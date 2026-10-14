@@ -1045,6 +1045,26 @@ func TestPlanLoopPlannerAsksAHuman(t *testing.T) {
 	}
 }
 
+// A planner session that could not start asks a human at once and costs
+// the task neither agent time nor an attempt: the usage recorded after it
+// is none, after the session the answer starts one session's.
+func TestPlanLoopSessionThatCannotStartCostsNothing(t *testing.T) {
+	ask := startEscalation("image pull", "push the worker image or correct its reference",
+		"start failed: image pull: container clone waits with ErrImagePull: not found")
+	h := newPlanHarness(t, PlanResult{Escalate: ask, StartFailed: true}, PlanResult{Findings: []string{"plan: 1 cards; this process allows 2 to 12"}})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "the image is pushed", Comment: 602})
+	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: we buy one" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{ask}) || len(h.plans) != 2 {
+		t.Fatalf("escalated %q, plans %q", h.escalated, h.plans)
+	}
+	if want := []TaskUsage{{}, {AgentTime: planSession, Attempts: 1}}; !slices.Equal(h.usage, want) {
+		t.Fatalf("usage %+v, want %+v", h.usage, want)
+	}
+}
+
 // A refused acceptance (a cycle found when the cards are filed) goes back
 // to the planner as its findings, and the next valid revision is accepted.
 func TestAcceptRefusesCycle(t *testing.T) {
@@ -1374,10 +1394,10 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunPlan still waits on the pod")
 	}
-	want := "the session's pod cannot start, and no session can fix it: push the worker image or correct its reference, " +
-		"then answer to start a session again, or close the card.\nimage pull: container clone waits with ErrImagePull: " + imageNotFound
-	if res.Escalate != want || len(res.Findings) != 0 || res.Revision != 0 {
-		t.Fatalf("result %+v, want the escalation %q", res, want)
+	want := startEscalation("image pull", "push the worker image or correct its reference",
+		"start failed: image pull: container clone waits with ErrImagePull: "+imageNotFound)
+	if res.Escalate != want || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
+		t.Fatalf("result %+v, want the start failure's escalation %q", res, want)
 	}
 }
 

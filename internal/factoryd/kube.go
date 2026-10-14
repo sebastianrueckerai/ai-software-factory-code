@@ -130,13 +130,24 @@ type PodCondition struct {
 }
 
 // ContainerState is one container's state: waiting, running or
-// terminated, with its reason.
+// terminated, with its reason, and a terminated one's exit code.
 type ContainerState struct {
 	Name     string `json:"name"`
 	State    string `json:"state"`
 	Reason   string `json:"reason,omitempty"`
 	Message  string `json:"message,omitempty"`
+	ExitCode int32  `json:"exit_code,omitempty"`
 	Restarts int    `json:"restarts"`
+}
+
+// waiting says what the container waits with: the kubelet's reason and
+// message.
+func (c ContainerState) waiting() string {
+	s := "container " + c.Name + " waits with " + c.Reason
+	if c.Message != "" {
+		s += ": " + c.Message
+	}
+	return s
 }
 
 // InClusterKube is the raw-REST Kubernetes client. No client-go: the runner
@@ -462,8 +473,9 @@ func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.
 
 func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	type detail struct {
-		Reason  string `json:"reason"`
-		Message string `json:"message"`
+		Reason   string `json:"reason"`
+		Message  string `json:"message"`
+		ExitCode int32  `json:"exitCode"`
 	}
 	type status struct {
 		Name         string `json:"name"`
@@ -494,7 +506,7 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 		case c.State.Waiting != nil:
 			cs.State, cs.Reason, cs.Message = "waiting", c.State.Waiting.Reason, c.State.Waiting.Message
 		case c.State.Terminated != nil:
-			cs.State, cs.Reason, cs.Message = "terminated", c.State.Terminated.Reason, c.State.Terminated.Message
+			cs.State, cs.Reason, cs.Message, cs.ExitCode = "terminated", c.State.Terminated.Reason, c.State.Terminated.Message, c.State.Terminated.ExitCode
 		}
 		d.Containers = append(d.Containers, cs)
 	}

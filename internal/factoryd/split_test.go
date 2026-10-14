@@ -413,6 +413,23 @@ func TestSplitFailsTwiceThenAsksAHuman(t *testing.T) {
 	}
 }
 
+// A split whose session could not start asks a human at once, with the
+// start failure and the split's own way on, instead of a second session
+// that would fail the same way; the approval wait goes on.
+func TestSplitThatCannotStartAsksAHumanAtOnce(t *testing.T) {
+	ask := "the session cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+		"then split the pull request again, or approve or deny it.\nstart failed: image pull: container clone waits with ErrImagePull: not found"
+	g, calls := newSplitHarness(t, PlanResult{Escalate: ask, StartFailed: true})
+	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})
+	g.signalAfter(3*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(*calls, []string{"run factory/coding-frontier 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
+		t.Fatalf("calls %q, escalated %q; want one session and the start failure asked", *calls, g.escalated)
+	}
+}
+
 // A split that arrives with a change request is dropped with the stale
 // approvals: the change request sends the card back to its agent, and the
 // next approval request, for the new head, splits nothing on its own.

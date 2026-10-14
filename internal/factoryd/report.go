@@ -67,16 +67,16 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	}
 	text := t.AgentSummary
 	if text == "" {
-		var why string
 		began := time.Now()
-		if text, why, _, err = r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil, nil); err != nil {
+		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil, nil)
+		if err != nil {
 			return ReportResult{}, err
 		}
-		if text == "" {
-			if refused, err := r.providerRefusal(ctx, t.ID, began, why); err != nil || refused.Status != 0 {
+		if text = end.report; text == "" {
+			if refused, err := r.providerRefusal(ctx, t.ID, began, end.why); err != nil || refused.Status != 0 {
 				return ReportResult{Refused: refused}, err
 			}
-			return ReportResult{}, terminalError("the report session ended without a report: %s", why)
+			return ReportResult{}, terminalError("the report session ended without a report: %s", end.why)
 		}
 		text = textutil.Truncate(text, maxReport)
 		if err := r.store.SetAgentSummary(ctx, t.ID, text); err != nil {
@@ -114,27 +114,33 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 		"factoryd %s, analyzer task %s: a report, no code changed.\n\n%s\n\n%s", t.Source, t.ID, fenced(r.untrusted(t, text)), marker))
 }
 
+// reportEnd is how a report-mode session ended. report is the agent's
+// last message, or why a stop ended it; with none, why says why the
+// session ended without one. escalate is a stop for a human; start, a
+// session that could not start, which leaves no report.
+type reportEnd struct {
+	report, why, escalate string
+	start                 *startFailure
+}
+
 // reportSession runs one worker in report mode, with guide, findings and
 // a human's answers, in the task's own sandbox: the read token on the
-// repository, no push token, no fork. Its report is the agent's last
-// message, or why a stop ended it; with none, why the session ended
-// without one. escalate is what a human answers: a stop for a human, or
-// a pod that cannot start, which leaves no report.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (report, why, escalate string, err error) {
+// repository, no push token, no fork.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
-		return "", "", "", err
+		return reportEnd{}, err
 	}
 	tc, err := r.TaskConfig(ctx, t.ID, pin)
 	if err != nil {
-		return "", "", "", err
+		return reportEnd{}, err
 	}
 	s.agentTime, s.checkIn = tc.AgentTime, tc.CheckIn
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return "", "", "", fmt.Errorf("revoke leftover credentials: %w", err)
+		return reportEnd{}, fmt.Errorf("revoke leftover credentials: %w", err)
 	}
 	cleanup := context.WithoutCancel(ctx)
 	defer func() {
@@ -145,10 +151,10 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	}()
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
 	if err != nil {
-		return "", "", "", err
+		return reportEnd{}, err
 	}
 	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
-		return "", "", "", err
+		return reportEnd{}, err
 	}
 	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
 	began := rfc3339(time.Now())
@@ -157,31 +163,30 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		r.record(cleanup, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report", "outcome": "aborted",
 			"summary": err.Error(), "started": began})
-		return "", "", "", err
+		return reportEnd{}, err
 	}
-	var text string
 	switch {
 	case out.result != nil && out.result.Success:
-		text = out.result.Summary
+		end.report = out.result.Summary
 	case out.decision != nil && out.trip != nil:
-		text = fmt.Sprintf("The session stopped (%s, %s): %s", out.trip.Kind, out.decision.Action, cmp.Or(out.decision.Reason, out.decision.Guidance, out.trip.Detail))
+		end.report = fmt.Sprintf("The session stopped (%s, %s): %s", out.trip.Kind, out.decision.Action, cmp.Or(out.decision.Reason, out.decision.Guidance, out.trip.Detail))
 		if out.decision.Action == ActionEscalate {
-			escalate = text
+			end.escalate = end.report
 		}
 	case out.start != nil:
-		why, escalate = out.noResult, out.start.escalation()
+		end.why, end.start = out.start.Error(), out.start
 	case out.result != nil:
-		why = out.result.Summary
+		end.why = out.result.Summary
 	default:
-		why = cmp.Or(out.noResult, "no last message")
+		end.why = cmp.Or(out.noResult, "no last message")
 	}
 	outcome := "reported"
-	if text == "" {
+	if end.report == "" {
 		outcome = "no_report"
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "model": s.model, "mode": "report",
-		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(text, why), 2000), "started": began})
-	return text, why, escalate, nil
+		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(end.report, end.why), 2000), "started": began})
+	return end, nil
 }
 
 // Screen is the screening stage (ruling 182): it opens the task's

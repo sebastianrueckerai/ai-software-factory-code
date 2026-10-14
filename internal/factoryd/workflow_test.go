@@ -1680,19 +1680,18 @@ func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 	}
 }
 
-// A session whose pod cannot start goes to a human like any escalation,
-// but it ran no agent: its minute is no agent time, so the answer finds
-// the whole 20 minutes left and grants no slice, and the session it buys
-// runs on the same rung with the same findings.
-func TestWorkflowPodThatCannotStartTakesNoAgentTime(t *testing.T) {
+// A session that cannot start goes to a human like any escalation, but
+// it ran no agent: its minute is no agent time, so the answer finds the
+// whole 20 minutes left and grants no slice, and the session it buys runs
+// on the same rung.
+func TestWorkflowSessionThatCannotStartTakesNoAgentTime(t *testing.T) {
 	h := newWorkflowHarness(t)
-	reason := startRefused + "push the worker image or correct its reference, then answer to start a session again, or close the card.\n" +
-		"image pull: container clone waits with ErrImagePull: not found"
+	reason := startEscalation("image pull", "push the worker image or correct its reference",
+		"start failed: image pull: container clone waits with ErrImagePull: not found")
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
-			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Model: in.Model, Reason: reason, StartFailed: true,
-				Findings: []string{"go vet: unreachable code"}}, nil
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Model: in.Model, Reason: reason, StartFailed: true}, nil
 		}).Once()
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
@@ -1709,8 +1708,8 @@ func TestWorkflowPodThatCannotStartTakesNoAgentTime(t *testing.T) {
 	if !slices.Equal(h.escalated, []string{reason}) {
 		t.Fatalf("escalations = %q, want the start failure's", h.escalated)
 	}
-	if second := h.sessions[1]; second.Model != h.sessions[0].Model || !slices.Equal(second.Findings, []string{"go vet: unreachable code"}) {
-		t.Fatalf("second session = %+v, want the first's model and findings", second)
+	if second := h.sessions[1]; second.Model != h.sessions[0].Model {
+		t.Fatalf("second session = %+v, want the first's model", second)
 	}
 	want := TaskUsage{AgentTime: 5 * time.Minute, Attempts: 2, ExtraAttempts: 1}
 	if last := h.usage[len(h.usage)-1]; last != want {

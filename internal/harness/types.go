@@ -95,10 +95,12 @@ type Event struct {
 	Detail map[string]any `json:"detail,omitempty"`
 }
 
-// Result is the adapter's final verdict.
+// Result is the adapter's final verdict, or the worker's when its start
+// failed before the harness ran: Step names the step that failed.
 type Result struct {
 	Success bool   `json:"success"`
 	Summary string `json:"summary"`
+	Step    string `json:"step,omitempty"`
 }
 
 // SandboxEnv names where a task runs.

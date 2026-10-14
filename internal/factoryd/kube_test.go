@@ -291,7 +291,7 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 			io.WriteString(w, `{"status":{"phase":"Pending","conditions":[{"type":"PodScheduled","status":"True"},`+
 				`{"type":"Ready","status":"False","reason":"ContainersNotReady","message":"containers with unready status: [worker]"}],`+
 				`"containerStatuses":[{"name":"worker","restartCount":2,"state":{"waiting":{"reason":"ImagePullBackOff","message":"Back-off pulling image"}}}],`+
-				`"initContainerStatuses":[{"name":"clone","state":{"terminated":{"reason":"Completed","exitCode":0}}}]}}`)
+				`"initContainerStatuses":[{"name":"clone","state":{"terminated":{"reason":"Error","message":"no space","exitCode":1}}}]}}`)
 		case "/api/v1/namespaces/factory-agents-t1/pods/worker-s1/log":
 			if q := r.URL.Query(); q.Get("tailLines") != "100" || q.Get("limitBytes") != "65536" || q.Has("follow") {
 				t.Errorf("log query = %v, want tailLines=100, limitBytes=65536 and no follow", q)
@@ -315,7 +315,7 @@ func TestInClusterKubePodDiagnosisAndLogTail(t *testing.T) {
 	d, err := k.PodDiagnosis(context.Background(), "factory-agents-t1", "worker-s1")
 	want := PodDiagnosis{Phase: "Pending", Conditions: []PodCondition{{Type: "PodScheduled", Status: "True"},
 		{Type: "Ready", Status: "False", Reason: "ContainersNotReady", Message: "containers with unready status: [worker]"}},
-		Containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+		Containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Error", Message: "no space", ExitCode: 1},
 			{Name: "worker", State: "waiting", Reason: "ImagePullBackOff", Message: "Back-off pulling image", Restarts: 2}}}
 	if err != nil || fmt.Sprint(d) != fmt.Sprint(want) {
 		t.Fatalf("PodDiagnosis = %+v, %v", d, err)

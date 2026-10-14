@@ -116,6 +116,10 @@ type Runner struct {
 	supervisor *SupervisorModel
 	stopWait   time.Duration
 	cheapCap   time.Duration // cheapAttemptCap; a test shortens it
+	// startPoll is how often a pod's start is read, configGrace how long a
+	// container may wait with a configuration error (configErrorGrace);
+	// a test shortens both
+	startPoll, configGrace time.Duration
 	// workerPort replaces harness.MessagePort in tests
 	workerPort int
 
@@ -304,7 +308,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		alerts:  cfg.Alerts,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
-			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap, booted: time.Now()}, nil
+			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}, nil
 }
 
 // WorkflowConfig is what TaskWorkflow captures at its start: the limits of
@@ -406,7 +411,7 @@ type sessionOutcome struct {
 	decision  *Decision
 	digest    string
 	noResult  string
-	start     *startFailure // the pod could not start, noResult says so
+	start     *startFailure // the session could not start
 	model     string        // the model the session ended on
 	findings  []string
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
@@ -463,22 +468,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
-	supCfg.ReadOnly = s.report != ""
-	if s.attempt == 1 && r.canClimb(s) {
-		supCfg.CheapCap = r.cheapCap
-	}
-	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
-	if err != nil {
-		return out, err
-	}
-	defer func() { out.findings, out.model = sup.Findings(), s.model }()
-	digest := newDigestBuilder(time.Now())
-	// messages: the guidance this session's delivered messages carried
-	var messages []string
-	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
-		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages))
-	}}
 	// stopAt is when workerStop closed: the whole stop, an in-flight
 	// supervisor call included, ends within r.stopWait of it
 	var stopAt time.Time
@@ -530,6 +519,25 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	progress(0, nil)
 
+	// the supervisor's clocks start with the pod: a slow pull is no time
+	// the agent had
+	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
+	supCfg.ReadOnly = s.report != ""
+	if s.attempt == 1 && r.canClimb(s) {
+		supCfg.CheapCap = r.cheapCap
+	}
+	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
+	if err != nil {
+		return out, err
+	}
+	defer func() { out.findings, out.model = sup.Findings(), s.model }()
+	digest := newDigestBuilder(time.Now())
+	// messages: the guidance this session's delivered messages carried
+	var messages []string
+	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
+		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages))
+	}}
+
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
 	// the worker asks for its push token once its agent is dead; the log
@@ -571,6 +579,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if env.Result != nil {
 			res := *env.Result
 			out.result = &res
+			if !res.Success && res.Step != "" {
+				out.start = &startFailure{step: res.Step, text: res.Summary}
+			}
 			return nil, true
 		}
 		if env.Event == nil {
@@ -775,8 +786,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 				if out.result == nil {
 					out.noResult = ended("pod exited without a result")
-					if diag, dErr := r.kube.PodDiagnosis(ctx, ns, podName); dErr == nil && diag.Reason == "Evicted" {
-						out.noResult = "evicted: " + diag.Message
+					if diag, dErr := r.kube.PodDiagnosis(ctx, ns, podName); dErr == nil {
+						out.noResult = cmp.Or(exitedHow(diag), out.noResult)
 					}
 				}
 				return out, nil
@@ -954,13 +965,18 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 	return trip
 }
 
-// awaitPodStart waits for the pod to leave Pending. A container that
-// waits on a cause no wait removes ends it at once with a *startFailure;
-// factoryd stopping ends it with errWorkerStop (the retry creates the pod
-// anew).
+// awaitPodStart waits for the pod to leave Pending. A container waiting
+// on a cause no wait removes ends it with a *startFailure: at once, or,
+// for a configuration error, once the same container has waited with it
+// for r.configGrace, since the kubelet's view of a secret written just
+// before the pod can lag. factoryd stopping ends it with errWorkerStop
+// (the retry creates the pod anew); a timeout says what the pod waits on.
 func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	// configSince is when each container's configuration error began
+	configSince := map[string]time.Time{}
+	var last PodDiagnosis
+	for now := time.Now(); now.Before(deadline); now = time.Now() {
 		d, err := r.kube.PodDiagnosis(ctx, ns, podName)
 		if err == nil && d.Phase != "" && d.Phase != "Pending" {
 			return nil
@@ -968,9 +984,24 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return err
 		}
+		if err == nil {
+			last = d
+		}
 		for _, c := range d.Containers {
-			if step := startStep(c); step != "" {
-				return &startFailure{step: step, container: c.Name, reason: c.Reason, message: c.Message}
+			step := startStep(c)
+			if step == stepContainerConfig {
+				since, seen := configSince[c.Name]
+				if !seen {
+					configSince[c.Name] = now
+				}
+				if !seen || now.Sub(since) < r.configGrace {
+					continue
+				}
+			} else {
+				delete(configSince, c.Name)
+			}
+			if step != "" {
+				return &startFailure{step: step, text: "start failed: " + step + ": " + c.waiting()}
 			}
 		}
 		select {
@@ -978,10 +1009,56 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 			return ctx.Err()
 		case <-workerStop:
 			return errWorkerStop
-		case <-time.After(2 * time.Second):
+		case <-time.After(min(r.startPoll, time.Until(deadline))):
 		}
 	}
-	return fmt.Errorf("pod %s still pending after %s", podName, timeout)
+	why := fmt.Sprintf("pod %s still pending after %s", podName, timeout)
+	if on := waitsOn(last); on != "" {
+		why += ": " + on
+	}
+	return errors.New(why)
+}
+
+// configErrorGrace is how long a container may wait with a configuration
+// error before the start fails.
+const configErrorGrace = 30 * time.Second
+
+// waitsOn says what a pending pod waits on: the scheduler's refusal, or
+// its first container not done, init containers first.
+func waitsOn(d PodDiagnosis) string {
+	for _, c := range d.Conditions {
+		if c.Type == "PodScheduled" && c.Status == "False" {
+			return c.Reason + ": " + c.Message
+		}
+	}
+	for _, c := range d.Containers {
+		switch c.State {
+		case "waiting":
+			return c.waiting()
+		case "running":
+			return "container " + c.Name + " runs"
+		}
+	}
+	return ""
+}
+
+// exitedHow says how a pod ended without a result: its eviction, or the
+// first container that ended in failure, init containers first; "" when
+// its diagnosis says no more.
+func exitedHow(d PodDiagnosis) string {
+	if d.Reason == "Evicted" {
+		return "evicted: " + d.Message
+	}
+	for _, c := range d.Containers {
+		if c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed") {
+			s := fmt.Sprintf("pod exited without a result: container %s terminated with %s (exit code %d)", c.Name, c.Reason, c.ExitCode)
+			if c.Message != "" {
+				s += ": " + c.Message
+			}
+			return s
+		}
+	}
+	return ""
 }
 
 // The start steps a pod can fail at for good.
@@ -1013,27 +1090,37 @@ func startStep(c ContainerState) string {
 	return ""
 }
 
-// startFailure is a pod that cannot start: the step, and the container
-// waiting at it with the kubelet's reason and message.
+// startFailure is a session that cannot start: the start step that
+// failed, the pod's or the worker's, and its text, "start failed: <step>:
+// <cause>".
 type startFailure struct {
-	step, container, reason, message string
+	step, text string
 }
 
-func (f *startFailure) Error() string {
-	return fmt.Sprintf("%s: container %s waits with %s: %s", f.step, f.container, f.reason, f.message)
-}
+func (f *startFailure) Error() string { return f.text }
 
-// startRefused opens the escalation of a session whose pod cannot start.
-const startRefused = "the session's pod cannot start, and no session can fix it: "
+// startRefused opens the escalation of a session that cannot start.
+const startRefused = "the session cannot start at "
 
-// escalation is the failure's escalation reason: its first line is the
-// card's question row (escalationQuestion), with the action.
-func (f *startFailure) escalation() string {
-	act := "push the worker image or correct its reference"
-	if f.step == stepContainerConfig {
+// The ways on a start failure's escalation: a code or plan session's, and
+// a split's, which a split of the pull request starts again.
+const (
+	thenAnswer = "then answer to start a session again, or close the card"
+	thenSplit  = "then split the pull request again, or approve or deny it"
+)
+
+// escalation is the failure's escalation reason, then the way on: its
+// first line is the card's question row (escalationQuestion), with the
+// action.
+func (f *startFailure) escalation(then string) string {
+	act := "fix the cause below"
+	switch f.step {
+	case stepImagePull:
+		act = "push the worker image or correct its reference"
+	case stepContainerConfig:
 		act = "correct the sandbox pod's configuration"
 	}
-	return startRefused + act + ", then answer to start a session again, or close the card.\n" + f.Error()
+	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
 }
 
 // setupNamespace builds the session's sandbox: base is the read token of

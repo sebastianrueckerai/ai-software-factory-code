@@ -160,12 +160,16 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 			r.record(context.WithoutCancel(ctx), taskID, "split_state", map[string]any{"error": err.Error()})
 		}
 	}()
-	text, why, escalate, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if escalate != "" {
-		return PlanResult{Findings: []string{"split: the planner stopped: " + escalate}}, nil
+	text, why := end.report, end.why
+	if end.start != nil {
+		return PlanResult{Escalate: end.start.escalation(thenSplit), StartFailed: true}, nil
+	}
+	if end.escalate != "" {
+		return PlanResult{Findings: []string{"split: the planner stopped: " + text}}, nil
 	}
 	p, found := CheckSplit(text, files, bound, v.Document.Limits)
 	if text == "" {
@@ -273,6 +277,7 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 	for try := 1; ; try++ {
 		var res PlanResult
 		v, decided, err := t.race(t.sessionOptions(t.cfg.WallClockCap), &res, ActivityRunSplit, t.taskID, t.cfg.Models.Stronger, t.cfg.PolicyVersion, findings)
+		var ask string
 		switch {
 		case decided && v.final != "" && !v.cancelled:
 			return v, true
@@ -280,6 +285,9 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 			findings = []string{"split: " + cmp.Or(v.reason, v.escalate)}
 		case err != nil:
 			findings = []string{"split: the session failed: " + errMessage(err)}
+		case res.StartFailed:
+			// a second session could not start either
+			ask = res.Escalate
 		case len(res.Findings) > 0:
 			findings = res.Findings
 		default:
@@ -289,10 +297,12 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 			}
 			return verdict{final: "closed", reason: SplitInto(filed.Issues)}, true
 		}
-		if try < 2 {
+		if ask == "" && try < 2 {
 			continue
 		}
-		ask := splitFailed + "; approve, deny or split the pull request again. The findings:\n- " + strings.Join(findings, "\n- ")
+		if ask == "" {
+			ask = splitFailed + "; approve, deny or split the pull request again. The findings:\n- " + strings.Join(findings, "\n- ")
+		}
 		if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask, []string(nil)).Get(t.ctx, &t.escalation); err != nil {
 			return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 		}

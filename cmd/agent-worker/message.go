@@ -158,7 +158,7 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, log func(string, ...any)) (stop func(), err error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
 	if err != nil {
-		return nil, fmt.Errorf("message endpoint: %w", err)
+		return nil, err
 	}
 	srv := &http.Server{Handler: messageHandler(tokenSHA256, gate, send), ReadHeaderTimeout: 10 * time.Second}
 	go func() {

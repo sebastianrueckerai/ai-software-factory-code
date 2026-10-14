@@ -60,6 +60,7 @@ type fakeKube struct {
 	ops          []string                     // namespace deletions and pod creations, in order
 	applies      []string                     // ns/name of every applied CNP, in order
 	onCreatePod  func()                       // runs on every CreatePod
+	onDiagnosis  func()                       // runs on every PodDiagnosis, under mu
 	nsDelay      time.Duration                // every CreateNamespace takes this long
 	pvs          []PersistentVolume
 	deletedPVs   []string
@@ -308,6 +309,9 @@ func (k *fakeKube) PodIP(ctx context.Context, namespace, name string) (string, e
 func (k *fakeKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if k.onDiagnosis != nil {
+		k.onDiagnosis()
+	}
 	p, ok := k.pods[namespace+"/"+name]
 	if !ok {
 		return PodDiagnosis{}, ErrNotFound
@@ -1575,49 +1579,64 @@ func TestEvictionRecorded(t *testing.T) {
 // worker image whose manifest the registry does not hold.
 const imageNotFound = `rpc error: code = NotFound desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": reg/worker@sha256:abc: not found`
 
-// A pod whose clone init container or worker container waits on an image
-// the registry does not hold ends its session at the first such wait, not
-// after ten minutes: the session goes to a human with the step, the
-// container and the kubelet's words, the timeline's session_end says so,
-// and the findings no agent saw wait for the next session.
-func TestRunSessionPodThatCannotStartEscalatesAtOnce(t *testing.T) {
+// startEscalation is a start failure's escalation reason, by hand: the
+// step on the question row with its action, the failure below.
+func startEscalation(step, act, summary string) string {
+	return "the session cannot start at " + step + ", and no session can fix it: " + act +
+		", then answer to start a session again, or close the card.\n" + summary
+}
+
+// A session that cannot start goes to a human at once, with the step on
+// the card's question row and the failure below it, whether its pod's
+// clone init container or worker container waits on an image the
+// registry does not hold (not ten minutes later) or the worker's own
+// start fails at a step and says so in its result. No agent ran: the
+// session hands on no findings of its own, and the timeline's
+// session_end says what failed.
+func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
+	const pushTheImage = "push the worker image or correct its reference"
+	cloneErr := "start failed: clone: git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
 	for _, tc := range []struct {
-		name       string
-		containers []ContainerState
-		summary    string
+		name          string
+		containers    []ContainerState
+		log           string
+		summary, step string
+		act           string
 	}{
-		{"clone", []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound},
+		{name: "clone container", containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound},
 			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
-			"image pull: container clone waits with ErrImagePull: " + imageNotFound},
-		{"worker", []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+			summary: "start failed: image pull: container clone waits with ErrImagePull: " + imageNotFound, step: "image pull", act: pushTheImage},
+		{name: "worker container", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
 			{Name: "worker", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}},
-			"image pull: container worker waits with ErrImagePull: " + imageNotFound},
+			summary: "start failed: image pull: container worker waits with ErrImagePull: " + imageNotFound, step: "image pull", act: pushTheImage},
+		{name: "worker start", log: workerStartFailed("clone", cloneErr),
+			summary: cloneErr, step: "clone", act: "fix the cause below"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			task := Task{ID: "t4i", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
 			kube := newFakeKube()
-			kube.onCreatePod = func() {
-				p := kube.podOrder[len(kube.podOrder)-1]
-				p.phase, p.containers = "Pending", tc.containers
+			if tc.containers != nil {
+				kube.onCreatePod = func() {
+					p := kube.podOrder[len(kube.podOrder)-1]
+					p.phase, p.containers = "Pending", tc.containers
+				}
 			}
 			objects := &fakeObjectStore{}
 			runner, _, _ := newTestRunner(t, task, kube, objects)
-
 			// a start that waits ends in the deadline's error, not ten minutes on
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			began := time.Now()
-			res, err := runSession(t, ctx, runner, SessionInput{TaskID: "t4i", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"go vet: unreachable code"}}, nil)
-			reason := "the session's pod cannot start, and no session can fix it: push the worker image or correct its reference, " +
-				"then answer to start a session again, or close the card.\n" + tc.summary
+			var bodies []string
+			if tc.log != "" {
+				bodies = []string{tc.log}
+			}
+			res, err := runSession(t, ctx, runner, SessionInput{TaskID: "t4i", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"go vet: unreachable code"}}, nil, bodies...)
+			reason := startEscalation(tc.step, tc.act, tc.summary)
 			if err != nil || res.Outcome != OutcomeEscalate || res.Summary != tc.summary || res.Reason != reason || !res.StartFailed {
 				t.Fatalf("result = (%+v, %v), want an escalation:\n%s", res, err, reason)
 			}
-			if !slices.Equal(res.Findings, []string{"go vet: unreachable code"}) || res.Model != "factory/coding-cheap" {
-				t.Fatalf("findings %q on %s, want the session's own on its model", res.Findings, res.Model)
-			}
-			if d := time.Since(began); d >= 2*time.Second {
-				t.Fatalf("the session took %v, want its end at the first look at the pod", d)
+			if len(res.Findings) != 0 || res.Model != "factory/coding-cheap" || res.Trip != "" {
+				t.Fatalf("findings %q, trip %q on %s, want none of its own on its model", res.Findings, res.Trip, res.Model)
 			}
 			if got := escalationSource(res.Reason); got != "start" {
 				t.Fatalf("escalation source = %q, want start", got)
@@ -1625,19 +1644,29 @@ func TestRunSessionPodThatCannotStartEscalatesAtOnce(t *testing.T) {
 			if end := timelineStep(t, objects, "t4i", "session_end"); end["outcome"] != string(OutcomeEscalate) || end["summary"] != tc.summary {
 				t.Fatalf("session_end = %v, want outcome escalate with the summary", end)
 			}
-			if len(kube.deletedPods) != 1 {
-				t.Fatalf("deleted pods = %v, want the pod gone", kube.deletedPods)
-			}
 		})
 	}
+}
+
+// workerStartFailed is the worker's result line for a start that failed
+// at step with summary.
+func workerStartFailed(step, summary string) string {
+	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step}})
+	return string(b)
+}
+
+// startRunner is a runner on kube that reads a pod's start every 10 ms
+// and lets a container wait with a configuration error for grace.
+func startRunner(kube *fakeKube, grace time.Duration) *Runner {
+	return &Runner{kube: kube, startPoll: 10 * time.Millisecond, configGrace: grace}
 }
 
 // awaitPodStart ends a pod's start at the first wait no wait gets past,
 // in its init or its main container, and waits on through every other:
 // a registry that answers 503, a back-off that names no error (a kubelet
-// before 1.30), a container still being created, a pod no node takes. A
-// closed stop ends the first wait at once, so errWorkerStop says the
-// start waited.
+// before 1.30), a container still being created, a configuration error
+// first seen, a pod no node takes. A closed stop ends the first wait at
+// once, so errWorkerStop says the start waited.
 func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 	const unavailable = `rpc error: code = Unknown desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": ` +
 		`unexpected status from HEAD request to https://reg/v2/worker/manifests/sha256:abc: 503 Service Unavailable`
@@ -1649,20 +1678,19 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 	}{
 		{name: "init ErrImagePull, manifest not found",
 			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}, {Name: "worker", State: "waiting", Reason: "PodInitializing"}},
-			want:       "image pull: container clone waits with ErrImagePull: " + imageNotFound},
+			want:       "start failed: image pull: container clone waits with ErrImagePull: " + imageNotFound},
 		{name: "main ImagePullBackOff after a pull not found",
 			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
 				{Name: "worker", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + imageNotFound}},
-			want: `image pull: container worker waits with ImagePullBackOff: Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + imageNotFound},
+			want: `start failed: image pull: container worker waits with ImagePullBackOff: Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + imageNotFound},
 		{name: "manifest unknown",
 			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ErrImagePull", Message: "reading manifest abc in reg/worker: manifest unknown"}},
-			want:       "image pull: container clone waits with ErrImagePull: reading manifest abc in reg/worker: manifest unknown"},
+			want:       "start failed: image pull: container clone waits with ErrImagePull: reading manifest abc in reg/worker: manifest unknown"},
 		{name: "invalid image name",
 			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "InvalidImageName", Message: `Failed to apply default image tag "reg/Worker": couldn't parse image name "reg/Worker": invalid reference format: repository name must be lowercase`}},
-			want:       `image pull: container clone waits with InvalidImageName: Failed to apply default image tag "reg/Worker": couldn't parse image name "reg/Worker": invalid reference format: repository name must be lowercase`},
-		{name: "container config",
-			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "CreateContainerConfigError", Message: `secret "task-git" not found`}},
-			want:       `container config: container worker waits with CreateContainerConfigError: secret "task-git" not found`},
+			want:       `start failed: image pull: container clone waits with InvalidImageName: Failed to apply default image tag "reg/Worker": couldn't parse image name "reg/Worker": invalid reference format: repository name must be lowercase`},
+		{name: "container config, first seen",
+			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "CreateContainerConfigError", Message: `secret "task-git" not found`}}},
 		{name: "registry 503",
 			containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc": ErrImagePull: ` + unavailable}}},
 		{name: "back-off without the pull's error",
@@ -1675,10 +1703,9 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
-			r := &Runner{kube: kube}
 			stop := make(chan struct{})
 			close(stop)
-			err := r.awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
+			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, stop)
 			var f *startFailure
 			switch {
 			case tc.want == "" && !errors.Is(err, errWorkerStop):
@@ -1687,6 +1714,142 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 				t.Fatalf("awaitPodStart = %v, want the start failure %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A container that waits with a configuration error ends the start only
+// once it has waited with it for the grace: the kubelet's view of a
+// secret written just before the pod can lag, and one that clears within
+// the grace starts the pod. A wait without the error starts the count
+// again. The worker's state follows the time since the start, read every
+// 10 ms against a grace of 600 ms.
+func TestAwaitPodStartGivesAConfigErrorItsGrace(t *testing.T) {
+	configErr := ContainerState{Name: "worker", State: "waiting", Reason: "CreateContainerConfigError", Message: `secret "task-git" not found`}
+	creating := ContainerState{Name: "worker", State: "waiting", Reason: "ContainerCreating"}
+	running := ContainerState{Name: "worker", State: "running"}
+	type span struct {
+		until time.Duration // the state holds until then, the last one for good
+		state ContainerState
+	}
+	for _, tc := range []struct {
+		name  string
+		spans []span
+		want  string // "" starts
+	}{
+		{name: "clears within the grace", spans: []span{{300 * time.Millisecond, configErr}, {0, running}}},
+		// 700 ms of the error in all, never 600 ms in a row
+		{name: "cleared, then again", spans: []span{{300 * time.Millisecond, configErr}, {500 * time.Millisecond, creating},
+			{900 * time.Millisecond, configErr}, {0, running}}},
+		{name: "persists", spans: []span{{0, configErr}},
+			want: `start failed: container config: container worker waits with CreateContainerConfigError: secret "task-git" not found`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kube := newFakeKube()
+			pod := &fakePod{ns: "ns", name: "worker-s1", phase: "Pending"}
+			kube.pods["ns/worker-s1"] = pod
+			began := time.Now()
+			kube.onDiagnosis = func() {
+				i := 0
+				for i < len(tc.spans)-1 && time.Since(began) >= tc.spans[i].until {
+					i++
+				}
+				pod.containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, tc.spans[i].state}
+				if tc.spans[i].state.State == "running" {
+					pod.phase = "Running"
+				}
+			}
+			err := startRunner(kube, 600*time.Millisecond).awaitPodStart(context.Background(), "ns", "worker-s1", time.Minute, nil)
+			switch {
+			case tc.want == "" && err != nil:
+				t.Fatalf("awaitPodStart = %v after %v, want the pod started", err, time.Since(began))
+			case tc.want != "" && (err == nil || err.Error() != tc.want):
+				t.Fatalf("awaitPodStart = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A start that times out says what the pod waits on: its first container
+// not done, init containers first, with the kubelet's reason and message,
+// or the scheduler's refusal.
+func TestAwaitPodStartTimeoutSaysWhatThePodWaitsOn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		containers []ContainerState
+		conditions []PodCondition
+		want       string
+	}{
+		{name: "pull back-off", containers: []ContainerState{{Name: "clone", State: "waiting", Reason: "ImagePullBackOff", Message: `Back-off pulling image "reg/worker@sha256:abc"`},
+			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
+			want: `pod worker-s1 still pending after 30ms: container clone waits with ImagePullBackOff: Back-off pulling image "reg/worker@sha256:abc"`},
+		{name: "clone runs", containers: []ContainerState{{Name: "clone", State: "running"}, {Name: "worker", State: "waiting", Reason: "PodInitializing"}},
+			want: "pod worker-s1 still pending after 30ms: container clone runs"},
+		{name: "unschedulable", conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient memory."}},
+			want: "pod worker-s1 still pending after 30ms: Unschedulable: 0/3 nodes are available: 3 Insufficient memory."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kube := newFakeKube()
+			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
+			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("awaitPodStart = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// A pod that ends without a result says how, from what the kubelet
+// reports: the first container that ended in failure, init containers
+// first, with its reason and exit code, instead of the generic line.
+func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		containers []ContainerState
+		want       string
+	}{
+		{name: "worker OOM", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137}},
+			want: "pod exited without a result: container worker terminated with OOMKilled (exit code 137)"},
+		{name: "clone error", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Error", ExitCode: 1, Message: "agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
+			{Name: "worker", State: "waiting", Reason: "PodInitializing"}},
+			want: "pod exited without a result: container clone terminated with Error (exit code 1): agent-worker: prctl PR_SET_DUMPABLE: operation not permitted"},
+		{name: "worker exited 0", containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "terminated", Reason: "Completed"}},
+			want: "pod exited without a result"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			task := Task{ID: "t4o", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+			kube := newFakeKube()
+			kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].containers = tc.containers }
+			runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4o", Attempt: 1, Model: "m"}, nil,
+				envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n")
+			if err != nil || res.Outcome != OutcomeNoPush || res.Summary != tc.want {
+				t.Fatalf("result = (%+v, %v), want summary %q", res, err, tc.want)
+			}
+		})
+	}
+}
+
+// The supervisor's clocks start when the pod has started: a pull that
+// takes longer than the cheap rung's cap leaves the session on the cheap
+// rung, with no cheap_cap trip at its first event.
+func TestSlowPodStartIsNoTimeOfTheCheapRung(t *testing.T) {
+	task := Task{ID: "t4s", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+	kube := newFakeKube()
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.phase = "Pending"
+		time.AfterFunc(1500*time.Millisecond, func() {
+			kube.mu.Lock()
+			defer kube.mu.Unlock()
+			p.phase = "Running"
+		})
+	}
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.startPoll, runner.cheapCap = 50*time.Millisecond, time.Second
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4s", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+resultLine(true, "no changes to push"))
+	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != "" || res.Model != "factory/coding-cheap" || res.Summary != "no changes to push" {
+		t.Fatalf("result = (%+v, %v), want no trip on the cheap rung", res, err)
 	}
 }
 
@@ -2042,6 +2205,9 @@ func TestContentFilterRefusalGoesToAHuman(t *testing.T) {
 	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})
 	if res.Outcome != OutcomeEscalate || res.Reason != prefix+summary+suffix {
 		t.Fatalf("content-filter refusal: %+v", res)
+	}
+	if got := escalationSource(res.Reason); got != "content_filter" {
+		t.Fatalf("escalation source = %q, want content_filter", got)
 	}
 	summary = "provider error: data_inspection_failed (status 400)"
 	res = sessionResult(sessionSpec{id: "s1"}, sessionOutcome{result: &harness.Result{Success: false, Summary: summary}})

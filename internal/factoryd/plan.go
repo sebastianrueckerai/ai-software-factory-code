@@ -124,6 +124,9 @@ type PlanResult struct {
 	// Refused: the provider refused the session's first call (Status 0:
 	// it did not).
 	Refused ProviderWait
+	// StartFailed: the session could not start (Escalate says why). No
+	// planner ran, so it took no agent time and is no attempt.
+	StartFailed bool `json:",omitempty"`
 }
 
 // maxPlanEcho bounds the last message a planner answered without a plan,
@@ -1085,9 +1088,11 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 			continue
 		}
-		t.providerAnswered(&refusals, err)
-		u.AgentTime += workflow.Now(t.ctx).Sub(began)
-		u.Attempts++
+		if !res.StartFailed {
+			t.providerAnswered(&refusals, err)
+			u.AgentTime += workflow.Now(t.ctx).Sub(began)
+			u.Attempts++
+		}
 		t.recordUsage(u)
 		if final, why, ok := t.planRejected(); ok {
 			return t.finish(final, why)
@@ -1108,6 +1113,9 @@ func (t *taskRun) planLoop() (string, error) {
 				return t.finish(final, why)
 			}
 			findings = append([]string{"the last planner session failed: " + errMessage(err)}, comments...)
+			continue
+		case res.StartFailed:
+			reason, ask = "the planner session could not start", res.Escalate
 			continue
 		case res.Escalate != "":
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
@@ -1368,18 +1376,24 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	text, why, escalate, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
+	}
+	text, why := end.report, end.why
+	if end.start != nil {
+		reason := end.start.escalation(thenAnswer)
+		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": reason})
+		return PlanResult{Escalate: reason, StartFailed: true}, nil
 	}
 	if text == "" {
 		if refused, err := r.providerRefusal(ctx, t.ID, began, why); err != nil || refused.Status != 0 {
 			return PlanResult{Refused: refused}, err
 		}
 	}
-	if escalate != "" {
-		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": escalate})
-		return PlanResult{Escalate: escalate}, nil
+	if end.escalate != "" {
+		r.record(ctx, taskID, "plan_escalated", map[string]any{"reason": end.escalate})
+		return PlanResult{Escalate: end.escalate}, nil
 	}
 	if res, ok := r.takeFiled(taskID); ok {
 		return res, nil

@@ -195,6 +195,22 @@ func scrubActivityError(err error, s *redact.Scrubber) error {
 	return err
 }
 
+// named prefixes err with the step of an activity it came from. Temporal
+// reads an activity error's type and non-retryable flag off the returned
+// error itself, never off one it wraps: a returned ApplicationError stays
+// one, its message prefixed.
+func named(step string, err error) error {
+	if app, ok := err.(*temporal.ApplicationError); ok { //nolint:errorlint // the SDK's own test, on the error itself
+		return temporal.NewApplicationErrorWithOptions(step+": "+app.Message(), app.Type(), temporal.ApplicationErrorOptions{
+			NonRetryable:   app.NonRetryable(),
+			Cause:          app.Unwrap(),
+			NextRetryDelay: app.NextRetryDelay(),
+			Category:       app.Category(),
+		})
+	}
+	return fmt.Errorf("%s: %w", step, err)
+}
+
 // forgejoTerminal is a Forgejo answer no retry changes: a refusal or a 404.
 func forgejoTerminal(err error) bool {
 	return errors.Is(err, ErrRefused) || errors.Is(err, errForgejoNotFound)
@@ -404,29 +420,29 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult, error) {
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("policy", err)
 	}
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("plan card", err)
 	}
 	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")
 		s.directories = askedDirectories(body)
 	}
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("fork", err)
 	}
 	// the branch head, when the branch exists, is where every attempt
 	// continues: the push of an earlier attempt, or of a session that died
 	// after pushing, which a non-force push must build on
 	if s.startRef, err = r.startRef(ctx, &t, repo, in.StartRef); err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("start ref", err)
 	}
 	s.base = t.SHA
 	var dead sessionProgress
@@ -442,13 +458,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	// starts over from the branch, the heartbeat's findings included
 	var live *LiveSession
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
-		return SessionResult{}, err
+		return SessionResult{}, named("live session", err)
 	} else if ok {
 		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
 			live = &l
 			s.id, s.parent, s.findings = l.SessionID, in.ParentSessionID, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
-			return SessionResult{}, err
+			return SessionResult{}, named("live session", err)
 		}
 	}
 	hb := startHeartbeat(ctx, s.id)
@@ -456,7 +472,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 
 	if live == nil {
 		if err := r.completion.reconcile(ctx, t.ID); err != nil {
-			return SessionResult{}, fmt.Errorf("revoke leftover credentials: %w", err)
+			return SessionResult{}, named("revoke leftover credentials", err)
 		}
 	}
 	cleanup := context.WithoutCancel(ctx)
@@ -480,12 +496,12 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		// minted when the worker asks for it, its agent dead (answerPush)
 		base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
 		if err != nil {
-			return SessionResult{}, err
+			return SessionResult{}, named("read token", err)
 		}
 		// freshNamespace deletes a leftover namespace first, and with it any
 		// pod a dead session left running
 		if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
-			return SessionResult{}, err
+			return SessionResult{}, named("namespace", err)
 		}
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
 		r.record(ctx, t.ID, "session_start", map[string]any{
@@ -610,11 +626,9 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush}
 	if out.start != nil {
-		// no agent saw the session's findings, and every next pod would
-		// wait the same way: a human fixes the cause, the answer starts
-		// the next session with them
-		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(), true
-		res.Findings = s.findings
+		// every next session would fail the same way: a human fixes the
+		// cause, and the answer starts the next session
+		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(thenAnswer), true
 		return res
 	}
 	// a session that finished and pushed goes to verification, even when a

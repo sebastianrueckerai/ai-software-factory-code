@@ -397,17 +397,26 @@ func TestCloneModeClones(t *testing.T) {
 }
 
 // A session whose start fails before the harness runs leaves a result
-// naming the failed step and its error, whatever the step: the card reads
-// why, not a pod that exited without a result. The clone's failure is the
-// text its init container left in the workspace.
+// naming the failed step, in Step and in its summary, and the step's
+// error, whatever the step: the card reads why, not a pod that exited
+// without a result. The init checks are the first step; the clone's
+// failure is the text its init container left in the workspace; an error
+// too long for factoryd's 1 MiB log line is cut with its size.
 func TestSessionStartFailureLeavesAResult(t *testing.T) {
 	const cloneErr = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
+	huge := strings.Repeat("\x01", 2<<20)
 	for name, tc := range map[string]struct {
-		taskID, fetchFailed, want string
+		initErr                         error
+		taskID, fetchFailed, step, want string
 	}{
-		"environment":  {want: "start failed: environment: TASK_ID is required"},
-		"clone":        {taskID: "t1", fetchFailed: cloneErr, want: "start failed: clone: " + cloneErr},
-		"prepare repo": {taskID: "t1", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
+		"init": {initErr: errors.New("must run as the container's init (pid 1), runs as pid 7"), taskID: "t1",
+			step: "init", want: "start failed: init: must run as the container's init (pid 1), runs as pid 7"},
+		"environment":  {step: "environment", want: "start failed: environment: TASK_ID is required"},
+		"clone":        {taskID: "t1", fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
+		"prepare repo": {taskID: "t1", step: "prepare repo", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
+		// "clone: " and 2 MiB, cut at 16 KiB
+		"huge clone error": {taskID: "t1", fetchFailed: huge, step: "clone",
+			want: "start failed: clone: " + huge[:16384-7] + "… (cut from 2097159 bytes)"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			setRequiredEnv(t)
@@ -426,14 +435,15 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 				}
 			}
 			var out bytes.Buffer
-			if code := runSession(context.Background(), nolog, ws, &out); code != 1 {
+			if code := runSession(context.Background(), nolog, ws, &out, tc.initErr); code != 1 {
 				t.Fatalf("exit %d, want 1", code)
 			}
-			want := harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1)}}
+			want := harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1), Step: tc.step}
 			var got harness.WorkerEnvelope
-			if lines := strings.Split(strings.TrimSpace(out.String()), "\n"); len(lines) != 1 || json.Unmarshal([]byte(lines[0]), &got) != nil ||
-				got.Type != want.Type || got.Result == nil || *got.Result != *want.Result {
-				t.Fatalf("stdout = %q, want the one result %+v", out.String(), *want.Result)
+			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+			if len(lines) != 1 || len(lines[0]) >= 1<<20 || json.Unmarshal([]byte(lines[0]), &got) != nil ||
+				got.Type != "result" || got.Result == nil || *got.Result != want {
+				t.Fatalf("stdout = %.300q (%d bytes), want the one result %.300q", out.String(), out.Len(), fmt.Sprintf("%+v", want))
 			}
 		})
 	}

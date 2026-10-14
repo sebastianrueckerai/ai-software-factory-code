@@ -34,6 +34,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 func main() {
@@ -45,27 +46,38 @@ func main() {
 }
 
 func run(log func(string, ...any)) int {
-	// killOthers relies on every agent process being in this PID namespace
-	// and reparenting to the worker.
-	if os.Getpid() != 1 {
-		log("must run as the container's init (pid 1), runs as pid %d", os.Getpid())
-		return 1
-	}
-	// The agent runs as the same uid; a non-dumpable worker keeps its
-	// /proc/1 (its memory holds the push token at the end) unreadable to it.
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0); errno != 0 {
-		log("prctl PR_SET_DUMPABLE: %v", errno)
-		return 1
-	}
-	switch os.Getenv("MODE") {
-	case "clone":
+	initErr := becomeInit()
+	mode := os.Getenv("MODE")
+	switch {
+	case (mode == "clone" || mode == "repro-fetch") && initErr != nil:
+		// left for the worker container to report, like a failed fetch
+		return recordFetch(log, workspace, initErr)
+	case mode == "clone":
 		return runClone(log, workspace)
-	case "repro-fetch":
+	case mode == "repro-fetch":
 		return runReproFetch(log, workspace)
-	case "repro":
+	case mode == "repro" && initErr != nil:
+		log("%v", initErr)
+		return 1
+	case mode == "repro":
 		return runRepro(log)
 	}
-	return runSession(context.Background(), log, workspace, os.Stdout)
+	return runSession(context.Background(), log, workspace, os.Stdout, initErr)
+}
+
+// becomeInit checks the worker runs as its container's init and makes it
+// non-dumpable. killOthers relies on every agent process being in this
+// PID namespace and reparenting to the worker. The agent runs as the same
+// uid; a non-dumpable worker keeps its /proc/1 (its memory holds the push
+// token at the end) unreadable to it.
+func becomeInit() error {
+	if pid := os.Getpid(); pid != 1 {
+		return fmt.Errorf("must run as the container's init (pid 1), runs as pid %d", pid)
+	}
+	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, syscall.PR_SET_DUMPABLE, 0, 0); errno != 0 {
+		return fmt.Errorf("prctl PR_SET_DUMPABLE: %v", errno)
+	}
+	return nil
 }
 
 // session is what a session's start hands its run.
@@ -84,16 +96,16 @@ type session struct {
 	closeTelemetry, stopMessages func()
 }
 
-// runSession runs a session on the workspace ws, its envelopes on stdout.
-// A step before the harness that fails ends the session with a result
-// that names the step and its error.
-func runSession(ctx context.Context, log func(string, ...any), ws string, stdout io.Writer) int {
-	s, err := start(ctx, log, ws)
+// runSession runs a session on the workspace ws, its envelopes on stdout;
+// initErr is becomeInit's. A step before the harness that fails ends the
+// session with a result that names the step and its error.
+func runSession(ctx context.Context, log func(string, ...any), ws string, stdout io.Writer, initErr error) int {
+	s, err := start(ctx, log, ws, initErr)
 	defer s.closeTelemetry()
 	defer s.stopMessages()
 	if err != nil {
 		log("%v", err)
-		writeResult(stdout, harness.Result{Success: false, Summary: "start failed: " + err.Error()}, s.closeTelemetry)
+		writeResult(stdout, startFailed(err), s.closeTelemetry)
 		return 1
 	}
 	if s.env.report != "" {
@@ -154,21 +166,49 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	return 0
 }
 
+// startError is the step of the session's start that failed, and why.
+type startError struct {
+	step string
+	err  error
+}
+
+func (e startError) Error() string { return e.step + ": " + e.err.Error() }
+func (e startError) Unwrap() error { return e.err }
+
+// maxStartError bounds a start failure's text in its result: escaped as
+// JSON, at most 6 bytes a byte, the line stays far under the 1 MiB that
+// factoryd reads of one.
+const maxStartError = 16 << 10
+
+// startFailed is the result of a start that failed with err, a startError.
+func startFailed(err error) harness.Result {
+	var se startError
+	errors.As(err, &se)
+	text := err.Error()
+	if len(text) > maxStartError {
+		text = fmt.Sprintf("%s (cut from %d bytes)", textutil.Truncate(text, maxStartError), len(text))
+	}
+	return harness.Result{Success: false, Summary: "start failed: " + text, Step: se.step}
+}
+
 // start runs the session's steps before the harness, in order, on the
-// workspace ws; an error names the step that failed. s is never nil: its
-// closers undo what started.
-func start(ctx context.Context, log func(string, ...any), ws string) (s *session, err error) {
+// workspace ws; an error is a startError. s is never nil: its closers
+// undo what started.
+func start(ctx context.Context, log func(string, ...any), ws string, initErr error) (s *session, err error) {
 	s = &session{outcome: "failed", closeTelemetry: func() {}, stopMessages: func() {}}
+	if initErr != nil {
+		return s, startError{"init", initErr}
+	}
 	if s.env, err = loadEnv(); err != nil {
-		return s, fmt.Errorf("environment: %w", err)
+		return s, startError{"environment", err}
 	}
 	log("task %s session %s", s.env.taskID, s.env.sessionID)
 	otelProviders, err := telemetry.Setup(ctx, "agent-worker")
 	if err != nil {
-		return s, fmt.Errorf("telemetry: %w", err)
+		return s, startError{"telemetry", err}
 	}
 	if s.tel, err = newSessionTelemetry(otelProviders.Tracer, otelProviders.Meter, s.env.taskID, s.env.sessionID, s.env.model); err != nil {
-		return s, fmt.Errorf("telemetry: %w", err)
+		return s, startError{"telemetry", err}
 	}
 	s.tel.start()
 	// factoryd deletes the pod once it reads the result line, so the session
@@ -186,15 +226,15 @@ func start(ctx context.Context, log func(string, ...any), ws string) (s *session
 	// restore the image-baked opencode provider packages into it.
 	if _, err := os.Stat(filepath.Join(s.env.home, ".config", "opencode")); os.IsNotExist(err) {
 		if err := os.CopyFS(filepath.Join(s.env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
-			return s, fmt.Errorf("restore pre-baked opencode config: %w", err)
+			return s, startError{"restore pre-baked opencode config", err}
 		}
 	}
 	s.repoDir = filepath.Join(ws, "repo")
 	if err := cloned(ws); err != nil {
-		return s, fmt.Errorf("clone: %w", err)
+		return s, startError{"clone", err}
 	}
 	if s.base, s.mainHead, err = prepareRepo(s.repoDir, s.env); err != nil {
-		return s, fmt.Errorf("prepare repo: %w", err)
+		return s, startError{"prepare repo", err}
 	}
 	s.brief = harness.TaskBrief{
 		Objective:      s.env.objective,
@@ -212,7 +252,7 @@ func start(ctx context.Context, log func(string, ...any), ws string) (s *session
 		LeftOut:        s.env.leftOut,
 	}
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
-		return s, fmt.Errorf("repository map: %w", err)
+		return s, startError{"repository map", err}
 	}
 	if s.brief.Map != "" {
 		log("repository map: %d directories, %d bytes", len(s.env.directories), len(s.brief.Map))
@@ -228,7 +268,7 @@ func start(ctx context.Context, log func(string, ...any), ws string) (s *session
 		Steps:      s.env.steps,
 	}
 	if err := s.oc.Prepare(ctx, harness.SandboxEnv{}, s.brief); err != nil {
-		return s, fmt.Errorf("prepare brief: %w", err)
+		return s, startError{"prepare brief", err}
 	}
 	s.gate = newPushGate()
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
@@ -238,12 +278,12 @@ func start(ctx context.Context, log func(string, ...any), ws string) (s *session
 		return s.oc.Message(ctx, text)
 	}, log)
 	if err != nil {
-		return s, err
+		return s, startError{"message endpoint", err}
 	}
 	s.stopMessages = stop
 	if s.env.report == "" {
 		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base); err != nil {
-			return s, fmt.Errorf("checkpoint store: %w", err)
+			return s, startError{"checkpoint store", err}
 		}
 	}
 	return s, nil

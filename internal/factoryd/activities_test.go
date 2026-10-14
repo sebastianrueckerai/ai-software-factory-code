@@ -317,6 +317,40 @@ func TestTerminalForgejoErrorsEndRetries(t *testing.T) {
 	}
 }
 
+// An activity step's name goes in front of its error, and a terminal error
+// stays terminal. The server's retry reads the top failure, whose type and
+// non-retryable flag Temporal's failure converter takes off the returned
+// error itself: a %w wrap of a terminal error is a retryable failure, a
+// named one is not. Any other error stays wrapped, its sentinel in reach.
+func TestNamedKeepsATerminalErrorTerminal(t *testing.T) {
+	fc := temporal.GetDefaultFailureConverter()
+	gone := terminalError("task t9 not found")
+	if fc.ErrorToFailure(fmt.Errorf("task: %w", gone)).GetApplicationFailureInfo().GetNonRetryable() {
+		t.Fatal("a %w wrap of a terminal error converts non-retryable: named is not needed")
+	}
+	err := named("task", gone)
+	f := fc.ErrorToFailure(err)
+	if info := f.GetApplicationFailureInfo(); !info.GetNonRetryable() || info.GetType() != errTerminal || f.GetMessage() != "task: task t9 not found" {
+		t.Fatalf("named terminal error converts to %v", f)
+	}
+	refused := fmt.Errorf("forgejo POST /repos/sf/r/forks: %w: status 409", ErrRefused)
+	if err := named("fork", refused); !errors.Is(err, ErrRefused) || err.Error() != "fork: forgejo POST /repos/sf/r/forks: forgejo: refused: status 409" ||
+		fc.ErrorToFailure(err).GetApplicationFailureInfo().GetNonRetryable() {
+		t.Fatalf("named(fork) = %v, want the wrap, retryable until the interceptor judges it", err)
+	}
+}
+
+// A session whose start fails before session_start names the step: the
+// task row of an unknown task, terminal as it was.
+func TestRunSessionNamesItsStepBeforeTheSessionStarts(t *testing.T) {
+	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo"}, newFakeKube(), &fakeObjectStore{})
+	_, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "nope", Attempt: 1, Model: "m"})
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Message() != "task: task nope not found" || !app.NonRetryable() {
+		t.Fatalf("RunSession = %v, want the terminal error named task", err)
+	}
+}
+
 // stubActivityNext is a fixed ExecuteActivity result, standing in for the
 // rest of the interceptor chain so TerminalForgejoErrors is tested on its
 // own, with no Temporal failure-conversion round trip to blur what it
