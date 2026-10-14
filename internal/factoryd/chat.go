@@ -164,8 +164,8 @@ type ChatConversation struct {
 	State    string    `json:"state"`
 	Inbox    bool      `json:"inbox,omitempty"`
 	Current  bool      `json:"current,omitempty"`
-	FirstAt  time.Time `json:"first_at"`
-	LastAt   time.Time `json:"last_at"`
+	FirstAt  time.Time `json:"first_at,omitzero"`
+	LastAt   time.Time `json:"last_at,omitzero"`
 	Messages int64     `json:"messages"`
 	Unread   int64     `json:"unread"`
 	Working  bool      `json:"working,omitempty"`

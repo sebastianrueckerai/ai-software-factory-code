@@ -728,6 +728,18 @@ func TestChatTextReply(t *testing.T) {
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
 
+// The current thread before its first message has no row: it carries no
+// times, so the page says no "739903 days ago" of year 1.
+func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	body := rec.Body.String()
+	if rec.Code != 200 || !strings.Contains(body, `"thread":{"number":1,"title":"","state":"active","messages":0,"unread":0}`) {
+		t.Fatalf("GET = %d %s, want thread 1 with no first_at or last_at", rec.Code, body)
+	}
+}
+
 // A card whose next session waits for a roll reads so in the agent's
 // board, as on the board's face.
 func TestChatBoardShowsAHeldCard(t *testing.T) {
