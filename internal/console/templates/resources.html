@@ -30,9 +30,9 @@
 <h4>Envelope: what tasks may commission without a human</h4>
 <p class="meta">{{if .File}}The project's file sets it: <a href="{{.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
 <ul>
-<li>Task block: {{printf "%.2f" .MonthlyEUR}} EUR a month, types {{range $i, $t := .ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{.MaxCount}} servers at once, leases up to {{.MaxLeaseHours}} h, volumes up to {{.VolumeMaxGB}} GB</li>
-<li>This month: {{eur4 .Use.MonthEUR}} EUR used or reserved, {{.Use.OpenServers}} servers open</li>
-<li>Standing block: {{printf "%.2f" .Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{.Standing.MaxCount}} servers</li>
-<li>Standing now: {{.StandingUse.Count}} servers, {{eur4 .StandingUse.MonthlyEUR}} EUR a month</li>
+<li>Task block: {{printf "%.2f" .MonthlyEUR}} EUR a month, types {{range $i, $t := .ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{servers .MaxCount}} at once, leases up to {{.MaxLeaseHours}} h, volumes up to {{.VolumeMaxGB}} GB</li>
+<li>This month: {{eur4 .Use.MonthEUR}} EUR used or reserved, {{servers .Use.OpenServers}} open</li>
+<li>Standing block: {{printf "%.2f" .Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{servers .Standing.MaxCount}}</li>
+<li>Standing now: {{servers .StandingUse.Count}}, {{eur4 .StandingUse.MonthlyEUR}} EUR a month</li>
 </ul>
 </div>{{end}}

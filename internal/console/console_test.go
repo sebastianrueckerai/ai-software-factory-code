@@ -1867,9 +1867,9 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		// demo-app's file, read-only, linked at the version's commit
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml">change it in Git</a>.`,
 		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
-		"This month: 1.5000 EUR used or reserved, 1 servers open",
+		"This month: 1.5000 EUR used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
-		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 servers, 5.9900 EUR a month",
+		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {

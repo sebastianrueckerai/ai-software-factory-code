@@ -27,6 +27,13 @@ import (
 
 var funcs = template.FuncMap{
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	// servers is n with the noun in its number: 1 server, 2 servers
+	"servers": func(n int) string {
+		if n == 1 {
+			return "1 server"
+		}
+		return fmt.Sprintf("%d servers", n)
+	},
 	// eur2 is money to the cent, as a card's face reads spend against budget
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
 	// accents are the colour labels a writer may put on a card

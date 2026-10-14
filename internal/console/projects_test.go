@@ -68,7 +68,7 @@ func TestProjectsPage(t *testing.T) {
 		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
 		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h",
-		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 servers, 5.9900 EUR a month",
+		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
 		"demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world",
 		"hostname: demo-staging.aisoftwarefactory.world", // the gateway YAML
 		"Forgejo: organisation, repository, CI user and tokens made",

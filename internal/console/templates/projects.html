@@ -21,8 +21,8 @@
 </ul>
 {{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export" id="export-{{.Name}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
-<label>GitHub repository <input name="remote" required placeholder="owner/name" autocomplete="off"></label>
-<label>GitHub login <input name="username" required autocomplete="off"></label>
+<label>GitHub repository <input type="text" name="remote" required placeholder="owner/name" autocomplete="off"></label>
+<label>GitHub login <input type="text" name="username" required autocomplete="off"></label>
 <label>Token <input name="token" type="password" required minlength="8" maxlength="255" autocomplete="off"></label>
 <label>Mode <select name="mode"><option value="mirror">mirror: every branch and tag</option><option value="pull_requests">pull requests: each merged card</option></select></label>
 <button type="submit">Export to GitHub</button>
