@@ -661,8 +661,9 @@ func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
 			t.Fatalf("final = %q (%v)", final, q.finals)
 		}
 		reran(t, q)
-		if len(q.enters) != 7 || q.enters[5] != 3*time.Hour || q.enters[6] != 3*time.Hour+queueRecheck {
-			t.Fatalf("EnterQueue ran at %v, want the answer's re-entry at 3h behind one entry", q.enters)
+		// the answer resumes the card once its burst is over (answerQuiet)
+		if len(q.enters) != 7 || q.enters[5] != 3*time.Hour+answerQuiet || q.enters[6] != 3*time.Hour+answerQuiet+queueRecheck {
+			t.Fatalf("EnterQueue ran at %v, want the answer's re-entry at 3h plus its quiet window, behind one entry", q.enters)
 		}
 		if !slices.Contains(q.states, "in-review") || len(q.sessions) != 1 {
 			t.Fatalf("states %v, %d sessions; want in review after the answer, no session", q.states, len(q.sessions))
