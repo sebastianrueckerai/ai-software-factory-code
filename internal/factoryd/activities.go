@@ -71,6 +71,7 @@ func (r *Runner) RegisterActivities(w interface {
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:                 r.EnsureIssue,
 		ActivitySetState:                    r.SetState,
+		ActivitySetGate:                     r.SetGate,
 		ActivityRunSession:                  r.RunSession,
 		ActivityOpenPullRequest:             r.OpenPullRequest,
 		ActivityWaitChecks:                  r.WaitChecks,
@@ -257,6 +258,13 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	}
 	mirrorTaskState(ctx, r.forgejo, t, state)
 	return nil
+}
+
+// SetGate moves the task's row to gate since, for a gate the workflow
+// enters after its activity's schedule: the review beside the checks wait,
+// once the review stage awaits it (activityBeside).
+func (r *Runner) SetGate(ctx context.Context, taskID, gate string, since time.Time) error {
+	return r.store.SetGate(ctx, taskID, gate, since)
 }
 
 // sessionProgress is RunSession's heartbeat: a retry after a crashed worker

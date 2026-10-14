@@ -69,6 +69,7 @@ type TaskSignal struct {
 const (
 	ActivityEnsureIssue                 = "EnsureIssue"
 	ActivitySetState                    = "SetState"
+	ActivitySetGate                     = "SetGate"
 	ActivityRunSession                  = "RunSession"
 	ActivityOpenPullRequest             = "OpenPullRequest"
 	ActivityWaitChecks                  = "WaitChecks"
@@ -415,7 +416,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
 	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
 	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
-	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewParallel)
+	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewSupervised)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -743,6 +744,13 @@ const (
 	// lands on a head that goes back. Runs from before the change keep
 	// the sequential review after green checks.
 	versionReviewParallel workflow.Version = 1
+	// versionReviewSupervised (the same change id, roadmap 245, 246): the
+	// review beside the checks wait opens no gate at its schedule
+	// (GateResults.Beside), so the wait holds the task's row; the review
+	// stage moves the row to gate review while it awaits the review, and
+	// acts on the review's gate trips as on the sequential review's, those
+	// that came while another wait ran kept for it.
+	versionReviewSupervised workflow.Version = 2
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -817,7 +825,7 @@ type taskRun struct {
 	alertPreCheck     workflow.Version
 	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
 	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
-	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel)
+	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel, versionReviewSupervised)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1912,17 +1920,28 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 		if !decided || v.escalate == "" {
 			return v, decided, err
 		}
-		final, why, changes := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)
-		switch {
-		case final != "":
-			return verdict{final: final, reason: why}, true, nil
-		case len(changes) > 0:
-			return verdict{findings: changes, reason: "changes requested", requested: true}, true, nil
-		}
-		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
-			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}, true, nil
+		if v, stop := t.gateEscalated(v.escalate); stop {
+			return v, true, nil
 		}
 	}
+}
+
+// gateEscalated waits on the human a gate supervisor's escalation asks:
+// stop with the task's verdict when the answer decides it (a close, or a
+// change request back to the agent), else the task is in review again and
+// the gate runs again.
+func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
+	final, why, changes := t.awaitHuman(reason, escalationQuestion(reason), nil)
+	switch {
+	case final != "":
+		return verdict{final: final, reason: why}, true
+	case len(changes) > 0:
+		return verdict{findings: changes, reason: "changes requested", requested: true}, true
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
+		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}, true
+	}
+	return verdict{}, false
 }
 
 // watch runs the activity until it returns, a terminal signal decides the
@@ -1930,86 +1949,123 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 // is the task's, the activity cancelled and waited for.
 func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	supervised := t.v12 >= versionGateSupervisor
-	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
 	if supervised {
-		// trips of activities that ended before this one: none is its own
-		for trips.ReceiveAsync(nil) {
+		// trips of activities that ended before this one: none is its own;
+		// the review beside the checks wait keeps its own
+		var trip GateTrip
+		for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
+			t.keepTrip(trip)
 		}
 	}
-	actCtx, cancel := workflow.WithCancel(t.ctx)
+	return t.watchRun(terminal, supervised, t.startGate(opts, activity, args...), out)
+}
+
+// startGate schedules a long gate's activity, which a cancel waits for.
+func (t *taskRun) startGate(opts workflow.ActivityOptions, activity string, args ...any) *gateRun {
+	ctx, cancel := workflow.WithCancel(t.ctx)
 	opts.WaitForCancellation = true
-	fut := workflow.ExecuteActivity(workflow.WithActivityOptions(actCtx, opts), activity, args...)
-	var run gateRun
+	return &gateRun{activity: activity, opts: opts, args: args, cancel: cancel,
+		future: workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), activity, args...)}
+}
+
+// watchRun waits for run as watch describes; supervised: it takes the gate
+// supervisor's trips of run's activity, those kept for it first.
+func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (verdict, bool, error) {
+	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
 	var asking workflow.Future // the supervisor's call on trip (versionGateSupervisorRace)
 	var trip GateTrip
 	for {
 		done, answered := false, false
 		sel := workflow.NewSelector(t.ctx)
-		sel.AddFuture(fut, func(workflow.Future) { done = true })
+		sel.AddFuture(run.future, func(workflow.Future) { done = true })
 		if terminal {
 			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
 				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 			}
 		}
-		if asking != nil {
+		switch {
+		case asking != nil:
 			sel.AddFuture(asking, func(workflow.Future) { answered = true })
-		} else if supervised {
+		case supervised && len(run.trips) > 0:
+			// a trip kept for it is taken at once
+			sel.AddDefault(func() {})
+		case supervised:
 			sel.AddReceive(trips, func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
 		if done {
-			return verdict{}, false, fut.Get(t.ctx, out)
+			return verdict{}, false, run.future.Get(t.ctx, out)
 		}
 		if terminal {
 			if final, reason, ok := t.decided(); ok {
-				cancel()
-				_ = fut.Get(t.ctx, nil)
+				run.cancel()
+				_ = run.future.Get(t.ctx, nil)
 				return verdict{final: final, reason: reason}, true, nil
 			}
 		}
 		if answered {
 			d := t.gateAnswer(asking)
 			asking = nil
-			if v, stop := t.actOnGate(trip, d, &run); stop {
-				cancel()
-				_ = fut.Get(t.ctx, nil)
+			if v, stop := t.actOnGate(trip, d, run); stop {
+				run.cancel()
+				_ = run.future.Get(t.ctx, nil)
 				return v, true, nil
 			}
 			continue
 		}
-		for asking == nil && supervised && trips.ReceiveAsync(&trip) {
-			if trip.Activity != activity {
+		for asking == nil && supervised && run.nextTrip(trips, &trip) {
+			if trip.Activity != run.activity {
+				t.keepTrip(trip)
 				continue
 			}
-			ask := t.askGate(trip, opts, args, &run)
+			ask := t.askGate(trip, run)
 			if t.v15 >= versionGateSupervisorRace {
 				asking = ask
 				break
 			}
 			d := t.gateAnswer(ask)
-			if fut.IsReady() {
+			if run.future.IsReady() {
 				continue
 			}
-			if v, stop := t.actOnGate(trip, d, &run); stop {
-				cancel()
-				_ = fut.Get(t.ctx, nil)
+			if v, stop := t.actOnGate(trip, d, run); stop {
+				run.cancel()
+				_ = run.future.Get(t.ctx, nil)
 				return v, true, nil
 			}
 		}
 	}
 }
 
-// gateRun is what one activity run used of the gate supervisor.
-type gateRun struct{ waited, retried bool }
+// gateRun is one run of a long gate's activity: the call, the trips kept
+// for it while the workflow awaited another activity (the review beside
+// the checks wait), and what it used of the gate supervisor.
+type gateRun struct {
+	activity        string
+	opts            workflow.ActivityOptions
+	args            []any
+	future          workflow.Future
+	cancel          workflow.CancelFunc
+	trips           []GateTrip
+	waited, retried bool
+}
+
+// nextTrip is the run's next trip: one kept for it, else the channel's.
+func (r *gateRun) nextTrip(trips workflow.ReceiveChannel, trip *GateTrip) bool {
+	if len(r.trips) == 0 {
+		return trips.ReceiveAsync(trip)
+	}
+	*trip, r.trips = r.trips[0], r.trips[1:]
+	return true
+}
 
 // askGate starts SuperviseGate on one trip of the running activity.
-func (t *taskRun) askGate(trip GateTrip, opts workflow.ActivityOptions, args []any, run *gateRun) workflow.Future {
+func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	// a session's wait would trip again past its own start-to-close, and
 	// so would any wait whose doubled bound outlasts the attempt (a merge:
 	// 2 x 90 s against 2 min); a retry on the last attempt would fail the
 	// activity
-	maxAttempts := opts.RetryPolicy.MaximumAttempts
-	in := GateSupervision{Trip: trip, Input: args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < opts.StartToCloseTimeout,
+	maxAttempts := run.opts.RetryPolicy.MaximumAttempts
+	in := GateSupervision{Trip: trip, Input: run.args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < run.opts.StartToCloseTimeout,
 		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts), PolicyVersion: t.cfg.PolicyVersion}
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }

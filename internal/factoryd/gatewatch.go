@@ -51,7 +51,9 @@ var StepGates = map[string]string{
 }
 
 // activityGates are the gates the activities open: the task's row is in
-// the gate from the activity's schedule until the next one opens.
+// the gate from the activity's schedule until the next one opens. The
+// review beside the checks wait opens none (activityBeside): the review
+// stage moves the row to gate review once it awaits the review (SetGate).
 var activityGates = map[string]string{
 	ActivityRunSession:       GateSession,
 	ActivityWaitChecks:       GateChecks,
@@ -81,7 +83,7 @@ var activityGates = map[string]string{
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityHeadChecks}
+	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityHeadChecks, ActivitySetGate}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {
@@ -161,7 +163,7 @@ type gateWatchInbound struct {
 func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.ExecuteActivityInput) (any, error) {
 	info := activity.GetInfo(ctx)
 	name, taskID := info.ActivityType.Name, activityTask(in.Args)
-	if gate, ok := activityGates[name]; ok && taskID != "" {
+	if gate, ok := activityGates[name]; ok && taskID != "" && !activityBeside(in.Args) {
 		if err := i.g.Store.SetGate(ctx, taskID, gate, info.ScheduledTime); err != nil {
 			log.Printf("task %s: enter gate %s: %v", taskID, gate, err)
 		}
@@ -305,6 +307,17 @@ func activityPin(args []any) int64 {
 		}
 	}
 	return 0
+}
+
+// activityBeside: the activity is the review beside the checks wait
+// (GateResults.Beside), which the workflow does not await at its schedule.
+func activityBeside(args []any) bool {
+	for _, a := range args {
+		if g, ok := a.(GateResults); ok {
+			return g.Beside
+		}
+	}
+	return false
 }
 
 // PinnedBound is GateWatch.Bound: the bound of the version pin (read with

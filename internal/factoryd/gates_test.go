@@ -334,6 +334,27 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	startedWithin(t, objects, "model_review", from)
 }
 
+// A review beside the checks wait leaves the task's row in gate checks,
+// which the wait holds; its step starts at its own schedule.
+func TestModelReviewBesideTheChecksStartsAtItsSchedule(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	task := gateTask
+	checksSince := time.Now().Add(-time.Minute)
+	task.Gate, task.GateSince = GateChecks, &checksSince
+	r, store, objects := newGateRunner(t, task, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"s","strict_improvement":true}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	from := time.Now()
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Beside: true})
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" {
+		t.Fatalf("review = %+v", rv)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Gate != GateChecks {
+		t.Fatalf("task in gate %q, want checks: the review beside the wait opens none", got.Gate)
+	}
+	startedWithin(t, objects, "model_review", from)
+}
+
 // The review reads an outside account's objective sanitised the same way
 // the agent's own brief is (ruling 152, item 48): the model review is
 // another reader of untrusted issue text.

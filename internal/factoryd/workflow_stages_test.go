@@ -225,8 +225,8 @@ func TestStagesReviewRunsBesideTheChecksWait(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.reviewGates) != 1 || g.reviewGates[0].ChecksPassed {
-		t.Fatalf("review calls = %d, gates %+v: want one call whose gates carry no checks answer", len(g.reviewGates), g.reviewGates)
+	if len(g.reviewGates) != 1 || g.reviewGates[0].ChecksPassed || !g.reviewGates[0].Beside {
+		t.Fatalf("review calls = %d, gates %+v: want one call whose gates carry no checks answer and mark it beside them", len(g.reviewGates), g.reviewGates)
 	}
 	if !g.approvals[0].Gates.ChecksPassed || g.approvals[0].Review.Verdict != "approve" || g.approvals[0].Commit != "c1" {
 		t.Fatalf("approval = %+v: want the review and green checks together", g.approvals[0])
@@ -293,7 +293,7 @@ func TestStagesRedChecksAtTheCapKeepTheReviewBesideThem(t *testing.T) {
 // checks, so its review's gates carry them.
 func TestStagesBeforeReviewParallelReviewsAfterChecks(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
-	g.env.OnGetVersion("review-parallel", workflow.DefaultVersion, versionReviewParallel).Return(workflow.DefaultVersion)
+	g.env.OnGetVersion("review-parallel", workflow.DefaultVersion, versionReviewSupervised).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -355,6 +355,153 @@ func TestStagesIssueClosedBesideTheAwaitedReviewDecides(t *testing.T) {
 	}
 	if g.finishAt.Sub(g.started) > time.Hour {
 		t.Fatalf("finished %s after the start, want right after the close", g.finishAt.Sub(g.started))
+	}
+}
+
+// besideTheChecks is a stages harness whose checks wait takes 20 minutes
+// and whose review takes review: the review runs beside the wait.
+func besideTheChecks(t *testing.T, review time.Duration) *gateHarness {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = review })
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	return g
+}
+
+// onSetGate records each SetGate call as "gate since S at A", both on the
+// workflow's clock from the start.
+func (g *gateHarness) onSetGate() *[]string {
+	var got []string
+	g.env.OnActivity(ActivitySetGate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, gate string, since time.Time) error {
+			got = append(got, fmt.Sprintf("%s since %s at %s", gate, since.Sub(g.started), g.env.Now().Sub(g.started)))
+			return nil
+		})
+	return &got
+}
+
+// The task's row follows the activity the workflow awaits (roadmap 245):
+// the review beside the checks wait opens no gate, so the row stays in
+// checks while both run; once the checks are green and the review stage
+// waits for the review, the row moves to gate review, since the review's
+// schedule. A review that ended within the checks wait moves it nowhere.
+func TestStagesRowIsInReviewWhileTheStageAwaitsTheReviewBesideTheChecks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		review time.Duration
+		want   []string
+	}{
+		{"the review outlasts the checks", time.Hour, []string{"review since 0s at 20m0s"}},
+		{"the review ends within the checks", 10 * time.Minute, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideTheChecks(t, tc.review)
+			gates := g.onSetGate()
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(*gates, tc.want) {
+				t.Fatalf("gates set = %q, want %q", *gates, tc.want)
+			}
+		})
+	}
+}
+
+// The review beside the checks wait is supervised as the sequential
+// review is (roadmap 246): its trip during the checks wait, or one still
+// unread when the checks wait runs again after a human's answer, is kept
+// for the review stage, which asks the gate supervisor once it awaits the
+// review; the supervisor's cancel fails the task then, not at the
+// review's own end three hours in.
+func TestStagesReviewBesideTheChecksKeepsItsTripsForTheStage(t *testing.T) {
+	cancel := GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"}
+	for _, tc := range []struct {
+		name      string
+		setup     func(g *gateHarness)
+		decisions []GateDecision
+		want      []string // the supervisor's calls: activity, may wait, may retry
+		end       time.Duration
+	}{
+		{"its trip during the checks wait", func(g *gateHarness) {
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+			g.tripAfter(15*time.Minute, ActivityModelReview, 2)
+		}, []GateDecision{cancel}, []string{"ModelReview [true,true]"}, 20 * time.Minute},
+		{"its trip unread when the checks wait runs again", func(g *gateHarness) {
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil).Once()
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(ChecksResult{State: ChecksSuccess}, nil)
+			g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+			g.tripAfter(20*time.Minute, ActivityModelReview, 2)
+			g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "runner registered", Comment: 700})
+		}, []GateDecision{{Action: ActionEscalate, Diagnosis: "no runner serves the label", Recommendation: "register a runner"}, cancel},
+			[]string{"WaitChecks [true,true]", "ModelReview [true,true]"}, time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+			g.onSessions(pushed("s1", "c1"))
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+			tc.setup(g)
+			calls := g.onGateSupervisor(tc.decisions...)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "failed" || g.finals[0][1] != "the gate supervisor cancelled ModelReview: the review model does not answer" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			var got []string
+			for _, in := range *calls {
+				got = append(got, in.Trip.Activity+" "+jsonOf([]bool{in.CanWait, in.CanRetry}))
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("supervisor calls = %q, want %q", got, tc.want)
+			}
+			if end := g.finishAt.Sub(g.started); end != tc.end {
+				t.Fatalf("finished %s after the start, want %s", end, tc.end)
+			}
+		})
+	}
+}
+
+// An escalation of the review beside the checks waits for the human as a
+// gate's does; the answer reviews the head again, sequentially, after
+// the green checks.
+func TestStagesEscalatedReviewBesideTheChecksRunsAgainAfterTheAnswer(t *testing.T) {
+	g := besideTheChecks(t, 3*time.Hour)
+	g.tripAfter(15*time.Minute, ActivityModelReview, 2)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+	g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 700})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the review model hangs\nRecommendation: look at the gateway"
+	if len(g.escalated) != 1 || g.escalated[0] != want {
+		t.Fatalf("escalations = %q, want %q", g.escalated, want)
+	}
+	if last := g.reviewGates[len(g.reviewGates)-1]; !last.ChecksPassed || last.Beside {
+		t.Fatalf("review gates %+v: want the last review after the green checks, not beside them", g.reviewGates)
+	}
+	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour {
+		t.Fatalf("approval requested %v, want once, at 4h: the answer at 1h and the sequential review's 3h", g.requested)
+	}
+}
+
+// A run from before versionReviewSupervised keeps its review beside the
+// checks as it was: unmarked, unsupervised, the row left alone.
+func TestStagesReviewParallelRunLeavesTheReviewsTripsAndTheRow(t *testing.T) {
+	g := besideTheChecks(t, time.Hour)
+	g.env.OnGetVersion("review-parallel", workflow.DefaultVersion, versionReviewSupervised).Return(versionReviewParallel)
+	gates := g.onSetGate()
+	calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
+	g.tripAfter(15*time.Minute, ActivityModelReview, 2)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || len(*calls) != 0 || len(*gates) != 0 {
+		t.Fatalf("final = %q after supervisor calls %+v and gates set %q, want done after none", final, *calls, *gates)
+	}
+	if len(g.reviewGates) != 1 || g.reviewGates[0].Beside {
+		t.Fatalf("review gates %+v: want the one call beside the checks, unmarked", g.reviewGates)
 	}
 }
 

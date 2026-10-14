@@ -88,6 +88,10 @@ type GateResults struct {
 	// ChecksPassed: the checks stage ran and was green; the auto merge
 	// needs it.
 	ChecksPassed bool `json:",omitempty"`
+	// Beside: the review runs beside the checks wait
+	// (versionReviewSupervised) and opens no gate on the task's row, which
+	// the wait holds until the review stage awaits the review.
+	Beside bool `json:",omitempty"`
 	// Audit is the audit stage's verdict (ruling 188); nil: not run.
 	Audit *AuditResult `json:",omitempty"`
 }
@@ -828,6 +832,15 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	// a review beside the checks wait opened no gate on the task's row:
+	// its own schedule starts its gate
+	reviewEnd := func(detail map[string]any) map[string]any {
+		if !gates.Beside {
+			return gateEnd(t, GateReview, detail)
+		}
+		detail["started"] = rfc3339(activity.GetInfo(ctx).ScheduledTime)
+		return detail
+	}
 	// the review model reads no adjudication (roadmap 192): a finding an
 	// approval covered reads as any finding of an earlier round
 	for i := range earlier {
@@ -835,7 +848,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	if t.Source == SourceRoll {
 		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"}
-		r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
+		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
 		return rv, nil
 	}
 	pinned, err := r.pinned(ctx, gates.Pin)
@@ -849,7 +862,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		rv := Review{Note: "model review not run: " + errMessage(err)}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
-		r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": len(earlier) + 1}))
+		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": len(earlier) + 1}))
 		return rv, nil
 	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, maxForgejoAnswer)
@@ -898,7 +911,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, r.untrusted(t, reviewComment(model, commit, rv, read))); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "model_review", gateEnd(t, GateReview, map[string]any{"pr": pr.Number, "commit": commit, "model": model,
+	r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "model": model,
 		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": len(earlier) + 1}))
 	process, lane := processLane(ctx, r.store, t)
 	r.countReview(ctx, rv, len(earlier)+1, process, lane)

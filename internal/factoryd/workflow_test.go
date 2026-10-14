@@ -122,6 +122,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	for name, fn := range map[string]any{
 		ActivityEnsureIssue:     func(ctx context.Context, taskID string) error { return nil },
 		ActivitySetState:        func(ctx context.Context, taskID, state string) error { return nil },
+		ActivitySetGate:         func(ctx context.Context, taskID, gate string, since time.Time) error { return nil },
 		ActivityRunSession:      func(ctx context.Context, in SessionInput) (SessionResult, error) { return SessionResult{}, nil },
 		ActivityOpenPullRequest: func(ctx context.Context, taskID, sha string) (PullRequest, error) { return PullRequest{}, nil },
 		ActivityWaitChecks:      func(ctx context.Context, taskID, sha string) (ChecksResult, error) { return ChecksResult{}, nil },

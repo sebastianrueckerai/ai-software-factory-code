@@ -505,11 +505,11 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 
 // reviewInFlight is a model review scheduled beside the checks wait
 // (versionReviewParallel): head is the commit the review reads, the one
-// the checks stage was waiting on when it scheduled the call.
+// the checks stage was waiting on when it scheduled the call at since.
 type reviewInFlight struct {
-	head   string
-	future workflow.Future
-	cancel workflow.CancelFunc
+	head  string
+	since time.Time
+	*gateRun
 }
 
 // scheduleReview starts the model review beside the checks wait on head:
@@ -537,35 +537,60 @@ func (t *taskRun) scheduleReview(head string, g *GateResults) {
 			return
 		}
 	}
-	ctx, cancel := workflow.WithCancel(t.ctx)
-	opts := reviewOptions()
-	opts.WaitForCancellation = true // a cancelled call is not retried
-	t.flight = &reviewInFlight{
-		head:   head,
-		future: workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), ActivityModelReview, t.taskID, t.pr, head, *g, t.reviews),
-		cancel: cancel,
+	gates := *g
+	gates.Beside = t.reviewParallel >= versionReviewSupervised
+	t.flight = &reviewInFlight{head: head, since: workflow.Now(t.ctx),
+		gateRun: t.startGate(reviewOptions(), ActivityModelReview, t.taskID, t.pr, head, gates, t.reviews)}
+}
+
+// keepTrip keeps a gate trip of the review beside the checks wait for the
+// review stage, which supervises it (versionReviewSupervised); any other
+// trip that is not the watched activity's is stale, its run ended.
+func (t *taskRun) keepTrip(trip GateTrip) {
+	if f := t.flight; f != nil && trip.Activity == f.activity {
+		f.trips = append(f.trips, trip)
 	}
 }
 
 // review runs the review stage: the review scheduled beside the checks
 // wait on the same head is awaited, any other head — one the checks
 // re-run made, or a run from before the change — reviews sequentially
-// after the checks, cancelling one still beside an older head.
+// after the checks, cancelling one still beside an older head. A human's
+// answer to the awaited review's escalation reviews sequentially too, as
+// gateActivity runs a gate again.
 func (t *taskRun) review(head string, g *GateResults, review *Review) (verdict, bool, error) {
 	if f := t.flight; f != nil && f.head == head {
 		t.flight = nil
-		return t.awaitReview(f, review)
+		v, decided, err := t.awaitReview(f, review)
+		if !decided || v.escalate == "" {
+			return v, decided, err
+		}
+		if v, stop := t.gateEscalated(v.escalate); stop {
+			return v, true, nil
+		}
 	}
 	t.cancelReview()
 	return t.gateActivity(true, reviewOptions(), review, ActivityModelReview, t.taskID, t.pr, head, *g, t.reviews)
 }
 
-// awaitReview waits for the review scheduled beside the checks wait,
-// racing the terminal signals as watch does: the receiver takes the
-// signal out of its channel, and one that decides cancels the call and
-// returns the task's verdict; one that does not (another pull request's
-// event) is dropped and the wait goes on.
+// awaitReview waits for the review scheduled beside the checks wait as
+// watch waits for a gate (versionReviewSupervised): the task's row is in
+// gate review while it waits, the terminal signals race it, and the
+// review's gate trips, those kept while another wait ran first, are acted
+// on as the sequential review's are. A run of versionReviewParallel races
+// the terminal signals alone: the receiver takes the signal out of its
+// channel, and one that decides cancels the call and returns the task's
+// verdict; one that does not (another pull request's event) is dropped
+// and the wait goes on.
 func (t *taskRun) awaitReview(f *reviewInFlight, review *Review) (verdict, bool, error) {
+	if t.reviewParallel >= versionReviewSupervised {
+		if !f.future.IsReady() {
+			if err := workflow.ExecuteActivity(t.short, ActivitySetGate, t.taskID, GateReview, f.since).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("enter gate review", "task", t.taskID, "error", err)
+			}
+		}
+		return t.watchRun(true, true, f.gateRun, review)
+	}
 	for {
 		done := false
 		var name string
