@@ -1,0 +1,25 @@
+# The whole suite under the race detector once a night (roadmap 222,
+# item 3): pull requests run without -race, main runs it on every push,
+# and this run covers the days main does not move. The same docker runner
+# and the same warm caches as ci.yml's test job.
+name: nightly
+on:
+  schedule:
+    - cron: '0 3 * * *'
+env:
+  CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
+jobs:
+  test-race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build the CI runner image on the layer cache
+        run: docker build -f Dockerfile.runner -t ci-runner:test --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
+      - name: the whole suite with the race detector
+        run: |
+          set -euo pipefail
+          tar -c . | docker run -i --rm --user 0:0 \
+            -v ci-go-build:/cache/go-build -v ci-go-mod:/modcache \
+            -e GOCACHE=/cache/go-build -e GOMODCACHE=/modcache -e GOPATH=/tmp/go \
+            --entrypoint /bin/bash ci-runner:test \
+            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race -count=1 ./... && go vet ./...'

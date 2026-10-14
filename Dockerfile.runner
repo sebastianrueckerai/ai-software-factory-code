@@ -81,4 +81,14 @@ ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
 USER 1000:1000
 WORKDIR /workspace
 RUN /usr/local/go/bin/go version
+
+# The module cache and a warm build cache for the pull-request jobs
+# (roadmap 222, item 3), in Go's default places for the runner user: a
+# job compiles only what its pull request changed. main CI rebuilds this
+# image on every push and the roll pins it, so the cache trails main by
+# one roll at most. The source leaves the image; the caches stay.
+COPY --chown=1000:1000 go.mod go.sum /tmp/warm/
+RUN cd /tmp/warm && go mod download
+COPY --chown=1000:1000 . /tmp/warm/
+RUN cd /tmp/warm && go build ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
 ENTRYPOINT ["forgejo-runner"]
