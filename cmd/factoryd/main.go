@@ -403,6 +403,9 @@ func main() {
 		},
 		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,
+		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
+			return runner.CloseCardDone(ctx, taskID, by, evidence)
+		},
 		SplitCard: func(ctx context.Context, taskID, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
 		},

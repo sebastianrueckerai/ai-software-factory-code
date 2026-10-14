@@ -24,6 +24,11 @@ const (
 	EventSessionStarted = "session_started"
 	EventSessionPushed  = "session_pushed"
 	EventModelSwitched  = "model_switched"
+	// EventAcceptancePassed is factoryd's record of a session of a plan's
+	// card that ran one of the plan's acceptance commands and it exited 0
+	// (roadmap 208): detail {"command", "exit", "session"}. Only green
+	// runs are recorded; the trail is the card's evidence.
+	EventAcceptancePassed = "acceptance_passed"
 )
 
 // StepEvent is the timeline step every event is recorded under.

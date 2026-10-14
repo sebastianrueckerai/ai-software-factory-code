@@ -508,6 +508,16 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
 		}
 	}
+	if res.Outcome != OutcomePushed {
+		// the session may have proven the card itself (roadmap 208): one
+		// of its plan's acceptance commands run green. A read that fails
+		// costs the card nothing: it ends as it always did.
+		if acceptance, err := r.planAcceptance(ctx, t); err != nil {
+			log.Printf("task %s: its plan's acceptance: %v", t.ID, err)
+		} else if hit := r.sessionAcceptance(ctx, t, s.id, acceptance); hit != nil {
+			res.Acceptance = hit
+		}
+	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {

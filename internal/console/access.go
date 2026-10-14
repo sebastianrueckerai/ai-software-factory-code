@@ -108,6 +108,7 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/plan/reject":              rCard,
 	"POST /tasks/{id}/retry":                    {need: approver, scope: scCard, what: "retry a card"},
 	"POST /tasks/{id}/close":                    rCard,
+	"POST /tasks/{id}/acceptance-close":         {need: approver, scope: scCard, what: "close a card on its acceptance"},
 	"POST /tasks/{id}/steer":                    rCard,
 	"POST /tasks/{id}/split":                    {need: approver, scope: scCard, what: "split a card"},
 	"POST /approvals/{id}/approve":              {need: approver, scope: scApproval, what: "authorize spend"},

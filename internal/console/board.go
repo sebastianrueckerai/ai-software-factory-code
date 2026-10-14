@@ -155,6 +155,13 @@ type card struct {
 	// remaining budget cannot fund a call (ruling 322's floor), which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// AcceptanceClose is the approver's Close on a waiting card whose
+	// event trail shows one of its plan's acceptance commands run green
+	// in a session (roadmap 208): the work is its own evidence, so the
+	// close ends it done where an answer would buy the next session.
+	// nil hides the button; Evidence is the newest green run, the button's
+	// title.
+	AcceptanceClose *acceptanceCloseForm
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -476,6 +483,11 @@ type move struct{ Lane, Title, CSRF string }
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
+
+// acceptanceCloseForm is an approver's Close beside a waiting card's
+// answer box: the close ends the card done on its acceptance green
+// (roadmap 208), which the button's Evidence names.
+type acceptanceCloseForm struct{ CSRF, Evidence string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
@@ -1148,6 +1160,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		// the answer (ruling 322): the same card, to its project's approvers
 		if v.approves(t.Repository) && c.unfundedAnswer(ctx, t) != "" {
 			k.Fund = &fundForm{CSRF: v.csrf}
+		}
+		// the acceptance close is offered where the card's own trail
+		// proves the work (roadmap 208): the same card, to its approvers
+		if v.approves(t.Repository) {
+			if evidence, ok := c.acceptanceEvidence(ctx, t.ID); ok {
+				k.AcceptanceClose = &acceptanceCloseForm{CSRF: v.csrf, Evidence: evidence}
+			}
 		}
 	}
 	return k

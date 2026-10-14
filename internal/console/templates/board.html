@@ -83,6 +83,9 @@
 <label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">why</label>
 <input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="2000" required>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
+</form>{{end}}{{with .Card.AcceptanceClose}}<form method="post" action="/tasks/{{$.Card.ID}}/acceptance-close" class="inline">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
+<button type="submit" title="{{.Evidence}}">Close: acceptance green</button>
 </form>{{end}}{{end}}
 {{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</p>
 {{end}}{{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
