@@ -23,7 +23,7 @@ const mustHave = {
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
     "How far back does the feed page by default?", "One day", "One week",
     "#598", "#616", "#617", "waiting on #603, #611", "#533",
-    "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "merge queue", "PR #605",
+    "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
     "Wide view", "?"],

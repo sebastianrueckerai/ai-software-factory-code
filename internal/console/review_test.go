@@ -56,8 +56,11 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">20 min</span>`) {
-		t.Errorf("the face counts the stage from the admission, not the newest status row:\n%s", face)
+	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">4 h 0 min</span>`) {
+		t.Errorf("the face lacks the card's age beside its stage (C11):\n%s", face)
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {
+		t.Errorf("the drawer counts the stage from the admission, not the newest status row:\n%s", drawer)
 	}
 }
 
@@ -157,5 +160,18 @@ func TestTickerKeepsTheLastDay(t *testing.T) {
 	}
 	if got := recentTicks(nil, now); len(got) != 0 {
 		t.Errorf("no events keep %d", len(got))
+	}
+}
+
+// A span in words: under a minute, minutes, hours and minutes, days and
+// hours.
+func TestMinutesInWords(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		30 * time.Second: "under a minute", 7 * time.Minute: "7 min", 125 * time.Minute: "2 h 5 min",
+		24 * time.Hour: "1 d 0 h", 50 * time.Hour: "2 d 2 h", 100*time.Hour + 59*time.Minute: "4 d 4 h",
+	} {
+		if got := minutes(d); got != want {
+			t.Errorf("minutes(%s) = %q, want %q", d, got, want)
+		}
 	}
 }

@@ -936,13 +936,19 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	return word, minutes(now.Sub(since))
 }
 
-// minutes is a duration in whole minutes, or hours and minutes.
+// minutes is a duration in whole minutes, hours and minutes from an
+// hour, days and hours from a day; under a minute it says so.
 func minutes(d time.Duration) string {
 	m := int(d.Minutes())
-	if m < 60 {
+	switch {
+	case m < 1:
+		return "under a minute"
+	case m < 60:
 		return fmt.Sprintf("%d min", m)
+	case m < 24*60:
+		return fmt.Sprintf("%d h %d min", m/60, m%60)
 	}
-	return fmt.Sprintf("%d h %d min", m/60, m%60)
+	return fmt.Sprintf("%d d %d h", m/(24*60), m%(24*60)/60)
 }
 
 // span is a gate's duration to the second under an hour.
@@ -1994,6 +2000,11 @@ func (d drawerData) Age() string {
 	var parts []string
 	if d.Card.StageAge != "" {
 		parts = append(parts, d.Card.StageAge)
+	}
+	// the card's place in the merge queue, the one gate worth a word here;
+	// the Time section holds the rest
+	if strings.HasPrefix(d.Card.GateText, "merge queue") {
+		parts = append(parts, strings.TrimSuffix(d.Card.GateText, ","))
 	}
 	if d.Card.Total != "" {
 		parts = append(parts, d.Card.Total+" in all")
