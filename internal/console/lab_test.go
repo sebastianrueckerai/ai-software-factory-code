@@ -54,6 +54,13 @@ func TestLab(t *testing.T) {
 	r.c.cfg.ForgejoURL = forgejo.URL
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
+	// the capped card of the fire scene is below the answer path's floor, so its approvers get the Fund action (roadmap 210)
+	r.c.cfg.AttemptFunded = func(_ context.Context, id, _ string) (string, error) {
+		if id == labID(610) {
+			return "the card's remaining €0.52 cannot fund a call: the floor is €0.60", nil
+		}
+		return "", nil
+	}
 	r.projects.rows = slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
 	r.projects.rows[0].Process, r.projects.rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",

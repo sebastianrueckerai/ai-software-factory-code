@@ -2,7 +2,8 @@
 # scripts/console-lab/run.sh [out] serves the console over its test fakes
 # (TestLab in internal/console/lab_test.go) and screenshots every scenario
 # in both themes into out, by default /tmp/claude-1000/console-lab/shots;
-# then it stops the lab. Run from anywhere; no database, cluster or network.
+# then runs the structural check (check.js) and stops the lab. Run from
+# anywhere; no database, cluster or network.
 set -euo pipefail
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 export CONSOLE_LAB_DIR=${CONSOLE_LAB_DIR:-/tmp/claude-1000/console-lab}
@@ -30,3 +31,5 @@ for _ in $(seq 1 240); do
 done
 [ -f "$CONSOLE_LAB_DIR/cookie.txt" ] || { echo "the lab did not start within 2 minutes; see $log" >&2; exit 1; }
 node "$repo/scripts/console-lab/shoot.js"
+# the structural check of the design round, after the shots so a red check still leaves them
+node "$repo/scripts/console-lab/check.js"
