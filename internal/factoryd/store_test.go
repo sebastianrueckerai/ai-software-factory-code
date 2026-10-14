@@ -350,7 +350,7 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -1521,6 +1521,43 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	slices.SortFunc(counts, func(a, b AlertCount) int { return strings.Compare(a.Kind, b.Kind) })
 	if want := []AlertCount{{"escalation", "real", 1}, {"gate_bound", "open", 2}, {"info_request", "unjudged", 1}}; !reflect.DeepEqual(counts, want) {
 		t.Fatalf("counts %v, want %v", counts, want)
+	}
+}
+
+// DeployedCommit (roadmap 194): the commit of a deployment's newest
+// recorded roll — the tree that was live when an alert on it fires, which
+// a signal card's filing pins as its reproduction base — and ok false for
+// a deployment with no roll.
+func TestPGStoreDeployedCommit(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE rolls`); err != nil {
+		t.Fatal(err)
+	}
+	if sha, ok, err := s.DeployedCommit(ctx, "factoryd"); err != nil || ok || sha != "" {
+		t.Fatalf("no roll recorded: %q %v %v", sha, ok, err)
+	}
+	base := Roll{SHA: "roll-7", Image: "worker", Deployment: "factoryd",
+		PushedAt: at("2026-10-13T06:00:00Z"), AppliedAt: at("2026-10-13T06:02:00Z"), LiveAt: at("2026-10-13T06:04:00Z")}
+	if ok, err := s.RecordRoll(ctx, base); err != nil || !ok {
+		t.Fatalf("record roll-7: %v %v", ok, err)
+	}
+	newer := base
+	newer.SHA, newer.Image = "roll-8", "gateway"
+	newer.PushedAt, newer.AppliedAt, newer.LiveAt = at("2026-10-14T06:00:00Z"), at("2026-10-14T06:02:00Z"), at("2026-10-14T06:04:00Z")
+	if ok, err := s.RecordRoll(ctx, newer); err != nil || !ok {
+		t.Fatalf("record roll-8: %v %v", ok, err)
+	}
+	if sha, ok, err := s.DeployedCommit(ctx, "factoryd"); err != nil || !ok || sha != "roll-8" {
+		t.Fatalf("deployed commit = %q %v %v, want roll-8", sha, ok, err)
+	}
+	if sha, ok, err := s.DeployedCommit(ctx, "factory-gateway"); err != nil || ok || sha != "" {
+		t.Fatalf("another deployment: %q %v %v", sha, ok, err)
 	}
 }
 

@@ -627,12 +627,14 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 }
 
 // When a head check fails, the gate reads main's state for the same check:
-// a context also failing on main is named as such in the finding, so the
-// agent's session and the supervisor's guidance point at the pre-existing
-// defect instead of the card (Stage 19, finding 195).
+// a check also failing on main is named as such in the finding, closed
+// with main's failing context — the check, not the context, for main runs
+// the push workflow — so the agent's session and the supervisor's guidance
+// point at the pre-existing defect instead of the card (Stage 19, finding
+// 195).
 func TestWaitChecksNamesMainFailure(t *testing.T) {
 	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
-	mainFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 3m"}
+	mainFail := [4]string{"failure", "ci / test (push)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 3m"}
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
 			"c1": {statusBody("failure", headFail)},
@@ -641,23 +643,27 @@ func TestWaitChecksNamesMainFailure(t *testing.T) {
 		mainHead: "m1",
 	}
 	r, _, _ := newActivityRunner(t, prTask, fj)
+	r.forgejo.PublicURL = "https://git.example.org"
+	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` +
+		` (also failing on main: ci / test (push))`
 	var res ChecksResult
 	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
 	if err != nil || val.Get(&res) != nil {
 		t.Fatal(err)
 	}
-	if len(res.Findings) != 1 || !strings.Contains(res.Findings[0], "also failing on main") {
-		t.Fatalf("findings = %q, want the finding naming 'also failing on main'", res.Findings)
+	if len(res.Findings) != 1 || res.Findings[0] != want {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
 	}
 }
 
-// A head failure main does not share keeps today's finding, with no suffix.
+// A head failure main does not share keeps today's finding, with no note:
+// main runs the check green, under its own push context.
 func TestWaitChecksKeepsFindingWhenMainGreen(t *testing.T) {
 	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
 			"c1": {statusBody("failure", headFail)},
-			"m1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+			"m1": {statusBody("success", [4]string{"success", "ci / test (push)", "", ""})},
 		},
 		mainHead: "m1",
 	}
@@ -671,6 +677,58 @@ func TestWaitChecksKeepsFindingWhenMainGreen(t *testing.T) {
 	}
 	if len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
+// A main run that is missing counts as passing: a main head no check has
+// reported on, and a main head that reads empty, leave the head's finding
+// as today's refusal — never a false "also failing on main".
+func TestWaitChecksMissingMainRunIsPassing(t *testing.T) {
+	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	for name, fj := range map[string]*prForgejo{
+		"no check has reported on main's head": {
+			statusesBySHA: map[string][]string{
+				"c1": {statusBody("failure", headFail)},
+				"m1": {statusBody("")},
+			},
+			mainHead: "m1",
+		},
+		"main's head reads empty": {
+			statusesBySHA: map[string][]string{"c1": {statusBody("failure", headFail)}},
+		},
+	} {
+		r, _, _ := newActivityRunner(t, prTask, fj)
+		r.forgejo.PublicURL = "https://git.example.org"
+		want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
+		var res ChecksResult
+		val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+		if err != nil || val.Get(&res) != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.State != ChecksFailure || len(res.Findings) != 1 || res.Findings[0] != want {
+			t.Fatalf("%s: findings = %q, want %q", name, res.Findings, want)
+		}
+	}
+}
+
+// A green head is untouched: main's state is not even read, so a red main
+// cannot sink a green head's verdict.
+func TestWaitChecksGreenHeadUntouched(t *testing.T) {
+	fj := &prForgejo{
+		statusesBySHA: map[string][]string{
+			"c1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+			"m1": {statusBody("failure", [4]string{"failure", "ci / test (push)", "", ""})},
+		},
+		mainHead: "m1",
+	}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatal(err)
+	}
+	if res.State != ChecksSuccess || len(res.Findings) != 0 {
+		t.Fatalf("res = %+v, want green with no findings", res)
 	}
 }
 
@@ -1268,7 +1326,9 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
 // at the cap, the model reviews oldest first, the last round, and
-// whether a retry_stronger climbed (sessions by attempt).
+// whether a retry_stronger climbed (sessions by attempt). The
+// finding_adjudicated steps land on the reviews that found them, by the
+// approval that overruled them (roadmap 192).
 func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
 	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
@@ -1277,6 +1337,7 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 			`{"step":"stage_findings","stage":"checks","round":2,"to":"agent","findings":["red"]}`+"\n"+
 			`{"step":"model_review","note":"model review failed: timeout","round":2}`+"\n"+
 			`{"step":"stage_findings","stage":"checks","round":3,"to":"card","findings":["red again"]}`+"\n"+
+			`{"step":"finding_adjudicated","finding":"a.go: x","by":"sebastian","why":"overruled: the check is advisory","time":"2026-10-14T09:00:00Z"}`+"\n"+
 			`{"step":"stage_findings","stage":"supervisor:repetition","round":3,"attempt":4,"to":"agent","findings":["loop"]}`+"\n"+
 			`{"step":"stage_findings","stage":"session","round":3,"attempt":5,"to":"stronger","findings":["none"]}`+"\n"+
 			`{"step":"dependencies_started","reason":"dependency #3 (links-api) ended failed: close this card, or answer to start it anyway"}`+"\n"))
@@ -1297,6 +1358,11 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	}
 	if len(st.Reviews) != 2 || st.Reviews[0].Verdict != "concerns" || st.Reviews[0].Findings[0] != "a.go: x" || st.Reviews[1].Note != "model review failed: timeout" {
 		t.Fatalf("reviews = %+v", st.Reviews)
+	}
+	adj, ok := st.Reviews[0].Adjudicated["a.go: x"]
+	when := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
+	if !ok || adj.By != "sebastian" || adj.Why != "overruled: the check is advisory" || !adj.When.Equal(when) {
+		t.Fatalf("the review's adjudication = %+v (found %v)", adj, ok)
 	}
 }
 
