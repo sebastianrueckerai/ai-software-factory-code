@@ -8,7 +8,7 @@
 {{template "chat" .}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
 </div>
-<footer class="ticker" id="ticker" aria-label="Recent events"><div class="tk-track" id="ticker-track"><span class="tk-set">{{range .Ticker}}<span class="tk t-{{.Class}}"><time>{{.At}}</time><span class="g" aria-hidden="true">{{.Glyph}}</span><b>{{.Ref}}</b><span>{{.Words}}</span></span>{{end}}</span></div><p class="stream" id="live" role="status"></p></footer>
+<footer class="ticker" id="ticker" aria-label="Recent events; focus pauses the ticker" tabindex="0"><div class="tk-track" id="ticker-track"><span class="tk-set">{{range .Ticker}}<span class="tk t-{{.Class}}"><time>{{.At}}</time><span class="g" aria-hidden="true">{{.Glyph}}</span><b>{{.Ref}}</b><span>{{.Words}}</span></span>{{end}}</span></div><p class="stream" id="live" role="status"></p></footer>
 <div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
 <div class="overlay-box">
 <h2 id="keys-title">Keys</h2>

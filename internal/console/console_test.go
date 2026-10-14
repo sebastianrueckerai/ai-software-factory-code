@@ -620,6 +620,7 @@ func (a *fakeAlerts) AlertByID(_ context.Context, id int64) (factoryd.Alert, boo
 }
 
 type fakeLedger struct {
+	mu        sync.Mutex
 	from, to  time.Time
 	costs     policy.Costs
 	monthCaps map[string]float64 // budget.month_eur by project file
@@ -649,6 +650,8 @@ func testProcesses() map[string]policy.Process {
 }
 
 func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	l.from, l.to = from, to
 	return l.costs, nil
 }

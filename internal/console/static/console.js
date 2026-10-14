@@ -6,6 +6,7 @@ function busy(el) {
   var drawer = document.getElementById("drawer");
   if (drawer && !drawer.hidden) return true;
   if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
+  if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
   if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
   for (var i = 0; i < fields.length; i++) {
@@ -164,7 +165,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   // read them, set whatever the board's state: neither holds a form
   function counters(d) {
     var line = document.getElementById("status-line"), counts = document.querySelectorAll("#board .count");
-    if (line) {
+    // a swap under the keyboard's focus would drop it: that panel waits for the next
+    if (line && !line.contains(document.activeElement)) {
       line.innerHTML = d.status;
       document.dispatchEvent(new Event("statusswapped"));
     }
@@ -302,10 +304,16 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     var one = track.firstElementChild, width = track.parentElement.clientWidth || 1;
     track.style.animation = "none";
     while (track.children.length > 1) track.removeChild(track.lastElementChild);
+    if (!track.dataset.n) track.dataset.n = one.children.length;
+    var items = Array.prototype.slice.call(one.children, 0, +track.dataset.n).map(function (x) { return x.outerHTML; }).join("");
+    one.innerHTML = items;
     var sw = one.scrollWidth || 1, k = Math.max(1, Math.ceil(width / sw));
-    var html = one.innerHTML, set = "";
-    for (var i = 0; i < k; i++) set += html;
-    one.innerHTML = set;
+    if (k > 1) {
+      var fill = document.createElement("span");
+      fill.setAttribute("aria-hidden", "true");
+      fill.innerHTML = items.repeat(k - 1);
+      one.appendChild(fill);
+    }
     var twin = one.cloneNode(true);
     twin.setAttribute("aria-hidden", "true");
     track.appendChild(twin);
@@ -331,14 +339,12 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     g.textContent = glyph;
     item.appendChild(document.createElement("b")).textContent = e.issue_number ? "#" + e.issue_number : e.task_id;
     item.appendChild(document.createElement("span")).textContent = words;
-    var one = track.firstElementChild;
-    if (track.children.length > 1) {
-      // the set was repeated: keep one copy before putting the new item first
-      var items = one.children, n = items.length;
-      one.innerHTML = Array.prototype.slice.call(items, 0, n).map(function (x) { return x.outerHTML; }).join("");
-    }
+    var one = track.firstElementChild, n = +track.dataset.n || one.children.length;
+    // the set's own items, without the copies that filled the width
+    one.innerHTML = Array.prototype.slice.call(one.children, 0, n).map(function (x) { return x.outerHTML; }).join("");
     one.insertBefore(item, one.firstChild);
     while (one.children.length > 24) one.removeChild(one.lastElementChild);
+    track.dataset.n = one.children.length;
     tick();
   }
   document.addEventListener("DOMContentLoaded", tick);
@@ -355,39 +361,47 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 document.addEventListener("click", function (e) {
   if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
   var card = e.target.closest("#board [data-card]");
-  if (!card || String(getSelection && getSelection())) return;
+  // a card without the title's link belongs to a reader, who has no drawer
+  if (!card || !card.querySelector("a.open") || String(getSelection && getSelection())) return;
   location.hash = "#card=" + card.dataset.card;
 });
 // On the phone the columns are sections: Done starts folded, a tap on a
 // column's title folds or unfolds it.
 (function () {
+  var folded = {};
   function narrow() { return window.innerWidth < 900; }
   function fold() {
     document.querySelectorAll("#board .column.fold").forEach(function (c) {
-      if (!c.dataset.folded) {
-        c.dataset.folded = narrow() ? "yes" : "no";
-        c.classList.toggle("folded", c.dataset.folded === "yes");
-      }
-      var h = c.querySelector(":scope > h3");
-      if (h) h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+      var id = c.getAttribute("aria-labelledby") || "", h = c.querySelector(":scope > h3");
+      if (!(id in folded)) folded[id] = narrow();
+      c.classList.toggle("folded", folded[id]);
+      if (!h) return;
+      h.setAttribute("aria-expanded", String(!folded[id]));
+      if (narrow()) { h.setAttribute("role", "button"); h.tabIndex = 0; } else { h.removeAttribute("role"); h.removeAttribute("tabindex"); }
     });
+  }
+  function toggle(h) {
+    var c = h.parentElement, id = c.getAttribute("aria-labelledby") || "";
+    folded[id] = !folded[id];
+    fold();
   }
   document.addEventListener("DOMContentLoaded", fold);
   document.addEventListener("htmx:afterSettle", fold);
+  window.addEventListener("resize", fold);
   document.addEventListener("click", function (e) {
-    var h = e.target.closest && e.target.closest("#board .column > h3");
-    if (!h || !narrow()) return;
-    var c = h.parentElement;
-    c.classList.toggle("folded");
-    c.dataset.folded = c.classList.contains("folded") ? "yes" : "no";
-    h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+    var h = e.target.closest && e.target.closest("#board .column.fold > h3");
+    if (h && narrow()) toggle(h);
+  });
+  document.addEventListener("keydown", function (e) {
+    var h = e.target.closest && e.target.closest("#board .column.fold > h3");
+    if (h && narrow() && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); toggle(h); }
   });
 })();
 
 // A disclosure: a button with aria-controls reveals or hides the element it
 // names (the deny form, the own-answer box) and says so in aria-expanded.
 document.addEventListener("click", function (e) {
-  var b = e.target.closest("button[aria-controls][aria-expanded]");
+  var b = e.target.closest("button.deny[aria-controls], button.own-toggle[aria-controls]");
   if (!b || b.type === "submit") return;
   var box = document.getElementById(b.getAttribute("aria-controls"));
   if (!box) return;
@@ -414,7 +428,9 @@ function showDrawer() {
     document.dispatchEvent(new Event("drawerclosed"));
     return;
   }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+  var id;
+  try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
     var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
     if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");

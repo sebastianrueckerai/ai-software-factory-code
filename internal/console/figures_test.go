@@ -23,7 +23,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 	r.ledger.costs = policy.Costs{Days: []policy.DayCost{
 		{Day: now.AddDate(0, 0, -1).Format(policy.DateLayout), Total: 9.5}, {Day: now.Format(policy.DateLayout), Total: 4.82}}}
 	r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport] = factoryd.Mirror{Project: "ai-software-factory-code",
-		Direction: factoryd.MirrorExport, Remote: "https://github.com/sebastianrueckerai/ai-software-factory-code", State: "1 open pull request: #12"}
+		Direction: factoryd.MirrorExport, Remote: "sebastianrueckerai/ai-software-factory-code", State: "1 open pull request: #12"}
 	admitted, gate := now.Add(-23*time.Minute), now.Add(-6*time.Minute)
 	for i := range r.tasks.tasks {
 		switch bt := &r.tasks.tasks[i]; bt.ID {
