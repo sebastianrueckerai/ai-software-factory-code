@@ -344,11 +344,13 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 	return factoryd.Task{}, false, nil
 }
 
-// BoardTasks lists the cards, as the store does: a chat task is none.
+// BoardTasks lists the cards, as the store does, in its order: a chat
+// task is none.
 func (s *fakeTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat })
+	factoryd.SortBoardTasks(cards)
 	return cards[:min(limit, len(cards))], nil
 }
 
