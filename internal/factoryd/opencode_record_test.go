@@ -150,7 +150,7 @@ func TestRecordOpencodeFixture(t *testing.T) {
 	fake := &fakeOpenAI{}
 	srv := httptest.NewServer(fake)
 	defer srv.Close()
-	cfgJSON, err := buildOpencodeConfig(srv.URL, "factory", "factory-main", 10000, recordSteps)
+	cfgJSON, err := buildOpencodeConfig(srv.URL, "factory", "factory-main", 10000, recordSteps, "")
 	if err != nil {
 		t.Fatal(err)
 	}

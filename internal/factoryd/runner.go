@@ -1163,6 +1163,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
 		{"name": "STRONGER_MODEL", "value": r.cfg.Models.Stronger},
+		{"name": "CHEAP_MODEL", "value": r.cfg.Models.Start},
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
