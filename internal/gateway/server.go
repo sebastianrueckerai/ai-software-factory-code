@@ -98,7 +98,18 @@ const (
 	HeaderFactoryTask    = "X-Factory-Task"
 	HeaderFactoryPurpose = "X-Factory-Purpose"
 	HeaderDecision       = "X-Gateway-Decision"
+	// HeaderFactoryThread names the chat thread a factoryd call serves
+	// (roadmap 239): its audit row carries it, the thread's token read.
+	HeaderFactoryThread = "X-Factory-Thread"
 )
+
+// RefusedContext is the decision of a call the provider refused for a
+// prompt past its context window: typed, so the caller compacts and
+// retries (roadmap 239).
+const RefusedContext = "refused_context"
+
+// maxThread bounds the thread a call names.
+const maxThread = 200
 
 // factorydSA stands for the service account uid of factoryd's key slot.
 const factorydSA = "factoryd"
@@ -312,6 +323,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now()}
+	if purpose != "" && purpose != auditFactoryd {
+		// read only behind factoryd's token: a sandbox names no thread
+		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
+			call.thread = th
+		}
+	}
 
 	if body, err = chatReq.withOutputLimit(hold.MaxOut); err != nil {
 		s.finish(call, zeroCost, "")
@@ -634,6 +651,7 @@ type modelCall struct {
 	hold       policy.Hold
 	alias      string
 	kind       string // the factoryd purpose, "" for an agent's call
+	thread     string // the chat thread a factoryd call serves, "" for none
 	slot       string // the key slot: the task, or the task's factoryd slot
 	saUID      string // what the slot's key was minted for, to re-mint it
 	models     []string
@@ -760,6 +778,13 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 				s.auditCall(c, decision, reason, &c.task.SpentEUR)
 				w.Header().Set(HeaderDecision, decision)
 				writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
+				return
+			}
+			if isContextOverflow(res.StatusCode, respBody) {
+				reason := "the prompt is past the model's context window: " + upstreamMessage(respBody)
+				s.auditCall(c, RefusedContext, reason, &c.task.SpentEUR)
+				w.Header().Set(HeaderDecision, RefusedContext)
+				writeError(w, http.StatusBadRequest, "context_length_exceeded", reason)
 				return
 			}
 			s.auditCall(c, "error_upstream", fmt.Sprintf("upstream %d", res.StatusCode), &c.task.SpentEUR)
@@ -921,6 +946,37 @@ func (s *Server) stream(w http.ResponseWriter, body io.Reader) {
 	}
 }
 
+// contextOverflow are the words a provider's or LiteLLM's refusal of a
+// prompt past the model's window carries: LiteLLM's mapped
+// ContextWindowExceededError, OpenAI's and DashScope's code and sentence,
+// Anthropic's, and the GLM family's.
+var contextOverflow = []string{"contextwindowexceedederror", "context_length_exceeded", "maximum context length",
+	"prompt is too long", "input is too long", "exceeds the model's maximum context", "context window", "range of input length"}
+
+// isContextOverflow reports whether an upstream refusal is one of a
+// prompt past the model's window: a 400, 413 or 422 that names it.
+func isContextOverflow(status int, body []byte) bool {
+	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	lower := strings.ToLower(string(body))
+	return slices.ContainsFunc(contextOverflow, func(w string) bool { return strings.Contains(lower, w) })
+}
+
+// upstreamMessage is an upstream error body's message, the body itself
+// cut when it is no error object.
+func upstreamMessage(body []byte) string {
+	var e struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error.Message != "" {
+		return e.Error.Message
+	}
+	return strings.TrimSpace(string(body[:min(len(body), 500)]))
+}
+
 func isBudgetExceeded(body []byte) bool {
 	var e struct {
 		Error struct {
@@ -969,7 +1025,7 @@ func (s *Server) refuse(w http.ResponseWriter, pid *int64, taskID, kind, decisio
 // the status the upstream answered.
 func (s *Server) auditCall(c *modelCall, decision, reason string, spend *float64) {
 	if err := s.opts.Store.InsertAudit(context.Background(), AuditRow{
-		TaskID: c.task.ID, Kind: c.kind, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
+		TaskID: c.task.ID, Kind: c.kind, Thread: c.thread, Decision: decision, Reason: reason, ModelAlias: c.alias, SpendEUR: spend,
 		PolicyVersion: c.pid, OutputLimit: &c.hold.MaxOut, HoldEUR: &c.hold.EUR, OverHold: c.overHold, Deployment: c.deployment,
 		PromptTokens: c.usage.PromptTokens, CachedTokens: c.usage.CachedTokens, OutputTokens: c.usage.OutputTokens,
 		CallCostEUR: c.callCost, DurationMS: int(c.duration.Milliseconds()), Status: c.status,

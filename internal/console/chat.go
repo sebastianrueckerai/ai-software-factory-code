@@ -11,11 +11,11 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
@@ -27,7 +27,6 @@ import (
 
 const (
 	chatHistory    = 100              // messages GET answers
-	chatContext    = 40               // messages a turn's context holds
 	chatEvents     = 30               // events a turn's context holds
 	chatRounds     = 8                // model calls a turn may make
 	chatTTL        = 30 * time.Minute // a proposal's and an undo's life
@@ -43,7 +42,7 @@ const (
 // ones but a used proposal; "" when the store fails.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
 	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
-		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL)})
+		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv})
 }
 
 // store is keep's row put under a fresh token, which it answers; "" when
@@ -90,6 +89,8 @@ type turn struct {
 	// freshRead is this turn's read of the board, stamped on every tool
 	// result it stores.
 	freshRead time.Time
+	// conv is the member's thread the turn answers in (roadmap 239).
+	conv int64
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -142,6 +143,7 @@ func (t *turn) fail(msg string) {
 // once the turn failed.
 func (t *turn) save(m factoryd.ChatMessage) bool {
 	ctx := context.WithoutCancel(t.r.Context())
+	m.Conversation = t.conv
 	if err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
@@ -151,39 +153,45 @@ func (t *turn) save(m factoryd.ChatMessage) bool {
 }
 
 // chatGetAnswer is GET /chat's JSON body: the conversation read, its
-// messages and the state of each proposal among them.
+// thread, its messages and the state of each proposal among them.
 type chatGetAnswer struct {
-	Conversation int64                    `json:"conversation"`
-	Messages     []factoryd.ChatMessage   `json:"messages"`
-	Proposals    []factoryd.ProposalState `json:"proposals,omitempty"`
+	Conversation int64                     `json:"conversation"`
+	Thread       factoryd.ChatConversation `json:"thread"`
+	Messages     []factoryd.ChatMessage    `json:"messages"`
+	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 }
 
 // chatGet answers GET /projects/{name}/chat: the member's current
-// conversation on the project, or the one ?conversation names, its last
-// chatHistory messages, oldest first, and each proposal's state among
-// them, pending, used or expired, as JSON.
+// conversation on the project, or the one ?conversation names, which
+// becomes their current one while it is active; its last chatHistory
+// messages, oldest first, and each proposal's state among them, pending,
+// used or expired, as JSON. Reading it marks it seen.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
-	var conv int64
-	var err error
-	if s := r.URL.Query().Get("conversation"); s != "" {
-		if conv, err = strconv.ParseInt(s, 10, 64); err != nil || conv < 1 {
-			http.Error(w, "conversation must be a positive integer", http.StatusBadRequest)
-			return
+	th, err := t.thread(r, false)
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	ctx, repo, login := r.Context(), t.p.Repository, t.a.s.user
+	if r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 {
+		if err := c.cfg.Chat.OpenConversation(ctx, repo, login, t.conv); err != nil {
+			log.Printf("console: open the chat of %s on %s: %v", login, repo, err)
+		} else {
+			th.Current = true
 		}
-	} else if conv, err = c.cfg.Chat.CurrentConversation(r.Context(), t.p.Repository, t.a.s.user); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	}
+	msgs, err := c.cfg.Chat.ChatMessages(ctx, repo, login, t.conv, chatHistory)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
 		return
 	}
-	msgs, err := c.cfg.Chat.ChatMessages(r.Context(), t.p.Repository, t.a.s.user, conv, chatHistory)
-	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
-		return
+	if err := c.cfg.Chat.MarkSeen(ctx, repo, login, t.conv); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
 	}
 	if msgs == nil {
 		msgs = []factoryd.ChatMessage{}
@@ -196,18 +204,22 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	answer := chatGetAnswer{Conversation: conv, Messages: msgs}
+	th.Unread, th.Working = 0, c.turns.working(t.key())
+	if th.Tokens, th.CostEUR, err = c.cfg.Chat.ThreadTotals(ctx, t.threadRef()); err != nil {
+		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
+	}
+	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs}
 	if len(tokens) > 0 {
-		states, err := c.cfg.Chat.ProposalStates(r.Context(), t.p.Repository, t.a.s.user, tokens, time.Now())
+		states, err := c.cfg.Chat.ProposalStates(ctx, repo, login, tokens, time.Now())
 		if err != nil {
-			log.Printf("console: the chat proposals of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+			log.Printf("console: the chat proposals of %s on %s: %v", login, repo, err)
 		} else {
 			answer.Proposals = states
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(answer); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
 	}
 }
 
@@ -233,18 +245,50 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		notice = "I removed a GitHub token from your message; it was not stored or sent. " + c.exportForm(t.p.Name)
 	}
 	ctx := r.Context()
+	if _, err := t.thread(r, true); err != nil {
+		c.fail(w, r, err)
+		return
+	}
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
 		log.Printf("console: the chat task of %s: %v", t.p.Name, err)
 		http.Error(w, "cannot file the chat's task", http.StatusInternalServerError)
 		return
 	}
-	if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text}); err != nil {
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	if text == chatCompactCommand {
+		t.detach()
+		t.open(w)
+		t.takeTurn(pos, wait)
+		release := c.turns.slot(t.p.Repository, t.parallelTurns())
+		defer release()
+		t.compactByHand(task.ID)
+		return
+	}
+	var queued int64
+	if pos == 0 {
+		err = c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv})
+	} else {
+		queued, err = c.cfg.Chat.QueueChatMessage(ctx, t.p.Repository, t.a.s.user, t.conv, text)
+	}
+	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
 		return
 	}
+	t.detach()
 	t.open(w)
+	t.takeTurn(pos, wait)
+	if queued > 0 {
+		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.a.s.user, queued); err != nil {
+			log.Printf("console: start the queued turn of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+			t.fail("The queued message could not start its turn; send it again.")
+			return
+		}
+	}
+	release := c.turns.slot(t.p.Repository, t.parallelTurns())
+	defer release()
 	t.run(task.ID, notice)
 }
 
@@ -262,6 +306,7 @@ func scrubTokens(text string) (string, bool) {
 // budget.
 func (t *turn) run(id, notice string) {
 	ctx := t.r.Context()
+	t.presetCompact(id)
 	msgs, err := t.context()
 	if err != nil {
 		log.Printf("console: the chat context of %s: %v", t.p.Name, err)
@@ -279,7 +324,8 @@ func (t *turn) run(id, notice string) {
 	for i, tool := range tools {
 		defs[i] = tool.def()
 	}
-	for range chatRounds {
+	forced := 0
+	for round := 0; round < chatRounds; round++ {
 		task, ok, err := t.c.cfg.Tasks.Task(ctx, id)
 		if err != nil || !ok {
 			log.Printf("console: chat task %s: found %v, %v", id, ok, err)
@@ -291,12 +337,29 @@ func (t *turn) run(id, notice string) {
 			t.send("done", struct{}{})
 			return
 		}
-		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, msgs, defs, func(s string) {
+		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, t.threadRef(), msgs, defs, func(s string) {
 			t.send("text", map[string]string{"text": s})
 		})
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Name, err)
 			var refusal *policy.Refusal
+			if errors.As(err, &refusal) && refusal.Decision == gateway.RefusedContext {
+				// the forced trigger: compact and retry, at most twice, the
+				// second keeping half the tail
+				if forced < 2 {
+					forced++
+					if done, cerr := t.compact(id, keepTurns/forced); cerr != nil {
+						log.Printf("console: compact %s on the provider's refusal: %v", t.threadRef(), cerr)
+					} else if done {
+						if msgs, err = t.context(); err == nil {
+							round--
+							continue
+						}
+					}
+				}
+				t.fail("The thread is past the model's context window even after compacting it (" + gateway.RefusedContext + "): start a new thread to go on.")
+				return
+			}
 			if errors.As(err, &refusal) {
 				t.fail("The gateway refused the call: " + refusal.Reason)
 				return
@@ -458,7 +521,15 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	if err := t.inThread(p.Conversation); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	t.detach()
 	t.open(w)
+	t.takeTurn(pos, wait)
 	t.apply(p)
 }
 
@@ -492,7 +563,15 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	if err := t.inThread(u.Conversation); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	t.detach()
 	t.open(w)
+	t.takeTurn(pos, wait)
 	t.a.decider = "member"
 	start := time.Now()
 	in := toolInput{undo: true}
@@ -533,8 +612,8 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 
 // context is the turn's conversation for the model: the system prompt with
 // the project and its last chatEvents events, then the project's open
-// cards read fresh at this turn's start, then the member's last
-// chatContext messages, each tool call followed by its result; a replayed
+// cards read fresh at this turn's start, the thread's summary, then its
+// rows after the summary, each tool call followed by its result; a replayed
 // result older than a minute shows when it was read and its age before
 // its text. An assistant row with no tool calls whose content claims an
 // action is dropped from the replay. The turn stamps every tool result it
@@ -548,12 +627,20 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, 0, chatContext)
+	th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.a.s.user, t.conv)
 	if err != nil {
 		return nil, err
 	}
-	msgs := []factoryd.OperatorMessage{{Role: "system", Content: t.prompt() + "\n\n" + project + "\n\n" + cards}}
-	for _, m := range history {
+	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, t.conv, chatContextMax)
+	if err != nil {
+		return nil, err
+	}
+	system := t.prompt() + "\n\n" + project + "\n\n" + cards
+	if th.Summary != "" {
+		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
+	}
+	msgs := []factoryd.OperatorMessage{{Role: "system", Content: system}}
+	for _, m := range liveRows(th, history) {
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
 			continue
 		}
@@ -707,7 +794,9 @@ func (c *Console) chatNew(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatConversations answers GET /projects/{name}/chat/conversations: the
-// member's conversations on the project, newest first.
+// member's threads on the project, the inbox first, then the active by
+// their last message, the archived last, each with its unread turns and
+// whether a turn runs on it.
 func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -721,6 +810,9 @@ func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	}
 	if list == nil {
 		list = []factoryd.ChatConversation{}
+	}
+	for i := range list {
+		list[i].Working = c.turns.working(threadKey(t.p.Repository, t.a.s.user, list[i].Number))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(list); err != nil {

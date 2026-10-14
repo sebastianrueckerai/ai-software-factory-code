@@ -228,6 +228,9 @@ type Console struct {
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
 	runs map[string]*projectRun
+	// turns holds each chat thread's turn in flight and those queued
+	// behind it, and each project's model turns (roadmap 239).
+	turns *turnGate
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
 	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
@@ -343,6 +346,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
 		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
+		{"POST /projects/{name}/chat/rename", http.HandlerFunc(c.chatRename), nil},
+		{"POST /projects/{name}/chat/seen", http.HandlerFunc(c.chatSeen), nil},
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
 		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},
 		{"POST /projects/{name}/autonomy", http.HandlerFunc(c.autonomyButton), nil},
@@ -367,7 +372,7 @@ func New(cfg Config) (*Console, error) {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
-	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}}
+	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate()}
 	gets, err := c.getRoutes()
 	if err != nil {
 		return nil, err

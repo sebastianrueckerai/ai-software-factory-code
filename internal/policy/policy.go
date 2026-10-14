@@ -77,7 +77,23 @@ type ChatConfig struct {
 	// documents to (the project's document repository, the factory's own
 	// first); empty: the project's chat writes no documents.
 	DocRepo string `yaml:"doc_repo,omitempty" json:"doc_repo,omitempty"`
+	// ParallelTurns bounds the project's chat turns that call the model at
+	// once, across its threads and members, which guards the chat task's
+	// month budget (roadmap 239). Absent: DefaultParallelTurns.
+	ParallelTurns int `yaml:"parallel_turns,omitempty" json:"parallel_turns,omitempty"`
+	// Window is the context window in tokens of the alias the project
+	// agent calls: a thread compacts before a turn projected past 80
+	// percent of it (roadmap 239). The provider's own refusal of a prompt
+	// past its window is the bound that always holds. Absent:
+	// DefaultChatWindow.
+	Window int `yaml:"window,omitempty" json:"window,omitempty"`
 }
+
+// DefaultParallelTurns is the bound of a chat block without one.
+const DefaultParallelTurns = 3
+
+// DefaultChatWindow is the window of a chat block without one.
+const DefaultChatWindow = 128000
 
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
@@ -167,6 +183,9 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 		}
 		c.Model = cmp.Or(b.Model, c.Model)
 		c.MonthlyEUR = cmp.Or(b.MonthlyEUR, c.MonthlyEUR)
+		c.DocRepo = cmp.Or(b.DocRepo, c.DocRepo)
+		c.ParallelTurns = cmp.Or(b.ParallelTurns, c.ParallelTurns)
+		c.Window = cmp.Or(b.Window, c.Window)
 		if b.Confirm != nil {
 			c.Confirm = b.Confirm
 		}
@@ -189,6 +208,12 @@ func (c *ChatConfig) validate() error {
 		if !slices.Contains(ChatTools, t) {
 			return fmt.Errorf("chat.confirm: unknown tool %q (known: %v)", t, ChatTools)
 		}
+	}
+	if c.ParallelTurns < 0 {
+		return errors.New("chat.parallel_turns must not be negative")
+	}
+	if c.Window != 0 && c.Window < 1000 {
+		return errors.New("chat.window must be at least 1000 tokens")
 	}
 	if c.DocRepo != "" && !repositoryName.MatchString(c.DocRepo) {
 		return fmt.Errorf("chat.doc_repo %q: owner/name in lower case", c.DocRepo)
@@ -617,10 +642,13 @@ const (
 	PurposeAudit          = "audit"
 	PurposeOperator       = "operator"
 	PurposePulse          = "pulse"
+	// PurposeCompact is a chat thread's compaction (roadmap 239): one
+	// cheap call that summarises the thread before its kept tail.
+	PurposeCompact = "compact"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse, PurposeCompact}
 
 // PulseModel is the LiteLLM alias of the pulse's calls (purpose pulse).
 const PulseModel = "pulse"
@@ -907,11 +935,11 @@ const ClassChat = "chat"
 // project agent's (operator) is the chat block's and the pulse's is
 // PulseModel, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator || purpose == PurposePulse {
+	if purpose == PurposeOperator || purpose == PurposePulse || purpose == PurposeCompact {
 		switch {
 		case !slices.Contains(classes, ClassChat):
 			return ""
-		case purpose == PurposePulse:
+		case purpose == PurposePulse || purpose == PurposeCompact:
 			return PulseModel
 		}
 		return d.ChatOf(ProjectConfig{}).Model

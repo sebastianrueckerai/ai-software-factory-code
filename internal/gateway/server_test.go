@@ -597,6 +597,22 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			// LiteLLM maps a provider's refusal of a prompt past the
+			// model's window to ContextWindowExceededError, a 400
+			name:    "a provider's refusal of a prompt past the window is refused_context",
+			task:    &runningTask,
+			reqBody: chatBody("coding-cheap"),
+			resp: stubResp{
+				status: http.StatusBadRequest,
+				body:   `{"error":{"message":"litellm.ContextWindowExceededError: maximum context length is 131072 tokens, the messages resulted in 140213","type":"invalid_request_error","param":null,"code":"400"}}`,
+			},
+			wantStatus:      http.StatusBadRequest,
+			wantDecision:    "refused_context",
+			wantReason:      "the prompt is past the model's context window: litellm.ContextWindowExceededError: maximum context length is 131072 tokens, the messages resulted in 140213",
+			wantErrType:     "context_length_exceeded",
+			wantUpstreamHit: 1,
+		},
+		{
 			// the key's window budget (auth_checks.py) names the key
 			name:     "litellm 429 on a key's window budget stays the key's bound",
 			task:     &runningTask,
@@ -2291,5 +2307,102 @@ func TestAgentCallsACheaperAliasOfTheClass(t *testing.T) {
 	s = NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: prices})
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-frontier")); rr.Code != http.StatusForbidden {
 		t.Fatalf("coding-frontier under a cheap session = %d, want 403", rr.Code)
+	}
+}
+
+// A refusal is a context overflow only as a 400, 413 or 422 that names it,
+// in LiteLLM's, OpenAI's, Anthropic's or DashScope's words.
+func TestIsContextOverflow(t *testing.T) {
+	for _, tt := range []struct {
+		status int
+		body   string
+		want   bool
+	}{
+		{400, `{"error":{"message":"litellm.ContextWindowExceededError: too long"}}`, true},
+		{400, `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 8192 tokens"}}`, true},
+		{400, `{"error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}`, true},
+		{400, `{"error":{"message":"Range of input length should be [1, 98304]"}}`, true},
+		{413, `{"error":{"message":"input is too long"}}`, true},
+		{400, `{"error":{"message":"invalid tool schema"}}`, false},
+		{500, `{"error":{"message":"maximum context length"}}`, false},
+		{429, `{"error":{"message":"the context window is busy"}}`, false},
+	} {
+		if got := isContextOverflow(tt.status, []byte(tt.body)); got != tt.want {
+			t.Errorf("isContextOverflow(%d, %s) = %v, want %v", tt.status, tt.body, got, tt.want)
+		}
+	}
+}
+
+// A factoryd call names the chat thread it serves and its audit row keeps
+// it, the compaction's under its own kind on the cheap alias; a sandbox's
+// call naming a thread keeps none (roadmap 239).
+func TestThreadOnTheAudit(t *testing.T) {
+	prices := fakePrices{"operator": testPrice, "pulse": testPrice, "coding-cheap": testPrice}
+	for name, tc := range map[string]struct {
+		purpose, alias, thread string
+		token                  string
+		wantKind, wantThread   string
+		wantLedger             string
+	}{
+		"the operator":   {purpose: policy.PurposeOperator, alias: "operator", thread: "sf/code:anna:2", token: testFactorydToken, wantKind: "operator", wantThread: "sf/code:anna:2", wantLedger: "operator/operator"},
+		"the compaction": {purpose: policy.PurposeCompact, alias: "pulse", thread: "sf/code:anna:2", token: testFactorydToken, wantKind: "compact", wantThread: "sf/code:anna:2", wantLedger: "compact/pulse"},
+		"a thread too long": {purpose: policy.PurposeOperator, alias: "operator", thread: strings.Repeat("x", 201), token: testFactorydToken,
+			wantKind: "operator", wantThread: "", wantLedger: "operator/operator"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+			task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}
+			store := newMemStore(task)
+			store.setPolicy(factoryPolicy())
+			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: testFactorydToken})
+			r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody(tc.alias)))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("Authorization", "Bearer "+tc.token)
+			r.Header.Set(HeaderFactoryTask, task.ID)
+			r.Header.Set(HeaderFactoryPurpose, tc.purpose)
+			r.Header.Set(HeaderFactoryThread, tc.thread)
+			rr := httptest.NewRecorder()
+			s.Routes("test").ServeHTTP(rr, r)
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body)
+			}
+			audits := store.auditRows()
+			last := audits[len(audits)-1]
+			if last.Kind != tc.wantKind || last.Thread != tc.wantThread {
+				t.Errorf("audit row kind %q thread %q, want %q %q", last.Kind, last.Thread, tc.wantKind, tc.wantThread)
+			}
+			if len(store.ledger) != 1 || store.ledger[0].ref != tc.wantLedger {
+				t.Errorf("ledger = %+v, want one row under %s", store.ledger, tc.wantLedger)
+			}
+		})
+	}
+}
+
+// A sandbox's call that names a thread is still the agent's: no thread on
+// its audit row.
+func TestSandboxNamesNoThread(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	s := NewServer(ServerOptions{
+		Auth:  fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
+		Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"coding-cheap": testPrice},
+	})
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap")))
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Authorization", "Bearer the-agents-jwt")
+	r.Header.Set(HeaderFactoryThread, "sf/code:anna:2")
+	rr := httptest.NewRecorder()
+	s.Routes("test").ServeHTTP(rr, r)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	audits := store.auditRows()
+	if last := audits[len(audits)-1]; last.Thread != "" || last.Kind != "" {
+		t.Errorf("the agent's audit row = kind %q thread %q, want neither", last.Kind, last.Thread)
 	}
 }

@@ -602,11 +602,20 @@ func (a *AcceptanceRig) EnsureChatTask(ctx context.Context, name, repository str
 func (a *AcceptanceRig) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	m.ID = int64(len(a.msgs) + 1)
+	m.ID = a.nextID()
 	m.At = time.Now()
 	m.Conversation = 1
 	a.msgs = append(a.msgs, accMessage{ChatMessage: m, Repository: repository, Login: login})
 	return nil
+}
+
+// nextID is one past the highest message id; a.mu held.
+func (a *AcceptanceRig) nextID() int64 {
+	var n int64
+	for _, m := range a.msgs {
+		n = max(n, m.ID)
+	}
+	return n + 1
 }
 
 func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string, _ int64, limit int) ([]factoryd.ChatMessage, error) {
@@ -778,3 +787,45 @@ func (a *AcceptanceRig) CountBacklog(_ context.Context, repository string) (int,
 	}
 	return n, nil
 }
+
+func (a *AcceptanceRig) Conversation(_ context.Context, _, _ string, n int64) (factoryd.ChatConversation, bool, error) {
+	return factoryd.ChatConversation{Number: n, State: factoryd.ThreadActive, Current: true}, true, nil
+}
+
+func (a *AcceptanceRig) OpenConversation(context.Context, string, string, int64) error { return nil }
+
+func (a *AcceptanceRig) RenameConversation(context.Context, string, string, int64, string) (bool, error) {
+	return true, nil
+}
+
+func (a *AcceptanceRig) MarkSeen(context.Context, string, string, int64) error { return nil }
+
+func (a *AcceptanceRig) QueueChatMessage(_ context.Context, repository, login string, _ int64, text string) (int64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m := factoryd.ChatMessage{ID: a.nextID(), Role: "user", Content: text, Kind: factoryd.MessageQueued, At: time.Now(), Conversation: 1}
+	a.msgs = append(a.msgs, accMessage{ChatMessage: m, Repository: repository, Login: login})
+	return m.ID, nil
+}
+
+func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	if i < 0 {
+		return nil
+	}
+	m := a.msgs[i]
+	a.msgs = slices.Delete(a.msgs, i, i+1)
+	m.ID, m.Kind, m.At = a.nextID(), "", time.Now()
+	a.msgs = append(a.msgs, m)
+	return nil
+}
+
+func (a *AcceptanceRig) SaveSummary(context.Context, string, string, int64, factoryd.ThreadSummary) error {
+	return nil
+}
+
+func (a *AcceptanceRig) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
+
+func (a *AcceptanceRig) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }

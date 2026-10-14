@@ -1,14 +1,17 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // KindChat is the kind of a project's chat task: the standing task the
@@ -34,6 +37,14 @@ type ChatMessage struct {
 	ToolCalls    []ChatToolCall `json:"tool_calls,omitempty"`
 	At           time.Time      `json:"at"`
 	Conversation int64          `json:"conversation"`
+	// Kind names a row factoryd wrote or holds itself: a deterministic
+	// poke, an escalation's face, a queued message; "" for a turn's row.
+	Kind string `json:"kind,omitempty"`
+	// Choices are a poke's or an escalation's answers, offered as buttons.
+	Choices []string `json:"choices,omitempty"`
+	// Decider names who acted on a poke's action, the level and the agent,
+	// when the agent acted alone ("assisted level · started by the agent").
+	Decider string `json:"decider,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -84,8 +95,11 @@ func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, b
 }
 
 // currentConversation is the current conversation of login $2 on
-// repository $1: the one they started last, 1 before they started one.
-const currentConversation = `coalesce((SELECT current FROM chat_conversations WHERE repository = $1 AND login = $2), 1)`
+// repository $1: the thread they opened last; with none, one past their
+// highest (1 before their first).
+const currentConversation = `coalesce(
+	(SELECT conversation FROM chat_conversations WHERE repository = $1 AND login = $2 AND current),
+	(SELECT max(conversation) + 1 FROM chat_conversations WHERE repository = $1 AND login = $2), 1)`
 
 // CurrentConversation is login's current conversation on repository.
 func (s *PGStore) CurrentConversation(ctx context.Context, repository, login string) (int64, error) {
@@ -94,38 +108,113 @@ func (s *PGStore) CurrentConversation(ctx context.Context, repository, login str
 	return n, err
 }
 
-// NewConversation makes login's current conversation on repository the
-// one after their highest with messages, and answers it: started again
-// before a message, it stays the same.
+// NewConversation makes a new thread login's current one on repository
+// and answers its number, one past their highest; started again before a
+// message, the empty current thread stays the one.
 func (s *PGStore) NewConversation(ctx context.Context, repository, login string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var cur int64
+	var inbox bool
+	var rows int64
+	switch err := tx.QueryRowContext(ctx, `SELECT c.conversation, c.inbox,
+		(SELECT count(*) FROM chat_messages m WHERE m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation)
+		FROM chat_conversations c WHERE c.repository = $1 AND c.login = $2 AND c.current`, repository, login).Scan(&cur, &inbox, &rows); {
+	case err == nil && !inbox && rows == 0:
+		return cur, nil
+	case err != nil && !errors.Is(err, sql.ErrNoRows):
+		return 0, err
+	}
 	var n int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, current)
-		SELECT $1, $2, coalesce(max(conversation), 1) + 1 FROM chat_messages WHERE repository = $1 AND login = $2
-		ON CONFLICT (repository, login) DO UPDATE SET current = excluded.current RETURNING current`, repository, login).Scan(&n)
-	return n, err
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(max(conversation), 1) + 1 FROM chat_conversations WHERE repository = $1 AND login = $2`,
+		repository, login).Scan(&n); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = false WHERE repository = $1 AND login = $2 AND current`, repository, login); err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, current) VALUES ($1, $2, $3, true)`,
+		repository, login, n); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }
 
-// ChatConversation is one conversation of a member on a project.
+// The states of a thread.
+const (
+	ThreadActive   = "active"
+	ThreadArchived = "archived"
+)
+
+// ChatConversation is one thread of a member on a project (roadmap 239):
+// its number, title, state, whether it is the member's inbox and their
+// current thread, its first and last message's times (the thread's own
+// when it has none), its rows, and its unread turns after the member's
+// seen marker. Working is the console's: a turn runs on it now.
 type ChatConversation struct {
 	Number   int64     `json:"number"`
+	Title    string    `json:"title"`
+	State    string    `json:"state"`
+	Inbox    bool      `json:"inbox,omitempty"`
+	Current  bool      `json:"current,omitempty"`
 	FirstAt  time.Time `json:"first_at"`
 	LastAt   time.Time `json:"last_at"`
 	Messages int64     `json:"messages"`
+	Unread   int64     `json:"unread"`
+	Working  bool      `json:"working,omitempty"`
+	// Summary is the thread's running summary of its rows up to
+	// SummaryUpto, which compaction keeps (roadmap 239); "" before the
+	// first, and Compactions counts them.
+	Summary     string    `json:"summary,omitempty"`
+	SummaryUpto int64     `json:"summary_upto,omitempty"`
+	SummaryAt   time.Time `json:"-"`
+	Compactions int       `json:"compactions,omitempty"`
+	// Tokens and CostEUR are the thread's model calls' totals, the
+	// console's read of the audit.
+	Tokens  int     `json:"tokens,omitempty"`
+	CostEUR float64 `json:"cost_eur,omitempty"`
 }
 
-// Conversations lists login's conversations on repository, newest first.
+// unreadTurn is a row that ends a turn of the agent the member may not have
+// read: an agent row of text or with a proposal, a poke, never a queued
+// message.
+const unreadTurn = `m.role = 'assistant' AND m.kind <> 'queued' AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
+
+const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
+	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
+	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `)
+	FROM chat_conversations c
+	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
+	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
+	WHERE c.repository = $1 AND c.login = $2`
+
+func scanConversation(scan func(...any) error) (ChatConversation, error) {
+	var c ChatConversation
+	var at time.Time
+	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread)
+	if at.After(time.Unix(0, 0)) {
+		c.SummaryAt = at
+	}
+	return c, err
+}
+
+// Conversations lists login's threads on repository: the inbox first,
+// then the active by their last message, newest first, the archived last.
 func (s *PGStore) Conversations(ctx context.Context, repository, login string) ([]ChatConversation, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT conversation, min(at), max(at), count(*)
-		FROM chat_messages WHERE repository = $1 AND login = $2
-		GROUP BY conversation ORDER BY conversation DESC`, repository, login)
+	rows, err := s.db.QueryContext(ctx, conversationSelect+`
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id
+		ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.conversation DESC`, repository, login)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ChatConversation
 	for rows.Next() {
-		var c ChatConversation
-		if err := rows.Scan(&c.Number, &c.FirstAt, &c.LastAt, &c.Messages); err != nil {
+		c, err := scanConversation(rows.Scan)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -133,25 +222,252 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 	return out, rows.Err()
 }
 
-// AddChatMessage appends m to login's current conversation on repository.
+// Conversation is login's thread n on repository; false for none.
+func (s *PGStore) Conversation(ctx context.Context, repository, login string, n int64) (ChatConversation, bool, error) {
+	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.conversation = $3
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id`, repository, login, n).Scan)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatConversation{}, false, nil
+	}
+	return c, err == nil, err
+}
+
+// OpenConversation makes thread n login's current one on repository;
+// ErrNotFound for none.
+func (s *PGStore) OpenConversation(ctx context.Context, repository, login string, n int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = false WHERE repository = $1 AND login = $2 AND current`, repository, login); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = true WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
+	if err != nil {
+		return err
+	}
+	if k, err := res.RowsAffected(); err != nil || k == 0 {
+		return cmp.Or(err, ErrNotFound)
+	}
+	return tx.Commit()
+}
+
+// RenameConversation sets thread n's title; false for no such thread.
+func (s *PGStore) RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error) {
+	return s.changeThread(ctx, `title = $4`, `true`, repository, login, n, title)
+}
+
+// ArchiveConversation archives thread n, or restores it; the inbox stays.
+// An archived thread is no one's current. False for no such thread.
+func (s *PGStore) ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error) {
+	if archived {
+		return s.changeThread(ctx, `state = 'archived', current = false`, `NOT inbox`, repository, login, n)
+	}
+	return s.changeThread(ctx, `state = 'active'`, `NOT inbox`, repository, login, n)
+}
+
+// changeThread updates thread n SET set WHERE where, its args after the
+// thread's three; false when no row matched.
+func (s *PGStore) changeThread(ctx context.Context, set, where, repository, login string, n int64, args ...any) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET `+set+`
+		WHERE repository = $1 AND login = $2 AND conversation = $3 AND `+where, append([]any{repository, login, n}, args...)...)
+	if err != nil {
+		return false, err
+	}
+	k, err := res.RowsAffected()
+	return k > 0, err
+}
+
+// DeleteConversation hard-deletes login's thread n on repository: its
+// messages, its proposals and undos, its seen marker and the thread, and
+// answers how many messages went. The inbox stays: ErrNotFound for it,
+// as for no thread.
+func (s *PGStore) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	res, err := tx.ExecContext(ctx, `DELETE FROM chat_conversations WHERE repository = $1 AND login = $2 AND conversation = $3 AND NOT inbox`,
+		repository, login, n)
+	if err != nil {
+		return 0, err
+	}
+	if k, err := res.RowsAffected(); err != nil || k == 0 {
+		return 0, cmp.Or(err, ErrNotFound)
+	}
+	res, err = tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
+	if err != nil {
+		return 0, err
+	}
+	gone, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	for _, q := range []string{`DELETE FROM chat_seen WHERE repository = $1 AND login = $2 AND conversation = $3`,
+		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`} {
+		if _, err := tx.ExecContext(ctx, q, repository, login, n); err != nil {
+			return 0, err
+		}
+	}
+	return gone, tx.Commit()
+}
+
+// ThreadSummary is one compaction's result (roadmap 239): the summary of
+// the thread's rows up to Upto, the alias that wrote it, and the context's
+// estimated tokens before and after.
+type ThreadSummary struct {
+	Text          string
+	Model         string
+	Upto          int64
+	Before, After int
+}
+
+// SaveSummary stores compaction s on login's thread n on repository and
+// counts it.
+func (s *PGStore) SaveSummary(ctx context.Context, repository, login string, n int64, sum ThreadSummary) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET summary = $4, summary_model = $5, summary_upto = $6, summary_at = now(),
+		compact_count = compact_count + 1, compact_tokens_before = $7, compact_tokens_after = $8
+		WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n, sum.Text, sum.Model, sum.Upto, sum.Before, sum.After)
+	return err
+}
+
+// ThreadTokens is the newest operator call of chat thread thread after
+// since as the gateway's audit booked it: its prompt and its answer's
+// tokens, which the thread's next prompt starts from; 0 for none.
+func (s *PGStore) ThreadTokens(ctx context.Context, thread string, since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT coalesce((SELECT prompt_tokens + output_tokens FROM audit
+		WHERE thread = $1 AND kind = $2 AND prompt_tokens > 0 AND ts > $3 ORDER BY ts DESC, id DESC LIMIT 1), 0)`,
+		thread, policy.PurposeOperator, since).Scan(&n)
+	return n, err
+}
+
+// ThreadTotals are chat thread thread's model calls' tokens and modeled
+// cost, every purpose's.
+func (s *PGStore) ThreadTotals(ctx context.Context, thread string) (int, float64, error) {
+	var tokens int
+	var eur float64
+	err := s.db.QueryRowContext(ctx, `SELECT coalesce(sum(prompt_tokens + output_tokens), 0)::int, coalesce(sum(call_cost_eur), 0)::float8
+		FROM audit WHERE thread = $1`, thread).Scan(&tokens, &eur)
+	return tokens, eur, err
+}
+
+// MarkSeen moves login's seen marker of thread n on repository to its
+// newest row: the thread reads as read.
+func (s *PGStore) MarkSeen(ctx context.Context, repository, login string, n int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_seen (repository, login, conversation, last_seen_message_id)
+		VALUES ($1, $2, $3, (SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3))
+		ON CONFLICT (repository, login, conversation) DO UPDATE
+		SET last_seen_message_id = greatest(chat_seen.last_seen_message_id, excluded.last_seen_message_id)`, repository, login, n)
+	return err
+}
+
+// InboxTitle is the inbox thread's title until the member renames it.
+const InboxTitle = "Inbox"
+
+// EnsureInbox is login's inbox thread on repository, created the first
+// time one past their highest: the one thread the agent and factoryd
+// speak in uninvited (roadmap 239). It never becomes their current one.
+func (s *PGStore) EnsureInbox(ctx context.Context, repository, login string) (int64, error) {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, inbox)
+		SELECT $1, $2, coalesce(max(conversation), 0) + 1, $3, true FROM chat_conversations WHERE repository = $1 AND login = $2
+		ON CONFLICT (repository, login) WHERE inbox DO NOTHING`, repository, login, InboxTitle); err != nil {
+		return 0, err
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT conversation FROM chat_conversations WHERE repository = $1 AND login = $2 AND inbox`,
+		repository, login).Scan(&n)
+	return n, err
+}
+
+// threadTitle is a thread's title from its first message: its words on
+// one line, at most 80 characters.
+func threadTitle(content string) string {
+	return textutil.Truncate(strings.Join(strings.Fields(content), " "), 80)
+}
+
+// AddChatMessage appends m to login's thread m.Conversation on
+// repository, their current one for 0; the thread's row is made with its
+// first message's title when it has none, the member's current one when
+// they have none.
 func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) error {
+	_, err := s.addChatMessage(ctx, repository, login, m)
+	return err
+}
+
+func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, m ChatMessage) (int64, error) {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(StampReadAt(m.ToolCalls, time.Now()))
 		if err != nil {
-			return err
+			return 0, err
 		}
 		calls = b
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation)
-		VALUES ($1, $2, $3, $4, $5::jsonb, `+currentConversation+`)`, repository, login, m.Role, m.Content, calls)
+	choices := any(nil)
+	if len(m.Choices) > 0 {
+		b, err := json.Marshal(m.Choices)
+		if err != nil {
+			return 0, err
+		}
+		choices = b
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	conv := m.Conversation
+	if conv <= 0 {
+		if err := tx.QueryRowContext(ctx, `SELECT `+currentConversation, repository, login).Scan(&conv); err != nil {
+			return 0, err
+		}
+	}
+	title := ""
+	if m.Role == "user" || m.Kind != "" {
+		title = threadTitle(m.Content)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current, last_turn_at)
+		VALUES ($1, $2, $3, $4, NOT EXISTS (SELECT 1 FROM chat_conversations WHERE repository = $1 AND login = $2 AND current), now())
+		ON CONFLICT (repository, login, conversation) DO UPDATE SET last_turn_at = now(),
+			title = CASE WHEN chat_conversations.title = '' THEN excluded.title ELSE chat_conversations.title END`,
+		repository, login, conv, title); err != nil {
+		return 0, err
+	}
+	var id int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// MessageQueued is the kind of a member's message that waits for the
+// turn before it to end (roadmap 239): stored at once, it moves to the
+// end of its thread when its turn starts, so turns never interleave.
+const MessageQueued = "queued"
+
+// QueueChatMessage stores the member's text in thread n as a queued
+// message and answers its id.
+func (s *PGStore) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
+	return s.addChatMessage(ctx, repository, login, ChatMessage{Role: "user", Content: text, Kind: MessageQueued, Conversation: n})
+}
+
+// StartQueued starts queued message id's turn: the row takes the next
+// id, after every row of the turns before it, and is queued no longer.
+func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), kind = '', at = now()
+		WHERE id = $1 AND repository = $2 AND login = $3 AND kind = $4`, id, repository, login, MessageQueued)
 	return err
 }
 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -162,8 +478,8 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		var calls []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation); err != nil {
+		var calls, choices []byte
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {
@@ -173,6 +489,11 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 			// a row stored before read_at was written reads back with the
 			// message's own time, so no result is ever undated
 			StampReadAt(m.ToolCalls, m.At)
+		}
+		if len(choices) > 0 {
+			if err := json.Unmarshal(choices, &m.Choices); err != nil {
+				return nil, err
+			}
 		}
 		out = append(out, m)
 	}
@@ -254,6 +575,9 @@ type ChatProposal struct {
 	Args                                 json.RawMessage
 	Description                          string
 	ExpiresAt                            time.Time
+	// Conversation is the thread that raised it, where its Do it's or its
+	// undo's row lands (roadmap 239); 0: the member's current one.
+	Conversation int64
 }
 
 // TakeProposal's refusals.
@@ -264,9 +588,9 @@ var (
 
 // PutProposal stores p.
 func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)`,
-		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
+		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation)
 	return err
 }
 
@@ -278,8 +602,8 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 	var args []byte
 	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
 		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4 AND kind = $5
-		RETURNING tool, args, description, expires_at`, token, repository, login, now, kind).
-		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt)
+		RETURNING tool, args, description, expires_at, conversation`, token, repository, login, now, kind).
+		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation)
 	switch {
 	case err == nil:
 		p.Args = args

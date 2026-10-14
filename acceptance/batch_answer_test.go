@@ -600,9 +600,52 @@ func (f *accBatchChat) EnsureChatTask(ctx context.Context, name, repository stri
 func (f *accBatchChat) AddChatMessage(_ context.Context, _, _ string, m factoryd.ChatMessage) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	m.ID = int64(len(f.msgs) + 1)
+	m.ID = f.nextID()
 	m.At = time.Now()
 	m.Conversation = 1
+	f.msgs = append(f.msgs, m)
+	return nil
+}
+
+// nextID is one past the highest message id; f.mu held.
+func (f *accBatchChat) nextID() int64 {
+	var n int64
+	for _, m := range f.msgs {
+		n = max(n, m.ID)
+	}
+	return n + 1
+}
+
+func (f *accBatchChat) Conversation(_ context.Context, _, _ string, n int64) (factoryd.ChatConversation, bool, error) {
+	return factoryd.ChatConversation{Number: n, State: factoryd.ThreadActive, Current: true}, true, nil
+}
+
+func (f *accBatchChat) OpenConversation(context.Context, string, string, int64) error { return nil }
+
+func (f *accBatchChat) RenameConversation(context.Context, string, string, int64, string) (bool, error) {
+	return true, nil
+}
+
+func (f *accBatchChat) MarkSeen(context.Context, string, string, int64) error { return nil }
+
+func (f *accBatchChat) QueueChatMessage(_ context.Context, _, _ string, _ int64, text string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	m := factoryd.ChatMessage{ID: f.nextID(), Role: "user", Content: text, Kind: factoryd.MessageQueued, At: time.Now(), Conversation: 1}
+	f.msgs = append(f.msgs, m)
+	return m.ID, nil
+}
+
+func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	if i < 0 {
+		return nil
+	}
+	m := f.msgs[i]
+	f.msgs = slices.Delete(f.msgs, i, i+1)
+	m.ID, m.Kind, m.At = f.nextID(), "", time.Now()
 	f.msgs = append(f.msgs, m)
 	return nil
 }
@@ -1095,3 +1138,11 @@ func TestOneMessageAnswersAllPlanQuestionsInOneTurn(t *testing.T) {
 		t.Fatalf("%d plan_answered signals, want one per answer: %v", signalled, r.signals)
 	}
 }
+
+func (f *accBatchChat) SaveSummary(context.Context, string, string, int64, factoryd.ThreadSummary) error {
+	return nil
+}
+
+func (f *accBatchChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
+
+func (f *accBatchChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }

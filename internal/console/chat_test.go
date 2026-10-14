@@ -32,11 +32,22 @@ type fakeChat struct {
 	tasks *fakeTasks
 	mu    sync.Mutex
 	msgs  map[string][]factoryd.ChatMessage // by repository and login
-	// started is the conversation each member started last, by repository
+	// started is the conversation each member opened last, by repository
 	// and login
 	started map[string]int64
-	next    int64
-	spend   []spendRow
+	// titles are the renamed threads' titles and seen the seen markers,
+	// by repository, login and thread
+	titles map[string]string
+	seen   map[string]int64
+	// summaries are the threads' compactions by repository, login and
+	// thread; tokens the newest call's tokens by thread reference, which a
+	// test sets, and totals its calls' sums
+	summaries map[string]factoryd.ThreadSummary
+	compacts  map[string]int
+	tokens    map[string]int
+	totals    map[string][2]float64
+	next      int64
+	spend     []spendRow
 	// proposals are the proposals and undos, in the order stored
 	proposals []*fakeProposal
 }
@@ -78,7 +89,7 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
-	m.ID, m.At, m.Conversation = f.next, at.Add(time.Duration(f.next)*time.Second), f.current(repository, login)
+	m.ID, m.At, m.Conversation = f.next, at.Add(time.Duration(f.next)*time.Second), cmp.Or(m.Conversation, f.current(repository, login))
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
@@ -109,17 +120,140 @@ func (f *fakeChat) NewConversation(_ context.Context, repository, login string) 
 func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	return f.threads(repository, login), nil
+}
+
+// threads is the member's threads as the store lists them; f.mu held.
+func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation {
+	k := repository + " " + login
+	cur := f.current(repository, login)
 	var out []factoryd.ChatConversation
-	for _, m := range f.msgs[repository+" "+login] {
+	for _, m := range f.msgs[k] {
 		i := slices.IndexFunc(out, func(c factoryd.ChatConversation) bool { return c.Number == m.Conversation })
 		if i < 0 {
-			out, i = append(out, factoryd.ChatConversation{Number: m.Conversation, FirstAt: m.At}), len(out)
+			out, i = append(out, factoryd.ChatConversation{Number: m.Conversation, State: factoryd.ThreadActive, FirstAt: m.At,
+				Current: m.Conversation == cur}), len(out)
+		}
+		if out[i].Title == "" && m.Role == "user" {
+			out[i].Title = strings.Join(strings.Fields(m.Content), " ")
+		}
+		if title := f.titles[fmt.Sprint(k, " ", m.Conversation)]; title != "" {
+			out[i].Title = title
+		}
+		if sum, ok := f.summaries[fmt.Sprint(k, " ", m.Conversation)]; ok {
+			out[i].Summary, out[i].SummaryUpto, out[i].Compactions = sum.Text, sum.Upto, f.compacts[fmt.Sprint(k, " ", m.Conversation)]
 		}
 		out[i].LastAt = m.At
 		out[i].Messages++
+		turnEnd := m.Role == "assistant" && m.Kind != factoryd.MessageQueued &&
+			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
+		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
+			out[i].Unread++
+		}
 	}
-	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int { return cmp.Compare(b.Number, a.Number) })
-	return out, nil
+	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
+		return cmp.Or(b.LastAt.Compare(a.LastAt), cmp.Compare(b.Number, a.Number))
+	})
+	return out
+}
+
+func (f *fakeChat) Conversation(_ context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.threads(repository, login) {
+		if c.Number == n {
+			return c, true, nil
+		}
+	}
+	return factoryd.ChatConversation{}, false, nil
+}
+
+func (f *fakeChat) OpenConversation(_ context.Context, repository, login string, n int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.started == nil {
+		f.started = map[string]int64{}
+	}
+	f.started[repository+" "+login] = n
+	return nil
+}
+
+func (f *fakeChat) RenameConversation(_ context.Context, repository, login string, n int64, title string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !slices.ContainsFunc(f.msgs[repository+" "+login], func(m factoryd.ChatMessage) bool { return m.Conversation == n }) {
+		return false, nil
+	}
+	if f.titles == nil {
+		f.titles = map[string]string{}
+	}
+	f.titles[fmt.Sprint(repository, " ", login, " ", n)] = title
+	return true, nil
+}
+
+func (f *fakeChat) SaveSummary(_ context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.summaries == nil {
+		f.summaries, f.compacts = map[string]factoryd.ThreadSummary{}, map[string]int{}
+	}
+	k := fmt.Sprint(repository, " ", login, " ", n)
+	f.summaries[k] = s
+	f.compacts[k]++
+	return nil
+}
+
+func (f *fakeChat) ThreadTokens(_ context.Context, thread string, _ time.Time) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tokens[thread], nil
+}
+
+func (f *fakeChat) ThreadTotals(_ context.Context, thread string) (int, float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	t := f.totals[thread]
+	return int(t[0]), t[1], nil
+}
+
+func (f *fakeChat) MarkSeen(_ context.Context, repository, login string, n int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.seen == nil {
+		f.seen = map[string]int64{}
+	}
+	k := fmt.Sprint(repository, " ", login, " ", n)
+	for _, m := range f.msgs[repository+" "+login] {
+		if m.Conversation == n {
+			f.seen[k] = max(f.seen[k], m.ID)
+		}
+	}
+	return nil
+}
+
+func (f *fakeChat) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
+	if err := f.AddChatMessage(ctx, repository, login, factoryd.ChatMessage{Role: "user", Content: text, Kind: factoryd.MessageQueued, Conversation: n}); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.next, nil
+}
+
+func (f *fakeChat) StartQueued(_ context.Context, repository, login string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	if i < 0 {
+		return nil
+	}
+	m := f.msgs[k][i]
+	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
+	f.next++
+	m.ID, m.At, m.Kind = f.next, at.Add(time.Duration(f.next)*time.Second), ""
+	f.msgs[k] = append(f.msgs[k], m)
+	return nil
 }
 
 func (f *fakeChat) ChatMessages(_ context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error) {
@@ -223,17 +357,48 @@ type chatGateway struct {
 	mu       sync.Mutex
 	replies  [][]string
 	requests []map[string]any
+	// hold, when set, keeps each call open until it closes; arrived
+	// hears of each call before it waits
+	hold    chan struct{}
+	arrived chan struct{}
+	// compacts are the compaction calls' requests and summaries the
+	// answers they get in order, "summary n" when none is scripted
+	compacts  []map[string]any
+	summaries []string
 }
 
+// refuseContext scripts an operator call the provider refuses for a
+// prompt past its window.
+const refuseContext = "REFUSE_CONTEXT"
+
 func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if g.arrived != nil {
+		g.arrived <- struct{}{}
+	}
+	if g.hold != nil {
+		<-g.hold
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		g.t.Errorf("model call body: %v", err)
 	}
-	g.requests = append(g.requests, body)
 	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeCompact {
+		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.PulseModel || body["max_tokens"] != float64(2048) {
+			g.t.Errorf("compaction call: task %q, body %v: want the cheap alias on %s", r.Header.Get(gateway.HeaderFactoryTask), body, task)
+		}
+		g.compacts = append(g.compacts, body)
+		summary := fmt.Sprintf("summary %d", len(g.compacts))
+		if len(g.summaries) > 0 {
+			summary, g.summaries = g.summaries[0], g.summaries[1:]
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(summary))
+		return
+	}
+	g.requests = append(g.requests, body)
 	if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
 		body["model"] != "operator" || body["stream"] != true || body["max_tokens"] != float64(4096) {
@@ -249,6 +414,13 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.replies = g.replies[1:]
 	if reply == nil {
 		http.Error(w, "upstream down", http.StatusBadGateway)
+		return
+	}
+	if len(reply) == 1 && reply[0] == refuseContext {
+		w.Header().Set(gateway.HeaderDecision, gateway.RefusedContext)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"the prompt is past the model's context window: maximum context length is 131072 tokens","type":"context_length_exceeded"}}`)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -317,29 +489,40 @@ var (
 // token TOKEN, and those tokens in order.
 func chatPost(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, form url.Values) (int, []string, []string) {
 	t.Helper()
-	srv := httptest.NewServer(r.c)
-	defer srv.Close()
-	if form == nil {
-		form = url.Values{}
-	}
-	form.Set("csrf", s.csrf)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(form.Encode()))
+	code, events, tokens, err := postStream(r, ck, s, path, form)
 	if err != nil {
 		t.Fatal(err)
+	}
+	return code, events, tokens
+}
+
+// postStream is chatPost without the test: a goroutine's post, its error
+// returned.
+func postStream(r *rig, ck *http.Cookie, s *session, path string, form url.Values) (int, []string, []string, error) {
+	srv := httptest.NewServer(r.c)
+	defer srv.Close()
+	f := url.Values{}
+	for k, v := range form {
+		f[k] = v
+	}
+	f.Set("csrf", s.csrf)
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(f.Encode()))
+	if err != nil {
+		return 0, nil, nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(ck)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		t.Fatal(err)
+		return 0, nil, nil, err
 	}
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
-		return resp.StatusCode, []string{strings.TrimSpace(string(body))}, nil
+		return resp.StatusCode, []string{strings.TrimSpace(string(body))}, nil, nil
 	}
 	var events, tokens []string
 	for _, msg := range strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n") {
@@ -351,7 +534,7 @@ func chatPost(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, fo
 		data = tokenField.ReplaceAllString(durationField.ReplaceAllString(data, `"duration_ms":0`), `"$1":"TOKEN"`)
 		events = append(events, event+" "+data)
 	}
-	return resp.StatusCode, events, tokens
+	return resp.StatusCode, events, tokens, nil
 }
 
 // chatRows holds the rows after before to exactly wants, each via chat by
@@ -449,7 +632,9 @@ func TestChatTextReply(t *testing.T) {
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
-		`{"conversation":1,"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
+		`{"conversation":1,"thread":{"number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
+			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},` +
+			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
 
@@ -902,7 +1087,7 @@ func TestChatProposalIsStored(t *testing.T) {
 		t.Fatalf("the proposal expires %v, want 30 minutes after %v", row.ExpiresAt, start)
 	}
 	equal(t, "the proposal", row, fakeProposal{ChatProposal: factoryd.ChatProposal{Token: tokens[0], Kind: "proposal", Repository: "sf/code",
-		Login: "sebastian", Tool: "new_card", Args: json.RawMessage(args), Description: desc, ExpiresAt: row.ExpiresAt}})
+		Login: "sebastian", Tool: "new_card", Args: json.RawMessage(args), Description: desc, ExpiresAt: row.ExpiresAt, Conversation: 1}})
 	chat.mu.Lock()
 	rows := len(chat.proposals)
 	chat.mu.Unlock()
@@ -971,7 +1156,7 @@ func TestChatUndoIsData(t *testing.T) {
 	} {
 		row, _ := chat.proposal(w.token)
 		equal(t, "the undo of "+w.undoes, row.ChatProposal, factoryd.ChatProposal{Token: w.token, Kind: "undo", Repository: "sf/code",
-			Login: "sebastian", Tool: w.tool, Args: json.RawMessage(w.args), Description: w.undoes, ExpiresAt: row.ExpiresAt})
+			Login: "sebastian", Tool: w.tool, Args: json.RawMessage(w.args), Description: w.undoes, ExpiresAt: row.ExpiresAt, Conversation: 1})
 	}
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/undo/"+tokens[0], nil)
 	back := `The accent of #5 is back to \"blue\".`
@@ -1282,15 +1467,17 @@ func TestChatNewConversation(t *testing.T) {
 		}
 		return strings.TrimSpace(rec.Body.String())
 	}
-	equal(t, "GET", get(chatPath), `{"conversation":2,"messages":[`+
+	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"number":2,"title":"world","state":"active","current":true,`+
+		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
-	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"messages":[`+
+	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"number":1,"title":"hello","state":"active","current":true,`+
+		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
-		`[{"number":2,"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2},`+
-			`{"number":1,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2}]`)
+		`[{"number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
+			`{"number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)
 	}

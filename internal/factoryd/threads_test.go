@@ -1,0 +1,232 @@
+package factoryd
+
+import (
+	"errors"
+	"slices"
+	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+)
+
+// The threads (roadmap 239): one row per conversation with its title,
+// state, inbox flag and current pointer; the seen marker; the lazy inbox;
+// the hard delete's count. Hand-derived from the plan's data model.
+func TestPGStoreChatThreads(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_threads"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_proposals, tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	repo, login := "sf/code", "sebastian"
+
+	// the first message lands in conversation 1 and marks it current
+	for _, text := range []string{"What is stuck?", "Nothing: two cards run."} {
+		if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	threads, err := s.Conversations(ctx, repo, login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(threads) != 1 || threads[0].Number != 1 || threads[0].Messages != 2 || threads[0].State != "active" || !threads[0].Current {
+		t.Fatalf("threads = %+v, want one active current thread 1 with two messages", threads)
+	}
+	if n, _ := s.CurrentConversation(ctx, repo, login); n != 1 {
+		t.Fatalf("CurrentConversation = %d, want 1", n)
+	}
+
+	// /new makes thread 2 the current one; its rows land there
+	if n, err := s.NewConversation(ctx, repo, login); err != nil || n != 2 {
+		t.Fatalf("NewConversation = %d, %v, want 2", n, err)
+	}
+	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "Fresh start."}); err != nil {
+		t.Fatal(err)
+	}
+	// seen: the member read thread 1; a late answer there marks it unread
+	if err := s.MarkSeen(ctx, repo, login, 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "Late answer.", Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	threads, _ = s.Conversations(ctx, repo, login)
+	for _, th := range threads {
+		switch th.Number {
+		case 1:
+			if th.Unread != 1 || th.Current {
+				t.Errorf("thread 1 = %+v, want one unread, not current after /new", th)
+			}
+		case 2:
+			if th.Unread != 0 || !th.Current || th.Messages != 1 {
+				t.Errorf("thread 2 = %+v, want current with its one message, a member's own", th)
+			}
+		}
+	}
+	if err := s.MarkSeen(ctx, repo, login, 1); err != nil {
+		t.Fatal(err)
+	}
+	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.Unread != 0 {
+		t.Errorf("thread 1 after it was read = %+v, %v, %v, want no unread", th, ok, err)
+	}
+
+	// a queued message waits as queued and moves after the rows of the
+	// turn before it once its own turn starts
+	q, err := s.QueueChatMessage(ctx, repo, login, 2, "And the second?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "The first answer.", Conversation: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.StartQueued(ctx, repo, login, q); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.ChatMessages(ctx, repo, login, 2, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range msgs {
+		order = append(order, m.Kind+":"+m.Content)
+	}
+	if want := []string{":Fresh start.", ":The first answer.", ":And the second?"}; !slices.Equal(order, want) {
+		t.Errorf("thread 2 = %q, want %q", order, want)
+	}
+
+	// rename, archive, restore
+	if ok, err := s.RenameConversation(ctx, repo, login, 1, "The cache plans"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := s.ArchiveConversation(ctx, repo, login, 2, true); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	threads, _ = s.Conversations(ctx, repo, login)
+	for _, th := range threads {
+		if th.Number == 1 && th.Title != "The cache plans" {
+			t.Errorf("thread 1 title = %q", th.Title)
+		}
+		if th.Number == 2 && th.State != "archived" {
+			t.Errorf("thread 2 state = %q, want archived", th.State)
+		}
+	}
+	if ok, err := s.ArchiveConversation(ctx, repo, login, 2, false); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+
+	// the inbox: lazy-created once, the poke lands in it with its choices
+	n, err := s.EnsureInbox(ctx, repo, login)
+	if err != nil || n != 3 {
+		t.Fatalf("EnsureInbox = %d, %v, want 3", n, err)
+	}
+	if n, err := s.EnsureInbox(ctx, repo, login); err != nil || n != 3 {
+		t.Fatalf("EnsureInbox again = %d, %v, want the same 3", n, err)
+	}
+	poke := ChatMessage{Role: "assistant", Kind: "poke", Content: "Card #9 waits on you.", Choices: []string{"Answer it", "Skip"}, Conversation: n}
+	if err := s.AddChatMessage(ctx, repo, login, poke); err != nil {
+		t.Fatal(err)
+	}
+	msgs, err = s.ChatMessages(ctx, repo, login, n, 10)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("the inbox rows = %v, %v, want one", msgs, err)
+	}
+	if msgs[0].Kind != "poke" || len(msgs[0].Choices) != 2 {
+		t.Errorf("the poke row = %+v, want kind poke with two choices", msgs[0])
+	}
+
+	// open switches the current thread
+	if err := s.OpenConversation(ctx, repo, login, 1); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := s.CurrentConversation(ctx, repo, login); n != 1 {
+		t.Fatalf("CurrentConversation = %d, want 1 after the switch", n)
+	}
+
+	// the hard delete removes the member's rows, the thread and the seen
+	// marker, and answers the count (the event is the console's to write)
+	gone, err := s.DeleteConversation(ctx, repo, login, 1)
+	if err != nil || gone != 3 {
+		t.Fatalf("DeleteConversation = %d, %v, want 3 rows gone", gone, err)
+	}
+	if _, err := s.DeleteConversation(ctx, repo, login, n); !errors.Is(err, ErrNotFound) {
+		t.Errorf("deleting the inbox = %v, want ErrNotFound: the inbox stays", err)
+	}
+	if ok, err := s.ArchiveConversation(ctx, repo, login, n, true); err != nil || ok {
+		t.Errorf("archiving the inbox = %v, %v, want refused", ok, err)
+	}
+	msgs, _ = s.ChatMessages(ctx, repo, login, 1, 10)
+	if len(msgs) != 0 {
+		t.Errorf("thread 1 rows = %v, want none", msgs)
+	}
+	threads, _ = s.Conversations(ctx, repo, login)
+	for _, th := range threads {
+		if th.Number == 1 {
+			t.Errorf("thread 1 survived its delete: %+v", th)
+		}
+	}
+}
+
+// A compaction is kept on its thread and counted; the thread's newest
+// operator call after a time is its token projection, and its calls of
+// every purpose sum to its totals (roadmap 239).
+func TestPGStoreThreadSummaryAndTokens(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_thread_tokens"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, audit CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	if err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSummary(ctx, "sf/code", "anna", 1, ThreadSummary{Text: "the summary", Model: "pulse", Upto: 1, Before: 900, After: 120}); err != nil {
+		t.Fatal(err)
+	}
+	th, ok, err := s.Conversation(ctx, "sf/code", "anna", 1)
+	if err != nil || !ok || th.Summary != "the summary" || th.SummaryUpto != 1 || th.Compactions != 1 || th.SummaryAt.IsZero() {
+		t.Fatalf("thread 1 = %+v, %v, %v: want its summary up to row 1, counted once", th, ok, err)
+	}
+	thread := "sf/code:anna:1"
+	at := time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)
+	for _, row := range []struct {
+		kind, thread string
+		prompt, out  int
+		eur          float64
+		minutes      int
+	}{
+		{"operator", thread, 1000, 200, 0.01, 0},
+		{"compact", thread, 3000, 300, 0.001, 1},
+		{"operator", thread, 4000, 500, 0.02, 2},
+		{"operator", "sf/code:anna:2", 9000, 900, 0.5, 3},
+		{"operator", thread, 0, 0, 0, 4}, // a refusal: no tokens
+	} {
+		if _, err := s.db.Exec(`INSERT INTO audit (task_id, decision, reason, model_alias, kind, thread, prompt_tokens, output_tokens, call_cost_eur, ts)
+			VALUES ('t-chat', 'allowed', '', 'operator', $1, $2, $3, $4, $5, $6)`, row.kind, row.thread, row.prompt, row.out, row.eur, at.Add(time.Duration(row.minutes)*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tt := range []struct {
+		since time.Time
+		want  int
+	}{
+		{time.Time{}, 4500},
+		{at.Add(90 * time.Second), 4500},
+		{at.Add(3 * time.Minute), 0},
+	} {
+		if n, err := s.ThreadTokens(ctx, thread, tt.since); err != nil || n != tt.want {
+			t.Errorf("ThreadTokens(since %v) = %d, %v, want %d", tt.since, n, err, tt.want)
+		}
+	}
+	tokens, eur, err := s.ThreadTotals(ctx, thread)
+	if err != nil || tokens != 9000 || eur < 0.0309 || eur > 0.0311 {
+		t.Errorf("ThreadTotals = %d, %v, %v, want 9000 tokens and €0.031", tokens, eur, err)
+	}
+}

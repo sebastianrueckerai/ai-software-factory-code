@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -33,9 +34,14 @@ func TestChatPanel(t *testing.T) {
 	body := page(ck, code)
 	for _, want := range []string{
 		`<div id="screen" class="main with-chat">
-<section id="chat" class="chat" aria-labelledby="chat-title"`,
-		`<section id="chat" class="chat" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select></div>
+<section id="chat" class="chat with-threads" aria-labelledby="chat-title"`,
+		`<section id="chat" class="chat with-threads" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new" title="Start a new thread">New</button></div>
+<nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="true" aria-label="Fold the threads" title="Fold the threads">‹</button></div>
+<div id="thread-rows" class="trows"></div></nav>
+<button type="button" class="sw-sum" data-swtoggle aria-expanded="true" aria-controls="switcher" hidden></button>
+<div class="chat-main">
+<div id="thread-head" class="thead"></div>
 <p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
@@ -44,10 +50,10 @@ func TestChatPanel(t *testing.T) {
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
 <button type="submit">Send</button></div>
-<p class="chat-own">This is your own conversation with the project agent; other members have theirs.</p>
+<p class="chat-own">This is your own thread with the project agent; other members have theirs.</p>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
-<script src="/static/chat.js" defer></script>
+</div><script src="/static/chat.js" defer></script>
 </section>
 <div id="board" data-project="ai-software-factory-code"`,
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent</dd>
@@ -71,14 +77,15 @@ func TestChatPanel(t *testing.T) {
 	body = page(ak, code)
 	if want := `<section id="chat" class="chat" aria-labelledby="chat-title">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span></div>
+<div class="chat-main">
 <p class="chat-start" title="You read this project: its writers chat with its agent.">You read this project: its writers chat with its agent.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
-<script src="/static/chat.js" defer></script>
+</div><script src="/static/chat.js" defer></script>
 </section>`; !strings.Contains(body, want) {
 		t.Errorf("the reader's page lacks\n%s", want)
 	}
-	for _, unwanted := range []string{"chat-form", "chat-input", "chat-queue", "data-login", "<kbd>/</kbd>"} {
+	for _, unwanted := range []string{"chat-form", "chat-input", "chat-queue", "data-login", "<kbd>/</kbd>", "switcher", "thread-head"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the reader's page holds %s", unwanted)
 		}
@@ -119,14 +126,26 @@ var args = '{"title":"Cache metrics","lane":"ready"}';
 var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
   {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "call_1", name: "new_card", arguments: args,
     result: "Proposed to sebastian: File a card, title Cache metrics, lane ready. Nothing runs until they press Do it.", proposal: "tok1"}]}];
-var one = {number: 1, first_at: "2026-10-11T09:30:01Z", last_at: "2026-10-11T09:30:02Z", messages: 2};
+var now = new Date("2026-10-11T12:00:00Z");
+var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2},
+  {number: 2, title: "world", state: "active", current: true, last_at: "2026-10-11T09:30:04Z", unread: 0, working: true},
+  {number: 4, title: "", state: "active", last_at: "2026-10-10T18:00:00Z", unread: 0},
+  {number: 1, title: "a <b>", state: "archived", last_at: "2026-10-08T09:30:02Z", unread: 0}];
 console.log(JSON.stringify({
   pending: chatView.historyHTML(msgs, "sebastian", [{token: "tok1", state: "pending"}]),
   used: chatView.historyHTML(msgs, "sebastian", [{token: "tok1", state: "used"}]),
   stream: chatView.proposalHTML({id: "tok1", tool: "new_card", arguments: JSON.parse(args), description: "File a card, title Cache metrics, lane ready"}),
-  two: chatView.conversationsHTML([{number: 2, first_at: "2026-10-11T09:30:03Z", last_at: "2026-10-11T09:30:04Z", messages: 2}, one], 2),
-  afterNew: chatView.conversationsHTML([one], 2),
-  one: chatView.conversationsHTML([one], 1),
+  rows: chatView.rowsHTML(threads, 2, now),
+  sum: chatView.sumHTML(threads, false),
+  unread: String(chatView.unreadOf(threads)),
+  inboxHead: chatView.headHTML(threads[0], now),
+  head: chatView.headHTML(threads[1], now),
+  poke: chatView.factoryHTML({id: 7, role: "assistant", kind: "poke", content: "Started the login card.", at: "2026-10-11T09:12:00Z",
+    decider: "assisted level · started by the agent", choices: ["Open the card"]}),
+  compacted: chatView.threadHTML([{id: 1, role: "user", content: "a1", at: "2026-10-11T09:30:01Z"}, {id: 2, role: "assistant", content: "a2", at: "2026-10-11T09:30:02Z"},
+    {id: 3, role: "user", content: "b1", at: "2026-10-11T09:31:00Z"}], "sebastian", [], {summary: "the cache was fixed", summary_upto: 2}),
+  escalation: chatView.factoryHTML({id: 8, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:13:00Z",
+    choices: ["Postgres", "SQLite"]}),
   queue: (function () {
     var started = [], drawn = [], busy = false;
     var q = chatView.queue(function (text) { started.push(text); busy = true; }, function () { return busy; },
@@ -145,7 +164,9 @@ console.log(JSON.stringify({
   })(),
   queueHTML: chatView.queueHTML(["a <b>", "c"])
 }));`
-	out, err := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js").Output()
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
@@ -161,16 +182,37 @@ console.log(JSON.stringify({
 		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, lane ready</li></ul>` +
 			`<details class="args"><summary>new_card arguments</summary><pre>` + args + `</pre></details>` +
 			`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`
-		older = `<option value="">Current conversation</option><option value="1">Conversation 1 · 10-11 09:30Z · 2 messages</option>`
+		dot = `<span class="tmark working"><i class="dot" aria-hidden="true"></i><span class="visually-hidden">a turn in flight</span></span>`
 	)
 	for _, c := range []struct{ name, want string }{
 		{"pending", you + agent + proposal + `</div>`},
 		{"used", you + agent + `<details class="tool"><summary>🔧 new_card · ` + result + `</summary><pre>` + args + "\n\n" + result + `</pre></details>` +
 			`<p class="pfoot"><span class="expired">used</span></p></div>`},
 		{"stream", proposal},
-		{"two", older},
-		{"afterNew", older},
-		{"one", ""},
+		{"rows", `<button type="button" class="trow unread inbox" data-thread="3" aria-current="false" title="Inbox, 2 unread">` +
+			`<span class="tmark inbox" aria-hidden="true">⌂</span><span class="ttitle">Inbox</span><span class="badge" aria-label="2 unread">2</span></button>` +
+			`<button type="button" class="trow on" data-thread="2" aria-current="true" title="world, a turn in flight">` + dot +
+			`<span class="ttitle">world</span><span class="tat">09:30</span></button>` +
+			`<button type="button" class="trow" data-thread="4" aria-current="false" title="New thread"><span class="tmark" aria-hidden="true"></span>` +
+			`<span class="ttitle">New thread</span><span class="tat">yesterday</span></button>` +
+			`<div class="tarch"><span class="tarch-l">archived</span><span class="trow arch"><span class="tmark" aria-hidden="true">arc</span>` +
+			`<button type="button" class="ttitle open-arch" data-thread="1" aria-current="false">a &lt;b&gt;</button>` +
+			`<button type="button" class="linkbtn restore" data-restore="1">restore</button></span></div>`},
+		{"sum", `Threads <span class="n">3</span> · <span class="badge">2</span> unread · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
+			`<span class="chev" aria-hidden="true">⌃</span>`},
+		{"unread", "2"},
+		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
+		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>`},
+		{"poke", `<div class="msg agent poke" data-message="7"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:12Z</time></p>` +
+			`<div class="said"><p>Started the login card.</p></div><p class="decider"><span class="visually-hidden">Decided by: </span>assisted level · started by the agent</p>` +
+			`<p class="choices"><button type="button" data-choice="Open the card">Open the card</button></p></div>`},
+		{"compacted", `<details class="compacted"><summary>2 earlier messages, compacted</summary>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">a1</p></div>` +
+			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p><div class="said"><p>a2</p></div></div></details>` +
+			`<div class="msg sum"><span class="av" aria-hidden="true">≡</span><p class="who"><span class="name">summary</span> <time>10-11 09:30Z</time></p><div class="said"><p>the cache was fixed</p></div></div>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
+		{"escalation", `<div class="msg agent poke esc" data-message="8"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:13Z</time> <span class="esc-l">needs you</span></p>` +
+			`<div class="esc-b"><div class="said"><p>Which store?</p></div></div></div>`},
 		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
 		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +

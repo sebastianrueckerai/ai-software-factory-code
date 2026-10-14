@@ -55,9 +55,27 @@ var chatView = (function () {
   function whoHTML(name, at) {
     return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
   }
-  function userHTML(login, text, at) {
+  function userHTML(login, text, at, queued) {
     return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
-      "<p class=\"said\">" + esc(text) + "</p></div>";
+      "<p class=\"said\">" + esc(text) + "</p>" + (queued ? "<p class=\"meta chat-queued\">queued: it goes out when the turn before it ends</p>" : "") + "</div>";
+  }
+  // factoryHTML is a row factoryd wrote itself (C14): a poke or an
+  // escalation by "the factory", its choices as buttons, its decider line
+  // when the agent acted alone; a summary turn after /compact
+  function factoryHTML(m) {
+    if (m.kind === "summary") {
+      return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
+    }
+    var esc1 = m.kind === "escalation";
+    var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" + (esc1 ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+    var body = saidHTML(m.content);
+    if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
+    if (m.choices && m.choices.length && !esc1) {
+      body += "<p class=\"choices\">" + m.choices.map(function (c) {
+        return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
+    }
+    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
+      (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + "</div>";
   }
   function agentHTML(at, parts) {
     return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
@@ -100,7 +118,12 @@ var chatView = (function () {
     msgs.forEach(function (m) {
       if (m.role === "user") {
         close();
-        out.push(userHTML(login, m.content, m.at));
+        out.push(userHTML(login, m.content, m.at, m.kind === "queued"));
+        return;
+      }
+      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
+        close();
+        out.push(factoryHTML(m));
         return;
       }
       if (!parts) {
@@ -122,15 +145,79 @@ var chatView = (function () {
     close();
     return out.join("");
   }
-  // conversationsHTML is the options of the select that reads an older
-  // conversation: the current one first, then each of list but current;
-  // "" when list holds no other
-  function conversationsHTML(list, current) {
-    var older = (list || []).filter(function (c) { return c.number !== current; });
-    if (!older.length) return "";
-    return "<option value=\"\">Current conversation</option>" + older.map(function (c) {
-      return "<option value=\"" + esc(c.number) + "\">Conversation " + esc(c.number) + " · " + stamp(c.first_at) + " · " + esc(c.messages) + " messages</option>";
+  // threadHTML is a thread's log: after a compaction its rows up to the
+  // summary fold behind one line, the summary turn follows, then the rows
+  // after it (C14)
+  function threadHTML(msgs, login, proposals, thread) {
+    var upto = thread && thread.summary ? thread.summary_upto || 0 : 0;
+    if (!upto) return historyHTML(msgs, login, proposals);
+    var old = msgs.filter(function (m) { return m.id <= upto; }), rest = msgs.filter(function (m) { return m.id > upto; });
+    var at = old.length ? old[old.length - 1].at : (rest[0] || {}).at;
+    return (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
+      ", compacted</summary>" + historyHTML(old, login, proposals) + "</details>" : "") +
+      factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals);
+  }
+  // when is a thread's last turn as the switcher shows it: the time today,
+  // yesterday, else n days ago; now is the reader's clock
+  function when(at, now) {
+    var d = new Date(at);
+    if (isNaN(d)) return "";
+    var day = function (x) { return Math.floor((x.getTime() - x.getTimezoneOffset() * 60000) / 864e5); };
+    var n = day(now) - day(d);
+    if (n <= 0) return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+    return n === 1 ? "yesterday" : n + " days ago";
+  }
+  function titleOf(t) { return t.title || (t.inbox ? "Inbox" : "New thread"); }
+  // markHTML is a thread's mark (C14): the inbox's house, a turn in flight's
+  // breathing dot, else nothing
+  function markHTML(t) {
+    if (t.inbox) return "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>";
+    if (t.working) return "<span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i><span class=\"visually-hidden\">a turn in flight</span></span>";
+    return "<span class=\"tmark\" aria-hidden=\"true\"></span>";
+  }
+  function badgeHTML(t) {
+    return t.unread ? "<span class=\"badge\" aria-label=\"" + esc(t.unread) + " unread\">" + esc(t.unread) + "</span>" : "";
+  }
+  // rowsHTML is the switcher's rows: the inbox first, the active threads,
+  // then the archived under their rule; open is the open thread's number
+  function rowsHTML(list, open, now) {
+    var active = (list || []).filter(function (t) { return t.state !== "archived"; });
+    var archived = (list || []).filter(function (t) { return t.state === "archived"; });
+    var rows = active.map(function (t) {
+      var on = t.number === open, tip = titleOf(t) + (t.unread ? ", " + t.unread + " unread" : "") + (t.working ? ", a turn in flight" : "");
+      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (t.unread ? " unread" : "") + (t.inbox ? " inbox" : "") +
+        "\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + on + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
+        "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (t.unread ? badgeHTML(t) : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
     }).join("");
+    if (archived.length) {
+      rows += "<div class=\"tarch\"><span class=\"tarch-l\">archived</span>" + archived.map(function (t) {
+        return "<span class=\"trow arch" + (t.number === open ? " on" : "") + "\"><span class=\"tmark\" aria-hidden=\"true\">arc</span>" +
+          "<button type=\"button\" class=\"ttitle open-arch\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + (t.number === open) + "\">" + esc(titleOf(t)) + "</button>" +
+          "<button type=\"button\" class=\"linkbtn restore\" data-restore=\"" + esc(t.number) + "\">restore</button></span>";
+      }).join("") + "</div>";
+    }
+    return rows;
+  }
+  // sumHTML is the folded switcher's one row on the phone
+  function sumHTML(list, folded) {
+    var active = (list || []).filter(function (t) { return t.state !== "archived"; });
+    var unread = active.reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+    var working = active.filter(function (t) { return t.working; }).length;
+    return "Threads <span class=\"n\">" + active.length + "</span>" + (unread ? " · <span class=\"badge\">" + unread + "</span> unread" : "") +
+      (working ? " · <span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i></span> " + working + " working" : "") +
+      "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
+  }
+  // unreadOf is the sum of the threads' unread turns, the tab title's count
+  function unreadOf(list) {
+    return (list || []).reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+  }
+  // headHTML is the open thread's head: its title (a click renames it),
+  // its last turn or the inbox's line or the archived note
+  function headHTML(t, now) {
+    var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
+    return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
+      (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
+      "</h3><span class=\"thint\">" + esc(hint) + "</span>";
   }
   function eventStream(contentType) {
     return /^text\/event-stream/.test(contentType || "");
@@ -185,8 +272,8 @@ var chatView = (function () {
     }).join("");
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, conversationsHTML: conversationsHTML, eventStream: eventStream, sse: sse,
-    queue: queue, queueHTML: queueHTML};
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, when: when, rowsHTML: rowsHTML,
+    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
 })();
 
 (function () {
@@ -194,9 +281,14 @@ var chatView = (function () {
   if (!panel) return;
   var log = document.getElementById("chat-log");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
-  var fresh = document.getElementById("chat-new"), select = document.getElementById("chat-conversations");
+  var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
+  var sum = panel.querySelector(".sw-sum");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
-  var streaming = false, readOnly = false;
+  var baseTitle = document.title;
+  // threads is the switcher's list; open the shown thread and its row;
+  // running counts each thread's streams in this page
+  var threads = [], open = 0, openThread = {}, running = {}, readOnly = false;
+  var foldKey = "chat-fold:" + login;
 
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
@@ -208,13 +300,14 @@ var chatView = (function () {
     into.insertBefore(t.content, into.querySelector(":scope > .cursor"));
     scrollEnd();
   }
-  function setStreaming(on) {
-    streaming = on;
-    log.setAttribute("aria-busy", String(on));
+  function busy(n) { return !!running[n]; }
+  // lock disables the composer while the open thread is read-only and the
+  // log's buttons while a turn of the open thread streams
+  function lock() {
+    if (!form) return;
     form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = readOnly; });
-    fresh.disabled = select.disabled = on;
-    log.querySelectorAll("button").forEach(function (b) { b.disabled = on; });
-    if (!on) waiting.flush();
+    log.setAttribute("aria-busy", String(busy(open)));
+    log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(open); });
   }
   function read(reader, onEvent) {
     var decoder = new TextDecoder(), buf = "";
@@ -226,19 +319,36 @@ var chatView = (function () {
       if (!chunk.done) return reader.read().then(next);
     });
   }
-  // run POSTs body to url and renders the turn's stream into into: text
-  // pieces as they come, tool blocks, proposals, applied lines, until done
-  // or error. A 404 is onMissing's when given; a stream that ends without
-  // either says the connection was lost, and nothing is sent again.
-  function run(url, body, into, onMissing) {
-    var ended = false, said = null, raw = "", reader = null, cursor = document.createElement("span");
+  // run POSTs body to url as a turn of thread n and renders its stream into
+  // into: queued while the turn before it runs, then text pieces, tool
+  // blocks, proposals and applied lines, until done or error. A 404 is
+  // onMissing's when given; a stream that ends without either says the
+  // connection was lost. A thread switched away from keeps its stream: the
+  // turn ends and marks the thread.
+  function run(n, url, body, into, onMissing) {
+    var ended = false, said = null, raw = "", reader = null, cursor = document.createElement("span"), wait = null;
     cursor.className = "cursor";
     cursor.setAttribute("aria-hidden", "true");
     cursor.textContent = "▍";
     into.appendChild(cursor);
-    setStreaming(true);
+    running[n] = (running[n] || 0) + 1;
+    lock();
+    listThreads();
     function event(ev) {
       var d = JSON.parse(ev.data);
+      if (wait && ev.event !== "queued") {
+        wait.remove();
+        wait = null;
+      }
+      if (ev.event === "compacted") {
+        add(into, "<p class=\"meta chat-queued\">compacted: " + chatView.esc(d.messages) + " earlier messages summarised</p>");
+        return;
+      }
+      if (ev.event === "queued") {
+        add(into, "<p class=\"meta chat-queued\">queued: place " + chatView.esc(d.position) + ", it starts when the turn before it ends</p>");
+        wait = cursor.previousElementSibling;
+        return;
+      }
       if (ev.event === "text") {
         if (!said) {
           add(into, "<div class=\"said\"></div>");
@@ -277,20 +387,49 @@ var chatView = (function () {
     }).then(function () {
       if (!ended) add(into, "<p class=\"chat-error\">the chat lost the connection, send again</p>");
       cursor.remove();
-      setStreaming(false);
+      running[n]--;
+      lock();
+      queueOf(n).flush();
+      return (n === open ? seen(n) : Promise.resolve()).then(listThreads);
     });
+  }
+  // seen moves thread n's seen marker to its newest row: the member read it
+  function seen(n) {
+    return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n}).toString(),
+      headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
+  }
+  // each thread's own queue of messages sent while its turn streams
+  var queues = {};
+  function queueOf(n) {
+    if (!queues[n]) {
+      queues[n] = chatView.queue(function (text) { turn(n, text); }, function () {
+        return busy(n) || readOnly && n === open || n === open && !!queued.querySelector("textarea");
+      }, function (items) {
+        if (n !== open || queued.querySelector("textarea")) return;
+        queued.innerHTML = chatView.queueHTML(items);
+        queued.hidden = !items.length;
+      });
+    }
+    return queues[n];
   }
   function send() {
     var text = input.value.trim();
     if (!text || readOnly) return;
     input.value = "";
-    waiting.add(text);
+    queueOf(open).add(text);
   }
-  function turn(text) {
-    add(log, chatView.userHTML(login, text, new Date()));
-    add(log, chatView.agentHTML(new Date(), ""));
-    scrollEnd(true);
-    run(base, new URLSearchParams({message: text}).toString(), log.lastElementChild).then(function () {
+  function turn(n, text) {
+    var shown = n === open, command = text === "/compact";
+    var into = document.createElement("div");
+    if (shown) {
+      if (!command) add(log, chatView.userHTML(login, text, new Date()));
+      add(log, chatView.agentHTML(new Date(), ""));
+      scrollEnd(true);
+      into = log.lastElementChild;
+    }
+    run(n, base, new URLSearchParams({message: text, conversation: n}).toString(), into).then(function () {
+      if (command && n === open) return load(n);
+    }).then(function () {
       if (document.activeElement === document.body) input.focus();
     });
   }
@@ -318,18 +457,11 @@ var chatView = (function () {
   // the queue under the input: a click on a message edits it in place
   // (Enter or leaving it keeps the edit, Escape the message as it was),
   // its × removes it; an open edit is drawn again once it closes
-  var waiting = chatView.queue(turn, function () {
-    return streaming || readOnly || !!queued.querySelector("textarea");
-  }, function (items) {
-    if (queued.querySelector("textarea")) return;
-    queued.innerHTML = chatView.queueHTML(items);
-    queued.hidden = !items.length;
-  });
   queued.addEventListener("click", function (e) {
     var b = e.target.closest("button");
     if (!b) return;
     if (b.hasAttribute("data-remove")) {
-      waiting.remove(Number(b.dataset.remove));
+      queueOf(open).remove(Number(b.dataset.remove));
       input.focus();
       return;
     }
@@ -356,8 +488,8 @@ var chatView = (function () {
     var area = e.target;
     if (area.localName !== "textarea") return;
     area.remove();
-    if (area.dataset.drop === undefined) waiting.edit(Number(area.dataset.edit), area.value);
-    else waiting.flush();
+    if (area.dataset.drop === undefined) queueOf(open).edit(Number(area.dataset.edit), area.value);
+    else queueOf(open).flush();
   });
 
   form.addEventListener("submit", function (e) {
@@ -388,69 +520,157 @@ var chatView = (function () {
   });
   log.addEventListener("click", function (e) {
     var b = e.target.closest("button");
-    if (!b || streaming) return;
+    if (!b || busy(open)) return;
     var card = b.closest(".proposal");
-    if (b.hasAttribute("data-skip")) {
+    if (b.hasAttribute("data-choice")) {
+      queueOf(open).add(b.dataset.choice);
+    } else if (b.hasAttribute("data-skip")) {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
       var foot = card.querySelector(".pfoot");
       foot.textContent = "";
-      run(base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
+      run(open, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
     } else if (b.hasAttribute("data-undo")) {
       var out = document.createElement("div");
       out.className = "undoing";
       b.parentNode.after(out);
       b.remove();
-      run(base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
+      run(open, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
 
-  // load replaces the log with conversation n's history, the current
-  // one's for "", and an older one's is read-only; then the select lists
-  // the older ones
+  // load shows thread n, the current one for "": its head and its log,
+  // read marks it seen; an archived thread is read-only
   var intro = log.innerHTML;
   function load(n) {
-    readOnly = n !== "";
-    setStreaming(true);
-    var url = base + (readOnly ? "?conversation=" + encodeURIComponent(n) : "");
+    var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n));
     return fetch(url, {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + url + ": " + resp.status);
       return resp.json();
     }).then(function (data) {
-      log.innerHTML = data.messages.length ? chatView.historyHTML(data.messages, login, data.proposals) : intro;
-      if (readOnly) add(log, "<p class=\"meta chat-old\">an old conversation; start a new one to continue</p>");
+      open = data.conversation;
+      openThread = data.thread || {number: open};
+      readOnly = openThread.state === "archived";
+      log.innerHTML = data.messages.length ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
+      if (readOnly) add(log, "<p class=\"meta chat-old\">archived, read-only: restore it to write</p>");
+      if (busy(open)) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
+      drawHead();
       scrollEnd(true);
-      if (!readOnly) return listConversations(data.conversation);
+      queueOf(open).flush();
+      lock();
+      return listThreads();
     }).catch(function () {
       add(log, "<p class=\"chat-error\">The conversation could not be read; reload the page.</p>");
-    }).then(function () {
-      setStreaming(false);
     });
   }
-  function listConversations(current) {
+  function drawHead() {
+    if (!head) return;
+    head.innerHTML = chatView.headHTML(openThread, new Date());
+    head.className = "thead" + (openThread.inbox ? " inbox" : "") + (openThread.state === "archived" ? " arch" : "");
+  }
+  // listThreads reads the switcher's list and draws it, its fold's summary
+  // and the tab title's count; the open thread, unread by a turn it did not
+  // stream here, is read again
+  function listThreads() {
     return fetch(base + "/conversations", {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + base + "/conversations: " + resp.status);
       return resp.json();
     }).then(function (list) {
-      select.innerHTML = chatView.conversationsHTML(list, current);
-      select.hidden = !select.innerHTML;
-    }).catch(function () {
-      select.hidden = true;
-    });
+      threads = list;
+      var now = new Date();
+      rowsEl.innerHTML = chatView.rowsHTML(list, open, now);
+      sum.innerHTML = chatView.sumHTML(list, folded());
+      sum.hidden = false;
+      var n = chatView.unreadOf(list);
+      document.title = (n ? "(" + n + ") " : "") + baseTitle;
+      var mine = list.filter(function (t) { return t.number === open; })[0];
+      if (mine && mine.unread && !busy(open)) load(open);
+      else if (mine) {
+        openThread = mine;
+        drawHead();
+      }
+    }).catch(function () {});
   }
+  // the fold: the table folds to its marks, on the phone to one summary row;
+  // kept per member in this browser
+  function folded() { return panel.classList.contains("sw-collapsed"); }
+  function fold(on) {
+    panel.classList.toggle("sw-collapsed", on);
+    try { localStorage.setItem(foldKey, on ? "1" : ""); } catch (e) {}
+    panel.querySelectorAll("[data-swtoggle]").forEach(function (b) {
+      b.setAttribute("aria-expanded", String(!on));
+      if (b.classList.contains("swtg")) {
+        b.textContent = on ? "›" : "‹";
+        b.setAttribute("aria-label", on ? "Unfold the threads" : "Fold the threads");
+        b.title = on ? "Unfold the threads" : "Fold the threads";
+      }
+    });
+    sum.innerHTML = chatView.sumHTML(threads, on);
+  }
+  try { fold(localStorage.getItem(foldKey) === "1"); } catch (e) {}
+  panel.addEventListener("click", function (e) {
+    var t = e.target.closest("[data-swtoggle]");
+    if (t) {
+      fold(!folded());
+      t.focus();
+      return;
+    }
+    var row = e.target.closest("[data-thread]");
+    if (row && Number(row.dataset.thread) !== open) {
+      load(Number(row.dataset.thread)).then(function () {
+        if (!readOnly) input.focus({preventScroll: true});
+      });
+    }
+  });
+  head.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-rename]");
+    if (!b) return;
+    var field = document.createElement("input");
+    field.type = "text";
+    field.maxLength = 80;
+    field.value = b.textContent;
+    field.className = "rename-in";
+    field.setAttribute("aria-label", "The thread's title");
+    b.replaceWith(field);
+    field.focus();
+    field.select();
+    var done = false;
+    function finish(save) {
+      if (done) return;
+      done = true;
+      var title = field.value.trim();
+      if (!save || !title || title === openThread.title) {
+        drawHead();
+        return;
+      }
+      fetch(base + "/rename", {method: "POST", body: new URLSearchParams({conversation: open, title: title}).toString(),
+        headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function () {
+        return listThreads();
+      });
+    }
+    field.addEventListener("keydown", function (k) {
+      if (k.key === "Enter") finish(true);
+      else if (k.key === "Escape") {
+        k.stopPropagation();
+        finish(false);
+      }
+    });
+    field.addEventListener("blur", function () { finish(true); });
+  });
   fresh.addEventListener("click", function () {
-    setStreaming(true);
     fetch(base + "/new", {method: "POST", headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
       if (!resp.ok) throw new Error("POST " + base + "/new: " + resp.status);
       return load("");
+    }).then(function () {
+      input.focus();
     }).catch(function () {
-      add(log, "<p class=\"chat-error\">A new conversation could not be started; try again.</p>");
-      setStreaming(false);
+      add(log, "<p class=\"chat-error\">A new thread could not be started; try again.</p>");
     });
   });
-  select.addEventListener("change", function () {
-    load(select.value);
-  });
+  // the list follows the factory: a turn ending elsewhere, a poke arriving
+  setInterval(function () {
+    if (!document.hidden) listThreads();
+  }, 10000);
 
   load("");
 })();

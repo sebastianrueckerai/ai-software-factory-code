@@ -552,12 +552,62 @@ func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string,
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
-	m.ID, m.At, m.Conversation = f.next, f.at.Add(time.Duration(f.next)*time.Second), f.current(repository, login)
+	m.ID, m.At, m.Conversation = f.next, f.at.Add(time.Duration(f.next)*time.Second), cmp.Or(m.Conversation, f.current(repository, login))
 	k := repository + " " + login
 	f.msgs[k] = append(f.msgs[k], m)
 	if m.Conversation > f.convs[k] {
 		f.convs[k] = m.Conversation
 	}
+	return nil
+}
+
+func (f *acceptChat) Conversation(_ context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := factoryd.ChatConversation{Number: n, State: factoryd.ThreadActive, Current: n == f.current(repository, login)}
+	for _, m := range f.msgs[repository+" "+login] {
+		if m.Conversation == n {
+			c.Messages++
+		}
+	}
+	return c, c.Messages > 0, nil
+}
+
+func (f *acceptChat) OpenConversation(_ context.Context, repository, login string, n int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.convs[repository+" "+login] = n
+	return nil
+}
+
+func (f *acceptChat) RenameConversation(context.Context, string, string, int64, string) (bool, error) {
+	return true, nil
+}
+
+func (f *acceptChat) MarkSeen(context.Context, string, string, int64) error { return nil }
+
+func (f *acceptChat) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
+	if err := f.AddChatMessage(ctx, repository, login, factoryd.ChatMessage{Role: "user", Content: text, Kind: factoryd.MessageQueued, Conversation: n}); err != nil {
+		return 0, err
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.next, nil
+}
+
+func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	if i < 0 {
+		return nil
+	}
+	m := f.msgs[k][i]
+	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
+	f.next++
+	m.ID, m.At, m.Kind = f.next, f.at.Add(time.Duration(f.next)*time.Second), ""
+	f.msgs[k] = append(f.msgs[k], m)
 	return nil
 }
 
@@ -1055,3 +1105,11 @@ func hasToolCall(events []string, tool string) bool {
 	}
 	return false
 }
+
+func (f *acceptChat) SaveSummary(context.Context, string, string, int64, factoryd.ThreadSummary) error {
+	return nil
+}
+
+func (f *acceptChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
+
+func (f *acceptChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }

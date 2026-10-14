@@ -75,13 +75,25 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 // their index order. A gateway refusal is a *policy.Refusal in the chain;
 // any other status, an unreadable chunk or a stream that ends before its
 // [DONE] is an error.
-func (m *OperatorModel) Stream(ctx context.Context, taskID, alias string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
-	return m.stream(ctx, policy.PurposeOperator, operatorTokens, taskID, alias, messages, tools, text)
+// The call names the chat thread it serves, which its audit row keeps.
+func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
+	return m.stream(ctx, policy.PurposeOperator, operatorTokens, taskID, alias, thread, messages, tools, text)
+}
+
+// compactTokens bounds a compaction's summary (roadmap 239).
+const compactTokens = 2048
+
+// Compact is one compaction call of chat thread thread on chat task
+// taskID's account: the cheap alias summarises messages, its answer the
+// summary text.
+func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, messages []OperatorMessage) (string, error) {
+	answer, err := m.stream(ctx, policy.PurposeCompact, compactTokens, taskID, policy.PulseModel, thread, messages, nil, func(string) {})
+	return answer.Content, err
 }
 
 // stream is Stream for purpose with an answer of at most maxTokens; no
-// tools sends none.
-func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
+// tools sends none, no thread names none.
+func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
 	body := map[string]any{"model": alias, "messages": messages, "stream": true, "max_tokens": maxTokens}
 	if len(tools) > 0 {
 		body["tools"] = tools
@@ -100,6 +112,9 @@ func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens in
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(gateway.HeaderFactoryTask, taskID)
 	req.Header.Set(gateway.HeaderFactoryPurpose, purpose)
+	if thread != "" {
+		req.Header.Set(gateway.HeaderFactoryThread, thread)
+	}
 	client := m.HTTP
 	if client == nil {
 		client = http.DefaultClient

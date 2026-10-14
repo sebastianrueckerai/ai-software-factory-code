@@ -35,7 +35,10 @@ type AuditRow struct {
 	// Kind is the factoryd purpose of the call (policy.Purposes), factoryd
 	// for a factoryd call refused before its purpose is known, "" for an
 	// agent's: stored as agent.
-	Kind       string
+	Kind string
+	// Thread is the chat thread a factoryd call served (roadmap 239), ""
+	// for every other call.
+	Thread     string
 	Decision   string
 	Reason     string
 	ModelAlias string
@@ -128,10 +131,10 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind, deployment,
-		 prompt_tokens, cached_tokens, output_tokens, call_cost_eur, duration_ms, status)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+		 prompt_tokens, cached_tokens, output_tokens, call_cost_eur, duration_ms, status, thread)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
 		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment,
-		row.PromptTokens, row.CachedTokens, row.OutputTokens, row.CallCostEUR, row.DurationMS, row.Status)
+		row.PromptTokens, row.CachedTokens, row.OutputTokens, row.CallCostEUR, row.DurationMS, row.Status, row.Thread)
 	return err
 }
 

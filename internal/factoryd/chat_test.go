@@ -21,7 +21,7 @@ func chatStore(t *testing.T) *PGStore {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_conversations, chat_proposals, ledger, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_conversations, chat_proposals, chat_seen, ledger, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -348,8 +348,8 @@ func TestPGStoreChatConversations(t *testing.T) {
 		t.Fatal(err)
 	}
 	list, err := s.Conversations(ctx, "sf/code", "anna")
-	if want := []ChatConversation{{Number: 2, FirstAt: third[0].At, LastAt: third[0].At, Messages: 1},
-		{Number: 1, FirstAt: old[0].At, LastAt: old[1].At, Messages: 2}}; err != nil || !reflect.DeepEqual(list, want) {
+	if want := []ChatConversation{{Number: 2, Title: "third", State: ThreadActive, Current: true, FirstAt: third[0].At, LastAt: third[0].At, Messages: 1},
+		{Number: 1, Title: "first", State: ThreadActive, FirstAt: old[0].At, LastAt: old[1].At, Messages: 2}}; err != nil || !reflect.DeepEqual(list, want) {
 		t.Fatalf("anna's conversations = %+v, %v, want %+v", list, err, want)
 	}
 	n, err = s.NewConversation(ctx, "sf/code", "anna")

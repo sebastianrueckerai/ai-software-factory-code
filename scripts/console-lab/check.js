@@ -16,6 +16,10 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
+  threads: ["mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
+    "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 unread", "New"],
+  compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
+    "Why is the session store card waiting?"],
   assisted: ["Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
@@ -28,7 +32,7 @@ const mustHave = {
     "#598", "#616", "#617", "waiting on #603, #611", "#533",
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
-    "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
+    "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send", "own thread",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only", "Apply"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],

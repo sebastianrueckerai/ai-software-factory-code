@@ -157,10 +157,56 @@ type labScene struct {
 	// autonomy is the project's autonomy level for the scene (roadmap
 	// 239); empty: manual.
 	autonomy string
+	// seen are the member's seen markers by thread, the rows up to which
+	// they read it; working the threads with a turn in flight
+	seen    map[int64]int64
+	working []int64
+	// summaries are the compacted threads' summaries by thread
+	summaries map[int64]factoryd.ThreadSummary
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
-	"assisted": assistedScene}
+	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene}
+
+// threadsScene is the busy board with sebastian's four threads: the open
+// one on the session store, a planning thread with a turn in flight, a
+// costs thread whose answer Sebastian has not read, and yesterday's export
+// thread (roadmap 239's second thread and unread badge).
+func threadsScene(now time.Time) labScene {
+	s := busyScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = []factoryd.ChatMessage{
+		{Conversation: 1, Role: "user", Content: "Export the project to GitHub in pull request mode.", At: ago(26 * time.Hour)},
+		{Conversation: 1, Role: "assistant", Content: "The export runs in pull request mode once the mirror is set.", At: ago(26*time.Hour - time.Minute)},
+		{Conversation: 2, Role: "user", Content: "Give the costs page a from and a to date.", At: ago(50 * time.Minute)},
+		{Conversation: 2, Role: "assistant", Content: "Filed the costs card with the acceptance criteria from your words; it waits on the ledger read.", At: ago(41 * time.Minute)},
+		{Conversation: 3, Role: "user", Content: "Plan the members page: who is on the project, their roles, invite by Forgejo login.", At: ago(9 * time.Minute)},
+		{Conversation: 4, Role: "user", Content: "Why is the session store card waiting?", At: ago(6 * time.Minute)},
+		{Conversation: 4, Role: "assistant", Content: "It asked which store the session table should use: the plan named Postgres, the brief allows SQLite for a single replica.", At: ago(6*time.Minute - 20*time.Second)},
+	}
+	s.proposals = nil
+	s.seen = map[int64]int64{1: 2, 2: 3, 3: 5, 4: 7}
+	s.working = []int64{3}
+	return s
+}
+
+// compactedScene is the threads scene with the open thread compacted: its
+// first turns fold behind one line, the summary turn and the last two
+// turns follow (roadmap 239, C14).
+func compactedScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	earlier := []factoryd.ChatMessage{
+		{Conversation: 4, Role: "user", Content: "Which cards wait on the session store?", At: ago(40 * time.Minute)},
+		{Conversation: 4, Role: "assistant", Content: "Two: the login redirect (#8) and the remember-me box (#11).", At: ago(40*time.Minute - 15*time.Second)},
+		{Conversation: 4, Role: "user", Content: "Keep #11 in the backlog until the store is settled.", At: ago(38 * time.Minute)},
+		{Conversation: 4, Role: "assistant", Content: "#11 stays in the backlog.", At: ago(38*time.Minute - 10*time.Second)},
+	}
+	s.chat = append(slices.Clone(s.chat[:5]), append(earlier, s.chat[5:]...)...)
+	s.summaries = map[int64]factoryd.ThreadSummary{4: {Text: "Sebastian asked which cards wait on the session store: the login redirect (#8) and the remember-me box (#11). #11 stays in the backlog until the store is settled.", Upto: 9}}
+	s.seen[4] = 11
+	return s
+}
 
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent started the login card itself (its applied move in the chat, the
@@ -209,7 +255,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet or assisted", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads or compacted", name)
 	}
 	now := time.Now()
 	s := scene(now)
@@ -237,9 +283,20 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.events.mu.Unlock()
 	r.chat.mu.Lock()
 	r.chat.msgs, r.chat.started, r.chat.proposals, r.chat.next = map[string][]factoryd.ChatMessage{}, nil, nil, int64(len(s.chat))
+	r.chat.titles, r.chat.seen, r.chat.summaries, r.chat.compacts = nil, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
 	for i, m := range s.chat {
-		m.ID, m.Conversation = int64(i+1), 1
+		m.ID, m.Conversation = int64(i+1), cmp.Or(m.Conversation, 1)
 		r.chat.msgs["sf/code sebastian"] = append(r.chat.msgs["sf/code sebastian"], m)
+	}
+	for n, upto := range s.seen {
+		r.chat.seen[fmt.Sprint("sf/code sebastian ", n)] = upto
+	}
+	for n, sum := range s.summaries {
+		r.chat.summaries[fmt.Sprint("sf/code sebastian ", n)] = sum
+		r.chat.compacts[fmt.Sprint("sf/code sebastian ", n)] = 1
+	}
+	if len(s.chat) > 0 {
+		r.chat.started = map[string]int64{"sf/code sebastian": s.chat[len(s.chat)-1].Conversation}
 	}
 	for _, p := range s.proposals {
 		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p})
@@ -260,6 +317,10 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
 	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
 	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
+	r.c.turns = newTurnGate()
+	for _, n := range s.working {
+		r.c.turns.enter(threadKey("sf/code", "sebastian", n))
+	}
 	if p, ok := r.ledger.files["ai-software-factory-code"]; ok {
 		p.Autonomy = cmp.Or(s.autonomy, policy.AutonomyManual)
 		r.ledger.files["ai-software-factory-code"] = p

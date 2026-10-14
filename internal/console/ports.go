@@ -97,6 +97,19 @@ type Chat interface {
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
+	// the threads (roadmap 239): one thread's row, the switch, the title,
+	// the seen marker, and a message that waits for its thread's turn
+	Conversation(ctx context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error)
+	OpenConversation(ctx context.Context, repository, login string, n int64) error
+	RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error)
+	MarkSeen(ctx context.Context, repository, login string, n int64) error
+	QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error)
+	StartQueued(ctx context.Context, repository, login string, id int64) error
+	// compaction: the summary a thread keeps, its newest call's tokens
+	// since a time, and its calls' totals
+	SaveSummary(ctx context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error
+	ThreadTokens(ctx context.Context, thread string, since time.Time) (int, error)
+	ThreadTotals(ctx context.Context, thread string) (int, float64, error)
 }
 
 // Sessions is the console's logins (factoryd.PGStore's console_sessions):

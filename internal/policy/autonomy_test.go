@@ -128,3 +128,22 @@ func TestBacklogCapOf(t *testing.T) {
 		t.Errorf("BacklogCapOf(o/x) = %d, want %d", got, DefaultBacklogCap)
 	}
 }
+
+// A project's chat block reaches the chat whole: its document repository
+// and its turn bound merge over the policy's like its other keys.
+func TestChatOfMergesDocRepoAndParallelTurns(t *testing.T) {
+	d := Document{Chat: &ChatConfig{DocRepo: "sf/ai-software-factory", ParallelTurns: 2}}
+	if got := d.ChatOf(ProjectConfig{}); got.DocRepo != "sf/ai-software-factory" || got.ParallelTurns != 2 {
+		t.Errorf("the policy's block = %+v, want its doc_repo and parallel_turns", got)
+	}
+	got := d.ChatOf(ProjectConfig{Chat: &ChatConfig{DocRepo: "uptime/docs", ParallelTurns: 5}})
+	if got.DocRepo != "uptime/docs" || got.ParallelTurns != 5 {
+		t.Errorf("the project's block = %+v, want its own doc_repo and parallel_turns", got)
+	}
+	if got := (Document{}).ChatOf(ProjectConfig{}); got.DocRepo != "" || got.ParallelTurns != 0 {
+		t.Errorf("no block = %+v, want no doc_repo and the default bound left to the chat", got)
+	}
+	if err := (&ChatConfig{ParallelTurns: -1}).validate(); err == nil {
+		t.Error("parallel_turns -1 validated")
+	}
+}

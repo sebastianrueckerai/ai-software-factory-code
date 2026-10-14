@@ -68,7 +68,7 @@ func TestOperatorStreamsTextAndParallelToolCalls(t *testing.T) {
 	}}
 	m := g.start(t)
 	var pieces []string
-	answer, err := m.Stream(t.Context(), "t-chat-linkshort-2026-10", "operator", []OperatorMessage{
+	answer, err := m.Stream(t.Context(), "t-chat-linkshort-2026-10", "operator", "linkshort/linkshort:anna:2", []OperatorMessage{
 		{Role: "system", Content: "rules"},
 		{Role: "assistant", ToolCalls: []OperatorCall{{ID: "call_0", Name: "costs", Arguments: "{}"}}},
 		{Role: "tool", ToolCallID: "call_0", Content: "EUR 1.20"},
@@ -84,7 +84,7 @@ func TestOperatorStreamsTextAndParallelToolCalls(t *testing.T) {
 		t.Fatalf("answer = %+v, pieces %q", answer, pieces)
 	}
 	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-linkshort-2026-10" ||
-		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator {
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || g.headers.Get(gateway.HeaderFactoryThread) != "linkshort/linkshort:anna:2" {
 		t.Fatalf("headers = %v", g.headers)
 	}
 	b, _ := json.Marshal(g.request)
@@ -127,7 +127,7 @@ func TestOperatorReadsLiteLLMsToolCallChunks(t *testing.T) {
 {"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","object":"chat.completion.chunk","created":1791694136,"model":"operator","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}
 {"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":103,"prompt_tokens":4799,"total_tokens":4902,"prompt_tokens_details":{"cached_tokens":4608,"text_tokens":4799},"cost":0.0021520000000000003}}`, "\n"), "[DONE]")}
 	var pieces []string
-	answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", []OperatorMessage{{Role: "user", Content: "teal and smoke test"}}, nil,
+	answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", "", []OperatorMessage{{Role: "user", Content: "teal and smoke test"}}, nil,
 		func(s string) { pieces = append(pieces, s) })
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +155,7 @@ func TestOperatorStreamFailures(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := tc.g.start(t)
-			_, err := m.Stream(t.Context(), "t-chat-x-2026-10", "operator", nil, nil, func(string) {})
+			_, err := m.Stream(t.Context(), "t-chat-x-2026-10", "operator", "", nil, nil, func(string) {})
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}

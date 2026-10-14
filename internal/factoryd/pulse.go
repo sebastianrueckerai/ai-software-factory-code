@@ -255,7 +255,7 @@ func (pl *Pulser) pulse(ctx context.Context, p Project, taskID string) (Pulse, e
 	if err != nil {
 		return Pulse{}, fmt.Errorf("the project: %w", err)
 	}
-	answer, err := pl.Model.stream(ctx, policy.PurposePulse, pulseTokens, taskID, policy.PulseModel,
+	answer, err := pl.Model.stream(ctx, policy.PurposePulse, pulseTokens, taskID, policy.PulseModel, "",
 		[]OperatorMessage{{Role: "system", Content: pulsePrompt(p.Name)}, {Role: "user", Content: text}}, nil, func(string) {})
 	if err != nil {
 		return Pulse{}, err
