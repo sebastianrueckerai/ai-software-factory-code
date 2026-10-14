@@ -16,6 +16,9 @@ ARG GO_VERSION=1.25.9
 ARG NODE_VERSION=24.21.0
 ARG GOSEC_VERSION=2.29.0
 ARG CRANE_VERSION=0.22.1
+# roadmap 232: the warm-cache go build below runs on the commit's clock, not
+# the build clock (ci.yml passes --build-arg SOURCE_DATE_EPOCH=<commit time>).
+ARG SOURCE_DATE_EPOCH
 
 # PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
 # apt takes its packages only signed by the key of this fingerprint, and the
@@ -77,7 +80,8 @@ RUN echo "6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095  /tmp
 
 ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
     HOME=/home/runner \
-    GOPATH=/home/runner/go
+    GOPATH=/home/runner/go \
+    SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 USER 1000:1000
 WORKDIR /workspace
 RUN /usr/local/go/bin/go version
@@ -90,5 +94,5 @@ RUN /usr/local/go/bin/go version
 COPY --chown=1000:1000 go.mod go.sum /tmp/warm/
 RUN cd /tmp/warm && go mod download
 COPY --chown=1000:1000 . /tmp/warm/
-RUN cd /tmp/warm && go build ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
+RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
 ENTRYPOINT ["forgejo-runner"]
