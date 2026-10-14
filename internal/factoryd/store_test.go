@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -364,6 +365,17 @@ func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository strin
 	slices.SortFunc(out, func(a, b Task) int {
 		if !a.CreatedAt.Equal(b.CreatedAt) {
 			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		// same second: the issue number is the filing sequence, as the
+		// SQL's ORDER BY; 0 means no issue and sorts last
+		if a.IssueNumber != b.IssueNumber {
+			if a.IssueNumber == 0 {
+				return 1
+			}
+			if b.IssueNumber == 0 {
+				return -1
+			}
+			return cmp.Compare(a.IssueNumber, b.IssueNumber)
 		}
 		return strings.Compare(a.ID, b.ID)
 	})

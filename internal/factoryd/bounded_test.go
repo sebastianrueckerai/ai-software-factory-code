@@ -151,6 +151,27 @@ func TestPullQueuedAdmitsInFilingOrder(t *testing.T) {
 	}
 }
 
+// Forgejo stamps an issue's time in whole seconds, so a burst of filings
+// shares one created_at; the issue number, not the random task id, breaks
+// the tie (live 2026-10-14: #652 jumped #651 this way)
+func TestPullQueuedAdmitsASameSecondBurstInIssueOrder(t *testing.T) {
+	ctx := context.Background()
+	base := time.Now().Truncate(time.Second)
+	// one slot; both cards share base, and the later issue holds the
+	// smaller id, so the id tie-break would take the wrong one
+	store, rec, bounded := boundedFixture(t, 2,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running", CreatedAt: base.Add(-time.Minute)},
+		Task{ID: "t-later-id", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "queued", CreatedAt: base, IssueNumber: 652},
+		Task{ID: "t-earlier-id", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "queued", CreatedAt: base, IssueNumber: 651})
+	pullQueued(ctx, store, bounded, "demo/app")
+	if !slices.Equal(rec.starts, []string{"t-earlier-id"}) {
+		t.Fatalf("starts = %v, want the smaller issue number of the same second", rec.starts)
+	}
+	if later, _, _ := store.Task(ctx, "t-later-id"); later.AdmittedAt != nil {
+		t.Fatal("the same-second card with the larger issue took the only slot")
+	}
+}
+
 func TestTaskEndedHandsTheFreedSlotToTheOldestQueuedCard(t *testing.T) {
 	ctx := context.Background()
 	base := time.Now()

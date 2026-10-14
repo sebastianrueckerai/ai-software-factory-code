@@ -227,6 +227,8 @@ type Store interface {
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	// ListQueuedByRepository lists repository's queued cards in filing
 	// order, the oldest first: the order a freed slot admits them in.
+	// created_at ties (Forgejo stamps whole seconds) break by issue
+	// number, the filing sequence, so a same-second burst keeps its order.
 	ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock, and have no open model
@@ -870,7 +872,7 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
 		FROM tasks WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> '' AND status = 'queued'
-		ORDER BY created_at, id`, repository)
+		ORDER BY created_at, issue_number, id`, repository)
 }
 
 // changeStatus updates the one task $1 names, SET set WHERE where, and
