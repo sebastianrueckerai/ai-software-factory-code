@@ -476,6 +476,30 @@ func TestOpenPullRequestAllowsMainsWorkflowEditsThroughAMerge(t *testing.T) {
 	}
 }
 
+// The gate's base is the task's stamp, the fork point the branch was cut
+// from: a branch whose .forgejo/ entry equals the stamped base's passes
+// even when main's entry has since changed, and a branch whose entry
+// equals neither the base's nor main's stays refused (task
+// t-0c9745c86d12, whose clean branch a re-stamped base had made look like
+// the task's own workflow edit).
+func TestOpenPullRequestComparesAgainstTheStampedBase(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "f0", "mhead": "m9"}, mainHead: "mhead"}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	if _, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1"); err != nil {
+		t.Fatalf("OpenPullRequest: %v, want no refusal: the branch's .forgejo/ equals the stamped base's, main's own later edit notwithstanding", err)
+	}
+	if len(fj.created) != 1 {
+		t.Fatalf("pull requests created = %d, want 1", len(fj.created))
+	}
+
+	fj = &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "f9", "mhead": "m8"}, mainHead: "mhead"}
+	r, _, _ = newActivityRunner(t, prTask, fj)
+	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
+	if err == nil || !strings.Contains(err.Error(), "changes .forgejo/") || !isTerminal(err) {
+		t.Fatalf("err = %v, want a terminal refusal naming .forgejo/: the entry equals neither the base's nor main's", err)
+	}
+}
+
 // A later attempt whose push touches .forgejo/ finds the PR an earlier
 // attempt opened: CI already ran from the refused tree, so the PR is
 // closed with the reason, not left open behind a failed task.

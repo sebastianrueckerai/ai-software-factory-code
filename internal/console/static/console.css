@@ -465,12 +465,10 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .overlay-box dt { text-align: right; }
 .overlay-box dd { margin: 0; color: var(--text-muted); }
 
-/* the board's header row: Board in small capitals, the accent filter,
-   the view switch and the keys, quiet, 26 px high */
+/* the board's header row: Board in small capitals, the view switch and
+   the keys, quiet, 26 px high */
 .board-head { display: flex; align-items: center; gap: 8px; height: 26px; flex: none; margin-bottom: 8px; }
 .board-head h2 { margin: 0 auto 0 0; color: var(--text-muted); font-size: 14px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
-.filter { display: flex; gap: 8px; align-items: center; margin: 0; }
-.filter select { height: 24px; font-size: 11.5px; padding-right: 24px; background-position: calc(100% - 13px) 9px, calc(100% - 8px) 9px; }
 .view-toggle, .keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
 .keys-toggle { width: 24px; padding: 0; font-family: var(--font-mono); }
 .switch select { height: 28px; max-width: 240px; text-overflow: ellipsis; }
