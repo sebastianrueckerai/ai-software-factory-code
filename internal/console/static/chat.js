@@ -251,6 +251,21 @@ var chatView = (function () {
       return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
     }).join("") + "<span class=\"answer-or\">or in your words below</span>";
   }
+  // levelMenuHTML is the level control's menu (C14): its head, then the
+  // four states with their words, the current one checked
+  function levelMenuHTML(levels, cur) {
+    return "<p class=\"lp-head\"><span>autonomy</span><span>a change confirms</span></p>" + levels.map(function (l) {
+      var on = l.name === cur;
+      return "<button type=\"button\" role=\"menuitemradio\" aria-checked=\"" + on + "\" data-lvl=\"" + esc(l.name) + "\"><i aria-hidden=\"true\"></i><b>" +
+        esc(l.name) + "</b><span class=\"ck\" aria-hidden=\"true\">" + (on ? "✓" : "") + "</span><span class=\"lw\">" + esc(l.words) + "</span></button>";
+    }).join("");
+  }
+  // levelConfirmHTML is the menu turned into the confirm of state l
+  function levelConfirmHTML(l) {
+    return "<div class=\"lvl-confirm\" role=\"dialog\" aria-labelledby=\"lvl-title\"><h2 id=\"lvl-title\">Set the project's autonomy to " + esc(l.name) +
+      "?</h2><p>This writes a policy change and lands in the audit like every decision. From then on: " + esc(l.words) + ".</p>" +
+      "<div class=\"acts\"><button type=\"button\" class=\"need-btn\" data-set=\"" + esc(l.name) + "\">Set</button><button type=\"button\" data-keep>Keep</button></div></div>";
+  }
   // deleteHTML is the hard delete's warning for thread t (C14)
   function deleteHTML(t) {
     var n = t.messages || 0;
@@ -313,7 +328,7 @@ var chatView = (function () {
     }).join("");
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, levelConfirmHTML: levelConfirmHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
 })();
 
@@ -485,6 +500,62 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
 
+  // the level control under Send (C14): its menu of the four states; a
+  // change confirms in place, Set writes it through the project's file,
+  // and the inbox's poke follows; Escape, a click outside and Keep close
+  var levelBtn = document.getElementById("level-btn"), levelPop = document.getElementById("level-pop"), levelsEl = document.getElementById("chat-levels");
+  var levels = levelsEl ? JSON.parse(levelsEl.textContent || "null") || [] : [];
+  function closeLevel(focus) {
+    if (!levelPop || levelPop.hidden) return;
+    levelPop.hidden = true;
+    levelBtn.setAttribute("aria-expanded", "false");
+    if (focus) levelBtn.focus();
+  }
+  function openLevel() {
+    levelPop.innerHTML = chatView.levelMenuHTML(levels, levelBtn.dataset.level);
+    levelPop.hidden = false;
+    levelBtn.setAttribute("aria-expanded", "true");
+    levelPop.querySelector("[aria-checked=true]").focus();
+  }
+  if (levelBtn && levelPop) {
+    levelBtn.addEventListener("click", function () {
+      if (levelPop.hidden) openLevel();
+      else closeLevel(true);
+    });
+    levelPop.addEventListener("click", function (e) {
+      // a click in the menu stays here: its content is replaced below, and
+      // the outside-click close would find the clicked node gone
+      e.stopPropagation();
+      var pick = e.target.closest("[data-lvl]"), set = e.target.closest("[data-set]");
+      if (pick && pick.dataset.lvl === levelBtn.dataset.level) closeLevel(true);
+      else if (pick) {
+        levelPop.innerHTML = chatView.levelConfirmHTML(levels.filter(function (l) { return l.name === pick.dataset.lvl; })[0]);
+        levelPop.querySelector("[data-keep]").focus();
+      } else if (set) {
+        var to = set.dataset.set;
+        fetch(base.replace(/\/chat$/, "/autonomy"), {method: "POST", body: new URLSearchParams({autonomy: to}).toString(),
+          headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+          if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
+          levelBtn.dataset.level = to;
+          levelBtn.querySelector(".lvl-name").textContent = to;
+          levelBtn.setAttribute("aria-label", "The project's autonomy level: " + to);
+          closeLevel(true);
+        }).catch(function (err) {
+          closeLevel(true);
+          failed(err);
+        });
+      } else if (e.target.closest("[data-keep]")) closeLevel(true);
+    });
+    document.addEventListener("click", function (e) {
+      if (!e.target.closest(".lvlctl")) closeLevel(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !levelPop.hidden) {
+        e.stopPropagation();
+        closeLevel(true);
+      }
+    }, true);
+  }
   // a drawer's "From your chat thread" opens that thread here
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-open-thread]");
@@ -604,6 +675,15 @@ var chatView = (function () {
       input.blur();
     }
   });
+  // Ctrl+k reaches the threads: the first row, the inbox (C14)
+  document.addEventListener("keydown", function (e) {
+    if (!e.ctrlKey || e.metaKey || e.altKey || e.key !== "k") return;
+    var row = rowsEl && rowsEl.querySelector("[data-thread]");
+    if (!row) return;
+    e.preventDefault();
+    if (folded() && window.matchMedia("(max-width: 899px)").matches) fold(false);
+    row.focus();
+  });
   document.addEventListener("keydown", function (e) {
     var keys = document.getElementById("keys");
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || (keys && !keys.hidden) ||
@@ -651,7 +731,11 @@ var chatView = (function () {
       openThread = data.thread || {number: open};
       readOnly = openThread.state === "archived";
       log.innerHTML = data.messages.length ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
-      if (readOnly) add(log, "<p class=\"meta chat-old\">archived, read-only: restore it to write</p>");
+      if (form) {
+        // an archived thread's composer is one line with restore (C14)
+        form.classList.toggle("arch", readOnly);
+        form.querySelector(".arch-note").hidden = !readOnly;
+      }
       if (busy(open)) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
@@ -751,6 +835,11 @@ var chatView = (function () {
       closeDialog();
     }
   }, true);
+  form.addEventListener("click", function (e) {
+    if (!e.target.closest("[data-restore-open]")) return;
+    var n = open;
+    postThread("/archive", {conversation: n, restore: "1"}).then(function () { return load(n); }).catch(failed);
+  });
   panel.addEventListener("click", function (e) {
     var r0 = e.target.closest("[data-restore]");
     if (r0) {

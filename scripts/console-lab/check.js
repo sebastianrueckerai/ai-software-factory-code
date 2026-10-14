@@ -13,6 +13,12 @@ const base = process.env.BASE || "http://127.0.0.1:8090";
 const labDir = process.env.CONSOLE_LAB_DIR || "/tmp/claude-1000/console-lab";
 const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").trim().split(/=(.*)/s);
 
+// contrastEl are the C14 parts' text, measured on the rendered page in
+// both themes (design/rounds/02-multi-chat/check.js)
+const contrastEl = ".trow .ttitle, .trow .tat, .tarch-l, .trow.arch .ttitle, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
+  ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
+  ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link";
+
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
@@ -22,7 +28,7 @@ const mustHave = {
   poke: ["Inbox", "Why is the session store card waiting?", "1 unread", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
-  assisted: ["Inbox", "Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
+  assisted: ["Inbox", "Board", "autonomy", "assisted", "Moved #8 to lane ready",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "Board", "New task", "Projects", "Resources", "Costs", "Policy", "Alerts", "Log out", "sebastian", "Theme",
@@ -185,10 +191,34 @@ async function text(page) {
       const restore = p.page.locator("#thread-rows .tarch [data-restore]");
       if (!(await restore.count())) fails.push("threads: Archive puts no row under the archived rule");
       else {
+        // an archived thread opened: its composer is one line with restore (C14)
+        await p.page.locator("#thread-rows .tarch [data-thread]").first().click();
+        await p.page.waitForTimeout(600);
+        if (await p.page.locator("#chat-input").isVisible()) fails.push("threads: an archived thread shows the text box");
+        if (!(await p.page.locator(".arch-note").isVisible())) fails.push("threads: an archived thread's composer has no restore line");
         await restore.first().click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
       }
+    }
+    if (sc === "assisted") {
+      // the level control under Send (C14): the four states with their words; another one
+      // turns the menu into the confirm in place, Keep keeps the level, Escape closes the menu
+      const btn = p.page.locator("#level-btn"), pop = p.page.locator(".lvlpop");
+      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: the control does not show assisted");
+      await btn.click();
+      if ((await pop.locator("[data-lvl]").count()) !== 4 || (await pop.locator(".lw").count()) !== 4) fails.push("level: the menu does not list the four states with their words");
+      if ((await pop.locator('[aria-checked="true"]').getAttribute("data-lvl")) !== "assisted") fails.push("level: the menu does not check the current state");
+      await pop.locator('[data-lvl="autonomous"]').click();
+      const conf = await pop.innerText();
+      for (const w of ["autonomy to autonomous?", "policy change", "audit", "Set", "Keep"]) if (!conf.includes(w)) fails.push('level: the confirm lacks "' + w + '"');
+      await pop.getByRole("button", { name: "Keep" }).click();
+      if (await pop.isVisible()) fails.push("level: Keep does not close the menu");
+      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: Keep changed the level");
+      await btn.click();
+      await p.page.keyboard.press("Escape");
+      if (await pop.isVisible()) fails.push("level: Escape does not close the menu");
+      if (await p.page.locator("form#autonomy").count()) fails.push("level: the board head still carries the old selector");
     }
     if (sc === "escalation") {
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
@@ -203,6 +233,12 @@ async function text(page) {
         if (!log.includes("Answered #603")) fails.push("escalation: the factory's row on the answer is missing");
       }
     }
+    if (sc === "threads") {
+      // Ctrl+k reaches the threads: the first row, the inbox (C14)
+      await p.page.locator("#chat-log").click();
+      await p.page.keyboard.press("Control+k");
+      if (!(await p.page.evaluate(() => !!document.activeElement && !!document.activeElement.closest("#thread-rows")))) fails.push("threads: Ctrl+k does not reach the switcher");
+    }
     if (sc === "poke") {
       // a poke on another thread: the inbox row first, its badge, and the sum in the tab title (C14)
       const first = p.page.locator("#thread-rows .trow").first();
@@ -213,11 +249,65 @@ async function text(page) {
       await first.click();
       await p.page.waitForTimeout(600);
       const log = await p.page.locator("#chat").innerText();
-      for (const w of ["#616 is done", "needs you", "Merge PR #612 of #606 waits for you"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      for (const w of ["#600 is done", "needs you", "Merge PR #612 of #606 waits for you"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       if ((await p.page.title()).startsWith("(2) ")) fails.push("poke: opening the inbox leaves its count in the tab title");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
+  }
+  // the phone: 44 px targets for the C14 controls, no horizontal scroll
+  for (const sc of ["threads", "escalation"]) {
+    await seed(sc);
+    const pp = await open(browser, { width: 390, height: 844 });
+    await pp.page.goto(base + "/", { waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
+      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button"))
+      .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
+    if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+    const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
+    if (psw > 390) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + ")");
+    await pp.ctx.close();
+  }
+  // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
+  for (const theme of ["dark", "light"]) {
+    for (const [sc, act] of [["threads", "delete"], ["escalation", "palette"], ["assisted", "level"], ["poke", ""]]) {
+      await seed(sc);
+      const cp = await open(browser, { width: 1440, height: 900 });
+      // after open's own init script, so this theme wins
+      await cp.ctx.addInitScript((t) => localStorage.setItem("theme", t), theme);
+      await cp.page.goto(base + "/", { waitUntil: "load" });
+      if ((await cp.page.evaluate(() => document.documentElement.dataset.theme)) !== theme) fails.push("contrast: the page is not in the " + theme + " theme");
+      await cp.page.waitForTimeout(600);
+      if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();
+      if (act === "palette") { await cp.page.locator("#chat-input").click(); await cp.page.keyboard.type("/"); }
+      if (act === "level") await cp.page.locator("#level-btn").click();
+      await cp.page.waitForTimeout(200);
+      const low = await cp.page.evaluate((sel) => {
+        const cv = document.createElement("canvas").getContext("2d", { willReadFrequently: true });
+        const rgb = (s) => { cv.clearRect(0, 0, 1, 1); cv.fillStyle = s; cv.fillRect(0, 0, 1, 1); const d = cv.getImageData(0, 0, 1, 1).data; return [d[0], d[1], d[2], d[3] / 255]; };
+        const over = (fg, bg) => fg.map((x, i) => (i < 3 ? x * fg[3] + bg[i] * (1 - fg[3]) : 1));
+        const lum = (c) => { const f = (x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); }; return 0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2]); };
+        const bgOf = (el) => {
+          const layers = [];
+          for (let e = el; e; e = e.parentElement) { const b = rgb(getComputedStyle(e).backgroundColor); if (b[3] > 0) { layers.push(b); if (b[3] >= 1) break; } }
+          let out = [255, 255, 255, 1];
+          for (const l of layers.reverse()) out = over(l, out);
+          return out;
+        };
+        const out = [];
+        for (const el of document.querySelectorAll(sel)) {
+          if (!el.offsetParent || !el.textContent.trim()) continue;
+          const cs = getComputedStyle(el), bg = bgOf(el), fg = over(rgb(cs.color), bg);
+          const l1 = lum(fg), l2 = lum(bg), r = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+          const big = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
+          if (r < (big ? 3 : 4.5)) out.push((el.className || el.tagName) + ' "' + el.textContent.trim().slice(0, 18) + '" ' + r.toFixed(2));
+        }
+        return out;
+      }, contrastEl);
+      if (low.length) fails.push(theme + " " + sc + ": under 4.5:1: " + low.join("; "));
+      await cp.ctx.close();
+    }
   }
   await seed("busy");
   const ph = await open(browser, { width: 390, height: 844 });

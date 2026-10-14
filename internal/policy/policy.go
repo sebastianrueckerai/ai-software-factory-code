@@ -136,6 +136,10 @@ var AutonomyMeaning = map[string]string{
 	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money",
 }
 
+// AutonomyStates are the four states the level control offers (C14):
+// the three levels and full auto.
+var AutonomyStates = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomous, AutonomyFullAuto}
+
 // AutonomyValues are the autonomy values a project file may name.
 var AutonomyValues = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomous}
 

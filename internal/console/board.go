@@ -1018,6 +1018,12 @@ func (s statusLine) waiting() string {
 	return fmt.Sprintf("; %d %s", s.Waiting, providerWords)
 }
 
+// level is one autonomy state as the level control offers it.
+type level struct {
+	Name  string `json:"name"`
+	Words string `json:"words"`
+}
+
 type boardData struct {
 	User  string
 	CSRF  string
@@ -1042,10 +1048,11 @@ type boardData struct {
 	Problems    []string
 	Approver    bool // may authorize the shown project's spend (rulings 128, 254)
 	Factory     bool // writes the factory's own code: the layout links the factory-level pages
-	// Autonomy is the shown project's autonomy level, which the head's
-	// selector changes (roadmap 239); empty: no policy in force.
-	Autonomy       string
-	AutonomyLevels []string
+	// Autonomy is the shown project's autonomy state, which the chat's
+	// level control shows and an approver changes (roadmap 239, C14), and
+	// Levels the four states with their words; empty: no policy in force.
+	Autonomy string
+	Levels   []level
 	// Commands are the chat's commands, its own and the config tree's
 	// (roadmap 239).
 	Commands []policy.Command
@@ -1751,9 +1758,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	if v, ok := c.inForce(ctx); ok {
 		d.Commands = v.ChatCommands()
 		if pc, ok := v.Projects[shown.Name]; ok && shown.Name != "" {
-			d.Autonomy, d.AutonomyLevels = pc.Autonomy, policy.AutonomyValues
-			if d.Autonomy == "" {
-				d.Autonomy = policy.AutonomyManual
+			d.Autonomy = pc.AutonomyState()
+			for _, s := range policy.AutonomyStates {
+				d.Levels = append(d.Levels, level{Name: s, Words: policy.AutonomyMeaning[s]})
 			}
 		}
 	}

@@ -120,6 +120,10 @@ type infraFake struct {
 	mergeStatuses []int
 	// contentsStatus answers the contents calls; 0: 201
 	contentsStatus int
+	// files are main's files a GET contents reads, by path, and reads
+	// the Authorization of each read
+	files map[string]string
+	reads []string
 }
 
 type recorded struct {
@@ -144,6 +148,14 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			return recorded{auth: req.Header.Get("Authorization"), body: body}
 		}
 		switch {
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/") && f.files != nil:
+			text, ok := f.files[strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/")]
+			if !ok {
+				http.NotFound(w, req)
+				return
+			}
+			f.reads = append(f.reads, req.Header.Get("Authorization"))
+			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": "blob1"})
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
 			f.contents = append(f.contents, rec())
 			if f.contentsStatus != 0 {

@@ -48,6 +48,7 @@ func TestChatPanel(t *testing.T) {
 <div id="chat-answer" class="answer" role="group" aria-label="Answer" hidden></div>
 <form id="chat-form" class="chat-form composer" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
+<p class="arch-note" hidden>archived, read-only <button type="button" class="linkbtn" data-restore-open>restore</button></p>
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">[{"name":"compact","words":"the older turns of this thread become a summary"},{"name":"new","words":"a new thread"}]</script>
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
@@ -61,6 +62,7 @@ func TestChatPanel(t *testing.T) {
 </section>
 <div id="board" data-project="ai-software-factory-code"`,
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent; <kbd>/</kbd> at the start of the box lists the commands</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>k</kbd></dt><dd>the threads: open one, or the inbox</dd>
 <dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>
 <dt><kbd>Escape</kbd></dt><dd>in the chat's input: leave it</dd>`,
 	} {
@@ -151,6 +153,8 @@ console.log(JSON.stringify({
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]),
     chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
+  levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
+  levelConfirm: chatView.levelConfirmHTML({name: "full auto", words: "nothing waits"}),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
   poke: chatView.factoryHTML({id: 7, role: "assistant", kind: "poke", content: "Started the login card.", at: "2026-10-11T09:12:00Z",
@@ -226,6 +230,12 @@ console.log(JSON.stringify({
 		{"pendingRow", `[1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
+		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>a change confirms</span></p>` +
+			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
+			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},
+		{"levelConfirm", `<div class="lvl-confirm" role="dialog" aria-labelledby="lvl-title"><h2 id="lvl-title">Set the project's autonomy to full auto?</h2>` +
+			`<p>This writes a policy change and lands in the audit like every decision. From then on: nothing waits.</p>` +
+			`<div class="acts"><button type="button" class="need-btn" data-set="full auto">Set</button><button type="button" data-keep>Keep</button></div></div>`},
 		{"deleteOne", `<div id="thread-dialog" class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="overlay-box">` +
 			`<h2 id="dlg-title">Delete “a &lt;b&gt;”?</h2><p>Its 1 message goes for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
 			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +

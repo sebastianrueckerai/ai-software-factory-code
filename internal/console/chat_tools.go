@@ -930,10 +930,10 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
-		params: map[string]any{"autonomy": enum("the level: manual confirms everything, assisted starts and files ready work itself, autonomous runs within the always-confirm set", policy.AutonomyValues...),
+		params: map[string]any{"autonomy": enum("the state: manual confirms everything, assisted starts and files ready work itself, autonomous runs within the always-confirm set with merges human, full auto is autonomous with the merge rule on auto", policy.AutonomyStates...),
 			"backlog_cap": map[string]any{"type": "integer", "description": "how many of the project's cards may wait unstarted, 1 or more (default 8)", "minimum": 1}},
 		required: []string{"autonomy"},
-		about:    "Set the project's autonomy level, and its backlog cap with it, in the configuration's project file: the one change that waits for the member's OK at every level, the level's own included.",
+		about:    "Set the project's autonomy state, and its backlog cap with it, in the configuration's project file through a pull request the member files and merges: the one change that waits for the member's OK at every level, the level's own included.",
 		fits:     "the project's policy",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.BacklogCap, t.a); err != nil {

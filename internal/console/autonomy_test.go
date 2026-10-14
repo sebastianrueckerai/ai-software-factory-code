@@ -1,6 +1,9 @@
 package console
 
 import (
+	"context"
+	"encoding/base64"
+	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
@@ -83,6 +86,79 @@ func TestEditProjectFile(t *testing.T) {
 	}
 	if got = string(out); strings.Contains(got, "backlog_cap") {
 		t.Errorf("editProjectFile kept the cap at the default:\n%s", got)
+	}
+}
+
+// The four states in the project file (C14): full auto is autonomous with
+// merge_rule auto, autonomous takes merge_rule human, assisted and manual
+// keep the rule.
+func TestEditProjectFileStates(t *testing.T) {
+	raw := []byte("repository: sf/code\nmerge_rule: auto\n")
+	for _, tt := range []struct{ state, want string }{
+		{policy.AutonomyAssisted, "repository: sf/code\nmerge_rule: auto\nautonomy: assisted\n"},
+		{policy.AutonomyAutonomous, "repository: sf/code\nmerge_rule: human\nautonomy: autonomous\n"},
+		{policy.AutonomyFullAuto, "repository: sf/code\nmerge_rule: auto\nautonomy: autonomous\n"},
+		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: auto\nautonomy: manual\n"},
+	} {
+		out, err := editProjectFile(raw, tt.state, 0)
+		equal(t, tt.state, []any{string(out), err}, []any{tt.want, error(nil)})
+	}
+}
+
+// The level control's change (roadmap 239, C14): the project file read
+// with the config token and judged the loader's way, then committed by
+// the approver on a branch whose pull request they open and merge; one
+// event names the change. A file the loader refuses commits nothing.
+func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
+	var checked []string
+	r.c.cfg.CheckProject = func(_ context.Context, name string, file []byte) ([]string, error) {
+		checked = append(checked, name+": "+string(file))
+		return nil, nil
+	}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	rec := r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"full auto"}}), ck)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("POST autonomy = %d %s", rec.Code, rec.Body.String())
+	}
+	file := "# demo\nrepository: demo-app/demo-app\nmerge_rule: auto\nautonomy: autonomous\n"
+	equal(t, "the read and the check", []any{infra.reads, checked}, []any{[]string{"Bearer config-token"}, []string{"demo-app: " + file}})
+	if len(infra.contents) != 1 || infra.contents[0].auth != "Bearer access-1" {
+		t.Fatalf("contents = %+v", infra.contents)
+	}
+	body := infra.contents[0].body
+	change := body["files"].([]any)[0].(map[string]any)
+	content, _ := base64.StdEncoding.DecodeString(change["content"].(string))
+	branch, _ := body["new_branch"].(string)
+	if body["branch"] != "main" || !strings.HasPrefix(branch, "autonomy-demo-app-") || body["message"] != "Project demo-app: autonomy full auto (console, sebastian)" ||
+		change["operation"] != "update" || change["path"] != "factory/projects/demo-app.yaml" || change["sha"] != "blob1" || string(content) != file {
+		t.Fatalf("the commit = %+v (%q)", body, content)
+	}
+	if len(infra.pulls) != 1 || infra.pulls[0].auth != "Bearer access-1" || infra.pulls[0].body["head"] != branch || infra.pulls[0].body["title"] != "Project demo-app: autonomy full auto" {
+		t.Fatalf("pulls = %+v", infra.pulls)
+	}
+	if len(infra.merges) != 1 || infra.merges[0].auth != "Bearer access-1" {
+		t.Fatalf("merges = %+v", infra.merges)
+	}
+	rows := r.events.all()[before:]
+	if len(rows) != 1 {
+		t.Fatalf("%d events, want 1: %+v", len(rows), rows)
+	}
+	equal(t, "the event", rows[0], factoryd.Event{ID: rows[0].ID, At: rows[0].At, Repository: "demo-app/demo-app", Kind: factoryd.EventAutonomyChanged,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"from": "manual", "to": "full auto", "pr": int64(12)}})
+
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
+		return []string{"projects/demo-app.yaml: autonomy: no"}, nil
+	}
+	rec = r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"assisted"}}), ck)
+	if rec.Code != http.StatusUnprocessableEntity || !strings.Contains(rec.Body.String(), "The project file would not load: projects/demo-app.yaml: autonomy: no") {
+		t.Fatalf("a refused file = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(infra.contents) != 1 {
+		t.Fatalf("a refused file committed: %+v", infra.contents)
 	}
 }
 

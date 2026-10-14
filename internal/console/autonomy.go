@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -45,22 +46,25 @@ func docLock(repository string) *sync.Mutex {
 }
 
 // autonomyRefusal is the change's refusal; "" for a sound one.
-func autonomyRefusal(level string, backlogCap int) string {
+func autonomyRefusal(state string, backlogCap int) string {
 	switch {
-	case !slices.Contains(policy.AutonomyValues, level):
-		return "autonomy must be manual, assisted or autonomous"
+	case !slices.Contains(policy.AutonomyStates, state):
+		return "autonomy must be manual, assisted, autonomous or full auto"
 	case backlogCap < 0:
 		return "backlog_cap must not be negative"
 	}
 	return ""
 }
 
-// doSetAutonomy writes project name's autonomy level and backlog cap into
-// its project file in the configuration repository's main as one commit,
-// as the factory's config token, and records the change as one event
-// naming the member who made it.
-func (c *Console) doSetAutonomy(ctx context.Context, name, level string, backlogCap int, a actor) error {
-	if line := autonomyRefusal(level, backlogCap); line != "" {
+// doSetAutonomy writes project name's autonomy state and backlog cap
+// into its project file on the configuration repository's main as the
+// member, an approver, through the path a project's filing takes: the
+// file judged the loader's way, a branch with the one change, its pull
+// request and its merge. Full auto writes autonomous with merge_rule
+// auto, autonomous merge_rule human; manual and assisted leave the rule.
+// The change records one event naming the member.
+func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlogCap int, a actor) error {
+	if line := autonomyRefusal(state, backlogCap); line != "" {
 		return refuse(http.StatusBadRequest, line)
 	}
 	from, repo := policy.AutonomyManual, ""
@@ -82,34 +86,54 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, level string, backlog
 	if err != nil {
 		return refuse(http.StatusInternalServerError, "cannot decode the project file")
 	}
-	out, err := editProjectFile(raw, level, backlogCap)
+	out, err := editProjectFile(raw, state, backlogCap)
 	if err != nil {
 		return refuse(http.StatusConflict, err.Error())
+	}
+	if c.cfg.CheckProject != nil {
+		refused, err := c.cfg.CheckProject(ctx, name, out)
+		switch {
+		case err != nil:
+			log.Printf("console: check projects/%s.yaml against infra's head: %v", name, err)
+			return refuse(http.StatusBadGateway, "cannot read the configuration at infra's head; see the factoryd log")
+		case len(refused) > 0:
+			return refuse(http.StatusUnprocessableEntity, "The project file would not load: "+strings.Join(refused, "; "))
+		}
 	}
 	l := docLock(c.cfg.InfraRepo.String())
 	l.Lock()
 	defer l.Unlock()
-	message := fmt.Sprintf("Project %s: autonomy %s (console, %s)", name, level, a.s.user)
-	if err := c.api(ctx, c.cfg.InfraToken, http.MethodPost, infra+"/contents", map[string]any{
-		"branch": "main", "message": message,
-		"files": []map[string]string{{"operation": "update", "path": path,
-			"content": base64.StdEncoding.EncodeToString(out), "sha": file.SHA}}},
+	branch := fmt.Sprintf("autonomy-%s-%d", name, time.Now().Unix())
+	title := fmt.Sprintf("Project %s: autonomy %s", name, state)
+	if err := c.as(ctx, a.s, http.MethodPost, infra+"/contents", map[string]any{
+		"branch": "main", "new_branch": branch, "message": fmt.Sprintf("%s (console, %s)", title, a.s.user),
+		"files": []map[string]string{{"operation": "update", "path": path, "content": base64.StdEncoding.EncodeToString(out), "sha": file.SHA}}},
 		http.StatusCreated, nil); err != nil {
 		return &forgejoRefusal{"commit the project file", err}
 	}
-	detail := map[string]any{"from": from, "to": level}
+	var pull struct {
+		Number int64 `json:"number"`
+	}
+	if err := c.as(ctx, a.s, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": title},
+		http.StatusCreated, &pull); err != nil {
+		return &forgejoRefusal{"open the pull request", err}
+	}
+	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
+		return &forgejoRefusal{fmt.Sprintf("merge the pull request #%d", pull.Number), err}
+	}
+	detail := map[string]any{"from": from, "to": state, "pr": pull.Number}
 	if backlogCap > 0 && backlogCap != policy.DefaultBacklogCap {
 		detail["backlog_cap"] = backlogCap
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventAutonomyChanged,
 		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
-	log.Printf("console: %s set %s to %s via %s", a.s.user, name, level, a.via)
+	log.Printf("console: %s set %s to %s via %s (%s#%d)", a.s.user, name, state, a.via, c.cfg.InfraRepo, pull.Number)
 	return nil
 }
 
-// autonomyButton answers POST /projects/{name}/autonomy, the project
-// screen's selector: the level and the backlog cap into the project file
-// as one commit, then back to the project's status.
+// autonomyButton answers POST /projects/{name}/autonomy, the chat's level
+// control (C14): the state and the backlog cap into the project file, then
+// 204.
 func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	level := r.PostFormValue("autonomy")
@@ -126,13 +150,15 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/projects/"+name+"/status", http.StatusSeeOther)
+	w.WriteHeader(http.StatusNoContent)
 }
 
-// editProjectFile is the project file with autonomy and backlog_cap set,
-// its comments and key order kept: backlog_cap lands only away from the
-// default, and an existing key at the default comes off.
-func editProjectFile(raw []byte, level string, backlogCap int) ([]byte, error) {
+// editProjectFile is the project file at autonomy state with backlog_cap
+// set, its comments and key order kept: full auto is autonomous with
+// merge_rule auto, autonomous takes merge_rule human, manual and assisted
+// keep the rule; backlog_cap lands only away from the default, and an
+// existing key at the default comes off.
+func editProjectFile(raw []byte, state string, backlogCap int) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("the project file is no YAML: %w", err)
@@ -152,10 +178,22 @@ func editProjectFile(raw []byte, level string, backlogCap int) ([]byte, error) {
 		}
 		return -1
 	}
-	if i := index("autonomy"); i >= 0 {
-		m.Content[i+1].SetString(level)
-	} else {
-		m.Content = append(m.Content, scalar("autonomy", "!!str"), scalar(level, "!!str"))
+	set := func(key, v string) {
+		if i := index(key); i >= 0 {
+			m.Content[i+1].SetString(v)
+		} else {
+			m.Content = append(m.Content, scalar(key, "!!str"), scalar(v, "!!str"))
+		}
+	}
+	switch state {
+	case policy.AutonomyFullAuto:
+		set("autonomy", policy.AutonomyAutonomous)
+		set("merge_rule", policy.MergeAuto)
+	case policy.AutonomyAutonomous:
+		set("autonomy", state)
+		set("merge_rule", policy.MergeHuman)
+	default:
+		set("autonomy", state)
 	}
 	switch {
 	case backlogCap > 0 && backlogCap != policy.DefaultBacklogCap:

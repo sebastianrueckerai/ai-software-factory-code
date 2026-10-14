@@ -471,17 +471,7 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 		c.refuse(w, r, name, "No open pull request from project-"+name+".", http.StatusConflict)
 		return
 	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), pr.Number)
-	body := map[string]any{"Do": "merge", "delete_branch_after_merge": true}
-	err = c.asUser(r, http.MethodPost, path, body, http.StatusOK, nil)
-	for attempts := 0; ; attempts++ {
-		if apiStatus(err) != http.StatusMethodNotAllowed || attempts >= mergeRetryTries || r.Context().Err() != nil {
-			break
-		}
-		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", current(r).user, c.cfg.InfraRepo, pr.Number, attempts+1, mergeRetryTries)
-		time.Sleep(c.mergeRetryPause())
-		err = c.asUser(r, http.MethodPost, path, body, http.StatusOK, nil)
-	}
+	err = c.mergeInfra(r.Context(), current(r), pr.Number)
 	refusal := ""
 	if ae := (*apiError)(nil); errors.As(err, &ae) {
 		refusal = ae.reason()
@@ -511,6 +501,21 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	log.Printf("console: %s merged %s#%d", current(r).user, c.cfg.InfraRepo, pr.Number)
 	c.act(r, c.projectRepository(r, name), "", 0, factoryd.EventProjectMerged, map[string]any{"name": name, "pr": pr.Number})
 	c.acted(w, r, name)
+}
+
+// mergeInfra merges pull request number of the infra repository as
+// member s, its branch deleted; Forgejo's 405 while it still checks the
+// pull request's mergeability is retried.
+func (c *Console) mergeInfra(ctx context.Context, s *session, number int64) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), number)
+	body := map[string]any{"Do": "merge", "delete_branch_after_merge": true}
+	err := c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
+	for attempts := 0; apiStatus(err) == http.StatusMethodNotAllowed && attempts < mergeRetryTries && ctx.Err() == nil; attempts++ {
+		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, c.cfg.InfraRepo, number, attempts+1, mergeRetryTries)
+		time.Sleep(c.mergeRetryPause())
+		err = c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
+	}
+	return err
 }
 
 // mergeRetryTries are the retries of a merge Forgejo refused with 405.
