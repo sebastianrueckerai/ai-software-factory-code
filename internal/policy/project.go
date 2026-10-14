@@ -54,6 +54,10 @@ const (
 var DefaultProject = ProjectDefault{Quota: Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"},
 	Standing: Standing{ServerTypes: []string{}}}
 
+// DefaultWorkInProgress is how many of a project's cards hold a work
+// slot at once when its file sets no work_in_progress.
+const DefaultWorkInProgress = 5
+
 // Project is the policy's project_default, else DefaultProject.
 func (d Document) Project() ProjectDefault {
 	if d.ProjectDefault == nil {
@@ -117,6 +121,15 @@ func (t Tree) ProjectCap(repository string) (string, float64) {
 		return name, math.Inf(1)
 	}
 	return name, p.Budget.MonthEUR
+}
+
+// WorkInProgressOf is how many of repository's cards hold a work slot at
+// once: its project file's work_in_progress, else the default.
+func (t Tree) WorkInProgressOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok && p.WorkInProgress > 0 {
+		return p.WorkInProgress
+	}
+	return DefaultWorkInProgress
 }
 
 // ApproversOf are the approvers of repository's project: its file's,
@@ -250,6 +263,10 @@ type ProjectConfig struct {
 	// project has no cap of its own. Stricter wins: bounded by policy.yaml's
 	// budget.month_eur and budget.task_max_eur; a looser file is rejected.
 	Budget *ProjectBudget `yaml:"budget,omitempty" json:"budget,omitempty"`
+	// WorkInProgress is how many of the project's cards hold a work slot
+	// at once (waiting on a dependency, working, in review or waiting on a
+	// human); a queued card starts only under it. Absent: the default, 5.
+	WorkInProgress int `yaml:"work_in_progress,omitempty" json:"work_in_progress,omitempty"`
 	// Model runs a coding card's first session on Models.Stronger instead
 	// of the ladder's first rung; the only accepted value is "stronger".
 	// Absent: a coding card starts on the first rung. The planner and
@@ -378,6 +395,9 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if !slices.Contains(AgentModes, p.Agents) {
 		bad("agents %q: want one of %v", p.Agents, AgentModes)
+	}
+	if p.WorkInProgress < 0 {
+		bad("work_in_progress %d: a count of cards", p.WorkInProgress)
 	}
 	for _, u := range p.Notify {
 		if !forgejoLogin.MatchString(u) {

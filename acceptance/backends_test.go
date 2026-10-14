@@ -208,6 +208,55 @@ func (s *acceptanceStore) MarkStarted(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *acceptanceStore) SetAdmitted(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+	}
+	if t.AdmittedAt == nil {
+		now := time.Now()
+		t.AdmittedAt = &now
+		s.tasks[id] = t
+	}
+	return nil
+}
+
+func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+			continue
+		}
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+			(t.Status == "queued" && t.AdmittedAt != nil) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *acceptanceStore) ListQueuedByRepository(_ context.Context, repository string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind == "agent" && t.Lane != "" && t.Status == "queued" {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
+}
+
 func (s *acceptanceStore) ListTasksByStatus(_ context.Context, status string) ([]factoryd.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

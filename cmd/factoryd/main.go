@@ -138,7 +138,11 @@ func main() {
 	// the Temporal client is dialled after the runner: the gate watch gets
 	// its signal and the runner its failure reader once it is
 	gates := &factoryd.GateWatch{Store: store, Bound: factoryd.PinnedBound(policyLoader.Current, store.PolicyVersion)}
-	var workflows factoryd.TemporalWorkflows
+	var inner factoryd.TemporalWorkflows
+	// workflows is the work-bounded seam: every start and signal of a
+	// queued card goes through the project's work_in_progress (roadmap 225)
+	workflows := factoryd.BoundedWorkflows{Workflows: &inner, Store: store,
+		Policy: func() policy.Tree { return policyLoader.Current().Tree }}
 	// SigNoz's firing alerts: the project endpoint and the alert card's
 	// pre-check (roadmap 181, Stage 18 item 3.12). Its root password is
 	// read here so the boot's secret scrubber knows it.
@@ -175,7 +179,7 @@ func main() {
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		Gates:        gates,
 		LastFailure: func(ctx context.Context, workflowID, activityID string) (string, error) {
-			return workflows.LastFailure(ctx, workflowID, activityID)
+			return inner.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
 		Alerts:    signoz,
@@ -238,8 +242,8 @@ func main() {
 		log.Fatalf("temporal client: %v", err)
 	}
 	defer temporal.Close()
-	workflows = factoryd.TemporalWorkflows{Client: temporal}
-	gates.Signal = workflows.SignalGate
+	inner = factoryd.TemporalWorkflows{Client: temporal}
+	gates.Signal = inner.SignalGate
 	// a stop closes the activities' worker stop channel and cancels them
 	// after the timeout: RunSession stops its worker gracefully within it
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)

@@ -52,6 +52,11 @@ type Task struct {
 	// the API call (zero at CreateTask: now).
 	CreatedAt  time.Time
 	FinishedAt *time.Time
+	// AdmittedAt is when the card took one of its project's
+	// work_in_progress slots; nil while it has not started. A queued card
+	// with it set holds its slot while its workflow starts, or while a
+	// run that died before running restarts.
+	AdmittedAt *time.Time
 	// Gate is the gate the task is in (Gate* constants) since GateSince;
 	// none once it finished, and never for the human lane.
 	Gate      string
@@ -210,8 +215,19 @@ type Store interface {
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
 	// waiting-human or waiting-poster task to running.
 	MarkStarted(ctx context.Context, id string) error
+	// SetAdmitted stamps task id's admission (admitted_at, once): the
+	// moment it took one of its project's work_in_progress slots.
+	SetAdmitted(ctx context.Context, id string) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	// CountAdmitted counts repository's cards holding a work slot: those
+	// in a status a started card holds until it settles, plus queued
+	// cards already admitted. A lane-less card (a roll, a factory pull
+	// request) and human and chat cards hold none.
+	CountAdmitted(ctx context.Context, repository string) (int, error)
+	// ListQueuedByRepository lists repository's queued cards in filing
+	// order, the oldest first: the order a freed slot admits them in.
+	ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock, and have no open model
 	// hold: a call still streaming books its own cost, and settling it too
@@ -537,7 +553,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, '')`
+	COALESCE(alert_fingerprint, ''), admitted_at`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -547,7 +563,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -819,6 +835,27 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	return err
+}
+
+func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now() WHERE id = $1 AND admitted_at IS NULL`, id)
+	return err
+}
+
+func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT count(*) FROM tasks
+		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
+			AND (status IN ('waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'closing')
+				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository).Scan(&n)
+	return n, err
+}
+
+func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+`
+		FROM tasks WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> '' AND status = 'queued'
+		ORDER BY created_at, id`, repository)
 }
 
 // changeStatus updates the one task $1 names, SET set WHERE where, and

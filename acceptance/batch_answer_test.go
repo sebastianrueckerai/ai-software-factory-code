@@ -84,6 +84,56 @@ func (s *accBatchTasks) Task(_ context.Context, id string) (factoryd.Task, bool,
 	return factoryd.Task{}, false, nil
 }
 
+func (s *accBatchTasks) SetAdmitted(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, bt := range s.tasks {
+		if bt.ID == id {
+			if bt.AdmittedAt == nil {
+				now := time.Now()
+				bt.AdmittedAt = &now
+				s.tasks[i] = bt
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
+func (s *accBatchTasks) CountAdmitted(_ context.Context, repository string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+			continue
+		}
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+			(t.Status == "queued" && t.AdmittedAt != nil) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *accBatchTasks) ListQueuedByRepository(_ context.Context, repository string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, bt := range s.tasks {
+		if bt.Repository == repository && bt.Kind == "agent" && bt.Lane != "" && bt.Status == "queued" {
+			out = append(out, bt.Task)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
+}
+
 func (s *accBatchTasks) TaskByPR(_ context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -260,6 +310,18 @@ type accBatchStore struct {
 
 func (s *accBatchStore) Task(ctx context.Context, id string) (factoryd.Task, bool, error) {
 	return s.tasks.Task(ctx, id)
+}
+
+func (s *accBatchStore) SetAdmitted(ctx context.Context, id string) error {
+	return s.tasks.SetAdmitted(ctx, id)
+}
+
+func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
+	return s.tasks.CountAdmitted(ctx, repository)
+}
+
+func (s *accBatchStore) ListQueuedByRepository(ctx context.Context, repository string) ([]factoryd.Task, error) {
+	return s.tasks.ListQueuedByRepository(ctx, repository)
 }
 
 func (s *accBatchStore) PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error) {
