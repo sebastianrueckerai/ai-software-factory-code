@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 var funcs = template.FuncMap{
@@ -182,7 +183,7 @@ type card struct {
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
 	// one, the plan key of a planned card, else the objective's first
-	// clause.
+	// paragraph, the title as the issue was filed.
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
@@ -260,23 +261,41 @@ func fineStates(k card, wide bool) []fine {
 	return out
 }
 
-// titleClause is the face's title from the objective, on one line: up to
-// the first full stop that ends a sentence — one followed by whitespace,
-// or one at the very end — and at most 80 characters. A dot inside a file
-// name or a version ("internal/console/board.go", "v1.2") ends no
-// sentence, so the clause keeps it.
+// titleCap bounds the face's title in runes; titleEllipsis ends a title
+// cut to it.
+const (
+	titleCap      = 80
+	titleEllipsis = "…"
+)
+
+// titleClause is the face's title from the objective, on one line: the
+// objective's first paragraph, the title as the issue was filed, in full —
+// a blank line ends the paragraph, a full stop never does. Only a title
+// longer than titleCap runes is shortened, at a word boundary with an
+// ellipsis, never mid-word. The objective is sanitised as a brief carries
+// it, so a hidden comment in it shows on no face.
 func titleClause(objective string) string {
-	words := strings.Fields(objective)
-	for i, w := range words {
-		if strings.HasSuffix(w, ".") {
-			words[i] = strings.TrimSuffix(w, ".")
-			words = words[:i+1]
-			break
+	var words []string
+	for _, line := range strings.Split(sanitize.Inbound(objective), "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(words) > 0 {
+				break
+			}
+			continue
 		}
+		words = append(words, strings.Fields(line)...)
 	}
-	s := strings.TrimSpace(strings.Join(words, " "))
-	if r := []rune(s); len(r) > 80 {
-		s = strings.TrimRight(string(r[:80]), " ,;:")
+	s := strings.Join(words, " ")
+	if r := []rune(s); len(r) > titleCap {
+		cut := r[:titleCap-len([]rune(titleEllipsis))]
+		end := len(cut)
+		for end > 0 && cut[end-1] != ' ' {
+			end--
+		}
+		if end == 0 {
+			end = len(cut) // one word longer than the cap: cut it
+		}
+		s = strings.TrimRight(string(cut[:end]), " ,;:") + titleEllipsis
 	}
 	return s
 }

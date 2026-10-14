@@ -408,7 +408,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 }
 
 // cardTitle is the face's title of t: the summary a writer set, the plan
-// key of a planned card, else the objective's first clause.
+// key of a planned card, else the objective's first paragraph.
 func cardTitle(t factoryd.Task) string {
 	if t.HumanSummary != "" {
 		return t.HumanSummary
