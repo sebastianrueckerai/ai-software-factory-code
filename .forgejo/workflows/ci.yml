@@ -16,9 +16,8 @@ env:
   # cache.
   # Each image's inputs in the build context: its epoch is the newest
   # commit touching them (roadmap 250), so a commit that touches none
-  # keeps the image's digest. They mirror each Dockerfile's COPY lines;
-  # the runner's warm step bind-mounts the context and compiles every Go
-  # package in it.
+  # keeps the image's digest. They mirror each Dockerfile's COPY lines and
+  # the runner's warm-step mounts.
   GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal
   SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance

@@ -98,15 +98,18 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # (roadmap 222, item 3), in Go's default places for the runner user: a
 # job compiles only what its pull request changed. main CI rebuilds this
 # image on every push and the roll pins it, so the cache trails main by
-# one roll at most. The source is bind-mounted, so no layer holds it; the
-# caches stay.
+# one roll at most. The module and its package trees are bind-mounted,
+# so no layer holds them, the caches stay, and a change outside them (k8s/,
+# docs) keeps this layer: ci.yml's RUNNER_INPUTS name the same paths.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
 # `go clean -testcache`, and -count=1 caches none.
 RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
       cd /tmp/warm && go mod download
-RUN --mount=type=bind,target=/tmp/warm \
+RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
+      --mount=type=bind,source=cmd,target=/tmp/warm/cmd --mount=type=bind,source=internal,target=/tmp/warm/internal \
+      --mount=type=bind,source=acceptance,target=/tmp/warm/acceptance \
       cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
       && cache=$(go env GOCACHE) \
       && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \

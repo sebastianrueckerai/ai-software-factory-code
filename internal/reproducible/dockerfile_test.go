@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -320,8 +321,41 @@ func TestRunnerWarmCacheHoldsNoTestResultsAndNoSource(t *testing.T) {
 			t.Errorf("Dockerfile.runner warm step: %q runs without %s", test, flag)
 		}
 	}
-	if !strings.HasPrefix(warm, "--mount=type=bind,target=/tmp/warm ") {
-		t.Errorf("Dockerfile.runner warm step: the source is not bind-mounted at /tmp/warm, so a layer would hold it: %s", warm)
+	// the module and every top-level tree holding Go files are bind-mounted
+	// under /tmp/warm, and nothing else: no layer holds the source, and a
+	// change outside them (k8s/, docs) keeps the layer; ci.yml's
+	// RUNNER_INPUTS, the runner image's epoch, name the same paths
+	mounts := regexp.MustCompile(`--mount=type=bind,source=([^,\s]+),target=/tmp/warm/([^,\s]+) `).FindAllStringSubmatch(warm, -1)
+	if n := strings.Count(warm, "--mount="); n != len(mounts) {
+		t.Errorf("Dockerfile.runner warm step: %d mounts, %d of them binds of a source path at /tmp/warm/<the same path>: %s", n, len(mounts), warm)
+	}
+	var mounted []string
+	for _, m := range mounts {
+		if m[1] != m[2] {
+			t.Errorf("Dockerfile.runner warm step: %s is mounted at /tmp/warm/%s, want /tmp/warm/%s", m[1], m[2], m[1])
+		}
+		mounted = append(mounted, m[1])
+	}
+	want := append([]string{"go.mod", "go.sum"}, goTrees(t)...)
+	sort.Strings(mounted)
+	sort.Strings(want)
+	if !reflect.DeepEqual(mounted, want) {
+		t.Errorf("Dockerfile.runner warm step mounts %v, want the module and every tree holding Go files: %v", mounted, want)
+	}
+	ci, err := os.ReadFile(filepath.Join("..", "..", ".forgejo", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	line := regexp.MustCompile(`(?m)^\s*RUNNER_INPUTS: (.*)$`).FindSubmatch(ci)
+	if line == nil {
+		t.Fatal("ci.yml: no RUNNER_INPUTS")
+	}
+	inputs := strings.Fields(string(line[1]))
+	sort.Strings(inputs)
+	wantInputs := append([]string{".dockerignore", "Dockerfile.runner"}, want...)
+	sort.Strings(wantInputs)
+	if !reflect.DeepEqual(inputs, wantInputs) {
+		t.Errorf("ci.yml RUNNER_INPUTS = %v, want Dockerfile.runner, .dockerignore and the warm step's mounts: %v", inputs, wantInputs)
 	}
 	for _, line := range final.lines {
 		fields := strings.Fields(line)
@@ -403,4 +437,33 @@ func TestDockerfilesBuildWithOneGo(t *testing.T) {
 			t.Errorf("%s: golang bases %v, want one at %s pinned by digest", file, m, version)
 		}
 	}
+}
+
+// goTrees are the repository's top-level directories that hold a .go
+// file, hidden ones aside.
+func goTrees(t *testing.T) []string {
+	t.Helper()
+	root := filepath.Join("..", "..")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var trees []string
+	for _, e := range entries {
+		if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+		found := false
+		filepath.WalkDir(filepath.Join(root, e.Name()), func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && strings.HasSuffix(p, ".go") {
+				found = true
+				return filepath.SkipAll
+			}
+			return err
+		})
+		if found {
+			trees = append(trees, e.Name())
+		}
+	}
+	return trees
 }
