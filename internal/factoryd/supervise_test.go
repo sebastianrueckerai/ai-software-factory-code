@@ -1260,3 +1260,38 @@ func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 		t.Fatalf("finding = %q", last)
 	}
 }
+
+// The start rung's first attempt has the cheap cap to push: at the cap
+// without a push the supervisor trips cheap_cap with the climb decided, no
+// model call; a push before it, or the climb in place, ends the cap.
+func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3, CheapCap: 8 * time.Minute, NoWriteAfter: 10 * time.Hour}
+	s, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trip := s.Tick(minute(7.9)); trip != nil {
+		t.Fatalf("tripped before the cap: %+v", trip)
+	}
+	trip := s.Tick(minute(8))
+	if trip == nil || trip.Kind != TripCheapCap || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("trip = %+v, want cheap_cap with the climb decided", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	s.Event(harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"commit": "c1"}}, minute(3))
+	if trip := s.Tick(minute(9)); trip != nil {
+		t.Fatalf("tripped after a push: %+v", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	s.Climbed()
+	if trip := s.Event(harness.Event{Kind: harness.EventModelCall}, minute(9)); trip != nil {
+		t.Fatalf("tripped after the climb: %+v", trip)
+	}
+
+	s, _ = NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3}, time.Unix(0, 0), time.Unix(0, 0))
+	if trip := s.Tick(minute(30)); trip != nil {
+		t.Fatalf("a session without the cap tripped: %+v", trip)
+	}
+}

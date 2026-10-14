@@ -1923,3 +1923,42 @@ func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
 		t.Fatalf("signals %q, Forgejo requests %v; want the waiting card's issue_closed alone", signals, *requests)
 	}
 }
+
+// A card's rung comes from its body's Rung line, else from its size and
+// its text: large, or factoryd's own package, start on frontier; the rest
+// on cheap (roadmap 222, item 5). The size is kept on the row.
+func TestIntakeReadsAndDerivesTheRung(t *testing.T) {
+	for _, tc := range []struct {
+		body       string
+		rung, size string
+	}{
+		{"Build it.\n\nSize: small", RungCheap, "small"},
+		{"Build it.\n\nSize: medium", RungCheap, "medium"},
+		{"Build it.\n\nSize: large", RungFrontier, "large"},
+		{"Build it.\n\nSize: small\nRung: frontier, the queue code is subtle", RungFrontier, "small"},
+		{"Build it.\n\nSize: large\nRung: cheap, a rename", RungCheap, "large"},
+		{"Fix the roll in internal/factoryd/rolltask.go.", RungFrontier, ""},
+		{"Build it.\nDirectories: internal/factoryd, cmd/factoryd", RungFrontier, ""},
+		{"Build it.\nDirectories: internal/console", RungCheap, ""},
+		{"rung: FRONTIER, said so", RungFrontier, ""},
+		{"Rung: giant, nope", RungCheap, ""},
+		{"Build it.", RungCheap, ""},
+	} {
+		in, store, _ := newTestIntake(t)
+		in.Policy = func() policy.Tree {
+			return policy.Tree{Document: policy.Document{Budget: policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}}}
+		}
+		store.projects = []Project{seedProject("sf/ai-software-factory-code")}
+		body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add X", tc.body)
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d, body = %s", tc.body, rr.Code, rr.Body)
+		}
+		var got Task
+		for _, task := range store.tasks {
+			got = task
+		}
+		if got.Rung != tc.rung || got.Size != tc.size {
+			t.Fatalf("%q: rung %q size %q, want %q %q", tc.body, got.Rung, got.Size, tc.rung, tc.size)
+		}
+	}
+}

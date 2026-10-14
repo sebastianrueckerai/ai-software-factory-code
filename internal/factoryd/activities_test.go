@@ -1825,6 +1825,17 @@ type stubPrices struct {
 
 func (p stubPrices) Price(context.Context, string) (policy.Price, error) { return p.price, p.err }
 
+// askedPrices records the aliases asked.
+type askedPrices struct {
+	price   policy.Price
+	aliases []string
+}
+
+func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, error) {
+	p.aliases = append(p.aliases, alias)
+	return p.price, nil
+}
+
 // The attempt grant's floor is the hold machinery's own minimum (ruling
 // 322): policy.Fit at the task's remaining budget refuses an attempt whose
 // cheapest call cannot fit policy.MinCallTokens output tokens, and the
@@ -1860,10 +1871,18 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 			t.Fatalf("refusal = %q, want it to name %q", why, want)
 		}
 	}
-	// an unpriced model is no refusal: the per-call hold still guards the money
+	// an unpriced model refuses the attempt, naming the alias without its
+	// provider prefix (roadmap 222, item 5)
 	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
-	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap"); err != nil || why != "" {
-		t.Fatalf("unpriced: (%q, %v), want funded", why, err)
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
+		why != "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model" {
+		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
+	}
+	// the price is read for the alias LiteLLM knows, not the prefixed name
+	asked := &askedPrices{price: cheap}
+	r.cfg.Prices = asked
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil || why != "" || !slices.Equal(asked.aliases, []string{"coding-cheap"}) {
+		t.Fatalf("prefixed: (%q, %v), asked %q; want funded on coding-cheap", why, err, asked.aliases)
 	}
 	// no price source wired: every attempt is funded
 	r.cfg.Prices = nil

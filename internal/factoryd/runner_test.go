@@ -2279,3 +2279,66 @@ func TestWorkerPodSpecCarriesMigrationGlobs(t *testing.T) {
 		t.Fatalf("MIGRATION_GLOBS = %q without a migration rule, want none", got)
 	}
 }
+
+// The climb in place (roadmap 222, item 5): on the start rung's first
+// attempt the cheap cap trips without a push, and the session goes on
+// instead of ending: the task's alias moves to the stronger one, the
+// worker gets the model with the message, the switch is recorded, and the
+// result names the model the session ended on.
+func TestRunSessionClimbsInPlace(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	runner.cheapCap = 50 * time.Millisecond
+	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second // the tick every second
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			n := len(worker.texts)
+			worker.mu.Unlock()
+			if n > 0 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	_, err := runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, hangLogs)
+	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+		t.Fatalf("err = %v, want the test's cancel after the climb", err)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: this session continues on the stronger model, coding-frontier: the cheap rung's 50ms passed without a push.") {
+		t.Fatalf("worker got %q, want the climb's message", texts)
+	}
+	if store.tasks["t2"].ModelAlias != "coding-frontier" {
+		t.Fatalf("model_alias = %q, want the stronger alias for the gateway", store.tasks["t2"].ModelAlias)
+	}
+	step := timelineStep(t, objects, "t2", "model_switched")
+	if step["from"] != "coding-cheap" || step["to"] != "coding-frontier" || step["trip"] != "cheap_cap" {
+		t.Fatalf("model_switched step = %v", step)
+	}
+	if !slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "continues on the stronger model from here") }) {
+		t.Fatalf("comments = %q, want the climb explained on the issue", hub.comments)
+	}
+}
+
+// A session that climbed and then pushes reports the model it ended on,
+// so the next session starts there.
+func TestRunSessionResultNamesTheModelItEndedOn(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "factory/coding-frontier"}, nil, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Model != "factory/coding-frontier" || res.Outcome != OutcomePushed {
+		t.Fatalf("result = %+v, want the model it ended on", res)
+	}
+}

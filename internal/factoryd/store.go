@@ -86,6 +86,10 @@ type Task struct {
 	Lane, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// Rung is the model rung the card starts on (RungCheap, RungFrontier,
+	// "" for the ladder's start) and Size its card size, both from its
+	// filing (roadmap 222, item 5).
+	Rung, Size string
 	// HumanSummary is what a writer of the task's project says the card
 	// is about, shown on its face instead of the generated title; "" when
 	// nothing is set (the column is NULL).
@@ -284,6 +288,10 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// SetTaskModelAlias moves a running session to alias: the gateway
+	// admits the session's calls on it from the next one (the in-session
+	// climb, roadmap 222, item 5).
+	SetTaskModelAlias(ctx context.Context, id, alias string) error
 	// PauseQueue pauses a project's merge queue while main is red
 	// (mainfix.go); QueuePause reads it, SetQueuePauseRevert names the
 	// revert card, ClearQueuePause ends it.
@@ -522,16 +530,16 @@ func insertTask(ctx context.Context, db interface {
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN $16 ELSE '' END,
 		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
-		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''))
+		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), $24, $25)
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size)
 	return err
 }
 
@@ -570,7 +578,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -580,7 +588,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -751,6 +759,11 @@ func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, err
 		                  ORDER BY ts, id LIMIT 1), '')`,
 		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &m.Refusal)
 	return m, err
+}
+
+func (s *PGStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET model_alias = $2 WHERE id = $1`, id, alias)
+	return err
 }
 
 func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {

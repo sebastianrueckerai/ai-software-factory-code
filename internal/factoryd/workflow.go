@@ -172,6 +172,9 @@ type TaskConfig struct {
 	// before this field existed decodes it false. The planner and report
 	// sessions keep their own rung.
 	Stronger bool
+	// StrongerAfter overrides WorkflowConfig's for the task when above 0:
+	// 1 for a medium or large card (roadmap 222, item 5)
+	StrongerAfter int
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -232,6 +235,9 @@ type SessionInput struct {
 }
 
 type SessionResult struct {
+	// Model is the alias the session ended on: the stronger one after an
+	// in-session climb (roadmap 222, item 5)
+	Model     string
 	Outcome   SessionOutcome
 	SessionID string
 	Commit    string // pushed; for a supervisor stop, the work in progress
@@ -1128,6 +1134,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		parent = res.SessionID
+		if res.Model != "" {
+			model = res.Model
+		}
 		reason = res.Summary
 		switch res.Outcome {
 		case OutcomeWallClock:
@@ -1307,9 +1316,18 @@ func (t *taskRun) drainFolds() bool {
 
 // climbed: an earlier run left the task on the stronger rung, by a
 // retry_stronger (stronger) or a return past StrongerAfter.
+//
+// strongerAfter is the task's: its config's when set, else the policy's.
+func (t *taskRun) strongerAfter() int {
+	if t.cfg.Task.StrongerAfter > 0 {
+		return t.cfg.Task.StrongerAfter
+	}
+	return t.cfg.StrongerAfter
+}
+
 func (t *taskRun) climbed(stronger bool) bool {
 	for _, n := range t.returns {
-		if n > t.cfg.StrongerAfter {
+		if n > t.strongerAfter() {
 			return true
 		}
 	}

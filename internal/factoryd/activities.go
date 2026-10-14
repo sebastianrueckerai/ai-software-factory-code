@@ -333,7 +333,7 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 // task's remaining headroom, the day, the month and the project unbounded,
 // refuses a call that cannot fit policy.MinCallTokens output tokens — so
 // the floor is read here, never restated. A model that cannot be priced
-// fails open: the per-call hold still guards the money.
+// refuses the attempt: nothing could bound its calls.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -345,10 +345,11 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 	if r.cfg.Prices == nil {
 		return "", nil
 	}
-	price, err := r.cfg.Prices.Price(ctx, model)
+	price, err := r.cfg.Prices.Price(ctx, aliasOf(model))
 	if err != nil {
-		log.Printf("task %s: the attempt's floor on %s: %v; the attempt is not refused", taskID, model, err)
-		return "", nil
+		// a model nobody can price is a hold nobody can bound: the
+		// attempt is refused (roadmap 222, item 5)
+		return fmt.Sprintf("the attempt's floor on %s cannot be read: %v", aliasOf(model), err), nil
 	}
 	if _, err := policy.Fit(policy.Free{Task: t.BudgetEUR - t.SpentEUR,
 		Day: math.Inf(1), Month: math.Inf(1), Project: math.Inf(1)},
@@ -374,7 +375,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, err
 	}
@@ -458,6 +459,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		r.record(ctx, t.ID, "session_start", map[string]any{
 			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
 			"poster_info": s.posterInfo})
+		r.timeline.recordEvent(ctx, t.ID, EventSessionStarted, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt})
 	} else {
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, time.Until(live.Deadline)), live.StartedAt
 		r.record(ctx, t.ID, "session_reattached", map[string]any{"session": s.id, "pod": live.Pod, "lines": live.Lines, "attempt": in.Attempt})
@@ -476,7 +478,15 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			"outcome": "aborted", "summary": err.Error(), "commit": out.commit, "started": began})
 		return SessionResult{}, err
 	}
+	if out.model != "" {
+		s.model = out.model
+	}
 	res := sessionResult(s, out)
+	res.Model = s.model
+	if res.Outcome == OutcomePushed {
+		r.timeline.recordEvent(ctx, t.ID, EventSessionPushed, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt,
+			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})
+	}
 	if res.Outcome != OutcomePushed {
 		// no later session could spend: a human raises the cap or waits
 		// for the month to end
@@ -954,7 +964,11 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.Class = lane.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
-	tc.Stronger = tc.Session == policy.SessionCode && project.Model == policy.ModelStronger
+	tc.Stronger = tc.Session == policy.SessionCode && (project.Model == policy.ModelStronger || t.Rung == RungFrontier)
+	// stronger_after is 1 for a medium or large card (roadmap 222, item 5)
+	if t.Size == "medium" || t.Size == "large" {
+		tc.StrongerAfter = 1
+	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
 	return tc, nil
 }

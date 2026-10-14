@@ -257,7 +257,7 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // lane) and priority when given, its body ending with the line "Size:
 // <size>" when given; the webhook or the heal pass makes it a task. It
 // answers the repository and the issue's number.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size string) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason string) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -270,11 +270,19 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "unknown priority")
 	case size != "" && !slices.Contains(policy.CardSizes, size):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
+	case rung != "" && rung != factoryd.RungCheap && rung != factoryd.RungFrontier:
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "rung must be cheap or frontier")
+	case rung != "" && strings.TrimSpace(rungReason) == "":
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
 	}
 	detail := map[string]any{"lane": lane, "title": title}
 	if size != "" {
 		body += "\n\nSize: " + size
 		detail["size"] = size
+	}
+	if rung != "" {
+		body += "\nRung: " + rung + ", " + strings.TrimSpace(rungReason)
+		detail["rung"] = rung
 	}
 	ps, err := c.coderProjects(ctx)
 	if err != nil {

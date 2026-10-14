@@ -700,6 +700,13 @@ func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since ti
 	return r, ok, nil
 }
 
+func (s *fakeStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {
+	t := s.tasks[id]
+	t.ModelAlias = alias
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) error {
 	if s.pauses == nil {
 		s.pauses = map[string]QueuePause{}

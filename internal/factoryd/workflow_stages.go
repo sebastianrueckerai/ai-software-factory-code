@@ -161,7 +161,7 @@ func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]
 		}
 		t.recordFindings(s.Name, "agent", 0, findings)
 		t.returns[s.Name]++
-		return verdict{findings: findings, stronger: t.returns[s.Name] > t.cfg.StrongerAfter,
+		return verdict{findings: findings, stronger: t.returns[s.Name] > t.strongerAfter(),
 			reason: s.Name + " findings went back to the agent"}, true
 	}
 	for _, f := range findings {
@@ -226,7 +226,7 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 		t.returns = map[string]int{}
 	}
 	t.returns[stage]++
-	return t.returns[stage] > t.cfg.StrongerAfter
+	return t.returns[stage] > t.strongerAfter()
 }
 
 // sessionCapCard is the escalation of sessions at the cap: last is how
