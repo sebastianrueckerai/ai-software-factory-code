@@ -404,6 +404,45 @@ func TestCardFaceStaleRing(t *testing.T) {
 	}
 }
 
+// The ring reads the card's own work too: a running card whose newest
+// event is old but whose session wrote a fresh timeline step wears no
+// ring, and one whose newest step is old wears the ring for the step's
+// age, not the event's.
+func TestCardFaceStaleRingReadsTheTimeline(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, _ := r.loggedIn(t)
+	old := time.Now().Add(-45 * time.Minute)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-live", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "live session", CreatedAt: old},
+		factoryd.Task{ID: "t-dead", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "dead workflow", CreatedAt: old})
+	for _, id := range []string{"t-live", "t-dead"} {
+		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardMoved,
+			Actor: "sebastian", Via: factoryd.ViaButton, At: old}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step := func(at time.Time) []byte {
+		line, err := json.Marshal(map[string]any{"step": "session_start", "attempt": 1, "time": at.UTC().Format(time.RFC3339Nano)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(line, '\n')
+	}
+	r.objects["sessions/t-live/timeline.jsonl"] = step(time.Now().Add(-2 * time.Minute))
+	r.objects["sessions/t-dead/timeline.jsonl"] = step(time.Now().Add(-40 * time.Minute))
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-live"); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") {
+		t.Errorf("a card whose session writes steps wears the ring:\n%s", face)
+	}
+	face := faceOf(t, body, "t-dead")
+	if !strings.HasPrefix(face, `<article class="card face stale" data-card="t-dead" `) {
+		t.Errorf("the quiet card wears no ring:\n%s", face)
+	}
+	if want := "nothing for over 40 min"; !strings.Contains(face, want) {
+		t.Errorf("the ring's words are not the step's age:\n%s", face)
+	}
+}
+
 // A waiting card's activity line is the question it waits on, not its
 // newest event, in the escalations and in its column alike.
 func TestCardFaceWaitingReason(t *testing.T) {
