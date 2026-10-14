@@ -40,7 +40,8 @@ var funcs = template.FuncMap{
 	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
-	"pct": pct,
+	"pct":    pct,
+	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
 	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
 	// switch is whether the top bar shows the project select: the board
@@ -531,6 +532,15 @@ type need struct {
 	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
+// anchor is where the item is on the page: an escalation's article, else
+// the card's drawer.
+func (n need) anchor() string {
+	if n.Escalated {
+		return "#need-" + n.Card.ID
+	}
+	return "#card=" + n.Card.ID
+}
+
 // Waiting is how long the item has waited for a member, in minutes or
 // hours and minutes; empty when the item's start is unknown.
 func (n need) Waiting() string {
@@ -652,8 +662,10 @@ func pct(spent, cap float64) int {
 func (d boardData) InProgress() []card {
 	var out []card
 	for _, col := range d.Columns {
-		if col.Title == "In progress" {
-			out = append(out, col.Cards...)
+		for _, k := range col.Cards {
+			if k.Stage != "" {
+				out = append(out, k)
+			}
 		}
 	}
 	return out
@@ -663,13 +675,27 @@ func (d boardData) InProgress() []card {
 // the anchor of the item in the column.
 type needLink struct{ Words, Href string }
 
-// NeedLinks are the Needs you column's items for the status panel.
+// NeedLinks are the Needs you items for the status panel: the first
+// column's in the four columns; in the wide view, which keeps them in
+// its own lists, the approvals, the escalations and the human tasks.
 func (d boardData) NeedLinks() []needLink {
 	var out []needLink
 	if len(d.Columns) == 0 {
 		return nil
 	}
-	for _, n := range d.Columns[0].Needs {
+	needs := d.Columns[0].Needs
+	if needs == nil {
+		for i := range d.Approvals {
+			needs = append(needs, need{Since: d.Approvals[i].CreatedAt, Approval: &d.Approvals[i]})
+		}
+		for _, n := range d.Escalations {
+			needs = append(needs, n)
+		}
+		for _, k := range d.HumanTasks {
+			needs = append(needs, need{Since: k.CreatedAt, Card: k})
+		}
+	}
+	for _, n := range needs {
 		switch {
 		case n.Approval != nil && n.Approval.Kind == factoryd.ApprovalMerge:
 			out = append(out, needLink{fmt.Sprintf("Merge PR #%d", n.Approval.PRNumber), fmt.Sprintf("#approval-%d", n.Approval.ID)})
@@ -678,9 +704,9 @@ func (d boardData) NeedLinks() []needLink {
 		case n.Approval != nil:
 			out = append(out, needLink{"Resource request", fmt.Sprintf("#approval-%d", n.Approval.ID)})
 		case n.Card.IssueNumber > 0:
-			out = append(out, needLink{fmt.Sprintf("#%d %s", n.Card.IssueNumber, n.Card.Title), "#need-" + n.Card.ID})
+			out = append(out, needLink{fmt.Sprintf("#%d %s", n.Card.IssueNumber, n.Card.Title), n.anchor()})
 		default:
-			out = append(out, needLink{n.Card.Title, "#need-" + n.Card.ID})
+			out = append(out, needLink{n.Card.Title, n.anchor()})
 		}
 	}
 	return out
@@ -705,8 +731,7 @@ func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project
 		return nil
 	}
 	var out []tick
-	for i := len(rows) - 1; i >= 0; i-- {
-		e := rows[i]
+	for _, e := range rows {
 		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
 		if e.IssueNumber > 0 {
 			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
@@ -785,7 +810,7 @@ func (d boardData) counts() []int {
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge)
+		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {
@@ -794,6 +819,9 @@ func (d boardData) faces() string {
 		for _, n := range col.Needs {
 			if n.Approval == nil {
 				add(n.Card)
+				fmt.Fprintf(&b, "waiting %s\n", n.Waiting())
+			} else {
+				fmt.Fprintf(&b, "approval %d %s\n", n.Approval.ID, n.Approval.Waiting())
 			}
 		}
 	}
@@ -865,6 +893,9 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	}
 	if word == "verifying" && t.GateSince != nil {
 		since = *t.GateSince
+	}
+	if since.IsZero() {
+		return word, ""
 	}
 	return word, minutes(now.Sub(since))
 }
@@ -1185,6 +1216,10 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		}
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
+			// the stage began at its status row, when that row is the newest event
+			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
+				k.StageAge = minutes(time.Since(e.At))
+			}
 			k.Stale = live && ring(time.Since(e.At))
 			if k.Stale {
 				k.StaleText = "nothing for over " + minutes(time.Since(e.At))
@@ -1505,10 +1540,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	}
 	if ok {
 		s.GitHub, _, _ = strings.Cut(m.State, ":")
-		s.GitHubURL = m.Remote + "/pulls"
-		if !strings.Contains(m.Remote, "://") {
-			s.GitHubURL = "https://github.com/" + s.GitHubURL
-		}
+		s.GitHubURL = "https://github.com/" + m.Remote + "/pulls"
 	}
 }
 

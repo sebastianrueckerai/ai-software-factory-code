@@ -426,10 +426,57 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	}
 }
 
+// headGreen is the approval stage's guard (versionApprovalGreen): before
+// any request it reads the staged head's combined status once — the read
+// the approver does by hand, the checks wait's without its wait, so a
+// moved head (the queue's sync re-ran only the checks) is read as it now
+// is. Success leaves the request to approve as before; a red or pending
+// head goes back through the checks stage's on_findings with the failing
+// or pending checks named, so no approval request exists while the head
+// is not green.
+func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
+	if t.approvalGreen < versionApprovalGreen {
+		return verdict{}, false
+	}
+	var checks ChecksResult
+	if err := workflow.ExecuteActivity(t.short, ActivityHeadChecks, t.taskID, commit).Get(t.ctx, &checks); err != nil {
+		return verdict{final: "failed", reason: "read the head's checks: " + errMessage(err)}, true
+	}
+	if final, why, ok := t.decided(); ok {
+		return verdict{final: final, reason: why}, true
+	}
+	if checks.State == ChecksSuccess {
+		return verdict{}, false
+	}
+	findings := checks.Findings
+	if len(findings) == 0 {
+		findings = []string{"the checks are not green on " + commit}
+	}
+	if commit == t.syncedHead {
+		for i, f := range findings {
+			findings[i] = queuePrefix + f
+		}
+	}
+	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+	var capped []string
+	if v, stop := t.onFindings(t.cfg.Stages[i], findings, &capped, card); stop {
+		return v, true
+	}
+	if len(capped) > 0 {
+		*card = append(append(capped, t.history...), *card...)
+	}
+	return verdict{}, false
+}
+
 // approve is the approval stage: the merge rule auto when no stage left
 // findings for a human, else the card with why, and the wait for a
-// human's approval; the merge stage follows in either.
+// human's approval; the merge stage follows in either. The head must be
+// green first: headGreen sends a red or pending one back to the agent
+// before any request (versionApprovalGreen).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card []string) verdict {
+	if v, stop := t.headGreen(commit, &card); stop {
+		return v
+	}
 	whyHuman := card
 	if len(card) == 0 {
 		auto, unmet := AutoMerge(g, review)

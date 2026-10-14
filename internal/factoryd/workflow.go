@@ -68,6 +68,7 @@ const (
 	ActivityRunSession                  = "RunSession"
 	ActivityOpenPullRequest             = "OpenPullRequest"
 	ActivityWaitChecks                  = "WaitChecks"
+	ActivityHeadChecks                  = "HeadChecks"
 	ActivityPullRequestMerged           = "PullRequestMerged"
 	ActivityRecordStep                  = "RecordStep"
 	ActivityFinish                      = "Finish"
@@ -408,6 +409,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.closedByHuman = workflow.GetVersion(ctx, "closed-by-human", workflow.DefaultVersion, versionClosedByHuman)
 	run.factoryPRCard = workflow.GetVersion(ctx, "factory-pr-card", workflow.DefaultVersion, versionFactoryPRCard)
 	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
+	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -715,6 +717,12 @@ const (
 	// why an answer will not run: close and refile; a budget action is
 	// finding 210's own card, not this one.
 	versionAttemptFunded workflow.Version = 1
+	// versionApprovalGreen (change id "approval-green"): the approval
+	// stage reads the staged head's combined status once before its
+	// request; a head that is red or pending goes back to the agent
+	// through the checks stage's findings, so a merge approval request
+	// exists only for a head whose checks were green at its creation.
+	versionApprovalGreen workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -782,6 +790,7 @@ type taskRun struct {
 	closedByHuman     workflow.Version
 	factoryPRCard     workflow.Version
 	alertPreCheck     workflow.Version
+	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1641,6 +1650,13 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		if gap {
 			if v, decided := t.awaitSessionGap(); decided {
 				return v
+			}
+			// a roll_folded that landed during the gap wait: the wait's
+			// race takes no roll_folded, so the loop's own drain ran
+			// before it was sent; the merge goes only to the head the
+			// fold's round stages
+			if t.rolling && t.drainFolds() {
+				return verdict{reason: "newer images folded in"}
 			}
 		}
 		var res MergeResult
