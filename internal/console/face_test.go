@@ -114,7 +114,7 @@ func TestCardFaceSpend(t *testing.T) {
 		t.Errorf("a card without a budget shows spend:\n%s", face)
 	}
 	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
-	for _, rule := range []string{".spend { color: var(--text-muted); }", ".spend.near { color: var(--warn); font-weight: 600; }"} {
+	for _, rule := range []string{".spend { color: var(--text-muted); }", ".spend.near { color: var(--need-text); }"} {
 		if !strings.Contains(css, rule) {
 			t.Errorf("console.css lacks %s", rule)
 		}
