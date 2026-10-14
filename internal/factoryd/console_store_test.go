@@ -96,6 +96,63 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 }
 
+// The Done column orders finished cards by date, not by rank (roadmap
+// 234): the newest first however low its priority, an unstampable card
+// last, and the active block before it all, still most urgent first.
+func TestPGStoreBoardDoneOrder(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, tk := range []Task{
+		{ID: "q0", Priority: 0, Status: "queued"},
+		{ID: "q2", Priority: 2, Status: "queued"},
+		{ID: "older", Priority: 2, Status: "done"},
+		{ID: "roll", Priority: 0, Status: "done"},
+		{ID: "unstamped", Priority: 1, Status: "failed", PlanKey: "k"},
+		{ID: "waiter", Priority: 1, Status: "waiting-deps"},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 days' WHERE id = 'older';
+		UPDATE tasks SET finished_at = now() WHERE id = 'roll';
+		INSERT INTO task_deps (task_id, depends_on) VALUES ('waiter', 'unstamped')`); err != nil {
+		t.Fatalf("stamp finished_at: %v", err)
+	}
+	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 20)
+	if err != nil {
+		t.Fatalf("BoardTasks: %v", err)
+	}
+	var ids []string
+	for _, tk := range tasks {
+		ids = append(ids, tk.ID)
+	}
+	// the active block stays most urgent first (q2, waiter, q0), the roll
+	// finished newest heads Done, the older card follows however higher its
+	// rank, and the card that never got a stamp sits last
+	if want := []string{"q2", "waiter", "q0", "roll", "older", "unstamped"}; !slices.Equal(ids, want) {
+		t.Fatalf("BoardTasks = %v, want %v", ids, want)
+	}
+	// the in-memory fakes sort with the same order
+	SortBoardTasks(tasks)
+	ids = ids[:0]
+	for _, tk := range tasks {
+		ids = append(ids, tk.ID)
+	}
+	if want := []string{"q2", "waiter", "q0", "roll", "older", "unstamped"}; !slices.Equal(ids, want) {
+		t.Fatalf("SortBoardTasks = %v, want %v", ids, want)
+	}
+}
+
 // A writer's summary and accent land on the task row and read back on the
 // task and the board; "" stores NULL, which reads back as "".
 func TestPGStoreHumanSummaryAndAccent(t *testing.T) {

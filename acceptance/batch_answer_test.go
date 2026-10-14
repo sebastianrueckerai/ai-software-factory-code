@@ -161,6 +161,7 @@ func (s *accBatchTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := slices.Clone(s.tasks)
+	factoryd.SortBoardTasks(out)
 	return out[:min(limit, len(out))], nil
 }
 
