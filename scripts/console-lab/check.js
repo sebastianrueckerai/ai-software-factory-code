@@ -52,6 +52,8 @@ async function open(browser, viewport) {
 }
 
 async function text(page) {
+  // what a disclosure hides (the deny form, the own-answer box) counts once opened
+  await page.evaluate(() => document.querySelectorAll('button[aria-controls][aria-expanded="false"]').forEach((b) => b.click()));
   return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
     .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
 }

@@ -1926,7 +1926,7 @@ func TestRepeatedButtonsNameTheirRow(t *testing.T) {
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
 	for _, want := range []string{
 		`aria-label="Approve resource request 3 of t-res"`, `aria-label="Deny resource request 3 of t-res"`,
-		`aria-label="Approve as you: merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
+		`aria-label="Approve merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
 	} {
 		if !strings.Contains(board, want) {
 			t.Errorf("board lacks %s", want)

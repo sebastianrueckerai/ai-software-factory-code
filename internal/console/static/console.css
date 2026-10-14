@@ -279,8 +279,53 @@ form.move button { padding: 0 6px; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
 .agent-summary { color: var(--text-muted); font-size: 12.5px; }
 
-/* Needs you items: a decision with its primary action first */
+/* Needs you items: a decision with its primary action first. The headline
+   row holds the chips and the waiting time; the actions sit on one row
+   from 272 px of column, Approve on its own row under that. */
+.need-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.need-top h4 { margin: 0; font-size: 14px; line-height: 1.3; }
+.need-top .since, .need-foot .since { margin-left: auto; color: var(--text-faint); font: 11px/1.6 var(--font-mono); white-space: nowrap; }
+.chip.risk { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); background: color-mix(in srgb, var(--need) 12%, transparent); }
+.chip.migration { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
+.need-line { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.need-line b { color: var(--text); font-weight: 600; }
+.need-line.beyond, .need-line.beyond b { color: var(--need-text); }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.acts form { display: contents; }
+.acts button { height: 30px; }
+.column .acts form[action$="/approve"] button { flex: 1 1 100%; }
+@container column (min-width: 272px) { .acts form[action$="/approve"] button { flex: 0 1 auto; } }
+.column { container-type: inline-size; container-name: column; }
+.need-foot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.need-foot a { color: var(--text-muted); }
+.deny-box, .own { margin-top: 8px; }
+.escalation .q { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; white-space: pre-line; }
 .escalation .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.choices .own-toggle { border-style: dashed; color: var(--text-muted); }
+/* the nested face is the item's headline and state row: its parts become
+   the item's own children so the question and the choices come between
+   the title and the state row */
+.escalation > .face { display: contents; }
+.escalation > .face > .line1 { order: 0; font-size: 14px; }
+.escalation > .q, .escalation > .reason { order: 1; }
+.escalation > .choices, .escalation > .own, .escalation > form, .escalation > .deny-box { order: 2; }
+.escalation > .face > .line2, .escalation > .face > .chips, .escalation > .need-foot, .escalation > .face > .transitions { order: 3; }
+/* the question stands once, as the item's own line; the face's activity line would repeat it */
+.card.escalation > .face > .activity { display: none; }
+.escalation > .need-foot { margin: 4px 0 0; font: 11px/1.6 var(--font-mono); }
+.escalation > .meta, .escalation > form.inline[action^="/alerts/"] { order: 4; }
+/* the item's blocks take full rows; the state row, the issue link and Close share one */
+.escalation { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+.escalation > *, .escalation > .face > * { flex: 1 1 100%; }
+.escalation > .face > .line2, .escalation > .face > .transitions, .escalation > .need-foot { flex: 0 1 auto; }
+.escalation > .face > .transitions { order: 4; margin-top: 4px; }
+.escalation > form, .escalation > .choices { min-width: 0; }
+.escalation textarea, .escalation input[type=text] { width: 100%; box-sizing: border-box; }
+.escalation form:not(.inline) button[type=submit] { height: auto; min-height: 30px; white-space: normal; }
+.escalation > .face > .transitions button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: 11px/1.6 var(--font-mono); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.escalation > .face > .transitions button:hover { color: var(--accent); background: none; }
+.escalation > .meta { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.escalation > form.inline[action^="/alerts/"] button { height: 22px; padding: 0 8px; font-size: 11.5px; }
 .choices form { display: contents; }
 .choices button { height: 30px; border-color: color-mix(in srgb, var(--need) 70%, transparent); background: color-mix(in srgb, var(--need) 5%, transparent); color: var(--text); text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .choices button:hover { background: color-mix(in srgb, var(--need) 16%, transparent); border-color: var(--need); }
