@@ -1232,7 +1232,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 func TestBoardShowsTheConfigVersion(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	line := `Configuration version 4 · commit <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a>`
+	line := `<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a></dd>`
 	for _, path := range []string{"/", "/?view=wide", "/board"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, line) {
@@ -1244,7 +1244,7 @@ func TestBoardShowsTheConfigVersion(t *testing.T) {
 		t.Fatalf("/board is not the bare board fragment: %.200s", frag)
 	}
 	r.c.cfg.Policies = noPolicy{r.ledger}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String(); strings.Contains(body, "Configuration version") {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String(); strings.Contains(body, "<dt>configuration</dt>") {
 		t.Errorf("board shows a configuration version with no policy read: %.200s", body)
 	}
 }

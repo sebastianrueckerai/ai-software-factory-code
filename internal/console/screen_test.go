@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -148,20 +149,22 @@ func TestStatusLineFigures(t *testing.T) {
 	line := func(query string) string {
 		t.Helper()
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
-		start := strings.Index(body, `<p id="status-line" class="status-line"`)
+		start := strings.Index(body, `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">`)
 		if start < 0 {
-			t.Fatalf("board%s has no status line", query)
+			t.Fatalf("board%s has no status strip", query)
 		}
-		return body[start : start+strings.Index(body[start:], "</p>")+len("</p>")]
+		return body[start : start+strings.Index(body[start:], `<button type="button" class="cell xp"`)]
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
-	code := `<p id="status-line" class="status-line" aria-label="Status of the project">
-<strong class="pname">ai-software-factory-code</strong>
-<span class="state" data-state="waiting on you"><span aria-hidden="true">●</span> waiting on you</span>
-<span class="fig">2 working</span>
-<a href="#needs-you" class="fig need">5 need you</a>
-<a href="/costs" class="fig" ` + title + `>€5.50 / €50.00</a>
-</p>`
+	gauge := func(pct int) string {
+		return fmt.Sprintf(`<span class="gauge" role="meter" aria-label="Spend of the month cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%d"><i style="width:%d%%"></i></span><span class="pct">%d%%</span>`, pct, pct, pct)
+	}
+	code := `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
+<span class="cell"><span><b class="n">2</b> working</span></span>
+<a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
+<a href="/costs" class="cell spend" ` + title + `><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a>
+`
 	for _, query := range []string{"", "?view=wide", "?accent=teal"} {
 		if got := line(query); got != code {
 			t.Errorf("board%s: status line\n%s\nwant\n%s", query, got, code)
@@ -171,22 +174,20 @@ func TestStatusLineFigures(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-poster", Author: "sebastian", Repository: "demo-app/demo-app"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "linkshort/linkshort"}})
 	r.tasks.tasks = slices.DeleteFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-elsewhere" })
-	if got, want := line("?project=demo-app"), `<p id="status-line" class="status-line" aria-label="Status of the project">
-<strong class="pname">demo-app</strong>
-<span class="state" data-state="waiting on you"><span aria-hidden="true">●</span> waiting on you</span>
-<span class="fig">0 working</span>
-<a href="#needs-you" class="fig need">1 need you</a>
-<a href="/costs" class="fig" `+title+`>€3.00 / €12.00</a>
-</p>`; got != want {
+	if got, want := line("?project=demo-app"), `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
+<span class="cell"><span><b class="n">0</b> working</span></span>
+<a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
+<a href="/costs" class="cell spend" `+title+`><span><b class="n">€3.00</b> <span class="of">/ €12.00</span></span>`+gauge(25)+`</a>
+`; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
-	if got, want := line("?project=linkshort"), `<p id="status-line" class="status-line" aria-label="Status of the project">
-<strong class="pname">linkshort</strong>
-<span class="state" data-state="idle"><span aria-hidden="true">●</span> idle</span>
-<span class="fig">0 working</span>
-<a href="#needs-you" class="fig">0 need you</a>
-<a href="/costs" class="fig" `+title+`>€0.00 / €50.00</a>
-</p>`; got != want {
+	if got, want := line("?project=linkshort"), `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+<span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
+<span class="cell"><span><b class="n">0</b> working</span></span>
+<a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
+<a href="/costs" class="cell spend" `+title+`><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`+gauge(0)+`</a>
+`; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
 }
@@ -320,10 +321,10 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 `
 	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<span class="state" data-state="idle"><span aria-hidden="true">●</span> idle</span>
-<span class="fig">0 working</span>
-<span class="fig">1 waiting on the provider</span>
-<a href="#needs-you" class="fig">0 need you</a>`, `<span class="pill fine st-waiting">waiting on the provider</span>`} {
+	for _, want := range []string{`<span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
+<span class="cell"><span><b class="n">0</b> working</span></span>
+<span class="cell warn"><span><b class="n">1</b> waiting on the provider</span></span>
+<a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>`, `<span class="pill fine st-waiting">waiting on the provider</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -333,8 +334,8 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	r.c.checks = nil
 	r.c.mu.Unlock()
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if want := `<span class="state" data-state="working"><span aria-hidden="true">●</span> working</span>
-<span class="fig">1 working</span>
+	if want := `<span class="cell state" data-state="working"><i class="dot" aria-hidden="true"></i>working</span>
+<span class="cell"><span><b class="n">1</b> working</span></span>
 <a href="#needs-you"`; !strings.Contains(body, want) || strings.Contains(body, "waiting on the provider") {
 		t.Errorf("after the session_start the board does not show the card working:\n%s", body)
 	}
@@ -344,7 +345,7 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	r.c.checks = nil
 	r.c.mu.Unlock()
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="pill fine st-waiting">waiting for a roll</span>`) || !strings.Contains(body, `<span class="fig">1 working</span>`) ||
+	if !strings.Contains(body, `<span class="pill fine st-waiting">waiting for a roll</span>`) || !strings.Contains(body, `<span class="cell"><span><b class="n">1</b> working</span></span>`) ||
 		strings.Contains(body, "waiting on the provider") {
 		t.Errorf("a held card after a refusal does not wait for the roll:\n%s", body)
 	}
@@ -377,9 +378,9 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
 	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
-		`<section aria-labelledby="human-lane" id="needs-you">`, `class="status-line"`,
+		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`,
-		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Five columns</a>`} {
+		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the wide view lacks %s", want)
 		}
@@ -422,10 +423,10 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`<aside id="drawer" class="drawer" aria-label="The card" hidden></aside>`,
 		`<strong class="title" title="Fix the cache"><a href="#card=t-run" class="open">Fix the cache</a></strong>`,
-		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys">?</button>`,
+		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
-		`<dt><kbd>w</kbd></dt><dd>the wide view, the lanes as columns, or back to the five columns</dd>`,
-		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, or this list</dd>`,
+		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
+		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the status in detail, or this list</dd>`,
 		`<dt><kbd>?</kbd></dt><dd>this list</dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)

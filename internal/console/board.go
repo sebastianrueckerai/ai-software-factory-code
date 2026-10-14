@@ -37,7 +37,22 @@ var funcs = template.FuncMap{
 		}
 		return fmt.Sprintf("%d min", minutes)
 	},
-	"utc":         func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
+	// is the gauge's class: warn from 80 percent, over past the cap
+	"pct": pct,
+	// switch is whether the top bar shows the project select: the board
+	// page's data has the projects, the other pages' has none
+	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },
+	"gaugeClass": func(spent, cap float64) string {
+		switch {
+		case cap > 0 && spent > cap:
+			return " over"
+		case pct(spent, cap) >= 80:
+			return " warn"
+		}
+		return ""
+	},
 	"inc":         func(i int) int { return i + 1 },
 	"join":        strings.Join,
 	"verdictForm": func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
@@ -600,6 +615,104 @@ type boardData struct {
 	PolicyVersion int64
 	PolicyCommit  string
 	PolicyTreeURL string
+	Ticker        []tick // the project's newest events along the foot
+}
+
+func pct(spent, cap float64) int {
+	if cap <= 0 {
+		return 0
+	}
+	return int(math.Round(spent / cap * 100))
+}
+
+// InProgress are the cards in progress for the status panel, with their
+// stage, in the columns' order.
+func (d boardData) InProgress() []card {
+	var out []card
+	for _, col := range d.Columns {
+		if col.Title == "Working" || col.Title == "Verifying" || col.Title == "In progress" {
+			out = append(out, col.Cards...)
+		}
+	}
+	return out
+}
+
+// needLink is one Needs you item in the status panel: its headline and
+// the anchor of the item in the column.
+type needLink struct{ Words, Href string }
+
+// NeedLinks are the Needs you column's items for the status panel.
+func (d boardData) NeedLinks() []needLink {
+	var out []needLink
+	if len(d.Columns) == 0 {
+		return nil
+	}
+	for _, n := range d.Columns[0].Needs {
+		switch {
+		case n.Approval != nil && n.Approval.Kind == factoryd.ApprovalMerge:
+			out = append(out, needLink{fmt.Sprintf("Merge PR #%d", n.Approval.PRNumber), fmt.Sprintf("#approval-%d", n.Approval.ID)})
+		case n.Approval != nil && n.Approval.Kind == factoryd.ApprovalPlan:
+			out = append(out, needLink{fmt.Sprintf("Plan #%d", n.Approval.Issue), fmt.Sprintf("#approval-%d", n.Approval.ID)})
+		case n.Approval != nil:
+			out = append(out, needLink{"Resource request", fmt.Sprintf("#approval-%d", n.Approval.ID)})
+		case n.Card.IssueNumber > 0:
+			out = append(out, needLink{fmt.Sprintf("#%d %s", n.Card.IssueNumber, n.Card.Title), "#need-" + n.Card.ID})
+		default:
+			out = append(out, needLink{n.Card.Title, "#need-" + n.Card.ID})
+		}
+	}
+	return out
+}
+
+// tick is one item of the ticker along the foot: a project event with the
+// card's words.
+type tick struct {
+	At, Glyph, Ref, Words, Class string
+}
+
+// tickerLimit bounds the events the ticker shows.
+const tickerLimit = 24
+
+// tickerOf is the project's newest events as ticks, newest first: a
+// status row by its status word and glyph, any other row by its kind, the
+// card's title when it is on the board.
+func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project) []tick {
+	rows, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, 0, tickerLimit)
+	if err != nil {
+		log.Printf("console: the ticker of %s: %v", p.Repository, err)
+		return nil
+	}
+	var out []tick
+	for i := len(rows) - 1; i >= 0; i-- {
+		e := rows[i]
+		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
+		if e.IssueNumber > 0 {
+			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
+		}
+		if t, ok := v.byID[e.TaskID]; ok {
+			k.Words = c.card(t).Title
+		}
+		if e.Kind == factoryd.EventTaskStatus {
+			status, _ := e.Detail["status"].(string)
+			switch status {
+			case "done":
+				k.Glyph, k.Class = "✓", "done"
+			case "failed":
+				k.Glyph, k.Class = "✕", "failed"
+			case "closed":
+				k.Glyph, k.Class = "⊘", "closed"
+			}
+			if k.Words == "" {
+				k.Words = status
+			} else if k.Class == "event" {
+				k.Words += " · " + status
+			}
+		} else if k.Words == "" {
+			k.Words = e.Kind + " by " + e.Actor
+		}
+		out = append(out, k)
+	}
+	return out
 }
 
 // configTree is commit's tree of the configuration directory in Forgejo,
@@ -1297,6 +1410,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)
+		d.Ticker = c.tickerOf(ctx, v, shown)
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
@@ -1339,7 +1453,10 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	}
 	if ok {
 		s.GitHub, _, _ = strings.Cut(m.State, ":")
-		s.GitHubURL = m.Remote
+		s.GitHubURL = m.Remote + "/pulls"
+		if !strings.Contains(m.Remote, "://") {
+			s.GitHubURL = "https://github.com/" + s.GitHubURL
+		}
 	}
 }
 

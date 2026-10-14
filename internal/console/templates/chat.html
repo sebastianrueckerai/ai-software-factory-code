@@ -1,9 +1,3 @@
-{{define "chat-tabs"}}{{if .Chat}}<nav class="tabs screen-tabs" role="tablist" aria-label="The board or the chat">
-<button type="button" role="tab" aria-selected="true" aria-controls="board" data-pane-tab="board">Board</button>
-<button type="button" role="tab" aria-selected="false" aria-controls="chat" data-pane-tab="chat">Chat <span id="chat-open" class="tab-count" title="proposals not yet answered" hidden></span></button>
-</nav>
-{{end}}{{end}}
-
 {{define "chat"}}{{if .Chat}}<section id="chat" class="chat" aria-labelledby="chat-title"{{if .Writes}} data-project="{{.Project}}" data-login="{{.User}}"{{end}}>
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · {{.Project}}</span>{{if .Writes}} <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select>{{end}}</div>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">

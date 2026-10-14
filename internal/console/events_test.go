@@ -747,9 +747,13 @@ func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
 	}
 	running.CreatedAt = running.CreatedAt.Add(-time.Hour)
 	r.tasks.set("", running)
-	for _, want := range [][]string{{": ping"}, {"event: board", "data:"}} {
-		if got := nextMessage(t, br); !slices.Equal(got, want) {
-			t.Fatalf("after the card's age changed: %q, want %q", got, want)
+	// the status panel names the card's stage age, so the counters change too
+	for got := nextMessage(t, br); ; got = nextMessage(t, br) {
+		if slices.Equal(got, []string{"event: board", "data:"}) {
+			break
+		}
+		if !slices.Equal(got, []string{": ping"}) && (len(got) != 2 || got[0] != "event: counters") {
+			t.Fatalf("after the card's age changed: %q, want the board event", got)
 		}
 	}
 }
@@ -869,16 +873,23 @@ func TestStreamSendsTheCounters(t *testing.T) {
 			}
 		}
 	}
-	const status = "\n<strong class=\"pname\">ai-software-factory-code</strong>\n" +
-		"<span class=\"state\" data-state=\"waiting on you\"><span aria-hidden=\"true\">●</span> waiting on you</span>\n" +
-		"<span class=\"fig\">1 working</span>\n<a href=\"#needs-you\" class=\"fig need\">2 need you</a>\n" +
-		"<a href=\"/costs\" class=\"fig\" title=\"spend this UTC month against the project's month cap\">€0.00 / €50.00</a>\n"
-	moved()
-	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 1, 0, 0}) {
-		t.Errorf("counters %+v, want %q and 2 0 1 0 0", got, status)
+	// the strip's cells, as the status template renders them
+	status := func(s string) bool {
+		for _, cell := range []string{`<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>`,
+			`<span class="cell"><span><b class="n">1</b> working</span></span>`, `<a href="#needs-you" class="cell needs on"><span><b class="n">2</b> need you</span></a>`,
+			`<a href="/costs" class="cell spend" title="spend this UTC month against the project's month cap"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`} {
+			if !strings.Contains(s, cell) {
+				return false
+			}
+		}
+		return true
 	}
-	if got := next(teal); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 0, 0, 0}) {
-		t.Errorf("teal's counters %+v, want %q and 2 0 0 0 0", got, status)
+	moved()
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0, 0}) {
+		t.Errorf("counters %+v, want the strip and 2 0 1 0 0", got)
+	}
+	if got := next(teal); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 0, 0, 0}) {
+		t.Errorf("teal's counters %+v, want the strip and 2 0 0 0 0", got)
 	}
 	// unchanged: two heartbeats pass after the event without counters
 	moved()
@@ -893,7 +904,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	queued := factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 12, Objective: "queue it"}
 	r.tasks.set("", running, queued)
 	moved()
-	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 1, 1, 0, 0}) {
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 1, 1, 0, 0}) {
 		t.Errorf("counters after a queued card %+v, want 2 1 1 0 0", got)
 	}
 }
@@ -1046,7 +1057,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`,
-		`<footer id="live" role="status"></footer>`} {
+		`<p class="stream" id="live" role="status"></p>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)
 		}
@@ -1055,7 +1066,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 		t.Error("the board page still polls")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil), ck).Body.String()
-	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<p id=\"status-line\" hx-swap-oob=\"innerHTML\">\n<strong class=\"pname\">ai-software-factory-code</strong>") {
+	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<div id=\"status-line\" hx-swap-oob=\"innerHTML\"><div class=\"strip\" role=\"group\" aria-label=\"Status of the project\">") {
 		t.Errorf("the board fragment carries no status line out of band:\n%s", frag)
 	}
 

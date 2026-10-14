@@ -102,6 +102,11 @@ async function main() {
         // the columns scroll inside the viewport: a tall one shows every card
         await shot("board-tall-1440.png", tall, "/", doIt);
         await shot("wide-1440.png", desk, "/?view=wide");
+        // the status in detail, opened on the strip's chevron
+        await shot("status-open-1440.png", desk, "/", async (p) => {
+          await p.page.locator("#status-toggle").click();
+          await p.idle();
+        }, false);
         if (drawer) {
           const tab = (title) => async (p) => {
             await p.page.locator("#drawer").getByRole("tab", { name: title, exact: true }).click();
@@ -111,12 +116,8 @@ async function main() {
           await shot("drawer-overview-1440.png", desk, (id) => "/#card=" + id, tab("Overview"), false);
           await shot("drawer-files-1440.png", desk, (id) => "/#card=" + id, tab("Files"), false);
         }
-        await shot("phone-board-390.png", phone, "/");
-        await shot("phone-chat-390.png", phone, "/", async (p) => {
-          await p.page.getByRole("tab", { name: /^Chat/ }).click();
-          await p.idle();
-          await doIt(p);
-        });
+        // the phone is one column: the chat first, the board below it
+        await shot("phone-390.png", phone, "/", doIt);
         if (s !== "busy") continue;
         for (const pg of pages) await shot(pg + "-1440.png", desk, "/" + pg);
         await shot("timeline-1440.png", desk, "/tasks/" + drawer + "/timeline");

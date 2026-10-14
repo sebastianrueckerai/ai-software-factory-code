@@ -621,7 +621,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 // question and its forms.
 func escalationOf(t *testing.T, body, id string) string {
 	t.Helper()
-	for _, part := range strings.Split(body, `<article class="card escalation">`)[1:] {
+	for _, part := range strings.Split(body, `<article class="card escalation" id="need-`)[1:] {
 		face, rest, _ := strings.Cut(part, "</article>")
 		if strings.Contains(face, `data-card="`+id+`"`) {
 			own, _, _ := strings.Cut(rest, "</article>")

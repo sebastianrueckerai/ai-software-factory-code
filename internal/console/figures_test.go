@@ -45,7 +45,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 	if d.Status.TodayEUR != 4.82 || d.Status.DayCapEUR != 20 {
 		t.Errorf("today %.2f of the day cap %.2f, want 4.82 of 20", d.Status.TodayEUR, d.Status.DayCapEUR)
 	}
-	if d.Status.GitHub != "1 open pull request" || d.Status.GitHubURL != "https://github.com/sebastianrueckerai/ai-software-factory-code" {
+	if d.Status.GitHub != "1 open pull request" || d.Status.GitHubURL != "https://github.com/sebastianrueckerai/ai-software-factory-code/pulls" {
 		t.Errorf("GitHub %q at %q", d.Status.GitHub, d.Status.GitHubURL)
 	}
 	got := map[string][2]string{}

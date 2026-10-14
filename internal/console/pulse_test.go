@@ -30,41 +30,39 @@ var calm = factoryd.Pulse{ID: 7, Repository: "sf/code", At: time.Date(2026, 10, 
 func pulseBlock(t *testing.T, r *rig, ck *http.Cookie, query string) string {
 	t.Helper()
 	body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
-	start := strings.Index(body, `<div id="pulse"`)
-	if start < 0 {
+	start := strings.Index(body, `<section id="pulse"`)
+	if start < 0 || !strings.Contains(body[start:], `<div class="pulse-row">`) {
 		return ""
 	}
-	return body[start : start+strings.Index(body[start:], "</div>")+len("</div>")]
+	return body[start : start+strings.Index(body[start:], "</p></div>")+len("</p></div>")]
 }
 
-// The pulse opens the board, under the status line, as one line: muted words
-// when all is well, the warning sign and the prominent class when a card
-// waits on a human. Its bullets are in the markup, folded; a project
-// without a pulse shows none.
+// The pulse band stands above the screen with its sentence first: muted
+// words when all is well, the warning sign and the prominent class when a
+// card waits on a human. Its bullets are in the markup, folded behind the
+// band's disclosure; a project without a pulse has a band of the strip
+// alone.
 func TestPulseLineSubduedAndProminent(t *testing.T) {
 	r, ck := screenRig(t)
 	r.c.cfg.Pulses = fakePulses{"sf/code": calm}
-	const tail = `<span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
-<ul class="pulse-bullets"><li>Needs you: nothing</li><li>Running: #11 Speed up the board</li><li>Since 08:30: #4 done</li><li>Spend: €5.50 of the €50 cap</li></ul>
-</details></div>`
-	const summary = `<details class="pulse-fold">
-<summary title="the most useful thing to know now; click for more">`
+	const tail = `<span class="typing pulse-typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span></p></div>`
+	const bullets = `<ul class="pulse-bullets" id="pulse-bullets" hidden><li>Needs you: nothing</li><li>Running: #11 Speed up the board</li><li>Since 08:30: #4 done</li><li>Spend: €5.50 of the €50 cap</li></ul>`
 	for _, query := range []string{"", "?view=wide"} {
-		if got, want := pulseBlock(t, r, ck, query), `<div id="pulse" class="pulse">`+summary+
-			`<span class="pulse-sign" hidden>⚠</span> <span class="pulse-say">#11 Speed up the board is running; #4 merged at 09:12.</span>`+tail; got != want {
+		if got, want := pulseBlock(t, r, ck, query), `<section id="pulse" class="status" aria-label="Pulse">
+<div class="pulse-row"><span class="pulse-sign" hidden aria-hidden="true">⚠</span><p class="pulse-text"><span class="pulse-say">#11 Speed up the board is running; #4 merged at 09:12.</span>`+tail; got != want {
 			t.Errorf("board%s: the calm pulse\n%s\nwant\n%s", query, got, want)
 		}
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	_, inBoard, _ := strings.Cut(body, `<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`)
-	if before, _, ok := strings.Cut(inBoard, `<div id="pulse"`); !ok || strings.TrimSpace(before) != "" || !strings.Contains(body, `<p id="status-line"`) {
-		t.Errorf("the pulse does not open the board under the status line")
+	band, screen := strings.Index(body, `<section id="pulse"`), strings.Index(body, `<div id="screen"`)
+	if band < 0 || screen < 0 || band > screen || !strings.Contains(body[band:screen], bullets) || !strings.Contains(body[band:screen], `<div id="status-line">`) {
+		t.Errorf("the pulse band with its strip and folded bullets does not stand above the screen")
 	}
 	waits := calm
 	waits.Sentence, waits.Prominent = "#13 Use a replica? needs your answer.", true
 	r.c.cfg.Pulses = fakePulses{"sf/code": waits}
-	if got, want := pulseBlock(t, r, ck, ""), `<div id="pulse" class="pulse prominent">`+summary+
-		`<span class="pulse-sign">⚠</span> <span class="pulse-say">#13 Use a replica? needs your answer.</span>`+tail; got != want {
+	if got, want := pulseBlock(t, r, ck, ""), `<section id="pulse" class="status prominent" aria-label="Pulse">
+<div class="pulse-row"><span class="pulse-sign" aria-hidden="true">⚠</span><p class="pulse-text"><span class="pulse-say">#13 Use a replica? needs your answer.</span>`+tail; got != want {
 		t.Errorf("the prominent pulse\n%s\nwant\n%s", got, want)
 	}
 	r.c.cfg.Pulses = fakePulses{}

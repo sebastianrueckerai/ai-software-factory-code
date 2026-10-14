@@ -1,30 +1,20 @@
 {{template "head" .}}
 {{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
-<form method="get" action="/" class="filter">
-<label for="project-filter">Project</label>
-<select id="project-filter" name="project">
-{{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
-{{end}}</select>
-<label for="accent-filter">Accent</label>
-<select id="accent-filter" name="accent">
-<option value=""{{if not .Accent}} selected{{end}}>every accent</option>
-{{range accents}}<option value="{{.}}"{{if eq . $.Accent}} selected{{end}}>{{.}}</option>
-{{end}}</select>
-{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}<button type="submit">Show</button>
-<a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Five columns{{else}}Wide view{{end}}</a>
-<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys">?</button>
-</form>
-{{if .Status.Project}}<p id="status-line" class="status-line" aria-label="Status of the project">{{template "status" .}}</p>
-{{end}}{{template "chat-tabs" .}}<div id="screen" class="screen{{if .Chat}} with-chat{{end}}" data-pane="board">
-{{template "board" .}}
-{{template "chat" .}}</div>
+{{if .Status.Project}}<section id="pulse" class="status{{if and .Pulse .Pulse.Prominent}} prominent{{end}}" aria-label="Pulse">
+{{with .Pulse}}<div class="pulse-row"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}} aria-hidden="true">⚠</span><p class="pulse-text"><span class="pulse-say">{{.Sentence}}</span><span class="typing pulse-typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span></p></div>
+{{end}}<div id="status-line">{{template "status" .}}</div>
+</section>
+{{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
+{{template "chat" .}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
+</div>
+<footer class="ticker" id="ticker" aria-label="Recent events"><div class="tk-track" id="ticker-track"><span class="tk-set">{{range .Ticker}}<span class="tk t-{{.Class}}"><time>{{.At}}</time><span class="g" aria-hidden="true">{{.Glyph}}</span><b>{{.Ref}}</b><span>{{.Words}}</span></span>{{end}}</span></div><p class="stream" id="live" role="status"></p></footer>
 <div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
 <div class="overlay-box">
 <h2 id="keys-title">Keys</h2>
 <dl>
-<dt><kbd>w</kbd></dt><dd>the wide view, the lanes as columns, or back to the five columns</dd>
-<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, or this list</dd>
+<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>
+<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the status in detail, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
 {{template "chat-keys" .}}</dl>
 <button type="button" id="keys-close">Close</button>

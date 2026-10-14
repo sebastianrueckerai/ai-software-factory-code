@@ -32,12 +32,8 @@ func TestChatPanel(t *testing.T) {
 	const code = "/?project=ai-software-factory-code"
 	body := page(ck, code)
 	for _, want := range []string{
-		`<nav class="tabs screen-tabs" role="tablist" aria-label="The board or the chat">
-<button type="button" role="tab" aria-selected="true" aria-controls="board" data-pane-tab="board">Board</button>
-<button type="button" role="tab" aria-selected="false" aria-controls="chat" data-pane-tab="chat">Chat <span id="chat-open" class="tab-count" title="proposals not yet answered" hidden></span></button>
-</nav>
-<div id="screen" class="screen with-chat" data-pane="board">
-<div id="board" data-project="ai-software-factory-code"`,
+		`<div id="screen" class="main with-chat">
+<section id="chat" class="chat" aria-labelledby="chat-title"`,
 		`<section id="chat" class="chat" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select></div>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
@@ -53,8 +49,7 @@ func TestChatPanel(t *testing.T) {
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 <script src="/static/chat.js" defer></script>
 </section>
-</div>
-<aside id="drawer"`,
+<div id="board" data-project="ai-software-factory-code"`,
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent</dd>
 <dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>
 <dt><kbd>Escape</kbd></dt><dd>in the chat's input: leave it</dd>`,
@@ -63,9 +58,9 @@ func TestChatPanel(t *testing.T) {
 			t.Errorf("the writer's page lacks\n%s", want)
 		}
 	}
-	line, tabs := strings.Index(body, `<p id="status-line" class="status-line" aria-label="Status of the project">`), strings.Index(body, `<nav class="tabs screen-tabs"`)
-	if line < 0 || tabs < 0 || !strings.HasSuffix(body[line:tabs], "</p>\n") || strings.Count(body[line:tabs], "</p>") != 1 {
-		t.Errorf("the status line does not stand right above the tabs and the screen")
+	band, screen := strings.Index(body, `<section id="pulse" class="status`), strings.Index(body, `<div id="screen" class="main with-chat">`)
+	if band < 0 || screen < 0 || band > screen || !strings.HasSuffix(body[band:screen], "</section>\n") {
+		t.Errorf("the pulse band does not stand right above the screen")
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/static/chat.js", nil))
 	if js, _ := io.ReadAll(rec.Body); rec.Code != http.StatusOK || !strings.Contains(string(js), "var chatView = ") {
@@ -92,7 +87,7 @@ func TestChatPanel(t *testing.T) {
 	bk, _ := r.as(t, "bob")
 	none := func(who, body string) {
 		t.Helper()
-		for _, unwanted := range []string{`id="chat"`, "screen-tabs", "with-chat", "chat.js"} {
+		for _, unwanted := range []string{`id="chat"`, "with-chat", "chat.js"} {
 			if strings.Contains(body, unwanted) {
 				t.Errorf("%s: the page holds %s", who, unwanted)
 			}
