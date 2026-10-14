@@ -755,6 +755,21 @@ func (s *PGStore) SetObjective(ctx context.Context, id, objective string) error 
 	return oneRow(res, err, "task "+id)
 }
 
+// RaiseTaskBudget raises task id's budget_eur by eur in one transaction
+// (roadmap 210: the console's Fund action) and answers the budget before
+// and after the raise, the one statement both doing the raise and reading
+// what the audit row carries.
+func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error) {
+	err = s.db.QueryRowContext(ctx,
+		`UPDATE tasks SET budget_eur = budget_eur + $2 WHERE id = $1
+		 RETURNING (budget_eur - $2::numeric)::float8, budget_eur::float8`,
+		id, eur).Scan(&from, &to)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	return from, to, err
+}
+
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL).
 func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET accent = NULLIF($2, '') WHERE id = $1`, id, accent)

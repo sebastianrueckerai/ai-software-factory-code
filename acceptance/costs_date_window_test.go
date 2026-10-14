@@ -276,6 +276,9 @@ func (s *acceptTasks) moveCard(taskID, lane string) {
 func (s *acceptTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
 func (s *acceptTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
 func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }
+func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *acceptTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }

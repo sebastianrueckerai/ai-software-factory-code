@@ -1893,3 +1893,32 @@ func (s *fakeStore) OpenPlanQuestions(ctx context.Context, id string, revision i
 	qs, _ := s.PlanQuestions(ctx, id, revision)
 	return len(qs) - len(slices.DeleteFunc(qs, func(q PlanQuestion) bool { return q.Answer == "" })), nil
 }
+
+// RaiseTaskBudget (roadmap 210: the console's Fund action) raises
+// budget_eur by the stated amount in one statement and answers the budget
+// before and after; a missing task is ErrNotFound.
+func TestPGStoreRaiseTaskBudget(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, SpentEUR: 1.83, Status: "waiting-human", Repository: "sf/r"}); err != nil {
+		t.Fatal(err)
+	}
+	from, to, err := s.RaiseTaskBudget(ctx, "t-c", 0.5)
+	if err != nil || from != 2 || to != 2.5 {
+		t.Fatalf("raise = (%v, %v, %v), want (2, 2.5, nil)", from, to, err)
+	}
+	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 2.5 || got.SpentEUR != 1.83 {
+		t.Fatalf("after the raise: budget %v spent %v, want 2.5 and 1.83", got.BudgetEUR, got.SpentEUR)
+	}
+	if _, _, err := s.RaiseTaskBudget(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("raise of no task = %v, want ErrNotFound", err)
+	}
+}

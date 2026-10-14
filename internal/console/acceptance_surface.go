@@ -477,6 +477,19 @@ func (a *AcceptanceRig) SetTaskAccent(context.Context, string, string) error { r
 
 func (a *AcceptanceRig) SetObjective(context.Context, string, string) error { return nil }
 
+func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float64) (float64, float64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			from := a.tasks[i].BudgetEUR
+			a.tasks[i].BudgetEUR += eur
+			return from, a.tasks[i].BudgetEUR, nil
+		}
+	}
+	return 0, 0, factoryd.ErrNotFound
+}
+
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
 
 func (a *AcceptanceRig) RemoveTaskDeps(context.Context, string, []string) error { return nil }

@@ -195,6 +195,9 @@ func (s *accBatchTasks) Dependents(_ context.Context, _ string) ([]factoryd.Depe
 func (s *accBatchTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
 func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
 func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }
+func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
@@ -751,6 +752,44 @@ func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
 		return ""
 	}
 	return why
+}
+
+// doFund raises card id's budget by eur, an approver's funding of a card
+// waiting on a human after a budget refusal (roadmap 210): one store
+// transaction raises budget_eur, and the event row is the raise's audit
+// trail — the actor, the card, the old and the new budget and the stated
+// reason. The card keeps waiting as it was; the next answer resumes it,
+// now with headroom (the answer box is unchanged).
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	switch {
+	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
+		return "", refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
+	case reason == "" || len(reason) > 64<<10:
+		return "", refuse(http.StatusBadRequest, "a reason of up to 64 KiB is required")
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if t.Kind != "agent" || t.Status != "waiting-human" {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
+	}
+	if c.unfundedAnswer(ctx, t) == "" {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a call: it needs no raise; answer it (answer).", t.IssueNumber))
+	}
+	from, to, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
+	case err != nil:
+		log.Printf("console: %s funds %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
+	}
+	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, reason)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded,
+		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": reason})
+	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f; it resumes on the next answer.", t.IssueNumber, eur, to), nil
 }
 
 // doClose closes card id's issue as the member, its note commented first

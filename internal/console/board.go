@@ -135,6 +135,10 @@ type card struct {
 	Reason   string   // an escalation's reason
 	Choices  []string // the answers its agent offered, a button each
 	Capped   bool     // an escalated card at its session cap, which an answer grants a session
+	// Fund is the approver's Fund action on an escalated card whose
+	// remaining budget cannot fund a call (ruling 322's floor), which
+	// raises its budget (roadmap 210).
+	Fund *fundForm
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -448,6 +452,10 @@ func planRollup(cards []card) string {
 // move is a backlog card's button into a starting lane. The board's filter
 // rides on the form from the card's Filter.
 type move struct{ Lane, Title, CSRF string }
+
+// fundForm is an approver's Fund action beside a capped card's answer box:
+// the stated amount raises the card's budget_eur (roadmap 210).
+type fundForm struct{ CSRF string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
@@ -923,6 +931,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.escalated(t) {
 		k.Reason, k.Choices, k.EscalationAlert = bt.Escalation, bt.Choices, bt.EscalationAlert
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
+		// the Fund action is offered where the answer path's floor refuses
+		// the answer (ruling 322): the same card, to its project's approvers
+		if v.approves(t.Repository) && c.unfundedAnswer(ctx, t) != "" {
+			k.Fund = &fundForm{CSRF: v.csrf}
+		}
 	}
 	return k
 }
@@ -1578,6 +1591,20 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 // answer posts the human's answer to an escalation (doAnswer).
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	if _, err := c.doAnswer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+}
+
+// fundCard raises a waiting card's budget (doFund).
+func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
+	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
+		return
+	}
+	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason")); err != nil {
 		c.fail(w, r, err)
 		return
 	}
