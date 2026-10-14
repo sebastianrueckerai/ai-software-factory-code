@@ -23,7 +23,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: build the CI runner image on the layer cache
-        run: docker build -f Dockerfile.runner -t ci-runner:test --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
+        # roadmap 232: the commit's clock, so a content-identical tree builds
+        # the same digest at any wall-clock time
+        run: |
+          EPOCH=$(git log -1 --pretty=%ct)
+          docker build -f Dockerfile.runner -t ci-runner:test --build-arg SOURCE_DATE_EPOCH=$EPOCH --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
       - name: test and vet with the warm caches
         # the checkout travels as a tar stream: the job container's filesystem
         # holds it, and the dind daemon can bind-mount only its own paths
@@ -44,7 +48,8 @@ jobs:
       - name: build and push gateway image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA \
+          EPOCH=$(git log -1 --pretty=%ct)
+          docker build --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA \
             --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
@@ -58,7 +63,8 @@ jobs:
       - name: build and push sandbox image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
+          EPOCH=$(git log -1 --pretty=%ct)
+          docker build -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
@@ -77,7 +83,8 @@ jobs:
       - name: build and push CI runner image
         run: |
           SHA=${GITHUB_SHA::7}
-          docker build -f Dockerfile.runner -t git.aisoftwarefactory.world/sf/ci-runner:$SHA \
+          EPOCH=$(git log -1 --pretty=%ct)
+          docker build -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/ci-runner:$SHA \
             --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/ci-runner:main,mode=max,registry.insecure=true,ignore-error=true .
           docker push git.aisoftwarefactory.world/sf/ci-runner:$SHA
