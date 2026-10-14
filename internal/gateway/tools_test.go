@@ -754,7 +754,7 @@ func TestFactorydEscalateClientRetriesThroughARestart(t *testing.T) {
 		w.WriteHeader(http.StatusConflict)
 	}))
 	defer down.Close()
-	f = &Factoryd{BaseURL: down.URL, Token: "shared", HTTP: down.Client(), RetryFor: 20 * time.Millisecond, RetryEvery: time.Millisecond}
+	f = &Factoryd{BaseURL: down.URL, Token: "shared", HTTP: down.Client(), RetryFor: 250 * time.Millisecond, RetryEvery: 10 * time.Millisecond}
 	if err := f.Escalate(context.Background(), "t-1", Escalation{Kind: "escalation"}); err == nil {
 		t.Fatal("an escalation nobody took within the bound returned no error")
 	}
