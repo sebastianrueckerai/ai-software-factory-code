@@ -15,7 +15,7 @@
 <a class="home" href="/">Factory console</a>
 {{if .CSRF}}{{if switch .}}<form method="get" action="/" class="switch"><label for="project-filter" class="visually-hidden">Project</label><select id="project-filter" name="project">
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
-{{end}}</select>{{with .Accent}}<input type="hidden" name="accent" value="{{.}}">{{end}}{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
+{{end}}</select>{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
 {{end}}<nav aria-label="Main"><a href="/">Board</a>{{if .Factory}} <a href="/tasks/new">New task</a> <a href="/projects">Projects</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a>{{end}}</nav>{{end}}
 <button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to the light theme" title="Dark theme is the default; your choice is remembered">Theme: dark</button>
 {{if .CSRF}}<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}

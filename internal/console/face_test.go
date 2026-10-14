@@ -404,6 +404,45 @@ func TestCardFaceStaleRing(t *testing.T) {
 	}
 }
 
+// The ring reads the card's own work too: a running card whose newest
+// event is old but whose session wrote a fresh timeline step wears no
+// ring, and one whose newest step is old wears the ring for the step's
+// age, not the event's.
+func TestCardFaceStaleRingReadsTheTimeline(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, _ := r.loggedIn(t)
+	old := time.Now().Add(-45 * time.Minute)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-live", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "live session", CreatedAt: old},
+		factoryd.Task{ID: "t-dead", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "dead workflow", CreatedAt: old})
+	for _, id := range []string{"t-live", "t-dead"} {
+		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardMoved,
+			Actor: "sebastian", Via: factoryd.ViaButton, At: old}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step := func(at time.Time) []byte {
+		line, err := json.Marshal(map[string]any{"step": "session_start", "attempt": 1, "time": at.UTC().Format(time.RFC3339Nano)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return append(line, '\n')
+	}
+	r.objects["sessions/t-live/timeline.jsonl"] = step(time.Now().Add(-2 * time.Minute))
+	r.objects["sessions/t-dead/timeline.jsonl"] = step(time.Now().Add(-40 * time.Minute))
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-live"); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") {
+		t.Errorf("a card whose session writes steps wears the ring:\n%s", face)
+	}
+	face := faceOf(t, body, "t-dead")
+	if !strings.HasPrefix(face, `<article class="card face stale" data-card="t-dead" `) {
+		t.Errorf("the quiet card wears no ring:\n%s", face)
+	}
+	if want := "nothing for over 40 min"; !strings.Contains(face, want) {
+		t.Errorf("the ring's words are not the step's age:\n%s", face)
+	}
+}
+
 // A waiting card's activity line is the question it waits on, not its
 // newest event, in the escalations and in its column alike.
 func TestCardFaceWaitingReason(t *testing.T) {
@@ -551,29 +590,7 @@ func TestAccentPost(t *testing.T) {
 	}
 }
 
-// ?accent= narrows the board to the cards of one accent; another name is
-// refused.
-func TestAccentFilterNarrowsBoard(t *testing.T) {
-	r := newRig(t)
-	ck, _ := r.loggedIn(t)
-	r.tasks.set("",
-		factoryd.Task{ID: "t-blue", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "blue work", Accent: "blue"},
-		factoryd.Task{ID: "t-red", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "red work", Accent: "red"},
-		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "plain work"})
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?accent=blue", nil), ck).Body.String()
-	if !strings.Contains(body, "blue work") || strings.Contains(body, "red work") || strings.Contains(body, "plain work") {
-		t.Errorf("the blue board shows another card or not its own:\n%s", col(t, body, "Running"))
-	}
-	if !strings.Contains(body, `<option value="blue" selected>blue</option>`) {
-		t.Error("the filter's select does not keep blue")
-	}
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/?accent=purple", nil), ck); rec.Code != http.StatusBadRequest {
-		t.Errorf("accent purple = %d, want 400", rec.Code)
-	}
-}
-
-// On a filtered board every form carries the filter back, never the card's
-// own accent: move, retry, Start plan, the plan's accept, changes and
+// On a filtered board every form carries the filter back: move, retry, Start plan, the plan's accept, changes and
 // reject, summary and accent; the poll asks for the same board, and a
 // browser's POST is sent back to it.
 func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
@@ -589,13 +606,13 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-spec2",
 		Project: "linkshort/linkshort", Status: "pending", Spec: json.RawMessage(`{"revision":1,"sha256":"sha-1"}`)})
 	ck, s := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&accent=teal", nil), ck).Body.String()
-	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value="teal">`
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	htmx := func(action string) string {
 		return `action="` + action + `" hx-post="` + action + `" hx-target="#board" hx-swap="outerHTML"`
 	}
 	for _, want := range []string{
-		`data-query="?accent=teal&amp;project=linkshort">`,
+		`data-query="?project=linkshort">`,
 		htmx("/cards/t-c2/lane") + ` class="inline move" data-move="ready">` + filter,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-plan/start-plan") + ` class="inline">` + filter,
@@ -608,7 +625,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 			t.Errorf("the filtered board lacks %s", want)
 		}
 	}
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2/drawer?project=linkshort&accent=teal", nil), ck).Body.String()
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
 		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
 		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit">` + filter,
@@ -617,9 +634,6 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 			t.Errorf("the filtered drawer lacks %s", want)
 		}
 	}
-	if plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(plain, `name="accent" value="teal"`) {
-		t.Error("on the unfiltered board a form carries the card's accent as the board's filter")
-	}
 	for path, form := range map[string]url.Values{
 		"/tasks/t-c2/summary": {"summary": {"links"}},
 		"/tasks/t-c2/accent":  {"value": {"blue"}},
@@ -627,8 +641,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	} {
 		form.Set("csrf", s.csrf)
 		form.Set("project", "linkshort")
-		form.Set("accent", "teal")
-		if rec := r.do(post(path, form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?accent=teal&project=linkshort" {
+		if rec := r.do(post(path, form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort" {
 			t.Errorf("%s = %d to %q, want 303 to the filtered board", path, rec.Code, rec.Header().Get("Location"))
 		}
 	}
@@ -670,7 +683,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	}
 	ck, s := r.loggedIn(t)
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`
+		`<input type="hidden" name="view" value="wide">`
 	choice := func(c string) string {
 		return `<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
 			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
@@ -703,7 +716,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	}
 
 	before := ev.count()
-	rec := r.do(post("/tasks/t-ch/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "accent": {""}, "view": {"wide"},
+	rec := r.do(post("/tasks/t-ch/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "view": {"wide"},
 		"answer": {"a shard"}}), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code&view=wide" {
 		t.Fatalf("the choice = %d to %q, want 303 to the filtered board", rec.Code, rec.Header().Get("Location"))

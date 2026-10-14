@@ -47,6 +47,7 @@ type fakeStore struct {
 	finished     map[string]time.Time
 	settled      map[string]bool
 	intakeEvents []IntakeEvent
+	events       []Event // newest last, as NewestTaskEvents reads them
 	deliveries   map[string]bool
 	pruned       []time.Duration
 	approvals    []ApprovalRequest
@@ -502,6 +503,24 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 		return tasks[i].ID < tasks[j].ID
 	})
 	return tasks, nil
+}
+
+// NewestTaskEvents is the newest event of each of tasks, newest row last.
+func (s *fakeStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error) {
+	set := map[string]bool{}
+	for _, t := range tasks {
+		set[t] = true
+	}
+	out := map[string]Event{}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		if e.TaskID != "" && set[e.TaskID] {
+			if _, ok := out[e.TaskID]; !ok {
+				out[e.TaskID] = e
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {

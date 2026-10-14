@@ -6,6 +6,7 @@ import (
 	"log"
 	"math"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -136,6 +137,7 @@ type GateWatch struct {
 }
 
 type watchedRun struct {
+	activity string
 	attempt  int32
 	started  time.Time
 	bound    time.Duration
@@ -166,7 +168,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	run := &watchedRun{attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, activityPin(in.Args)), cancel: cancel}
+	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, activityPin(in.Args)), cancel: cancel}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
 	i.g.mu.Lock()
@@ -226,6 +228,25 @@ func (g *GateWatch) Running(workflowID, activityID string, attempt int32) bool {
 	defer g.mu.Unlock()
 	_, ok := g.run(workflowID, activityID, attempt)
 	return ok
+}
+
+// RunningActivity is the activity workflowID runs here, "" when none
+// does: liveness the way the gates read it, so a caller that watches a
+// workflow (the stale sweep) does not act on a live one whose steps are
+// merely sparse.
+func (g *GateWatch) RunningActivity(workflowID string) (string, bool) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	name, running := "", false
+	for key, run := range g.runs {
+		if id, _, found := strings.Cut(key, "/"); !found || id != workflowID {
+			continue
+		}
+		if !running || run.activity < name {
+			name, running = run.activity, true
+		}
+	}
+	return name, running
 }
 
 // Wait extends the attempt's bound once by its own length; false when it

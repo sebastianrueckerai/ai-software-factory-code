@@ -508,6 +508,16 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
 		}
 	}
+	if res.Outcome != OutcomePushed {
+		// the session may have proven the card itself (roadmap 208): one
+		// of its plan's acceptance commands run green. A read that fails
+		// costs the card nothing: it ends as it always did.
+		if acceptance, err := r.planAcceptance(ctx, t); err != nil {
+			log.Printf("task %s: its plan's acceptance: %v", t.ID, err)
+		} else if hit := r.sessionAcceptance(ctx, t, s.id, acceptance); hit != nil {
+			res.Acceptance = hit
+		}
+	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome == OutcomePushed {
@@ -533,7 +543,11 @@ func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.
 }
 
 // startRef is where a session starts: the branch's head, else the given
-// ref, else main's current head, which becomes the task's base.
+// ref, else the task's stamped base — main's head when the row carries no
+// stamp yet, written once. A retry, or any later session start, reads the
+// existing stamp, the fork point the first stamp recorded, instead of
+// re-reading main's head: a main that moved during the session must not
+// re-stamp a base the branch was not cut from.
 func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string) (string, error) {
 	fork := r.forgejo.Fork(repo)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(*t))
@@ -544,17 +558,17 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 		return "", fmt.Errorf("branch head: %w", err)
 	case given != "":
 		return given, nil
+	case t.SHA != "":
+		return t.SHA, nil
 	}
 	main, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
 		return "", fmt.Errorf("main head: %w", err)
 	}
-	if main != t.SHA {
-		if err := r.store.SetTaskSHA(ctx, t.ID, main); err != nil {
-			return "", err
-		}
-		t.SHA = main
+	if err := r.store.SetTaskSHA(ctx, t.ID, main); err != nil {
+		return "", err
 	}
+	t.SHA = main
 	return main, nil
 }
 

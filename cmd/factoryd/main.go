@@ -299,8 +299,11 @@ func main() {
 		log.Fatalf("temporal worker: %v", err)
 	}
 	go func() {
+		// nudged is the stale sweep's memory of its signals, task id → when
+		nudged := map[string]time.Time{}
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
+			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, gates, nudged)
 			select {
 			case <-ctx.Done():
 				return
@@ -403,6 +406,9 @@ func main() {
 		},
 		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,
+		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
+			return runner.CloseCardDone(ctx, taskID, by, evidence)
+		},
 		SplitCard: func(ctx context.Context, taskID, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
 		},

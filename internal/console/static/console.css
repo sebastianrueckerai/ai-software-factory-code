@@ -465,12 +465,10 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .overlay-box dt { text-align: right; }
 .overlay-box dd { margin: 0; color: var(--text-muted); }
 
-/* the board's header row: Board in small capitals, the accent filter,
-   the view switch and the keys, quiet, 26 px high */
+/* the board's header row: Board in small capitals, the view switch and
+   the keys, quiet, 26 px high */
 .board-head { display: flex; align-items: center; gap: 8px; height: 26px; flex: none; margin-bottom: 8px; }
 .board-head h2 { margin: 0 auto 0 0; color: var(--text-muted); font-size: 14px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
-.filter { display: flex; gap: 8px; align-items: center; margin: 0; }
-.filter select { height: 24px; font-size: 11.5px; padding-right: 24px; background-position: calc(100% - 13px) 9px, calc(100% - 8px) 9px; }
 .view-toggle, .keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
 .keys-toggle { width: 24px; padding: 0; font-family: var(--font-mono); }
 .switch select { height: 28px; max-width: 240px; text-overflow: ellipsis; }
@@ -516,11 +514,16 @@ a.cell:hover { background: var(--bg-hover); }
 a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transparent); }
 .cell.spend { gap: 12px; }
 .cell.spend .of { color: var(--text-muted); font-family: var(--font-mono); font-size: 13px; }
-.gauge { position: relative; display: block; overflow: hidden; width: 132px; height: 6px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); }
+/* the gauge is a meter: the page's policy allows no inline style, so no
+   width attribute; the fill colour is the gauge's --fill */
+.gauge { --fill: var(--accent); position: relative; display: block; overflow: hidden; width: 132px; height: 6px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); }
 .gauge::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(90deg, transparent 0 calc(25% - 1px), var(--bg-panel) calc(25% - 1px) 25%); }
-.gauge i { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
-.spend.warn .gauge i { background: var(--need); }
-.spend.over .gauge i { background: var(--st-failed); }
+.gauge meter { display: block; width: 100%; height: 100%; margin: 0; border: 0; background: none; appearance: none; -webkit-appearance: none; -moz-appearance: none; color: var(--fill); }
+.gauge meter::-webkit-meter-bar { height: 100%; border: 0; border-radius: 0; background: none; }
+.gauge meter::-webkit-meter-optimum-value, .gauge meter::-webkit-meter-suboptimum-value, .gauge meter::-webkit-meter-even-less-good-value { background: var(--fill); }
+.gauge meter::-moz-meter-bar { background: var(--fill); }
+.spend.warn .gauge { --fill: var(--need); }
+.spend.over .gauge { --fill: var(--st-failed); }
 .spend.over .n, .spend.over .pct { color: var(--st-failed); }
 .pct { font: 12px var(--font-mono); color: var(--text-muted); min-width: 4ch; }
 .cell.gh { margin-left: auto; }
@@ -546,8 +549,8 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-g .lbl { color: var(--text-faint); }
 .sp-g .fig { justify-self: end; font: 12px var(--font-mono); }
 .sp-g .gauge { grid-column: 1 / -1; width: 100%; height: 4px; }
-.sp-g.warn .gauge i { background: var(--need); }
-.sp-g.over .gauge i { background: var(--st-failed); }
+.sp-g.warn .gauge { --fill: var(--need); }
+.sp-g.over .gauge { --fill: var(--st-failed); }
 .sp-g.over .fig { color: var(--st-failed); }
 .sp-note { margin: 0; color: var(--st-failed); font-size: 12.5px; }
 .sp-dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; font-size: 12.5px; }

@@ -856,7 +856,6 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	_, br := streamOf(t, r, "")
-	_, teal := streamAt(t, r, "ai-software-factory-code", "?accent=teal", "")
 	moved := func() {
 		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
@@ -888,9 +887,6 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	moved()
 	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0}) {
 		t.Errorf("counters %+v, want the strip and 2 0 1 0", got)
-	}
-	if got := next(teal); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 0, 0}) {
-		t.Errorf("teal's counters %+v, want the strip and 2 0 0 0", got)
 	}
 	// unchanged: two heartbeats pass after the event without counters
 	moved()
@@ -989,7 +985,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"", "?view=wide", "?project=linkshort", "?project=linkshort&view=wide", "?accent=teal"} {
+	for _, page := range []string{"", "?view=wide", "?project=linkshort", "?project=linkshort&view=wide"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+page, nil), ck).Body.String()
 		// the script asks for a card under the board's own query, the
 		// project it shows included
@@ -1015,7 +1011,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		// escalated t-e, which the wide view shows twice (its escalation
 		// and its column); linkshort: the plan, its cards 2 to 5 and 7,
 		// the second spec and t-q; teal: t-e alone, of the code project
-		if want := map[string]int{"": 5, "?view=wide": 6, "?project=linkshort": 8, "?project=linkshort&view=wide": 8, "?accent=teal": 1}[page]; faces != want {
+		if want := map[string]int{"": 5, "?view=wide": 6, "?project=linkshort": 8, "?project=linkshort&view=wide": 8}[page]; faces != want {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
@@ -1161,7 +1157,7 @@ setImmediate(function () {
 	want := `{"url":"/projects/code/events/stream?project=code","opened":[],"reconnected":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat"],"timers":0,` +
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
-		`"held":[],"moved":[],"focused":["GET /board?project=code"],"released":["GET /board?project=code"],` +
+		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer"}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)

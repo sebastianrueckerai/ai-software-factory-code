@@ -2001,7 +2001,7 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code",
 			CreatedAt: asked, FinishedAt: &finished})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<span class="elapsed">25 min</span>`, `<span class="gate">checks for 25 min</span>`, "47 min in all"} {
+	for _, want := range []string{`<span class="elapsed">2 h 5 min</span>`, "47 min in all"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
 		}
@@ -2009,8 +2009,8 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 25 min, 2 h 5 min in all</dd>") {
 		t.Errorf("the drawer's Status lacks the stage's time and the total:\n%s", drawer)
 	}
-	if strings.Count(body, `class="gate"`) != 1 {
-		t.Error("a finished task shows a gate")
+	if strings.Count(body, `class="gate"`) != 0 {
+		t.Error("a card's face shows its gate")
 	}
 }
 
@@ -2037,8 +2037,11 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
 		Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if want := `<span class="gate">merge queue, 2 ahead, for 6 min</span>`; !strings.Contains(body, want) {
-		t.Fatalf("board lacks %q", want)
+	if strings.Contains(body, "merge queue") {
+		t.Fatalf("the face names the merge queue:\n%s", faceOf(t, body, "t-q"))
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 6 min, merge queue, 2 ahead, 6 min in all</dd>") {
+		t.Fatalf("the drawer's Status lacks the merge queue place:\n%s", drawer)
 	}
 }
 
