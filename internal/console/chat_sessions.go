@@ -450,6 +450,11 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 		}
 	}
 	b.WriteString("\n" + strings.Join(costLines(during), "\n"))
+	if totals, err := t.c.cfg.Costs.CallTotals(t.r.Context(), []string{k.ID}); err != nil {
+		return "", err
+	} else if line := callsLine(totals[k.ID]); line != "" {
+		b.WriteString("\n" + line + " to date")
+	}
 	body, err := t.transcript(k.ID, s)
 	if no := (*refusal)(nil); errors.As(err, &no) {
 		return b.String() + "\n" + no.msg, nil

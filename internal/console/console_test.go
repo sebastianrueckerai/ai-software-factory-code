@@ -642,6 +642,23 @@ func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.Mode
 	return l.calls[taskID], nil
 }
 
+// CallTotals sums the tasks' calls' tokens and EUR as the store's one
+// query does over the audit rows.
+func (l *fakeLedger) CallTotals(_ context.Context, tasks []string) (map[string]policy.CallTotals, error) {
+	out := map[string]policy.CallTotals{}
+	for _, id := range tasks {
+		var t policy.CallTotals
+		for _, c := range l.calls[id] {
+			t.Prompt, t.Cached, t.Output = t.Prompt+c.PromptTokens, t.Cached+c.CachedTokens, t.Output+c.OutputTokens
+			t.ModeledEUR += c.EUR
+		}
+		if t != (policy.CallTotals{}) {
+			out[id] = t
+		}
+	}
+	return out, nil
+}
+
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),

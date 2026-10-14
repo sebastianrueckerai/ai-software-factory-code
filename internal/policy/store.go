@@ -226,6 +226,17 @@ type ModelCall struct {
 	Usage
 }
 
+// CallTotals is a task's audit call rows summed (roadmap 206): the tokens
+// its calls reported — the stored fact — and, derived at read time, the
+// modeled pay-as-you-go cost LiteLLM computed for them and the credits
+// the GLM Coding Plan prices the tokens of the deployments that answered
+// in. Never money billed; never stored.
+type CallTotals struct {
+	Prompt, Cached, Output int
+	ModeledEUR             float64
+	Credits                float64
+}
+
 // ModelCalls are task taskID's model calls in the ledger, oldest first.
 func ModelCalls(ctx context.Context, db *sql.DB, taskID string) ([]ModelCall, error) {
 	rows, err := db.QueryContext(ctx,

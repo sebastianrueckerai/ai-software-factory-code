@@ -283,6 +283,11 @@ func (t *turn) planText(in toolInput) (string, error) {
 		issues[c.PlanKey] = c.IssueNumber
 	}
 	fmt.Fprintf(&b, "revision %d, sha256 %s\nsummary: %s", rev.Revision, rev.SHA256, summary)
+	if totals, err := t.c.cfg.Costs.CallTotals(ctx, []string{plan.ID}); err != nil {
+		return "", err
+	} else if line := callsLine(totals[plan.ID]); line != "" {
+		b.WriteString("\n" + line + " to date")
+	}
 	qs, err := t.c.cfg.Tasks.PlanQuestions(ctx, plan.ID, rev.Revision)
 	if err != nil {
 		return "", err

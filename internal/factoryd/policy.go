@@ -614,6 +614,39 @@ func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.Model
 	return policy.ModelCalls(ctx, s.db, taskID)
 }
 
+// CallTotals sums the tasks' audit call rows — their tokens and modeled
+// pay-as-you-go cost to date, and the credits the GLM Coding Plan derives
+// from the tokens of each deployment that answered — in one query, with
+// no stored aggregate (ruling 198). Credits are computed here, at read
+// time, never stored (roadmap 206); a deployment the plan holds no rate
+// for contributes its tokens and cost but no credits. A task without
+// call rows is absent from the answer.
+func (s *PGStore) CallTotals(ctx context.Context, tasks []string) (map[string]policy.CallTotals, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT task_id, deployment, sum(prompt_tokens), sum(cached_tokens), sum(output_tokens), COALESCE(sum(call_cost_eur), 0)::float8
+		 FROM audit WHERE task_id = ANY($1) GROUP BY task_id, deployment`, tasks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	totals := map[string]policy.CallTotals{}
+	for rows.Next() {
+		var id, deployment string
+		var t policy.CallTotals
+		if err := rows.Scan(&id, &deployment, &t.Prompt, &t.Cached, &t.Output, &t.ModeledEUR); err != nil {
+			return nil, err
+		}
+		if rate, ok := policy.CreditRateOf(deployment); ok {
+			t.Credits = rate.Credits(t.Prompt, t.Cached, t.Output)
+		}
+		sum := totals[id]
+		sum.Prompt, sum.Cached, sum.Output = sum.Prompt+t.Prompt, sum.Cached+t.Cached, sum.Output+t.Output
+		sum.ModeledEUR, sum.Credits = sum.ModeledEUR+t.ModeledEUR, sum.Credits+t.Credits
+		totals[id] = sum
+	}
+	return totals, rows.Err()
+}
+
 var _ PolicyStore = (*PGStore)(nil)
 
 // Aliases are the ladder's models as the gateway sees them: without the

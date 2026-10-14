@@ -101,6 +101,10 @@ func (l *acceptLedger) ModelCalls(_ context.Context, _ string) ([]policy.ModelCa
 	return nil, nil
 }
 
+func (l *acceptLedger) CallTotals(context.Context, []string) (map[string]policy.CallTotals, error) {
+	return nil, nil
+}
+
 func (l *acceptLedger) windows() [][2]string {
 	l.mu.Lock()
 	defer l.mu.Unlock()

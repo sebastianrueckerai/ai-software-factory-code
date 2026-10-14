@@ -123,6 +123,7 @@ h4 { font-size: .9rem; margin: 0 0 .25rem; }
 .chips { display: flex; flex-wrap: wrap; gap: .3rem; align-items: baseline; }
 .spend { color: var(--text-muted); }
 .spend.near { color: var(--warn); font-weight: 600; }
+.calls { color: var(--text-muted); }
 .reason { white-space: pre-wrap; font-size: .85rem; }
 .note { background: var(--note-bg); border: 1px solid var(--note-line); color: var(--text); padding: .5rem; border-radius: 6px; }
 .problem { background: var(--problem-bg); border: 1px solid var(--problem-line); color: var(--warn); padding: .5rem; border-radius: 6px; }

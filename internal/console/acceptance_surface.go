@@ -719,6 +719,10 @@ func (a *AcceptanceRig) ModelCalls(context.Context, string) ([]policy.ModelCall,
 	return nil, nil
 }
 
+func (a *AcceptanceRig) CallTotals(context.Context, []string) (map[string]policy.CallTotals, error) {
+	return nil, nil
+}
+
 // Timelines: no timeline, so a card's face reads no checks.
 
 func (a *AcceptanceRig) Get(context.Context, string) ([]byte, error) {
