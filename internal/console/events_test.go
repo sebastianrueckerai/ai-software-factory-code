@@ -885,7 +885,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 		return true
 	}
 	moved()
-	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0}) {
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []string{"2", "0", "1", "0"}) {
 		t.Errorf("counters %+v, want the strip and 2 0 1 0", got)
 	}
 	// unchanged: two heartbeats pass after the event without counters
@@ -901,7 +901,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	queued := factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 12, Objective: "queue it"}
 	r.tasks.set("", running, queued)
 	moved()
-	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 1, 1, 0}) {
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []string{"2", "1", "1", "0"}) {
 		t.Errorf("counters after a queued card %+v, want 2 1 1 0", got)
 	}
 }
@@ -1113,9 +1113,9 @@ out.opened = requests.slice();
 es.onopen();
 out.reconnected = requests.slice();
 out.timers = timers;
-es.on.counters({data: JSON.stringify({status: "\n<strong class=\"pname\">code</strong>\n", counts: [2, 0, 1]})});
+es.on.counters({data: JSON.stringify({status: "\n<strong class=\"pname\">code</strong>\n", counts: ["2", "0", "1"]})});
 out.status = byID["status-line"].innerHTML;
-out.counts = counts.map(function (c) { return c.textContent; });
+out.counts = counts.map(function (c) { return c.innerHTML; });
 function event(e) { es.on.event({data: JSON.stringify(e)}); }
 var text = {id: 0, at: "2026-10-11T10:05:00.25Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-2", text: "Tests pass."}};
 event(text);

@@ -157,6 +157,164 @@ func arrival(cols []column) {
 	}
 }
 
+// find narrows the columns to the terms of q (C13): a word matches what
+// the face says (the ref, the title, the state and stage words, the
+// activity line, the chips, an item's headline), a key:value term a fact
+// behind the face (plan:558, stage:verifying, status:failed, is:failed
+// and the other exceptional states, by:sebastian, model:coding-cheap,
+// pr:612), and every term must match. Each column keeps its whole count;
+// the columns given stay as they were, for the status panel.
+func find(cols []column, q string) []column {
+	terms := strings.Fields(strings.ToLower(q))
+	out := make([]column, len(cols))
+	for i, col := range cols {
+		col.Total = col.Count()
+		if len(terms) > 0 {
+			var cards []card
+			for _, k := range col.Cards {
+				if found(k, nil, terms) {
+					cards = append(cards, k)
+				}
+			}
+			var needs []need
+			for _, n := range col.Needs {
+				if found(n.Card, n.Approval, terms) {
+					needs = append(needs, n)
+				}
+			}
+			col.Cards, col.Needs = cards, needs
+		}
+		out[i] = col
+	}
+	return out
+}
+
+// found is whether card k, or the approval item a, matches every term.
+func found(k card, a *approvalCard, terms []string) bool {
+	text := strings.ToLower(faceWords(k, a))
+	for _, t := range terms {
+		if key, val, ok := strings.Cut(t, ":"); ok && key != "" {
+			if match, known := fact(k, a, key, val); known {
+				if !match {
+					return false
+				}
+				continue
+			}
+		}
+		if !strings.Contains(text, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// faceWords is what the face says, for a word of the find to match.
+func faceWords(k card, a *approvalCard) string {
+	if a != nil {
+		switch a.Kind {
+		case factoryd.ApprovalMerge:
+			w := []string{fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass + " risk", a.TaskID}
+			if a.Merge.Migration {
+				w = append(w, "migration")
+			}
+			return strings.Join(w, " ")
+		case factoryd.ApprovalPlan:
+			return fmt.Sprintf("plan #%d %s %s", a.Issue, a.PlanSummary, a.TaskID)
+		}
+		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
+	}
+	w := []string{k.ID, k.Title, k.Status, k.Stage, k.Activity, k.StaleText, k.Reason, k.Children}
+	if k.IssueNumber > 0 {
+		w = append(w, fmt.Sprintf("#%d", k.IssueNumber))
+	}
+	if k.PRNumber > 0 {
+		w = append(w, fmt.Sprintf("pr #%d", k.PRNumber))
+	}
+	if k.PlanIssue > 0 {
+		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
+	}
+	if k.Blocked > 0 {
+		w = append(w, fmt.Sprintf("blocked by %d %s", k.Blocked, k.BlockedOn))
+	}
+	if k.WaitingOn != "" {
+		w = append(w, "waiting on "+k.WaitingOn)
+	}
+	if k.Checks != "" {
+		w = append(w, k.Checks+" checks")
+	}
+	if k.NearBudget {
+		w = append(w, "near its budget")
+	}
+	if k.Retrying {
+		w = append(w, "retrying")
+	}
+	if k.Held {
+		w = append(w, heldWords)
+	}
+	if k.Provider {
+		w = append(w, providerWords)
+	}
+	if k.Stale {
+		w = append(w, "stale")
+	}
+	if k.Status == "waiting-poster" {
+		w = append(w, "waiting on the author")
+	}
+	if k.Kind == "human" {
+		w = append(w, "human task")
+	}
+	return strings.Join(w, " ")
+}
+
+// fact is whether k, or the approval item a, has the fact key:val; known
+// is false for a key the find does not have, which then reads as a word.
+func fact(k card, a *approvalCard, key, val string) (match, known bool) {
+	val = strings.TrimPrefix(val, "#")
+	eq := func(s string) (bool, bool) { return strings.EqualFold(s, val), true }
+	switch key {
+	case "is":
+		return isState(k, val), true
+	case "plan":
+		return eq(strconv.FormatInt(k.PlanIssue, 10))
+	case "stage":
+		return eq(k.Stage)
+	case "status":
+		return eq(k.Status)
+	case "by":
+		return eq(k.Author)
+	case "model":
+		return eq(k.ModelAlias)
+	case "pr":
+		n := k.PRNumber
+		if a != nil {
+			n = a.PRNumber
+		}
+		return eq(strconv.FormatInt(n, 10))
+	}
+	return false, false
+}
+
+// isState is whether k is in the exceptional state v of is:v.
+func isState(k card, v string) bool {
+	switch v {
+	case "failed":
+		return k.Status == "failed"
+	case "blocked":
+		return k.Blocked > 0 || k.WaitingOn != ""
+	case "stale":
+		return k.Stale
+	case "provider":
+		return k.Provider
+	case "near":
+		return k.NearBudget
+	case "retrying":
+		return k.Retrying
+	case "held":
+		return k.Held
+	}
+	return false
+}
+
 // stateColumns are the wide view's columns after the lanes, in board
 // order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
@@ -559,6 +717,9 @@ type planCards struct {
 type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
+	// Total is the column's count before the find narrowed it (C13); the
+	// head reads "n of m" when they differ.
+	Total int
 	Cards []card
 	// Needs is the five columns' Needs you: what the wide view's human
 	// lane holds and every card that needs the viewer, oldest first.
@@ -614,17 +775,20 @@ const viewWide = "wide"
 // view; every form on it carries it back, so an action keeps the view.
 type boardFilter struct {
 	Project, View string
+	// Q is the find (C13): words and key:value terms that narrow every
+	// column, kept by every form, the poll, the fragments and the stream.
+	Q string
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view")}
+	return boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
 }
 
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	return boardFilter{Project: q.Get("project"), View: q.Get("view")}
+	return boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
 }
 
 func (f boardFilter) wide() bool { return f.View == viewWide }
@@ -637,6 +801,9 @@ func (f boardFilter) query() string {
 	}
 	if f.View != "" {
 		q.Set("view", f.View)
+	}
+	if f.Q != "" {
+		q.Set("q", f.Q)
 	}
 	if q.Encode() == "" {
 		return ""
@@ -682,6 +849,8 @@ type boardData struct {
 	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
 	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
 	ToggleQuery string   // the filter with the other view
+	ClearQuery  string   // the filter without the find, the ×'s link (C13)
+	whole       []column // the columns before the find narrowed them, the status panel's
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
 	Pulse       *factoryd.Pulse // the shown project's newest pulse
@@ -709,11 +878,20 @@ func pct(spent, cap float64) int {
 	return int(math.Round(spent / cap * 100))
 }
 
+// cols are the columns as read, before the find narrowed them: the
+// status panel lists the project's cards, not the find's.
+func (d boardData) cols() []column {
+	if d.whole != nil {
+		return d.whole
+	}
+	return d.Columns
+}
+
 // InProgress are the cards in progress for the status panel, with their
 // stage, in the columns' order.
 func (d boardData) InProgress() []card {
 	var out []card
-	for _, col := range d.Columns {
+	for _, col := range d.cols() {
 		for _, k := range col.Cards {
 			if k.Stage != "" {
 				out = append(out, k)
@@ -735,7 +913,7 @@ func (d boardData) NeedLinks() []needLink {
 	if len(d.Columns) == 0 {
 		return nil
 	}
-	needs := d.Columns[0].Needs
+	needs := d.cols()[0].Needs
 	if needs == nil {
 		for i := range d.Approvals {
 			needs = append(needs, need{Since: d.Approvals[i].CreatedAt, Approval: &d.Approvals[i]})
@@ -867,15 +1045,19 @@ func (c *Console) configTree(commit string) string {
 
 // counts are the board's column counts in the page's order, the wide
 // view's human lane first.
-func (d boardData) counts() []int {
-	var out []int
+func (c *Console) counts(d boardData) ([]string, error) {
+	var out []string
 	if d.wide() {
-		out = append(out, len(d.Approvals), len(d.Escalations), len(d.HumanTasks))
+		out = append(out, strconv.Itoa(len(d.Approvals)), strconv.Itoa(len(d.Escalations)), strconv.Itoa(len(d.HumanTasks)))
 	}
 	for _, col := range d.Columns {
-		out = append(out, col.Count())
+		var b strings.Builder
+		if err := c.tmpl.ExecuteTemplate(&b, "count", col); err != nil {
+			return nil, err
+		}
+		out = append(out, b.String())
 	}
-	return out
+	return out, nil
 }
 
 // faces is what of the board's cards changes with time alone, for the
@@ -1429,6 +1611,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		other.View = ""
 	}
 	d.ToggleQuery = other.query()
+	clear := f
+	clear.Q = ""
+	d.ClearQuery = clear.query()
 	byLane, byStatus := map[string]int{}, map[string]int{}
 	if wide {
 		lanes := map[string]bool{}
@@ -1575,6 +1760,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			fn(&d.Escalations[i].Card)
 		}
 	})
+	d.whole = d.Columns
+	d.Columns = find(d.Columns, f.Q)
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)

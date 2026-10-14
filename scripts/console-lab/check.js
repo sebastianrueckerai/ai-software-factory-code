@@ -26,7 +26,7 @@ const mustHave = {
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
-    "Wide view", "?"],
+    "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
@@ -119,6 +119,17 @@ async function text(page) {
         const t2 = await p.page.locator("#chat").innerText();
         if (!/applied/i.test(t2) || !/undo/i.test(t2)) fails.push("chat: Do it does not become an applied line with Undo");
       }
+    }
+    if (sc === "busy") {
+      // the find (C13): ?q= narrows every column, the counts read "n of m", the × clears
+      await p.page.goto(base + "/?q=is%3Afailed", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const counts = await p.page.locator("#board .count").allInnerTexts();
+      if (!counts.some((c) => /\d+ of \d+/.test(c))) fails.push("find: no count reads n of m under ?q=is:failed (" + counts.join(" | ") + ")");
+      const faces = await p.page.locator("#board [data-card]").count(), failed = await p.page.locator("#board [data-card]").filter({ hasText: "failed" }).count();
+      if (!faces || faces !== failed) fails.push("find: ?q=is:failed shows " + faces + " cards, " + failed + " of them failed");
+      if (!(await p.page.locator("#find.on .find-x").count())) fails.push("find: no × while a find is on");
+      if ((await p.page.locator("#board").getAttribute("data-query") || "").indexOf("q=is%3Afailed") < 0) fails.push("find: the board's query does not carry q");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();

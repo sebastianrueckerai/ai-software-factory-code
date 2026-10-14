@@ -103,7 +103,7 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		t.Error("the five columns show another project's card, the human lane or a lane column")
 	}
 	needs := col(t, body, "Needs you")
-	for _, want := range []string{`<section class="column" aria-labelledby="col-0" id="needs-you">`, `action="/tasks/t-esc/answer"`,
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`, `action="/tasks/t-esc/answer"`,
 		`<input type="hidden" name="back" value="/?project=ai-software-factory-code">`, `action="/approvals/4/approve"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
@@ -922,5 +922,87 @@ func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	if got := columnItems(t, wide, "Running"); !slices.Equal(got, []string{"t-r-first", "t-r-last", "t-r-mid"}) {
 		t.Errorf("the wide view's Running holds %v, want the store's order", got)
+	}
+}
+
+// The find (C13) narrows every column to its terms and the head reads
+// "n of m": a word against what the face says (the ref, the title, the
+// question), is:, status: and by: against the facts, every term matching;
+// an emptied column says "none match" and the Needs you column keeps its
+// amber (lit) from its whole count. The forms, the board's query and the
+// clear link carry q, and the status panel lists the whole project.
+func TestFindNarrowsTheColumns(t *testing.T) {
+	r, ck := screenRig(t)
+	page := func(q string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?q="+url.QueryEscape(q), nil), ck).Body.String()
+	}
+	for _, c := range []struct {
+		q, title string
+		items    []string
+		count    string
+	}{
+		{"t-run", "In progress", []string{"t-run"}, "<b>1</b> of 3"},
+		{"t-run", "Queued", nil, "<b>0</b> of 4"},
+		{"t-run", "Needs you", nil, "<b>0</b> of 5"},
+		{"is:failed", "Done", []string{"t-fail"}, "<b>1</b> of 3"},
+		{"is:blocked", "Queued", []string{"t-deps"}, "<b>1</b> of 4"},
+		{"status:queued", "Queued", []string{"t-queue"}, "<b>1</b> of 4"},
+		{"by:alice", "Queued", []string{"t-other"}, "<b>1</b> of 4"},
+		{"which region", "Needs you", []string{"t-esc"}, "<b>1</b> of 5"},
+		{"rotate key", "Needs you", []string{"t-human"}, "<b>1</b> of 5"},
+		{"nothing-here", "Done", nil, "<b>0</b> of 3"},
+	} {
+		body := page(c.q)
+		if got := columnItems(t, body, c.title); !slices.Equal(got, c.items) {
+			t.Errorf("q=%q: %s holds %v, want %v", c.q, c.title, got, c.items)
+		}
+		if !strings.Contains(body, ">"+c.title+` <span class="count">`+c.count+"</span></h3>") {
+			t.Errorf("q=%q: the header of %s does not read %s", c.q, c.title, c.count)
+		}
+	}
+	body := page("t-run")
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`,
+		`data-query="?project=ai-software-factory-code&amp;q=t-run"`, `<form class="find on" id="find" role="search" method="get" action="/">`,
+		`<input id="q" name="q" type="text" value="t-run" placeholder="Find: a word, #612, plan:558"`,
+		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("under the find the board lacks %s", want)
+		}
+	}
+	if n := strings.Count(body, `<p class="none-match">none match</p>`); n != 3 {
+		t.Errorf("%d columns say none match, want 3", n)
+	}
+	panel := body[strings.Index(body, "<section><h3>Needs you</h3>"):]
+	panel = panel[:strings.Index(panel, "</section>")]
+	if n := strings.Count(panel, `class="sp-link"`); n != 5 {
+		t.Errorf("the status panel lists %d Needs you items under the find, want the whole 5", n)
+	}
+	asked := page("which region")
+	for _, want := range []string{`<input type="hidden" name="q" value="which region">`, `name="back" value="/?project=ai-software-factory-code&amp;q=which&#43;region"`} {
+		if !strings.Contains(asked, want) {
+			t.Errorf("the escalation's forms lack %s", want)
+		}
+	}
+	plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`<form class="find" id="find"`, `>Needs you <span class="count">5</span></h3>`} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("without a find the board lacks %s", want)
+		}
+	}
+	for _, none := range []string{"find-x", "none match", " of "} {
+		if strings.Contains(col(t, plain, "Done"), none) || none == "find-x" && strings.Contains(plain, none) {
+			t.Errorf("without a find the board shows %q", none)
+		}
+	}
+}
+
+// The filter's query carries the find, trimmed, beside the project and
+// the view.
+func TestFilterQueryCarriesTheFind(t *testing.T) {
+	if got := (boardFilter{Project: "p", View: "wide", Q: "a b"}).query(); got != "?project=p&q=a+b&view=wide" {
+		t.Errorf("query %q", got)
+	}
+	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?q=%20x%20", nil)); got.Q != "x" {
+		t.Errorf("urlFilter trims to %q", got.Q)
 	}
 }

@@ -168,7 +168,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       line.innerHTML = d.status;
       document.dispatchEvent(new Event("statusswapped"));
     }
-    if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
+    if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
   // any card's for "", the steer being typed kept
@@ -471,6 +471,11 @@ document.addEventListener("htmx:afterSwap", function (e) {
   }
   document.addEventListener("keydown", function (e) {
     if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Escape in the find box clears it when it holds a find, else leaves it
+    if (e.key === "Escape" && e.target.id === "q") {
+      if (e.target.value) { e.target.value = ""; e.target.form.submit(); } else e.target.blur();
+      return;
+    }
     if (e.key === "Escape") {
       if (keys() && !keys().hidden) showKeys(false);
       else closeDrawer();
@@ -484,6 +489,12 @@ document.addEventListener("htmx:afterSwap", function (e) {
     } else if (e.key === "?") {
       e.preventDefault();
       showKeys(true);
+    } else if (e.key === "f") {
+      var q = document.getElementById("q");
+      if (!q) return;
+      e.preventDefault();
+      q.focus();
+      q.select();
     }
   });
   document.addEventListener("click", function (e) {

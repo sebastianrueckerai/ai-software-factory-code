@@ -187,8 +187,8 @@ var countersWait = 2 * time.Second
 // countersJSON are the board's figures the stream keeps live: the status
 // line's markup and each column's count in the page's order.
 type countersJSON struct {
-	Status string `json:"status"`
-	Counts []int  `json:"counts"`
+	Status string   `json:"status"`
+	Counts []string `json:"counts"`
 }
 
 // counters are d's counters as JSON; "" when they cannot be rendered.
@@ -198,7 +198,12 @@ func (c *Console) counters(d boardData) string {
 		log.Printf("console: the counters of %s: %v", d.Project, err)
 		return ""
 	}
-	b, err := json.Marshal(countersJSON{status.String(), d.counts()})
+	counts, err := c.counts(d)
+	if err != nil {
+		log.Printf("console: the counters of %s: %v", d.Project, err)
+		return ""
+	}
+	b, err := json.Marshal(countersJSON{status.String(), counts})
 	if err != nil {
 		return ""
 	}
