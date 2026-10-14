@@ -18,7 +18,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 unread", "New"],
-  poke: ["Inbox", "Why is the session store card waiting?", "1 unread"],
+  poke: ["Inbox", "Why is the session store card waiting?", "1 unread", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
   assisted: ["Inbox", "Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
@@ -166,6 +166,28 @@ async function text(page) {
       }
       await box.fill("");
       if ((await p.page.locator("#chat-form .cmd").count()) !== 2) fails.push("commands: not two chips under the box");
+      // archive and delete (C14): Delete… warns in a dialog that Keep it closes; Archive moves
+      // the thread under the archived rule, and restore brings it back
+      const del = p.page.locator("#thread-head [data-delete]");
+      if (!(await del.count())) fails.push("threads: no Delete… on the open thread's head");
+      else {
+        await del.click();
+        const dlg = p.page.locator("#thread-dialog");
+        if (!(await dlg.isVisible()) || !(await dlg.innerText()).includes("go for good")) fails.push("threads: Delete… opens no warning");
+        else {
+          await dlg.getByRole("button", { name: "Keep it" }).click();
+          if (await dlg.count()) fails.push("threads: Keep it does not close the warning");
+        }
+      }
+      await p.page.locator("#thread-head [data-archive]").click();
+      await p.page.waitForTimeout(600);
+      const restore = p.page.locator("#thread-rows .tarch [data-restore]");
+      if (!(await restore.count())) fails.push("threads: Archive puts no row under the archived rule");
+      else {
+        await restore.first().click();
+        await p.page.waitForTimeout(600);
+        if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
+      }
     }
     if (sc === "poke") {
       // a poke on another thread: the inbox row first, its badge, and the sum in the tab title (C14)

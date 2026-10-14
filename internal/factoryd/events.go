@@ -37,6 +37,10 @@ const (
 	// "kind", and "pr" and "class" for a merge, "revision" and "cards"
 	// for a plan}.
 	EventApprovalRequested = "approval_requested"
+	// EventChatThreadDeleted records a member's hard delete of a chat
+	// thread (roadmap 239): the actor is the member, detail {"thread",
+	// "messages"}, the thread's number and the rows that went.
+	EventChatThreadDeleted = "chat_thread_deleted"
 )
 
 // StepEvent is the timeline step every event is recorded under.

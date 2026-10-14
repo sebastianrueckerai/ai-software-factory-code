@@ -145,6 +145,9 @@ console.log(JSON.stringify({
   unread: String(chatView.unreadOf(threads)),
   inboxHead: chatView.headHTML(threads[0], now),
   head: chatView.headHTML(threads[1], now),
+  headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, now),
+  deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
+  deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
   poke: chatView.factoryHTML({id: 7, role: "assistant", kind: "poke", content: "Started the login card.", at: "2026-10-11T09:12:00Z",
     decider: "assisted level · started by the agent", choices: ["Open the card"]}),
   compacted: chatView.threadHTML([{id: 1, role: "user", content: "a1", at: "2026-10-11T09:30:01Z"}, {id: 2, role: "assistant", content: "a2", at: "2026-10-11T09:30:02Z"},
@@ -213,6 +216,16 @@ console.log(JSON.stringify({
 		{"unread", "2"},
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>`},
+		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>` +
+			`<span class="tacts"><button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
+		{"deleteOne", `<div id="thread-dialog" class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="overlay-box">` +
+			`<h2 id="dlg-title">Delete “a &lt;b&gt;”?</h2><p>Its 1 message goes for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
+			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +
+			`<div class="acts"><button type="button" class="danger" data-dlg="delete">Delete the thread</button><button type="button" data-dlg="keep">Keep it</button></div></div></div>`},
+		{"deleteMany", `<div id="thread-dialog" class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="overlay-box">` +
+			`<h2 id="dlg-title">Delete “world”?</h2><p>Its 4 messages go for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
+			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +
+			`<div class="acts"><button type="button" class="danger" data-dlg="delete">Delete the thread</button><button type="button" data-dlg="keep">Keep it</button></div></div></div>`},
 		{"poke", `<div class="msg agent poke" data-message="7"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:12Z</time></p>` +
 			`<div class="said"><p>Started the login card.</p></div><p class="decider"><span class="visually-hidden">Decided by: </span>assisted level · started by the agent</p>` +
 			`<p class="choices"><button type="button" data-choice="Open the card">Open the card</button></p></div>`},

@@ -171,7 +171,7 @@ func (f *fakeChat) DeleteConversation(_ context.Context, repository, login strin
 	defer f.mu.Unlock()
 	k := repository + " " + login
 	before := len(f.msgs[k])
-	if f.inboxes[k].Number != n {
+	if f.inboxes[k].Number != n && before > 0 {
 		f.msgs[k] = slices.DeleteFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == n })
 	}
 	gone := int64(before - len(f.msgs[k]))

@@ -87,8 +87,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		pages++
 	}
-	if pages != 33 || !slices.Equal(skipped, []string{"POST /logout"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 33 driven and only logout skipped", pages, skipped)
+	if pages != 35 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 35 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on

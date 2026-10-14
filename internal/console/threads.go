@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -207,6 +208,77 @@ func (c *Console) chatSeen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatArchive answers POST /projects/{name}/chat/archive: the thread
+// archived, or restored with restore=1, then 204. The inbox stays, and a
+// thread with a turn in flight waits for it to end.
+func (c *Console) chatArchive(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	th, err := t.thread(r, false)
+	if err == nil {
+		err = t.idle(th)
+	}
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	restore := r.PostFormValue("restore") == "1"
+	done, err := c.cfg.Chat.ArchiveConversation(r.Context(), t.p.Repository, t.a.s.user, t.conv, !restore)
+	switch {
+	case err != nil:
+		log.Printf("console: archive the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot archive the conversation", http.StatusInternalServerError)
+	case !done:
+		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// chatDelete answers POST /projects/{name}/chat/delete: the member's
+// thread and every row of it gone for good, one event naming the member,
+// the thread and the rows' count, then 204. What the chat did stays in
+// the events, the audit and git. The inbox stays, and a thread with a
+// turn in flight waits for it to end.
+func (c *Console) chatDelete(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	th, err := t.thread(r, false)
+	if err == nil {
+		err = t.idle(th)
+	}
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	gone, err := c.cfg.Chat.DeleteConversation(r.Context(), t.p.Repository, t.a.s.user, t.conv)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
+		return
+	case err != nil:
+		log.Printf("console: delete the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot delete the conversation", http.StatusInternalServerError)
+		return
+	}
+	c.event(context.WithoutCancel(r.Context()), factoryd.Event{Repository: t.p.Repository, Kind: factoryd.EventChatThreadDeleted,
+		Actor: t.a.s.user, Via: factoryd.ViaButton, Detail: map[string]any{"thread": t.conv, "messages": gone}})
+	log.Printf("console: %s deleted thread %d on %s (%d messages)", t.a.s.user, t.conv, t.p.Repository, gone)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// idle refuses a thread with a turn in flight: its rows still land.
+func (t *turn) idle(th factoryd.ChatConversation) error {
+	if t.c.turns.working(t.key()) {
+		return refuse(http.StatusConflict, fmt.Sprintf("A turn runs in conversation %d: wait for it to end.", th.Number))
+	}
+	return nil
 }
 
 // parallelTurns is the project's bound on model turns at once.

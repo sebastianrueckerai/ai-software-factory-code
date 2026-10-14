@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -233,4 +235,79 @@ func TestChatInboxBadge(t *testing.T) {
 	equal(t, "the unread turns after thread 1 was read", unread(list()), map[int64]int64{1: 0, 2: 1})
 	r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=2", nil), ck)
 	equal(t, "the unread turns after the inbox was read", unread(list()), map[int64]int64{1: 0, 2: 0})
+}
+
+// Archive hides a thread and keeps its rows, and restore brings it back;
+// delete takes every row of it for good and writes one event naming the
+// member, the thread and the count, while the card's events stay; the
+// inbox stays, and a thread with a turn in flight waits (roadmap 239).
+func TestChatArchiveAndDelete(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("first reply")}, {say("second reply")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	chatPost(t, r, ck, s, chatPath+"/new", nil)
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"world"}})
+	state := func(n int64) string {
+		th, ok, _ := chat.Conversation(t.Context(), "sf/code", "sebastian", n)
+		if !ok {
+			return "gone"
+		}
+		return th.State
+	}
+	post := func(path string, form url.Values) (int, string) {
+		t.Helper()
+		code, body, _ := chatPost(t, r, ck, s, chatPath+path, form)
+		return code, strings.Join(body, "")
+	}
+	if code, body := post("/archive", url.Values{"conversation": {"1"}}); code != http.StatusNoContent || state(1) != "archived" {
+		t.Fatalf("archive = %d %q, thread 1 %s", code, body, state(1))
+	}
+	if code, body := post("", url.Values{"message": {"again"}, "conversation": {"1"}}); code != http.StatusConflict || body != "Conversation 1 is archived: restore it to write in it." {
+		t.Fatalf("a message to an archived thread = %d %q", code, body)
+	}
+	if code, _ := post("/archive", url.Values{"conversation": {"1"}, "restore": {"1"}}); code != http.StatusNoContent || state(1) != "active" {
+		t.Fatalf("restore = %d, thread 1 %s", code, state(1))
+	}
+	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	in := url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}
+	if code, _ := post("/archive", in); code != http.StatusNotFound {
+		t.Errorf("archiving the inbox = %d, want 404", code)
+	}
+	if code, _ := post("/delete", in); code != http.StatusNotFound {
+		t.Errorf("deleting the inbox = %d, want 404", code)
+	}
+
+	key := threadKey("sf/code", "sebastian", 2)
+	r.c.turns.enter(key)
+	code, body := post("/delete", url.Values{"conversation": {"2"}})
+	r.c.turns.leave(key)
+	equal(t, "a delete while a turn runs", []any{code, body}, []any{http.StatusConflict, "A turn runs in conversation 2: wait for it to end."})
+
+	filed := factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardFiled, Actor: "sebastian", Via: factoryd.ViaChat,
+		Detail: map[string]any{"thread": float64(2)}}
+	if _, err := r.events.Record(t.Context(), filed); err != nil {
+		t.Fatal(err)
+	}
+	before := r.events.count()
+	if code, body := post("/delete", url.Values{"conversation": {"2"}}); code != http.StatusNoContent {
+		t.Fatalf("delete = %d %q", code, body)
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 2, 10)
+	equal(t, "thread 2 after the delete", []any{len(rows), state(2)}, []any{0, "gone"})
+	after := r.events.all()[before:]
+	if len(after) != 1 {
+		t.Fatalf("%d event rows of the delete, want 1: %+v", len(after), after)
+	}
+	equal(t, "the delete's event", after[0], factoryd.Event{ID: after[0].ID, At: after[0].At, Repository: "sf/code", Kind: factoryd.EventChatThreadDeleted,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"thread": int64(2), "messages": int64(2)}})
+	r.events.mu.Lock()
+	kept := slices.ContainsFunc(r.events.rows, func(e factoryd.Event) bool { return e.Kind == factoryd.EventCardFiled && e.TaskID == "t-m" })
+	r.events.mu.Unlock()
+	if !kept {
+		t.Error("the card's filing event went with the thread")
+	}
+	if code, _ := post("/delete", url.Values{"conversation": {"2"}}); code != http.StatusNotFound {
+		t.Errorf("a second delete = %d, want 404", code)
+	}
 }

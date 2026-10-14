@@ -122,6 +122,8 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/new":            rProject,
 	"POST /projects/{name}/chat/rename":         rProject,
 	"POST /projects/{name}/chat/seen":           rProject,
+	"POST /projects/{name}/chat/archive":        rProject,
+	"POST /projects/{name}/chat/delete":         rProject,
 	"POST /projects/{name}/chat/proposals/{id}": rProject,
 	"POST /projects/{name}/chat/undo/{token}":   rProject,
 	"POST /projects/{name}/autonomy":            {need: approver, scope: scProject, what: "change the autonomy level"},

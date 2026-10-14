@@ -230,12 +230,24 @@ var chatView = (function () {
     return (list || []).reduce(function (n, t) { return n + (t.unread || 0); }, 0);
   }
   // headHTML is the open thread's head: its title (a click renames it),
-  // its last turn or the inbox's line or the archived note
+  // its last turn or the inbox's line or the archived note, and Archive and
+  // Delete… on an active thread with rows, never on the inbox (C14)
   function headHTML(t, now) {
     var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
     return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
       (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
-      "</h3><span class=\"thint\">" + esc(hint) + "</span>";
+      "</h3><span class=\"thint\">" + esc(hint) + "</span>" +
+      (t.inbox || t.state === "archived" || !t.messages ? "" : "<span class=\"tacts\"><button type=\"button\" data-archive>Archive</button>" +
+        "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
+  }
+  // deleteHTML is the hard delete's warning for thread t (C14)
+  function deleteHTML(t) {
+    var n = t.messages || 0;
+    return "<div id=\"thread-dialog\" class=\"overlay\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"dlg-title\"><div class=\"overlay-box\">" +
+      "<h2 id=\"dlg-title\">Delete “" + esc(titleOf(t)) + "”?</h2><p>Its " + n + (n === 1 ? " message goes" : " messages go") +
+      " for good: a hard delete, no archive. One event will name you, the thread and the count. What the chat did stays in the events, the audit and git, " +
+      "so no decision and no merged card goes with it.</p><div class=\"acts\"><button type=\"button\" class=\"danger\" data-dlg=\"delete\">Delete the thread</button>" +
+      "<button type=\"button\" data-dlg=\"keep\">Keep it</button></div></div></div>";
   }
   function eventStream(contentType) {
     return /^text\/event-stream/.test(contentType || "");
@@ -290,7 +302,7 @@ var chatView = (function () {
     }).join("");
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
 })();
 
@@ -679,7 +691,48 @@ var chatView = (function () {
     sum.innerHTML = chatView.sumHTML(threads, on);
   }
   try { fold(localStorage.getItem(foldKey) === "1"); } catch (e) {}
+  // postThread posts form to the chat's path, the open thread's number in it
+  function postThread(path, form0) {
+    return fetch(base + path, {method: "POST", body: new URLSearchParams(form0).toString(),
+      headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+      if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
+    });
+  }
+  function failed(err) {
+    add(log, "<p class=\"chat-error\">" + chatView.esc(String(err.message || err).trim()) + "</p>");
+  }
+  // the hard delete's warning: Delete the thread, or Keep it, Escape or a
+  // click outside it; focus goes back to Delete…
+  function closeDialog() {
+    var d = document.getElementById("thread-dialog");
+    if (d) d.remove();
+    var b = head.querySelector("[data-delete]");
+    if (b) b.focus();
+  }
+  document.addEventListener("click", function (e) {
+    var d = document.getElementById("thread-dialog");
+    if (!d) return;
+    var b = e.target.closest("[data-dlg]");
+    if (b && b.dataset.dlg === "delete") {
+      var n = open;
+      d.remove();
+      postThread("/delete", {conversation: n}).then(function () { return load(""); }).catch(failed);
+    } else if (b || e.target === d) closeDialog();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && document.getElementById("thread-dialog")) {
+      e.stopPropagation();
+      closeDialog();
+    }
+  }, true);
   panel.addEventListener("click", function (e) {
+    var r0 = e.target.closest("[data-restore]");
+    if (r0) {
+      postThread("/archive", {conversation: r0.dataset.restore, restore: "1"}).then(function () {
+        return load(Number(r0.dataset.restore));
+      }).catch(failed);
+      return;
+    }
     var t = e.target.closest("[data-swtoggle]");
     if (t) {
       fold(!folded());
@@ -694,6 +747,15 @@ var chatView = (function () {
     }
   });
   head.addEventListener("click", function (e) {
+    if (e.target.closest("[data-archive]")) {
+      postThread("/archive", {conversation: open}).then(function () { return load(""); }).catch(failed);
+      return;
+    }
+    if (e.target.closest("[data-delete]")) {
+      document.body.insertAdjacentHTML("beforeend", chatView.deleteHTML(openThread));
+      document.querySelector("#thread-dialog [data-dlg=keep]").focus();
+      return;
+    }
     var b = e.target.closest("[data-rename]");
     if (!b) return;
     var field = document.createElement("input");

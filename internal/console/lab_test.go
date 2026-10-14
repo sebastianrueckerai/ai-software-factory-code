@@ -166,6 +166,8 @@ type labScene struct {
 	// inbox is the member's inbox thread, 0 for one the list makes; open
 	// the thread the chat opens, 0 for the last message's
 	inbox, open int64
+	// archived are the member's archived threads
+	archived []int64
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
@@ -196,7 +198,8 @@ func threadsScene(now time.Time) labScene {
 // pokeScene is the threads scene with the inbox: the question on #603
 // and the merge of #612 read, and the factory's poke on #616's end
 // arriving while the session store thread is open, so the inbox row and
-// the tab title carry its badge (roadmap 239, C14).
+// the tab title carry its badge; yesterday's export thread is archived
+// (roadmap 239, C14).
 func pokeScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -210,6 +213,7 @@ func pokeScene(now time.Time) labScene {
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-616", At: ago(time.Minute),
 			Content: "#616 is done: Chat form: center the Send button. €0.01 in all."})
 	s.seen[5] = int64(len(s.chat) - 1)
+	s.archived = []int64{1}
 	return s
 }
 
@@ -310,7 +314,10 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.chat.mu.Lock()
 	r.chat.msgs, r.chat.started, r.chat.proposals, r.chat.next = map[string][]factoryd.ChatMessage{}, nil, nil, int64(len(s.chat))
 	r.chat.titles, r.chat.seen, r.chat.summaries, r.chat.compacts = nil, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
-	r.chat.inboxes, r.chat.archived = nil, nil
+	r.chat.inboxes, r.chat.archived = nil, map[string]bool{}
+	for _, n := range s.archived {
+		r.chat.archived[fmt.Sprint("sf/code sebastian ", n)] = true
+	}
 	if s.inbox > 0 {
 		r.chat.inboxes = map[string]factoryd.ChatConversation{"sf/code sebastian": {Number: s.inbox, Title: factoryd.InboxTitle,
 			State: factoryd.ThreadActive, Inbox: true, FirstAt: now.Add(-time.Hour), LastAt: now.Add(-time.Hour)}}
