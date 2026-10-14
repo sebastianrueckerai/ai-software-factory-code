@@ -1249,7 +1249,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   lane badge. `?project=<name>` (a select at the top) shows one project.
   The human lane: approval requests, escalations with their reason, read
   from the escalation's intake event, and an answer box, human tasks. htmx
-  polls `/board` every 10 s. A card shows the task's time in all (from the
+  polls `/board` every 10 s. Above the columns the board names the
+  configuration version factoryd runs with its commit, linked to the
+  commit's tree in the infra repository, as `/policy` shows it. A card
+  shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan's card `part of plan #n`.
 - Moving a card: a backlog card has one button per starting lane of its

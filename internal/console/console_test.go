@@ -1199,6 +1199,29 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	}
 }
 
+// The board names the configuration version factoryd runs and links its
+// commit to the tree in Forgejo, as /policy does; without a readable
+// policy the line is left out, as the approver check degrades.
+func TestBoardShowsTheConfigVersion(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	line := `Configuration version 4 · commit <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a>`
+	for _, path := range []string{"/", "/?view=wide", "/board"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
+		if !strings.Contains(body, line) {
+			t.Errorf("%s lacks the configuration version line", path)
+		}
+	}
+	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
+	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") {
+		t.Fatalf("/board is not the bare board fragment: %.200s", frag)
+	}
+	r.c.cfg.Policies = noPolicy{r.ledger}
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String(); strings.Contains(body, "Configuration version") {
+		t.Errorf("board shows a configuration version with no policy read: %.200s", body)
+	}
+}
+
 func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
