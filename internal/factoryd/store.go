@@ -297,6 +297,10 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// TaskFree is the task's own headroom and its outstanding holds, the
+	// figures the gateway fits the task's next call into
+	// (policy.ReadTaskFree).
+	TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error)
 	// SetTaskModelAlias moves a running session to alias: the gateway
 	// admits the session's calls on it from the next one (the in-session
 	// climb, roadmap 222, item 5).

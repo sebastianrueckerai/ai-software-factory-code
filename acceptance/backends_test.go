@@ -393,6 +393,13 @@ func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (s
 	return "", false, nil
 }
 
+func (s *acceptanceStore) TaskFree(_ context.Context, id string) (policy.TaskFree, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	return policy.TaskFree{Status: t.Status, Headroom: t.BudgetEUR - t.SpentEUR}, nil
+}
+
 func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.Time) error {
 	return nil
 }

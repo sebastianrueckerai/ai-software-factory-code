@@ -585,7 +585,7 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "waiting-human", Question: "which alias?"}
-	unfunded := budgetRefused + ": 0.08 EUR of the 2.00 EUR budget remains, and the cheapest call needs more; close this card and file a new one"
+	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(unfunded, nil)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "again", Comment: 603})

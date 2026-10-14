@@ -285,27 +285,24 @@ var now = time.Now
 // refused: settlement relies on a finished task taking no new hold.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
 	taskID, at := r.TaskID, now()
-	var f Free
-	var status string
-	var taskHeld, allHeld float64
-	err := tx.QueryRowContext(ctx,
-		`SELECT status, (budget_eur - spent_eur)::float8,
-		        COALESCE((SELECT sum(eur) FROM holds WHERE task_id = $1), 0)::float8,
-		        ($2 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = ($4::timestamptz AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
-		        ($3 - `+MonthSpentSQL("$4::timestamptz")+`)::float8,
-		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8
-		 FROM tasks WHERE id = $1`, taskID, r.DayEUR, r.MonthEUR, at,
-	).Scan(&status, &f.TaskHeadroom, &taskHeld, &f.DayHeadroom, &f.MonthHeadroom, &allHeld)
-	if errors.Is(err, sql.ErrNoRows) {
-		return Free{}, fmt.Errorf("hold: no task row for %s", taskID)
-	}
+	t, err := ReadTaskFree(ctx, tx, taskID)
 	if err != nil {
 		return Free{}, err
 	}
-	if !slices.Contains(holdStatuses, status) {
-		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, status)}
+	if !slices.Contains(holdStatuses, t.Status) {
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, t.Status)}
 	}
-	f.Task, f.Day, f.Month = f.TaskHeadroom-taskHeld, f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
+	var f Free
+	var allHeld float64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT ($1 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = ($3::timestamptz AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
+		        ($2 - `+MonthSpentSQL("$3::timestamptz")+`)::float8,
+		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8`, r.DayEUR, r.MonthEUR, at,
+	).Scan(&f.DayHeadroom, &f.MonthHeadroom, &allHeld); err != nil {
+		return Free{}, err
+	}
+	f.TaskHeadroom, f.Task = t.Headroom, t.Free()
+	f.Day, f.Month = f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
 	f.ProjectHeadroom, f.Project = math.Inf(1), math.Inf(1)
 	if math.IsInf(r.ProjectEUR, 1) {
 		return f, nil
@@ -322,6 +319,41 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 	f.ProjectHeadroom = r.ProjectEUR - spent
 	f.Project = f.ProjectHeadroom - held
 	return f, nil
+}
+
+// TaskFree is a task's own headroom: its budget less its spend before any
+// hold (Headroom), and its outstanding holds, Held EUR in Holds of them,
+// the earliest expiring at Expires (zero without one). Status is the
+// task's, which decides whether it may take a hold.
+type TaskFree struct {
+	Status   string
+	Headroom float64
+	Held     float64
+	Holds    int
+	Expires  time.Time
+}
+
+// Free is what the task's next call fits into: its headroom after every
+// outstanding hold.
+func (t TaskFree) Free() float64 { return t.Headroom - t.Held }
+
+// ReadTaskFree reads taskID's own headroom and outstanding holds in one
+// statement: FreeHeadroom's task figures inside its transaction, and the
+// attempt floor's (factoryd's AttemptFunded) on the pool.
+func ReadTaskFree(ctx context.Context, q interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}, taskID string) (TaskFree, error) {
+	var t TaskFree
+	var expires sql.NullTime
+	err := q.QueryRowContext(ctx,
+		`SELECT status, (budget_eur - spent_eur)::float8, h.eur, h.n, h.expires
+		 FROM tasks, (SELECT COALESCE(sum(eur), 0)::float8 AS eur, count(*) AS n, min(expires_at) AS expires FROM holds WHERE task_id = $1) h
+		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Headroom, &t.Held, &t.Holds, &expires)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)
+	}
+	t.Expires = expires.Time
+	return t, err
 }
 
 // InsertHold records h inside tx, expiring after ttl, and returns its id.

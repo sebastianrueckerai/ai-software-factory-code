@@ -64,6 +64,8 @@ type fakeStore struct {
 	monthRefusals map[string]policy.Refusal
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
+	// held are TaskFree's outstanding holds by task (Held, Holds, Expires)
+	held map[string]policy.TaskFree
 	// createFails fails that many CreateTask calls
 	createFails int
 	// createCalls counts every CreateTask call, failed or not
@@ -740,6 +742,16 @@ func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since ti
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
+}
+
+func (s *fakeStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error) {
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return policy.TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)
+	}
+	f := s.held[taskID]
+	f.Status, f.Headroom = t.Status, t.BudgetEUR-t.SpentEUR
+	return f, nil
 }
 
 func (s *fakeStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {

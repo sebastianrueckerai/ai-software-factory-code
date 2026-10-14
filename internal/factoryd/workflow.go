@@ -720,8 +720,7 @@ const (
 	// a call is refused before it starts — no session, no key, no failure
 	// round — at the session loop's gate, wherever the answer that bought
 	// it came from (the console, a comment, a healed run). The card says
-	// why an answer will not run: close and refile; a budget action is
-	// finding 210's own card, not this one.
+	// why an answer will not run and what frees the budget.
 	versionAttemptFunded workflow.Version = 1
 	// versionApprovalGreen (change id "approval-green"): the approval
 	// stage reads the staged head's combined status once before its

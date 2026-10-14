@@ -618,6 +618,10 @@ func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.Model
 	return policy.ModelCalls(ctx, s.db, taskID)
 }
 
+func (s *PGStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error) {
+	return policy.ReadTaskFree(ctx, s.db, taskID)
+}
+
 // CallTotals sums the tasks' audit call rows — their tokens and modeled
 // pay-as-you-go cost to date, and the credits the GLM Coding Plan derives
 // from the tokens of each deployment that answered — in one query, with

@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -35,6 +36,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -2054,6 +2056,113 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 	return p.price, nil
 }
 
+// The floor reads the free headroom the gateway grants against, the
+// task's outstanding holds netted (roadmap 243, card #756). Budget 5.00,
+// spent 4.83 and a hold of 0.17: 0.17 remains, the hold takes all of it,
+// and the cheapest call on coding-frontier, 1024 output tokens at 1.5e-5,
+// needs 0.01536. The refusal names the hold, its expiry and both actions.
+// Settled at its call's cost of 0.05, spent is 4.88 and 0.12 is free: a
+// call fits. Swept instead, the hold is booked in full: spent is 5.00,
+// nothing is free and no hold is left to wait for, so only the raise fits.
+func TestAttemptFundedNetsTheHolds(t *testing.T) {
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83}); err != nil {
+		t.Fatal(err)
+	}
+	store.held = map[string]policy.TaskFree{"t-756": {Held: 0.17, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}}}
+
+	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
+	if want := budgetRefused + ": 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), " +
+		"so 0.000000 EUR is free, and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
+		"an answer would start an attempt whose first call cannot run. Wait for the holds to settle and answer (a released hold books its call's cost, " +
+		"an expired one is booked in full), or raise the budget (Fund on the board) and answer."; err != nil || why != want {
+		t.Fatalf("held: (%q, %v), want %q", why, err, want)
+	}
+
+	settled := store.tasks["t-756"]
+	settled.SpentEUR = 4.88
+	store.tasks["t-756"] = settled
+	store.held = nil
+	if why, err := r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier"); err != nil || why != "" {
+		t.Fatalf("settled: (%q, %v), want funded", why, err)
+	}
+
+	swept := store.tasks["t-756"]
+	swept.SpentEUR = 5
+	store.tasks["t-756"] = swept
+	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
+	if want := budgetRefused + ": 0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/coding-frontier needs 0.015360 EUR " +
+		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run. " +
+		"Raise the budget (Fund on the board) and answer, or close the card."; err != nil || why != want {
+		t.Fatalf("swept: (%q, %v), want %q", why, err, want)
+	}
+}
+
+// On the database factoryd and the gateway share, the floor and the
+// gateway's grant path read one figure (roadmap 243): the hold refuses
+// both the floor and the gateway's next call, its release at the call's
+// cost frees both, and an expired hold the sweep books in full refuses
+// both again with no hold left. The figures of TestAttemptFundedNetsTheHolds.
+func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_floor"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.insertTask(ctx, Task{ID: "t-756", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.83 WHERE id = 't-756'`); err != nil {
+		t.Fatal(err)
+	}
+	var id int64
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at)
+		VALUES ('t-756', 'model', 'coding-frontier', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}}}
+	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "coding-frontier", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
+	agree := func(stage, wantWhy string, fits bool) {
+		t.Helper()
+		why, err := r.AttemptFunded(ctx, "t-756", "factory/coding-frontier")
+		if err != nil || !strings.Contains(why, wantWhy) || (why == "") != fits {
+			t.Fatalf("%s: floor (%q, %v), want %q", stage, why, err, wantWhy)
+		}
+		h, err := policy.TakeHold(ctx, s.db, call)
+		var refused *policy.Refusal
+		if fits && err != nil || !fits && (!errors.As(err, &refused) || refused.Decision != "refused_budget") {
+			t.Fatalf("%s: the gateway's hold = (%+v, %v), want it to fit: %v", stage, h, err, fits)
+		}
+		if fits {
+			if _, err := s.db.ExecContext(ctx, `DELETE FROM holds WHERE id = $1`, h.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	agree("held", "outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2030-01-01T00:00:00Z), so 0.000000 EUR is free", false)
+
+	cost := 0.05
+	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "coding-frontier", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
+		t.Fatal(err)
+	}
+	agree("settled", "", true)
+
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-756', 'model', 'coding-frontier', 0.12, now() - interval '1 second')`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SweepHolds(ctx); err != nil || n != 1 {
+		t.Fatalf("sweep = (%d, %v), want the expired hold", n, err)
+	}
+	agree("swept", "0.000 EUR of the 5.000 EUR budget remains, and the cheapest call", false)
+}
+
 // The attempt grant's floor is the hold machinery's own minimum (ruling
 // 322): policy.Fit at the task's remaining budget refuses an attempt whose
 // cheapest call cannot fit policy.MinCallTokens output tokens, and the
@@ -2084,7 +2193,7 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{budgetRefused, "0.004 EUR of the 2.000 EUR budget remains", "1024 output tokens", "Close this card and file a new one", "finding 210"} {
+	for _, want := range []string{budgetRefused, "0.004 EUR of the 2.000 EUR budget remains", "1024 output tokens", "Raise the budget (Fund on the board) and answer, or close the card."} {
 		if !strings.Contains(why, want) {
 			t.Fatalf("refusal = %q, want it to name %q", why, want)
 		}

@@ -19,7 +19,7 @@ import (
 
 // budgetRefusal is what AttemptFunded answers for a card whose remaining
 // budget cannot fund a call (factoryd's Runner.AttemptFunded).
-const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more; close this card and file a new one"
+const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget cannot
 // fund a call, with the floor refusing it.

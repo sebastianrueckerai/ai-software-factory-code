@@ -328,10 +328,11 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 }
 
 // AttemptFunded is the attempt grant's floor (ruling 322, finding 215):
-// "" when the task's remaining budget (budget_eur minus spent) can fund
-// the cheapest call of model, else the refusal the waiting-human card
-// carries. The gateway's hold math itself decides — policy.Fit at the
-// task's remaining headroom, the day, the month and the project unbounded,
+// "" when the task's free budget can fund the cheapest call of model,
+// else the refusal the waiting-human card carries. The gateway's hold
+// math itself decides — policy.Fit at the free headroom the gateway
+// grants against (budget_eur less spent and every outstanding hold of the
+// task, roadmap 243), the day, the month and the project unbounded,
 // refuses a call that cannot fit policy.MinCallTokens output tokens — so
 // the floor is read here, never restated. A model that cannot be priced
 // refuses the attempt: nothing could bound its calls.
@@ -352,14 +353,24 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 		// attempt is refused (roadmap 222, item 5)
 		return fmt.Sprintf("the attempt's floor on %s cannot be read: %v", aliasOf(model), err), nil
 	}
-	if _, err := policy.Fit(policy.Free{Task: t.BudgetEUR - t.SpentEUR,
+	free, err := r.store.TaskFree(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	if _, err := policy.Fit(policy.Free{Task: free.Free(),
 		Day: math.Inf(1), Month: math.Inf(1), Project: math.Inf(1)},
 		policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: model, Price: price}); err == nil {
 		return "", nil
 	}
-	return fmt.Sprintf("%s: %.3f EUR of the %.3f EUR budget remains, and the cheapest call on %s needs %.6f EUR (%d output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run. Close this card and file a new one; a budget action is a card of its own (finding 210), not this one.",
-		budgetRefused, t.BudgetEUR-t.SpentEUR, t.BudgetEUR, model,
-		float64(policy.MinCallTokens)*price.Out, policy.MinCallTokens), nil
+	state := fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", free.Headroom, t.BudgetEUR)
+	act := "Raise the budget (Fund on the board) and answer, or close the card."
+	if free.Holds > 0 {
+		state += fmt.Sprintf(", outstanding holds take %.6f EUR of it (%d, the earliest expiring %s), so %.6f EUR is free",
+			free.Held, free.Holds, stamp(free.Expires), max(free.Free(), 0))
+		act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
+	}
+	return fmt.Sprintf("%s: %s, and the cheapest call on %s needs %.6f EUR (%d output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run. %s",
+		budgetRefused, state, model, float64(policy.MinCallTokens)*price.Out, policy.MinCallTokens, act), nil
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -683,7 +694,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	}
 	if strings.HasPrefix(reason, budgetRefused) {
 		// no answer can run (ruling 322): the card names why and the way out
-		next = "No answer can start an attempt here: close this issue and file a new card."
+		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
 	}
 	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) + "\n\n" + next
 	if strings.HasPrefix(reason, screeningAsks) {
