@@ -395,7 +395,7 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	quiet := `card_moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
+	quiet := `card moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
 	for id, words := range map[string]string{"t-quiet": quiet,
 		"t-ask": `<p class="activity">which region? — no event yet, 45 min on the card</p>`} {
 		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {

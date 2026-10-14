@@ -1210,7 +1210,7 @@ func TestBoardActivityLine(t *testing.T) {
 		end := strings.Index(body[i:], "</article>")
 		return body[start : i+end]
 	}
-	if got := card("t-run"); !strings.Contains(got, `class="activity">card_moved by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
+	if got := card("t-run"); !strings.Contains(got, `class="activity">card moved by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
 		t.Errorf("the card with an event: %.400s", got)
 	}
 	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {

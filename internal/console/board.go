@@ -1555,8 +1555,8 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	return k
 }
 
-// activityLine is event e on its card's activity line: what happened, by
-// whom, which way and when; a task_status row names the status and gate
+// activityLine is event e on its card's activity line: what happened in
+// words, by whom, which way and when; a task_status row names the status and gate
 // it left the task in.
 func activityLine(e factoryd.Event) string {
 	at := e.At.UTC().Format("15:04")
@@ -1567,7 +1567,7 @@ func activityLine(e factoryd.Event) string {
 		}
 		return words + " at " + at
 	}
-	return fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, at)
+	return fmt.Sprintf("%s by %s via %s at %s", strings.ReplaceAll(e.Kind, "_", " "), e.Actor, e.Via, at)
 }
 
 // maxCardReason bounds what a card shows of an escalation body even
