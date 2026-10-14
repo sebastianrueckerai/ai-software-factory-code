@@ -391,6 +391,9 @@ type workerEnv struct {
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
+	// taskPR is the task's own pull request (TASK_PR): a closed one's head
+	// stays on the task's repository after its branch left the fork
+	taskPR string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -493,7 +496,7 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	if err == nil {
-		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL")}
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR")}
 		err = cloneBase(e, filepath.Join(ws, "repo"))
 	}
 	return recordFetch(log, ws, err)
@@ -514,7 +517,9 @@ func cloned(ws string) error {
 // cloneBase clones the task's repository at its base, with the head of a
 // split's pull request as branch pull/<n>, and, when the session resumes a
 // branch head that only the fork holds, fetches that branch from the fork,
-// all with the read token. The headers stay out of .git/config.
+// all with the read token. A closed pull request's branch can be gone from
+// the fork (roadmap 214): its head then comes from the task's repository,
+// which keeps it as refs/pull/<n>/head. The headers stay out of .git/config.
 func cloneBase(e workerEnv, repoDir string) error {
 	if err := e.gitAuth(e.repoToken, "", "clone", "-q", e.repoURL, repoDir); err != nil {
 		return err
@@ -530,7 +535,20 @@ func cloneBase(e workerEnv, repoDir string) error {
 	if _, err := e.git(repoDir, "cat-file", "-e", e.repoSHA+"^{commit}"); err == nil {
 		return nil
 	}
-	return e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.pushURL, "refs/heads/"+e.branch)
+	err := e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.pushURL, "refs/heads/"+e.branch)
+	if err == nil {
+		return nil
+	}
+	if e.taskPR == "" {
+		return fmt.Errorf("the start %s is on no branch the session can fetch: %w", e.repoSHA, err)
+	}
+	if perr := e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.repoURL, "+refs/pull/"+e.taskPR+"/head:refs/heads/"+e.branch); perr != nil {
+		return fmt.Errorf("the start %s is on neither the fork's branch %s (%v) nor pull request #%s's head (%w)", e.repoSHA, e.branch, err, e.taskPR, perr)
+	}
+	if _, err := e.git(repoDir, "cat-file", "-e", e.repoSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("pull request #%s's head does not hold the start %s, and the fork's branch %s is gone", e.taskPR, e.repoSHA, e.branch)
+	}
+	return nil
 }
 
 func (e workerEnv) runGit(dir string, env []string, args ...string) (string, error) {

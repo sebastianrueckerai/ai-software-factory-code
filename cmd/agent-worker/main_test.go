@@ -160,6 +160,49 @@ func TestCloneBaseFetchesAResumedHeadFromTheFork(t *testing.T) {
 	}
 }
 
+// A revived task whose pull request closed and whose branch left the fork
+// resumes from the head the task's repository keeps as refs/pull/<n>/head
+// (roadmap 214); with no pull request to read, or none holding the start,
+// the clone fails naming where it looked. The remotes are file:// URLs: a
+// plain path clone would copy every object, the pull request's included.
+func TestCloneBaseRecoversAClosedPullRequestsHead(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote, fork := t.TempDir(), filepath.Join(t.TempDir(), "remote.git"), filepath.Join(t.TempDir(), "fork.git")
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	run("-C", seed, "checkout", "-q", "-b", "factory/t1")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "attempt 1")
+	run("-C", seed, "push", "-q", remote, "factory/t1:refs/pull/7/head")
+	head := run("-C", seed, "rev-parse", "HEAD")
+
+	e := workerEnv{taskID: "t1", repoSHA: head, branch: "factory/t1", repoURL: "file://" + remote, pushURL: "file://" + fork, taskPR: "7"}
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	if base, _, err := prepareRepo(dir, e); err != nil || base != head {
+		t.Fatalf("prepareRepo = (%s, %v), want the pull request's head %s", base, err, head)
+	}
+
+	e.taskPR = ""
+	if err := cloneBase(e, filepath.Join(t.TempDir(), "repo")); err == nil || !strings.Contains(err.Error(), "the start "+head+" is on no branch the session can fetch") {
+		t.Fatalf("no pull request: err = %v, want the start named", err)
+	}
+	e.taskPR = "8"
+	if err := cloneBase(e, filepath.Join(t.TempDir(), "repo")); err == nil || !strings.Contains(err.Error(), "nor pull request #8's head") {
+		t.Fatalf("no such pull request: err = %v, want both places named", err)
+	}
+}
+
 func TestGitRunRedactsToken(t *testing.T) {
 	e := workerEnv{pushToken: "s3cret-tok"}
 	err := e.gitAuth(e.pushToken, "", "clone", "https://x-access-token:s3cret-tok@git.example/repo.git", "/nonexistent-dir")

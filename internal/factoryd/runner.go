@@ -1193,6 +1193,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.pull != 0 {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PULL", "value": strconv.FormatInt(s.pull, 10)})
 	}
+	if t.PRNumber != 0 {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "TASK_PR", "value": strconv.FormatInt(t.PRNumber, 10)})
+	}
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": s.report})
 	} else {
