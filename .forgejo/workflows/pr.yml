@@ -70,7 +70,14 @@ jobs:
           ) || pkgs=""
           [ -n "$pkgs" ] || { echo "the walk named no package: full suite"; full; }
           echo "packages to test: $pkgs"
-          echo "pkgs=$pkgs" >> "$GITHUB_OUTPUT"
+          # the delimiter form: $pkgs holds one package a line, and a plain
+          # key=value write leaves every line after the first invalid, which
+          # fails the job after the tests ran green (PR 644, runs 952/954/964)
+          {
+            echo "pkgs<<EOF"
+            echo "$pkgs"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - name: test the affected packages
         run: scripts/pg-test.sh go test -race -p 1 ${{ steps.select.outputs.pkgs || './...' }}
   vet-and-format:
