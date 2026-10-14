@@ -214,10 +214,11 @@ func TestGuardClassCardReproducesInTest(t *testing.T) {
 }
 
 // An ordinary card keeps today's pair (roadmap 194 changes nothing
-// there): its base is restamped from main's head at session start, and
-// the gate's base run at that tree shows the bug.
+// there): its base is the task's stamp — the fork point the branch was
+// cut from, read once at session start, never main's moved head — and the
+// gate's base run at that tree shows the bug.
 func TestOrdinaryCardShowsTheBugAtBaseAsToday(t *testing.T) {
-	task := gateTask // source api, filed at sha old-base
+	task := gateTask // source api, stamped at sha base before the fix landed on main
 	task.ReproCommand = "go test ./internal/x -run TestY"
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -232,11 +233,11 @@ func TestOrdinaryCardShowsTheBugAtBaseAsToday(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ref != "main-4" {
-		t.Fatalf("startRef = %q, want main's head main-4", ref)
+	if ref != "base" {
+		t.Fatalf("startRef = %q, want the stamped base", ref)
 	}
-	if got := store.tasks["t1"].SHA; got != "main-4" {
-		t.Fatalf("an ordinary card's base restamped to %q, want main-4", got)
+	if got := store.tasks["t1"].SHA; got != "base" {
+		t.Fatalf("an ordinary card's base moved to %q, want the stamp base kept", got)
 	}
 	if t0.ReproBase != "" {
 		t.Fatalf("an ordinary card pins no reproduction base: %+v", t0)
@@ -250,12 +251,12 @@ func TestOrdinaryCardShowsTheBugAtBaseAsToday(t *testing.T) {
 	scriptReproPods(kube, reproLine(2, "--- FAIL: TestY at the base"), reproLine(0, "ok"))
 	<-done
 	if res.BaseExit != 2 || res.Exit != 0 || res.InTest || res.ByAgent || !res.Reproduced() {
-		t.Fatalf("result = %+v, want the bug at the restamped base, the fix at the head", res)
+		t.Fatalf("result = %+v, want the bug at the stamped base, the fix at the head", res)
 	}
-	if spec, _ := json.Marshal(kube.podAt(0).spec); !strings.Contains(string(spec), `{"name":"CHECKOUT_SHA","value":"main-4"}`) {
-		t.Fatalf("the base pod does not run at the restamped base: %s", spec)
+	if spec, _ := json.Marshal(kube.podAt(0).spec); !strings.Contains(string(spec), `{"name":"CHECKOUT_SHA","value":"base"}`) {
+		t.Fatalf("the base pod does not run at the stamped base: %s", spec)
 	}
-	if got := hub.comments[len(hub.comments)-1]; !strings.Contains(got, "reproduced at base (exit 2 at main-4)") {
+	if got := hub.comments[len(hub.comments)-1]; !strings.Contains(got, "reproduced at base (exit 2 at base)") {
 		t.Fatalf("comment = %s", got)
 	}
 }
