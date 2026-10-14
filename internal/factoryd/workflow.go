@@ -415,6 +415,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
 	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
 	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
+	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewParallel)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -734,6 +735,15 @@ const (
 	// finding puts it on the card as evidence and bounces no session for
 	// it; the approval decision keeps seeing the finding.
 	versionAdjudicated workflow.Version = 1
+	// versionReviewParallel (change id "review-parallel", roadmap 222,
+	// item b): the checks wait schedules the model review beside it as a
+	// future on its head — the local gates (policy, migration,
+	// reproduction) ran before the checks, so the review's inputs are all
+	// known — and the review stage awaits that future; red checks cancel
+	// it before their findings return to the agent, so no review comment
+	// lands on a head that goes back. Runs from before the change keep
+	// the sequential review after green checks.
+	versionReviewParallel workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -803,6 +813,7 @@ type taskRun struct {
 	alertPreCheck     workflow.Version
 	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
 	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
+	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -821,6 +832,9 @@ type taskRun struct {
 	// versionChecksRerun
 	redHead   string // the last head whose checks failed
 	rerunHead string // the head the last RerunChecks made
+	// flight is the model review scheduled beside the checks wait
+	// (versionReviewParallel), nil while none runs
+	flight *reviewInFlight
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -2066,17 +2080,37 @@ func (t *taskRun) checksOptions() workflow.ActivityOptions {
 func (t *taskRun) decided() (final, reason string, ok bool) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPRMerged).ReceiveAsync(&sig) {
-		if t.counted(SignalPRMerged, sig) {
-			return "done", "pull request merged", true
+		if final, reason, ok := t.decide(SignalPRMerged, sig); ok {
+			return final, reason, true
 		}
 	}
 	for workflow.GetSignalChannel(t.ctx, SignalPRClosed).ReceiveAsync(&sig) {
-		if t.counted(SignalPRClosed, sig) {
-			return "failed", "pull request closed without merge", true
+		if final, reason, ok := t.decide(SignalPRClosed, sig); ok {
+			return final, reason, true
 		}
 	}
 	if workflow.GetSignalChannel(t.ctx, SignalIssueClosed).ReceiveAsync(&sig) {
-		t.counted(SignalIssueClosed, sig)
+		return t.decide(SignalIssueClosed, sig)
+	}
+	return "", "", false
+}
+
+// decide is the verdict one received terminal signal makes, counted as
+// decided counts it: ok false when it does not count (another pull
+// request's event). An issue's close always decides, by whether its pull
+// request merged.
+func (t *taskRun) decide(name string, sig TaskSignal) (final, reason string, ok bool) {
+	switch name {
+	case SignalPRMerged:
+		if t.counted(name, sig) {
+			return "done", "pull request merged", true
+		}
+	case SignalPRClosed:
+		if t.counted(name, sig) {
+			return "failed", "pull request closed without merge", true
+		}
+	case SignalIssueClosed:
+		t.counted(name, sig)
 		final, reason, _ := t.issueClosed()
 		return final, reason, true
 	}

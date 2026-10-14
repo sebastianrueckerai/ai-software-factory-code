@@ -96,8 +96,26 @@ func TestWorkflowRollFoldsANewHeadBeforeItsMerge(t *testing.T) {
 	}
 }
 
-// Red checks on a head RollCommit leaves as it is fail the roll: no agent
-// answers findings on a roll, and the next green commit opens the next.
+// A roll schedules no review beside its checks wait (ruling 178): its
+// review is the stage's own, after green checks.
+func TestWorkflowRollReviewsAfterChecks(t *testing.T) {
+	g, commits := newRollHarness(t, "r1")
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(*commits) != 1 || len(g.reviewGates) != 1 || !g.reviewGates[0].ChecksPassed {
+		t.Fatalf("RollCommit calls %v, review gates %+v: want one review after green checks", *commits, g.reviewGates)
+	}
+	if want := []string{"policy", "repro r1", "review r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// Red checks on a head RollCommit leaves as it is fail the roll: the
+// local gates ran first (the pinned order), no agent answers findings on
+// a roll, and the next green commit opens the next.
 func TestWorkflowRollFailsOnFindingsItCannotAnswer(t *testing.T) {
 	g, commits := newRollHarness(t, "r1")
 	red := "check \"pr / test (pull_request)\": failure"
@@ -105,7 +123,7 @@ func TestWorkflowRollFailsOnFindingsItCannotAnswer(t *testing.T) {
 	if final := g.run(t); final != "failed" {
 		t.Fatalf("final = %q", final)
 	}
-	if len(*commits) != 2 || len(g.sessions) != 0 || len(g.steps) != 0 {
+	if len(*commits) != 2 || len(g.sessions) != 0 || !slices.Equal(g.steps, []string{"policy", "repro r1"}) {
 		t.Fatalf("RollCommit calls %v, sessions %v, steps %v", *commits, g.sessions, g.steps)
 	}
 	if reason := g.finals[0][1]; reason != "roll: checks failed: "+red {

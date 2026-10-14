@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,8 @@ type gateHarness struct {
 	review       Review
 	reviews      []Review      // in order, the last repeating; empty: review
 	earlier      [][]Review    // the earlier reviews each ModelReview call was given
+	reviewGates  []GateResults // the gates each ModelReview call was given
+	reviewMu     sync.Mutex    // review calls can overlap: one beside the checks, one cancelled still finishing
 	audits       []AuditResult // in order, the last repeating; empty: clear
 	auditErr     error
 	auditPins    []int64
@@ -89,8 +92,15 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 		})
 	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review) (Review, error) {
+			// the review runs beside the checks wait: a cancelled call
+			// still finishes in the test env (the real one is cut at its
+			// next heartbeat and posts no comment), so calls can overlap
+			// and share these slices under the lock
+			g.reviewMu.Lock()
+			defer g.reviewMu.Unlock()
 			g.steps = append(g.steps, "review "+commit)
 			g.earlier = append(g.earlier, earlier)
+			g.reviewGates = append(g.reviewGates, gates)
 			if len(g.reviews) > 0 {
 				return g.reviews[min(len(g.earlier), len(g.reviews))-1], g.reviewErr
 			}

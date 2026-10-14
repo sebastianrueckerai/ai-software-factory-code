@@ -153,8 +153,8 @@ var Refusals = map[string]Refusal{
 	// the ordering rules and the stage shape, kept from workflow.yaml
 	"screening_first": {Change: func(f map[string][]byte) {
 		const scr = "  - {name: screening, on_findings: human, enabled: true, when: outsider}\n"
-		const checks = "  - {name: checks, on_findings: agent, enabled: true}\n"
-		edit(f, spec, scr+checks, checks+scr)
+		const pl = "  - {name: policy, on_findings: fail, enabled: true}\n"
+		edit(f, spec, scr+pl, pl+scr)
 	}, Want: []string{"processes/spec.yaml: stages: stage screening must be first: it runs before the first session"}},
 	"migration_after_policy": {Change: func(f map[string][]byte) {
 		const pl = "  - {name: policy, on_findings: fail, enabled: true}\n"

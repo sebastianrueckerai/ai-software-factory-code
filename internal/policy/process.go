@@ -20,7 +20,11 @@ type Process struct {
 	// Stages are the stages a coding task's work passes, in this order
 	// (ruling 177): checks, policy, approval and merge are required,
 	// approval right before merge, merge last; checks, policy, approval
-	// and merge always run; screening is first and for a human only.
+	// and merge always run; screening is first and for a human only. The
+	// local gates (policy, migration, reproduction) come before the
+	// checks, which wait on CI: their reads and commands answer before a
+	// minute of it is spent, and the model review runs beside its wait
+	// (roadmap 222, item b).
 	Stages []Stage `yaml:"stages" json:"stages"`
 	// Merge is how the project's pull requests merge.
 	Merge Merge `yaml:"merge" json:"merge"`

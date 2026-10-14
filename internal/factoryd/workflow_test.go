@@ -38,14 +38,16 @@ var testWorkflowConfig = WorkflowConfig{
 }
 
 // testStages is the Stage 9 workflow (rulings 177, 182): screening on
-// for outside accounts, every other stage on.
+// for outside accounts, every other stage on; the local gates (policy,
+// migration, reproduction) come before the checks, whose wait the review
+// runs beside (roadmap 222, item b).
 func testStages() []policy.Stage {
 	return []policy.Stage{
 		{Name: "screening", OnFindings: "human", Enabled: true, When: "outsider"},
-		{Name: "checks", OnFindings: "agent", Enabled: true},
 		{Name: "policy", OnFindings: "fail", Enabled: true},
 		{Name: "migration", OnFindings: "human", Enabled: true},
 		{Name: "reproduction", OnFindings: "agent", Enabled: true},
+		{Name: "checks", OnFindings: "agent", Enabled: true},
 		{Name: "review", OnFindings: "agent", Enabled: true},
 		{Name: "approval", OnFindings: "human", Enabled: true},
 		{Name: "merge", OnFindings: "human", Enabled: true},

@@ -214,6 +214,10 @@ func (b *builder) code(kind string, ready Lane, atOnce, end string) string {
 	}
 	chain = append(chain, b.node(session))
 	b.edge(Edge{From: session.ID, To: nodeHuman, Label: "at the cap", Capped: true, Line: capLine})
+	// the stages follow in the process's order: the local gates (policy,
+	// migration, reproduction) first, then the checks with the review
+	// beside their wait, audit, approval and merge (roadmap 222, item b);
+	// the chain stays a chain whatever the order
 	for _, s := range stages {
 		if s.Name == StageApproval && b.p.Merge.Queue == QueueProject {
 			q := b.node(Node{ID: id("queue"), Name: "merge queue",

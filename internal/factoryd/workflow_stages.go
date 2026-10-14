@@ -71,6 +71,15 @@ const (
 // workflow's stages after the session (versionStages): each stage's
 // findings go where its on_findings says; approval and merge end it.
 func (t *taskRun) stages(commit string) verdict {
+	v := t.runStages(commit)
+	// no review outlives the pass: one still beside the checks when the
+	// pass ends (findings sent back, the task's end) is cancelled before
+	// its findings land anywhere
+	t.cancelReview()
+	return v
+}
+
+func (t *taskRun) runStages(commit string) verdict {
 	t.round++
 	if t.returns == nil {
 		t.returns = map[string]int{}
@@ -107,6 +116,10 @@ func (t *taskRun) stages(commit string) verdict {
 		if why := t.skipReason(s); why != "" {
 			t.recordSkip(s.Name, why)
 			continue
+		}
+		if s.Name == policy.StageChecks {
+			// the review runs beside the checks wait (versionReviewParallel)
+			t.scheduleReview(commit, &g)
 		}
 		findings, v, stop := t.runStage(s.Name, &commit, &g, &review)
 		if stop {
@@ -406,6 +419,9 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 					return nil, v, stop
 				}
 				t.rerunHead = *head
+				// the re-run made a new head: the review beside the old
+				// one is cancelled, the new head reviews sequentially
+				t.cancelReview()
 				return t.runStage(name, head, g, review)
 			}
 		}
@@ -458,7 +474,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 				g.Reproduction.Exit, commit, g.Reproduction.Command, g.Reproduction.Output)}, verdict{}, false
 		}
 	case policy.StageReview:
-		v, decided, err := t.gateActivity(true, reviewOptions(), review, ActivityModelReview, t.taskID, t.pr, commit, *g, t.reviews)
+		v, decided, err := t.review(commit, g, review)
 		if decided {
 			return nil, v, true
 		}
@@ -485,6 +501,106 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		return t.audit(commit, g)
 	}
 	return nil, verdict{}, false
+}
+
+// reviewInFlight is a model review scheduled beside the checks wait
+// (versionReviewParallel): head is the commit the review reads, the one
+// the checks stage was waiting on when it scheduled the call.
+type reviewInFlight struct {
+	head   string
+	future workflow.Future
+	cancel workflow.CancelFunc
+}
+
+// scheduleReview starts the model review beside the checks wait on head:
+// the local gates ran first, so the review's inputs are all known. Only
+// the pinned process's own order decides — its review comes after the
+// checks, its local gates before them, and no stage waits between the
+// two — and a roll makes no model call (ruling 178); anything else (a
+// run from before the change, a process with the old order) keeps the
+// sequential review after green checks.
+func (t *taskRun) scheduleReview(head string, g *GateResults) {
+	at := func(name string) int {
+		return slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == name })
+	}
+	checks, review := at(policy.StageChecks), at(policy.StageReview)
+	if t.reviewParallel < versionReviewParallel || t.rolling || checks < 0 || review < checks {
+		return
+	}
+	if t.skipReason(t.cfg.Stages[review]) != "" {
+		// the stage would never await the future: a review beside the
+		// checks would only burn the call
+		return
+	}
+	for _, name := range []string{policy.StagePolicy, policy.StageMigration, policy.StageReproduction} {
+		if at(name) > checks {
+			return
+		}
+	}
+	ctx, cancel := workflow.WithCancel(t.ctx)
+	opts := reviewOptions()
+	opts.WaitForCancellation = true // a cancelled call is not retried
+	t.flight = &reviewInFlight{
+		head:   head,
+		future: workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), ActivityModelReview, t.taskID, t.pr, head, *g, t.reviews),
+		cancel: cancel,
+	}
+}
+
+// review runs the review stage: the review scheduled beside the checks
+// wait on the same head is awaited, any other head — one the checks
+// re-run made, or a run from before the change — reviews sequentially
+// after the checks, cancelling one still beside an older head.
+func (t *taskRun) review(head string, g *GateResults, review *Review) (verdict, bool, error) {
+	if f := t.flight; f != nil && f.head == head {
+		t.flight = nil
+		return t.awaitReview(f, review)
+	}
+	t.cancelReview()
+	return t.gateActivity(true, reviewOptions(), review, ActivityModelReview, t.taskID, t.pr, head, *g, t.reviews)
+}
+
+// awaitReview waits for the review scheduled beside the checks wait,
+// racing the terminal signals as watch does: the receiver takes the
+// signal out of its channel, and one that decides cancels the call and
+// returns the task's verdict; one that does not (another pull request's
+// event) is dropped and the wait goes on.
+func (t *taskRun) awaitReview(f *reviewInFlight, review *Review) (verdict, bool, error) {
+	for {
+		done := false
+		var name string
+		var sig TaskSignal
+		sel := workflow.NewSelector(t.ctx)
+		sel.AddFuture(f.future, func(workflow.Future) { done = true })
+		for _, s := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, s), func(c workflow.ReceiveChannel, more bool) {
+				c.Receive(t.ctx, &sig)
+				name = s
+			})
+		}
+		sel.Select(t.ctx)
+		if done {
+			return verdict{}, false, f.future.Get(t.ctx, review)
+		}
+		if final, why, ok := t.decide(name, sig); ok {
+			f.cancel()
+			_ = f.future.Get(t.ctx, nil)
+			return verdict{final: final, reason: why}, true, nil
+		}
+	}
+}
+
+// cancelReview cancels a review still beside a checks wait and waits for
+// the call to end: no review comment lands on a head that goes back to
+// the agent, or past the pass that scheduled it.
+func (t *taskRun) cancelReview() {
+	f := t.flight
+	t.flight = nil
+	if f == nil {
+		return
+	}
+	f.cancel()
+	_ = f.future.Get(t.ctx, nil)
 }
 
 // audit is the audit stage (versionAudit): the findings line that sends

@@ -13,10 +13,10 @@ lanes:
 dependencies: {wait_until: done, on_failed: human}
 stages:
   - {name: screening, on_findings: human, enabled: true, when: outsider}
-  - {name: checks, on_findings: agent, enabled: true}
   - {name: policy, on_findings: fail, enabled: true}
   - {name: migration, on_findings: human, enabled: true}
   - {name: reproduction, on_findings: agent, enabled: true}
+  - {name: checks, on_findings: agent, enabled: true}
   - {name: review, on_findings: agent, enabled: true}
   - {name: audit, on_findings: human, enabled: true}
   - {name: approval, on_findings: human, enabled: true}

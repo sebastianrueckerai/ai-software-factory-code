@@ -208,6 +208,156 @@ func TestStagesFailFindingsFailTheTask(t *testing.T) {
 	}
 }
 
+// The checks wait runs beside the model review (roadmap 222, item b):
+// the local gates answered first, so the review's inputs are exactly the
+// sequential ones minus the checks — no checks_passed while the checks
+// still run — and the head's single review call is what the approval
+// card carries together with green checks.
+func TestStagesReviewRunsBesideTheChecksWait(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		yes := true
+		g.review = Review{Verdict: "approve", Summary: "fine", StrictImprovement: &yes}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.reviewGates) != 1 || g.reviewGates[0].ChecksPassed {
+		t.Fatalf("review calls = %d, gates %+v: want one call whose gates carry no checks answer", len(g.reviewGates), g.reviewGates)
+	}
+	if !g.approvals[0].Gates.ChecksPassed || g.approvals[0].Review.Verdict != "approve" || g.approvals[0].Commit != "c1" {
+		t.Fatalf("approval = %+v: want the review and green checks together", g.approvals[0])
+	}
+	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// A red head cancels the review beside its wait before its findings
+// return to the agent: the next session starts without waiting for the
+// call, and no review of the red head stands when the next head is
+// reviewed. (The test env's delayed mock still finishes the cancelled
+// call — the real one is cut at its next heartbeat and posts no
+// comment — so its step may appear late, after the return it must not
+// have held up.)
+func TestStagesRedChecksCancelTheReviewBesideThem(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviewDelay = time.Hour
+	})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) {
+		t.Fatalf("second session = %+v", g.sessions[1])
+	}
+	if i, j := slices.Index(g.steps, "repro c2"), slices.Index(g.steps, "review c1"); i < 0 || (j >= 0 && j < i) {
+		t.Fatalf("steps = %v: the red head's findings waited for its review", g.steps)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || len(g.approvals[0].EarlierReviews) != 0 {
+		t.Fatalf("approvals = %+v: want one request, on c2, with no review of the red head standing", g.approvals)
+	}
+}
+
+// Red checks at the session cap go to the card and the pass goes on: the
+// review stage takes the review that ran beside the checks wait, no
+// second call on the same head.
+func TestStagesRedChecksAtTheCapKeepTheReviewBesideThem(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(1, nil))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.reviewGates) != 1 || g.reviewGates[0].ChecksPassed {
+		t.Fatalf("review gates %+v: want the one call beside the checks", g.reviewGates)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c1" || g.approvals[0].Review.Verdict != "approve" ||
+		!strings.Contains(strings.Join(g.approvals[0].WhyHuman, "\n"), "checks, round 1: red 1") {
+		t.Fatalf("approvals = %+v: want one request on c1 with the review and the red checks", g.approvals)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// A run from before the change keeps the sequential review after green
+// checks, so its review's gates carry them.
+func TestStagesBeforeReviewParallelReviewsAfterChecks(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.env.OnGetVersion("review-parallel", workflow.DefaultVersion, versionReviewParallel).Return(workflow.DefaultVersion)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.reviewGates) != 1 || !g.reviewGates[0].ChecksPassed {
+		t.Fatalf("review gates %+v: want one review after green checks", g.reviewGates)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// The local gates come before the checks in the pinned order: a failing
+// reproduction returns to the agent before any checks wait starts.
+func TestStagesFailingReproductionReturnsBeforeTheChecksWait(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
+		setStage(w, "reproduction", func(s *policy.Stage) { s.OnFindings = "fail" })
+	}), func(g *gateHarness) {
+		g.repro = []ReproResult{{Ran: true, Command: "go test ./x", Exit: 1, Output: "--- FAIL"}}
+	})
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
+	waited := 0
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waited++
+			return ChecksResult{State: ChecksSuccess}, nil
+		})
+	g.onSessions(pushed("s1", "c1"))
+
+	if final := g.run(t); final != "failed" || !strings.HasPrefix(g.finals[0][1], "reproduction: ") {
+		t.Fatalf("final = %q %v", final, g.finals)
+	}
+	if waited != 0 {
+		t.Fatalf("WaitChecks calls = %d: the reproduction failed before the checks wait", waited)
+	}
+	if !slices.Equal(g.steps, []string{"policy", "repro c1"}) {
+		t.Fatalf("steps = %v", g.steps)
+	}
+}
+
+// A terminal signal that reaches the review awaited beside the checks
+// cancels it and decides the task from the signal the wait received, not
+// from a channel the wait drained: an issue closed with the pull request
+// still open ends the task closed, no approval request, without waiting
+// the review out. (The pull request's own close is
+// TestWorkflowTerminalSignalDuringTheReviewDecides.)
+func TestStagesIssueClosedBesideTheAwaitedReviewDecides(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviewDelay = 3 * time.Hour
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" || len(g.approvals) != 0 {
+		t.Fatalf("final = %q, approvals %d", final, len(g.approvals))
+	}
+	if g.finishAt.Sub(g.started) > time.Hour {
+		t.Fatalf("finished %s after the start, want right after the close", g.finishAt.Sub(g.started))
+	}
+}
+
 // A forbidden class on the default policy stage fails with the old
 // reason; on_findings agent sends the paths back instead.
 func TestStagesForbiddenClass(t *testing.T) {

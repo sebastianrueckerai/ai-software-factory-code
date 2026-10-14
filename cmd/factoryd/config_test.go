@@ -186,10 +186,10 @@ func TestExplainSpecChild(t *testing.T) {
  4. lane ready: starts a task of class coder (session code)
  5. stage screening: an outside account's card only; findings -> human card
  6. coder session (at most 3 per task, limits.sessions)
- 7. stage checks: findings -> back to the coder (step 6)
- 8. stage policy: findings -> end: failed
- 9. stage migration: findings -> human card
-10. stage reproduction: findings -> back to the coder (step 6)
+ 7. stage policy: findings -> end: failed
+ 8. stage migration: findings -> human card
+ 9. stage reproduction: findings -> back to the coder (step 6)
+10. stage checks: findings -> back to the coder (step 6)
 11. stage review: findings -> back to the coder (step 6); no verdict -> human card
 12. stage audit: projects with audit: true only; findings -> human card
 13. merge queue (project): one pull request at a time; main merged in and the checks run again when main moved
