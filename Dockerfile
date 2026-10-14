@@ -1,11 +1,16 @@
 FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
+# roadmap 232: this stage's only clock is the commit's; ci.yml passes
+# --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
+# builds the same digest at any wall-clock time.
+ARG SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
- && CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
+RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
+ && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
 
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
