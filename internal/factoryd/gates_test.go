@@ -1254,6 +1254,84 @@ func TestGateReproductionTakesTheAgentsReproBlock(t *testing.T) {
 	}
 }
 
+// A reproduction failing with the sandbox's not-a-repository signature
+// (exit 128, "not a git repository" in the output) gets the sandbox rule
+// named beside the failing command in the gate's comment, and
+// not_a_repository on the timeline.
+func TestGateReproductionNamesTheSandboxRuleOnNotARepository(t *testing.T) {
+	task := gateTask
+	task.ReproCommand = "cd /tmp/x && make repro"
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, _ := newTestRunner(t, task, kube, objects)
+	var res ReproResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var val converter.EncodedValue
+		if val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1"); err == nil {
+			err = val.Get(&res)
+		}
+	}()
+	sig := "fatal: not a git repository (or any of the parent directories): .git"
+	scriptReproPods(kube, reproLine(128, sig), reproLine(128, sig))
+	<-done
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Exit != 128 || !strings.Contains(res.Output, "not a git repository") {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(hub.comments) != 1 {
+		t.Fatalf("comments = %q", hub.comments)
+	}
+	if !strings.Contains(hub.comments[0], fenced(res.Command)) || !strings.Contains(hub.comments[0], notARepositoryRule) {
+		t.Fatalf("comment does not name the sandbox rule beside the command: %s", hub.comments[0])
+	}
+	if tl := timelineStep(t, objects, "t1", "gate_reproduction"); tl["not_a_repository"] != true {
+		t.Fatalf("timeline = %v", tl)
+	}
+}
+
+// An ordinary failing reproduction keeps today's refusal: no sandbox rule
+// in the comment without the signature, whatever the exit.
+func TestGateReproductionKeepsThePlainRefusalWithoutTheSignature(t *testing.T) {
+	for _, c := range []struct {
+		exit   int
+		output string
+	}{{2, "--- FAIL: TestY\nFAIL"}, {128, "error: pathspec 'x' did not match any file(s) known to git"}} {
+		task := gateTask
+		task.ReproCommand = "go test ./..."
+		kube := newFakeKube()
+		r, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		var res ReproResult
+		var err error
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			var val converter.EncodedValue
+			if val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1"); err == nil {
+				err = val.Get(&res)
+			}
+		}()
+		scriptReproPods(kube, reproLine(2, "base failure"), reproLine(c.exit, c.output))
+		<-done
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Exit != c.exit {
+			t.Fatalf("result = %+v, want exit %d", res, c.exit)
+		}
+		if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**failed** at the head") {
+			t.Fatalf("comments = %q", hub.comments)
+		}
+		if strings.Contains(hub.comments[0], "not-a-repository signature") {
+			t.Fatalf("exit %d without the signature names the sandbox rule: %s", c.exit, hub.comments[0])
+		}
+	}
+}
+
 // Only an alert's issue takes the agent's block (ruling 170): an outside
 // account's bug, a writer's issue and an API task without a command run no
 // reproduction, whatever the agent wrote.
