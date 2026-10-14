@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 type dockerfileStage struct {
@@ -322,17 +323,17 @@ func TestRunnerWarmCacheHoldsNoTestResultsAndNoSource(t *testing.T) {
 		}
 	}
 	// the module and every top-level tree holding Go files are bind-mounted
-	// under /tmp/warm, and nothing else: no layer holds the source, and a
-	// change outside them (k8s/, docs) keeps the layer; ci.yml's
-	// RUNNER_INPUTS, the runner image's epoch, name the same paths
-	mounts := regexp.MustCompile(`--mount=type=bind,source=([^,\s]+),target=/tmp/warm/([^,\s]+) `).FindAllStringSubmatch(warm, -1)
+	// under /tmp/src, and nothing else: a change outside them (k8s/, docs)
+	// keeps the layer; ci.yml's RUNNER_INPUTS, the runner image's epoch,
+	// name the same paths
+	mounts := regexp.MustCompile(`--mount=type=bind,source=([^,\s]+),target=/tmp/src/([^,\s]+) `).FindAllStringSubmatch(warm, -1)
 	if n := strings.Count(warm, "--mount="); n != len(mounts) {
-		t.Errorf("Dockerfile.runner warm step: %d mounts, %d of them binds of a source path at /tmp/warm/<the same path>: %s", n, len(mounts), warm)
+		t.Errorf("Dockerfile.runner warm step: %d mounts, %d of them binds of a source path at /tmp/src/<the same path>: %s", n, len(mounts), warm)
 	}
 	var mounted []string
 	for _, m := range mounts {
 		if m[1] != m[2] {
-			t.Errorf("Dockerfile.runner warm step: %s is mounted at /tmp/warm/%s, want /tmp/warm/%s", m[1], m[2], m[1])
+			t.Errorf("Dockerfile.runner warm step: %s is mounted at /tmp/src/%s, want /tmp/src/%s", m[1], m[2], m[1])
 		}
 		mounted = append(mounted, m[1])
 	}
@@ -416,6 +417,64 @@ func TestRunnerWarmCacheTakesTheCommitsClock(t *testing.T) {
 		}
 		if string(got) != f[1] {
 			t.Errorf("%s after the rewrite = %q, want %q", name, got, f[1])
+		}
+	}
+}
+
+// Go's module index keys each package of the module by its files' names,
+// sizes and mtimes, and a checkout sets the mtimes to its own clock: main's
+// runs 1229 and 1231 built one source into warm layers that differed in
+// the 22 index entries of the module's packages, and in nothing else.
+func TestRunnerWarmBuildReadsTheSourceAtTheCommitsClock(t *testing.T) {
+	_, warm := warmStep(t)
+	const cp, into = "cp -r /tmp/src /tmp/warm ", " && cd /tmp/warm && "
+	start, end := strings.Index(warm, cp), strings.Index(warm, into)
+	if start < 0 || end < start {
+		t.Fatalf("Dockerfile.runner warm step: no %q before %q: %s", cp, into, warm)
+	}
+	gos := goCall.FindAllStringIndex(warm, -1)
+	if gos[0][0] < end {
+		t.Fatalf("Dockerfile.runner warm step: a go call before the build enters its copy: %s", warm)
+	}
+	set := strings.Index(warm, "cache=$(go env GOCACHE)")
+	if last := gos[len(gos)-1][1]; set < last || !strings.Contains(warm[last:set], " && cd / && rm -r /tmp/warm && ") {
+		t.Errorf("Dockerfile.runner warm step: the copy is not removed between the last go call and the cache rewrite, so a layer holds the source: %s", warm)
+	}
+	// The step's copy, run on a checkout dated 1792006198
+	// (2026-10-14T19:29:58Z) with the commit's time 1792007035.
+	src, dst := t.TempDir(), filepath.Join(t.TempDir(), "warm")
+	files := map[string]string{"go.mod": "module example.com/m\n", "internal/p/p.go": "package p\n"}
+	checkout := time.Unix(1792006198, 0)
+	for name, body := range files {
+		path := filepath.Join(src, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, checkout, checkout); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prep := strings.NewReplacer("/tmp/src", src, "/tmp/warm", dst).Replace(warm[start:end])
+	cmd := exec.Command("sh", "-c", prep)
+	cmd.Env = append(os.Environ(), "SOURCE_DATE_EPOCH=1792007035")
+	if b, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("the warm step's copy: %v: %s", err, b)
+	}
+	for name, body := range files {
+		path := filepath.Join(dst, name)
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != body || info.ModTime().Unix() != 1792007035 {
+			t.Errorf("%s in the copy = %q dated %d, want %q dated 1792007035", name, got, info.ModTime().Unix(), body)
 		}
 	}
 }

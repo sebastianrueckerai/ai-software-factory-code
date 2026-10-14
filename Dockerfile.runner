@@ -99,18 +99,23 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # job compiles only what its pull request changed. main CI rebuilds this
 # image on every push and the roll pins it, so the cache trails main by
 # one roll at most. The module and its package trees are bind-mounted,
-# so no layer holds them, the caches stay, and a change outside them (k8s/,
-# docs) keeps this layer: ci.yml's RUNNER_INPUTS name the same paths.
+# so a change outside them (k8s/, docs) keeps this layer: ci.yml's
+# RUNNER_INPUTS name the same paths. Go keys its index of each package
+# by the files' mtimes, and a checkout dates them by its own clock: the
+# build reads a copy dated at the commit's time and removes it, so no
+# layer holds the source.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
 # `go clean -testcache`, and -count=1 caches none.
 RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
       cd /tmp/warm && go mod download
-RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
-      --mount=type=bind,source=cmd,target=/tmp/warm/cmd --mount=type=bind,source=internal,target=/tmp/warm/internal \
-      --mount=type=bind,source=acceptance,target=/tmp/warm/acceptance \
-      cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
+RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,source=go.sum,target=/tmp/src/go.sum \
+      --mount=type=bind,source=cmd,target=/tmp/src/cmd --mount=type=bind,source=internal,target=/tmp/src/internal \
+      --mount=type=bind,source=acceptance,target=/tmp/src/acceptance \
+      cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
+      && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
+      && cd / && rm -r /tmp/warm \
       && cache=$(go env GOCACHE) \
       && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \
       && printf %s "$SOURCE_DATE_EPOCH" > "$cache/trim.txt"
