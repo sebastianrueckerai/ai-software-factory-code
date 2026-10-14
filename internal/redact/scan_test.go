@@ -90,7 +90,7 @@ func TestScanDiffCleanDiff(t *testing.T) {
 	clean := "diff --git a/internal/f/f.go b/internal/f/f.go\n" +
 		"--- a/internal/f/f.go\n" +
 		"+++ b/internal/f/f.go\n" +
-		"@@ -1,2 +1,21 @@\n" +
+		"@@ -1,2 +1,25 @@\n" +
 		" package f\n" +
 		"+\treq.Header.Set(\"Authorization\", \"Bearer \"+m.Token)\n" +
 		"+\t// missing bearer token\n" +
@@ -111,7 +111,12 @@ func TestScanDiffCleanDiff(t *testing.T) {
 		"+token_url = \"https://example.com/token\"\n" +
 		"+token: \"${GITHUB_TOKEN_VALUE}\"\n" +
 		"+api_key: \"{{.Values.apiKey}}\"\n" +
-		"+passwordSecretRef: my-db-secret\n"
+		"+passwordSecretRef: my-db-secret\n" +
+		// public keys are no secrets (roadmap 49): a fixture's or a config's
+		"+ssh_public_key: \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT op@host\"\n" +
+		"+\taccessKey := \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT\"\n" +
+		"+AGENT_SSH_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT\n" +
+		"+-----BEGIN PUBLIC KEY-----\n"
 	if got := ScanDiff(clean); len(got) != 0 {
 		t.Fatalf("ScanDiff = %+v", got)
 	}
