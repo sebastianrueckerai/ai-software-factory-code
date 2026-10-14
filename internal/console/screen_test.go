@@ -157,7 +157,7 @@ func TestStatusLineFigures(t *testing.T) {
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
 	gauge := func(pct int) string {
-		return fmt.Sprintf(`<span class="gauge" role="meter" aria-label="Spend of the month cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%d"><i style="width:%d%%"></i></span><span class="pct">%d%%</span>`, pct, pct, pct)
+		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span><span class="pct">%d%%</span>`, pct, pct, pct)
 	}
 	code := `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>

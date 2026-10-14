@@ -87,8 +87,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		pages++
 	}
-	if pages != 29 || !slices.Equal(skipped, []string{"POST /logout"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 29 driven and only logout skipped", pages, skipped)
+	if pages != 30 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 30 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -146,6 +146,131 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 
 	if after := changes(); !slices.Equal(before, after) {
 		t.Errorf("a refused write changed the factory: %v -> %v", before, after)
+	}
+}
+
+// The completeness check fails a route or tool the access table misses,
+// and an entry no route or tool has (roadmap 185): New refuses to start
+// a console whose tables and the table disagree, so a route or tool
+// added without its rule, or a rule left over after its route or tool
+// went, cannot ship.
+func TestAccessTableCatchesAMissingEntry(t *testing.T) {
+	c := &Console{}
+	if err := c.checkAccess(); err != nil {
+		t.Fatalf("the table as committed is whole: %v", err)
+	}
+	forget := func(key string) func() {
+		rule := accessTable[key]
+		delete(accessTable, key)
+		return func() { accessTable[key] = rule }
+	}
+
+	t.Cleanup(forget("POST /tasks"))
+	err := c.checkAccess()
+	if want := "console: route POST /tasks is not in the access table"; err == nil || err.Error() != want {
+		t.Fatalf("checkAccess without POST /tasks = %v, want %q", err, want)
+	}
+
+	t.Cleanup(forget("new_card"))
+	if err := c.checkAccess(); err == nil ||
+		!strings.Contains(err.Error(), "console: tool new_card is not in the access table") {
+		t.Fatalf("checkAccess without new_card = %v, want the tool's error", err)
+	}
+
+	accessTable["POST /ghost"] = rMember
+	t.Cleanup(func() { delete(accessTable, "POST /ghost") })
+	if err := c.checkAccess(); err == nil ||
+		!strings.Contains(err.Error(), "console: the access table names POST /ghost, which is no route or tool") {
+		t.Fatalf("checkAccess with POST /ghost = %v, want the stale entry's error", err)
+	}
+}
+
+// A member holding the rule's roles passes the same dispatcher (roadmap
+// 185): every POST route reaches its handler in the holder's session —
+// anything but the rule's refusal — and every write tool admits the
+// holder's turn. alice writes and approves the factory's code, so she
+// holds the factory's, the code's cards' and its requests' rules; bob
+// writes and approves demo, so he holds its project's rules.
+func TestAccessTableAdmitsRoleHolders(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	members(r)
+	bk, bs := memberLogin(t, r, "bob")
+	ak, as := memberLogin(t, r, "alice")
+
+	// words is the refusal the rule's roles would name, the one answer a
+	// holder must never read.
+	words := func(rule accessRule, subject, project string) string {
+		switch {
+		case rule.need&factoryWriter != 0:
+			return "Only the writers of the factory's own code see the factory's pages."
+		case rule.need&writer != 0, rule.either&(writer|approver) != 0:
+			return "you write no project of " + subject
+		case rule.need&approver != 0:
+			return "Only the approvers of project " + project + " may " + rule.what + "."
+		}
+		return ""
+	}
+	path := func(pattern, name string) string {
+		p := strings.ReplaceAll(strings.TrimPrefix(pattern, "POST "), "{name}", name)
+		id := "1"
+		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
+			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			if strings.HasPrefix(p, fill.prefix) {
+				id = fill.v
+			}
+		}
+		return strings.ReplaceAll(strings.ReplaceAll(p, "{id}", id), "{token}", "x")
+	}
+
+	// The pages: the member the rule's scope holds drives every POST
+	// route, alice for the factory's and the code's, bob for demo's.
+	for _, p := range r.c.postRoutes() {
+		rule := accessTable[p.pattern]
+		cookie, s, name := ak, as, "ai-software-factory-code"
+		subject := "task t-c"
+		if rule.scope == scApproval {
+			subject = "approval request 3"
+		}
+		if rule.scope == scProject {
+			cookie, s, name, subject = bk, bs, "demo", "demo"
+		}
+		rec := r.do(post(path(p.pattern, name), url.Values{"csrf": {s.csrf}}), cookie)
+		if refused := words(rule, subject, name); rec.Code == http.StatusForbidden && strings.TrimSpace(rec.Body.String()) == refused {
+			t.Errorf("POST %s as %s = the rule's refusal %q, want the handler", p.pattern, s.user, refused)
+		}
+	}
+
+	// The chat: every write tool admits the holder's turn, alice's turn
+	// over the factory's code, bob's over demo.
+	demo, _, err := r.c.projectOf(context.Background(), "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := r.c.projectOf(context.Background(), "ai-software-factory-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnOf := func(s *session, p factoryd.Project) *turn {
+		req := httptest.NewRequest(http.MethodPost, "/projects/"+p.Name+"/chat", nil)
+		req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+		return &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p}
+	}
+	writes := 0
+	for _, tool := range tools {
+		if !tool.write {
+			continue
+		}
+		trn, who := turnOf(as, code), "alice"
+		if accessTable[tool.name].scope == scChat {
+			trn, who = turnOf(bs, demo), "bob"
+		}
+		if e := trn.admitTool(tool.name, toolInput{TaskID: "t-c", ID: 11}); e != nil {
+			t.Errorf("tool %s as %s = %v, want admitted", tool.name, who, e)
+		}
+		writes++
+	}
+	if writes != 28 {
+		t.Fatalf("%d write tools driven: want 28", writes)
 	}
 }
 
