@@ -760,6 +760,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		case line, ok := <-lines:
 			if !ok {
+				// a cancellation answers as itself even when the log ended
+				// with it: the caller reads the difference (a cancel is the
+				// workflow's decision, a closed log the worker's death)
+				if err := ctx.Err(); err != nil {
+					return out, err
+				}
 				if out.result == nil {
 					out.noResult = ended("pod exited without a result")
 					if diag, dErr := r.kube.PodDiagnosis(ctx, ns, podName); dErr == nil && diag.Reason == "Evicted" {

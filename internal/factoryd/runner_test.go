@@ -2294,12 +2294,16 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	ctx, cancel := context.WithCancel(context.Background())
+	// the cancel waits for the climb's comment, the switch's last side
+	// effect: canceling at the worker's message alone races the session's
+	// bookkeeping after the switch and loses the comment, the timeline
+	// step or the cancellation's own answer
 	go func() {
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			worker.mu.Lock()
-			n := len(worker.texts)
-			worker.mu.Unlock()
+			hub.mu.Lock()
+			n := len(hub.comments)
+			hub.mu.Unlock()
 			if n > 0 {
 				break
 			}
