@@ -65,7 +65,14 @@
 <label for="answer-{{.Card.ID}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}" name="answer" rows="3" required></textarea>
 <button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
-</form>{{end}}
+</form>{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
+<label for="fund-{{$.Card.ID}}">Fund this card, EUR</label>
+<input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}" name="eur" required>
+<label for="fund-reason-{{$.Card.ID}}">why</label>
+<input type="text" id="fund-reason-{{$.Card.ID}}" name="reason" maxlength="2000" required>
+<button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
+</form>{{end}}{{end}}
 {{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
 </article>{{end}}

@@ -403,6 +403,21 @@ func (s *fakeTasks) SetObjective(_ context.Context, id, objective string) error 
 	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
 }
 
+// RaiseTaskBudget raises task id's budget by eur, as the store's one
+// statement does, and answers the budget before and after.
+func (s *fakeTasks) RaiseTaskBudget(_ context.Context, id string, eur float64) (float64, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			from := s.tasks[i].BudgetEUR
+			s.tasks[i].BudgetEUR += eur
+			return from, s.tasks[i].BudgetEUR, nil
+		}
+	}
+	return 0, 0, fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
+}
+
 func (s *fakeTasks) AddTaskDeps(_ context.Context, id string, dependsOn []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

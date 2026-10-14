@@ -52,6 +52,7 @@ const (
 	EventSessionGranted       = "session_granted"
 	EventDependencySet        = "dependency_set"
 	EventCardSplit            = "card_split"
+	EventCardFunded           = "card_funded"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

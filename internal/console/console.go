@@ -76,6 +76,10 @@ type Tasks interface {
 	SetTaskAccent(ctx context.Context, id, accent string) error
 	// SetObjective is task id's objective after a writer edited its issue.
 	SetObjective(ctx context.Context, id, objective string) error
+	// RaiseTaskBudget raises task id's budget_eur by eur in one
+	// transaction and answers the budget before and after the raise;
+	// ErrNotFound when there is no such task.
+	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -303,6 +307,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
+		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
