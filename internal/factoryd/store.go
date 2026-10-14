@@ -223,7 +223,10 @@ type Store interface {
 	// CountAdmitted counts repository's cards holding a work slot: those
 	// in a status a started card holds until it settles, plus queued
 	// cards already admitted. A lane-less card (a roll, a factory pull
-	// request) and human and chat cards hold none.
+	// request) and human and chat cards hold none. A card parked on a
+	// person (waiting-human, waiting-poster) holds none either: no
+	// session runs and no spend accrues, so its slot frees at once, and
+	// the answer that resumes it overshoots the bound for one gate pass.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	// ListQueuedByRepository lists repository's queued cards in filing
 	// order, the oldest first: the order a freed slot admits them in.
@@ -892,7 +895,7 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
 		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
-			AND (status IN ('waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'closing')
+			AND (status IN ('waiting-deps', 'running', 'in-review', 'closing')
 				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository).Scan(&n)
 	return n, err
 }
