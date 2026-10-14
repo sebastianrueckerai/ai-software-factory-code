@@ -1078,7 +1078,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
     querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
-    getAttribute: function () { return null; }, addEventListener: function () {},
+    getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {},
     appendChild: function (c) { this.children.push(c); return c; }};
   return Object.assign(e, props);
 }
@@ -1145,7 +1145,8 @@ es.on.board({data: ""});
 byID.drawer.hidden = true;
 listeners.drawerclosed.forEach(function (fn) { fn(); });
 out.released = requests;
-out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
+// a turn: the avatar, the who line (the name and the time), the text
+out.said = log.children.map(function (m) { var who = m.children[1]; return [m.className, m.dataset.key, who.children[0].textContent + " · " + who.children[1].textContent, m.children[2].textContent].join(" | "); });
 out.timers = timers;
 setImmediate(function () {
   out.steer = byID["steer-input"].value;

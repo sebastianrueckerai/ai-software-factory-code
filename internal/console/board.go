@@ -41,6 +41,8 @@ var funcs = template.FuncMap{
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct": pct,
+	// initial is a member's avatar letter
+	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
 	// switch is whether the top bar shows the project select: the board
 	// page's data has the projects, the other pages' has none
 	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },

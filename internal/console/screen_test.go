@@ -670,15 +670,15 @@ func TestDrawerChat(t *testing.T) {
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="meta">Session 2 · coding-frontier · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
-<div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><p class="who">agent · 10-11 10:01Z</p><p class="said">Reading the cache first.</p></div>
-<div class="msg you" data-key="e2"><p class="who">sebastian · 10-11 10:03Z</p><p class="said">Rebase first.</p></div>
-<div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><p class="who">agent · 10-11 10:04Z</p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
+<div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:01Z</time></p><p class="said">Reading the cache first.</p></div>
+<div class="msg you" data-key="e2"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 10:03Z</time></p><p class="said">Rebase first.</p></div>
+<div class="msg agent" data-key="s-2@2026-10-11T10:04:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:04Z</time></p><p class="said">Done &lt;b&gt;here&lt;/b&gt;.
 Next: the tests.</p></div>
 </div>
-<form id="steer-form" class="chat-form" hx-post="/tasks/t-run/steer" hx-target="#drawer" hx-swap="innerHTML">
-<label for="steer-input" class="visually-hidden">Your message to the running session</label>
+<form id="steer-form" class="chat-form composer" hx-post="/tasks/t-run/steer" hx-target="#drawer" hx-swap="innerHTML">
+<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="steer-input" class="visually-hidden">Your message to the running session</label>
 <textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
-<button type="submit">Send</button>
+<button type="submit">Send</button></div>
 </form>
 </div>`,
 	} {
@@ -691,8 +691,8 @@ Next: the tests.</p></div>
 	}
 	if got, want := drawer(t, r, ck, "t-pr", "chat"), `<p class="meta">Session 1 · coding-cheap · pushed</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 1" data-task="t-pr" data-session="s-9">
-<div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><p class="who">agent · 10-11 08:10Z</p><p class="said">Drawing it.</p></div>
-<div class="msg you" data-key="e4"><p class="who">sebastian · 10-11 08:20Z</p><p class="said">Use the grid.</p></div>
+<div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 08:10Z</time></p><p class="said">Drawing it.</p></div>
+<div class="msg you" data-key="e4"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 08:20Z</time></p><p class="said">Use the grid.</p></div>
 </div>
 </div>`; !strings.Contains(got, want) {
 		t.Errorf("the ended session's chat lacks\n%s\nin\n%s", want, got)
@@ -734,8 +734,8 @@ func TestDrawerSteer(t *testing.T) {
 	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Chat", true),
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="note" role="status">The session of #11 has your message.</p>`,
-		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><p class="who">sebastian · ` + row.At.UTC().Format("01-02 15:04") +
-			`Z</p><p class="said">Rebase on main first.</p></div>`} {
+		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>` + row.At.UTC().Format("01-02 15:04") +
+			`Z</time></p><p class="said">Rebase on main first.</p></div>`} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the steer's answer lacks %s:\n%s", want, rec.Body)
 		}

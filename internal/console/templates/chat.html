@@ -1,15 +1,15 @@
 {{define "chat"}}{{if .Chat}}<section id="chat" class="chat" aria-labelledby="chat-title"{{if .Writes}} data-project="{{.Project}}" data-login="{{.User}}"{{end}}>
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · {{.Project}}</span>{{if .Writes}} <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select>{{end}}</div>
-<div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
-{{if .Writes}}<p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
-{{else}}<p class="meta chat-start">You read this project: its writers chat with its agent.</p>
-{{end}}</div>
-{{if .Writes}}<p class="meta chat-own">This is your own conversation with the project agent; other members have theirs.</p>
-<form id="chat-form" class="chat-form" method="post" action="/projects/{{.Project}}/chat">
+{{if .Writes}}<p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
+{{else}}<p class="chat-start" title="You read this project: its writers chat with its agent.">You read this project: its writers chat with its agent.</p>
+{{end}}<div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
+</div>
+{{if .Writes}}<form id="chat-form" class="chat-form composer" method="post" action="/projects/{{.Project}}/chat">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
-<label for="chat-input" class="visually-hidden">Your message to the project agent</label>
-<textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
-<button type="submit">Send</button>
+<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
+<textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
+<button type="submit">Send</button></div>
+<p class="chat-own">This is your own conversation with the project agent; other members have theirs.</p>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 {{end}}<script src="/static/chat.js" defer></script>

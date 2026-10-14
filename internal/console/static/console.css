@@ -382,6 +382,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .files td:nth-child(3) { color: var(--st-done); }
 .files td:nth-child(4) { color: var(--st-failed); }
 .session-log { margin: 6px 0; }
+.session-log .msg { font-size: 13.5px; margin-bottom: 12px; }
+.session-log .av { width: 20px; height: 20px; }
 .session-log .said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .drawer .chat-form { padding: 10px 0 0; border: 0; background: none; }
 
@@ -505,12 +507,24 @@ body:has(#screen) #flash { flex: none; }
 .chat-head h2 { margin: 0; font-size: 14px; font-variant-caps: normal; letter-spacing: 0; }
 .chat-who { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px 16px; font-size: 14px; line-height: 1.55; }
-.chat-start { color: var(--text-faint); font-size: 12px; margin: 0 0 12px; }
-.chat-own { margin: 0; padding: 8px 14px 0; color: var(--text-faint); font-size: 12px; }
-.msg { margin: 0 0 16px; font-size: 14.5px; line-height: 1.55; max-width: calc(72ch + 100px); }
-.msg .who { margin: 0 0 3px; color: var(--text-faint); font-size: 11.5px; }
-.msg.you .who, .msg.me .who { color: var(--accent); }
+/* the start line: one line under the header's hairline, cut with an
+   ellipsis, the whole text in its tooltip */
+.chat-start { flex: none; margin: 0; padding: 0 14px; overflow: hidden; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 12px; line-height: 28px; white-space: nowrap; text-overflow: ellipsis; }
+.chat-own { margin: 8px 0 0; color: var(--text-faint); font-size: 12px; }
+/* a turn: the avatar at the left, the name and the time above the text,
+   the text at the full width */
+.msg { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 0 10px; margin: 0 0 16px; font-size: 14.5px; line-height: 1.55; max-width: calc(72ch + 100px); }
+.msg > :not(.av) { grid-column: 2; }
+.av { grid-row: 1 / span 2; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%; border: 1px solid var(--accent); color: var(--accent); font: 600 11px/1 var(--font-mono); }
+.av::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.msg.you .av { background: var(--accent); color: var(--accent-ink); }
+.msg.you .av::before { content: none; }
+.msg .who { display: flex; gap: 8px; align-items: baseline; margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.4 var(--font-mono); }
+.msg .who .name { color: var(--text-muted); }
+.msg.you .who .name { color: var(--accent); }
+.msg .who time { font: inherit; }
 .msg.you .said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg .said { margin: 0; }
 .said p, .said ul, .said ol { margin: 4px 0; }
 .said ul, .said ol { padding-left: 18px; }
 .said, .applied, .refused { overflow-wrap: anywhere; }
@@ -541,9 +555,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-error { margin: 8px 0; color: var(--need-text); font: 12px var(--font-mono); }
 .cursor { display: inline-block; width: .55em; height: 1.05em; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.chat-form { display: flex; align-items: flex-end; gap: 10px; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
-.chat-form textarea { flex: 1; max-width: none; resize: none; font-size: 14px; line-height: 22px; }
-.chat-form button { margin: 0; }
+/* the composer: a prompt line with the cyan mark, Send at its right */
+.chat-form { flex: none; display: block; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
+.prompt { display: flex; align-items: flex-end; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--line-strong); background: var(--bg); transition: border-color .12s, box-shadow .12s; }
+[data-theme=light] .prompt { background: var(--bg-card); }
+.prompt:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.prompt .ps { align-self: flex-start; color: var(--accent); font: 600 14px/22px var(--font-mono); }
+.prompt textarea { flex: 1; min-width: 0; max-width: none; padding: 0; border: 0; outline: none; background: none; resize: none; font-size: 14px; line-height: 22px; }
+.prompt textarea:focus-visible { box-shadow: none; }
+.prompt button { margin: 0; }
 .chat-queue { list-style: none; margin: 0; padding: 0 14px 10px; display: flex; flex-direction: column; gap: 4px; }
 .chat-queue li { display: flex; gap: 6px; align-items: center; }
 .chat-queue .queued-text { flex: 1; height: auto; min-height: 26px; padding: 2px 8px; justify-content: flex-start; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); border: 1px dashed var(--btn-line); font-size: 13px; font-weight: 400; }

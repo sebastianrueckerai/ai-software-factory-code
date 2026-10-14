@@ -49,12 +49,12 @@
 {{template "steps" .}}
 {{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session {{.N}}" data-task="{{$.Card.ID}}" data-session="{{.ID}}">{{range $.Said}}
-<div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><p class="who">{{.Who}} · {{.At.UTC.Format "01-02 15:04Z"}}</p><p class="said">{{.Text}}</p></div>{{end}}
+<div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><span class="av" aria-hidden="true">{{if not .Agent}}{{initial .Who}}{{end}}</span><p class="who"><span class="name">{{.Who}}</span> <time>{{.At.UTC.Format "01-02 15:04Z"}}</time></p><p class="said">{{.Text}}</p></div>{{end}}
 </div>
-{{if $.Steers}}<form id="steer-form" class="chat-form" hx-post="/tasks/{{$.Card.ID}}/steer" hx-target="#drawer" hx-swap="innerHTML">
-<label for="steer-input" class="visually-hidden">Your message to the running session</label>
+{{if $.Steers}}<form id="steer-form" class="chat-form composer" hx-post="/tasks/{{$.Card.ID}}/steer" hx-target="#drawer" hx-swap="innerHTML">
+<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="steer-input" class="visually-hidden">Your message to the running session</label>
 <textarea id="steer-input" name="text" rows="2" maxlength="8192" required placeholder="Message the running session; it reads it at its next step"></textarea>
-<button type="submit">Send</button>
+<button type="submit">Send</button></div>
 </form>
 {{end}}{{else}}{{if not $.Problem}}<p class="meta">No session yet</p>
 {{end}}{{end}}{{else if not .Card.PRNumber}}<p class="meta">no pull request yet</p>
