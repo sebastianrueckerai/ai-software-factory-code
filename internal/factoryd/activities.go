@@ -1090,8 +1090,10 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 
 // stageMemory rebuilds what the stages remembered from the task's
 // timeline: the stage_findings steps (returns to the agent, the history),
-// a dependencies_started step (the card started despite a dependency)
-// and the model_review steps (the reviews), the last round.
+// a dependencies_started step (the card started despite a dependency),
+// the model_review steps (the reviews), the last round, and the
+// finding_adjudicated steps (the overrules an approval recorded on the
+// reviews' findings, versionAdjudicated).
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
@@ -1100,8 +1102,10 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 	for line := range strings.SplitSeq(string(b), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note, Reason string
+			By, Finding, Why                                string
 			Round, Attempt                                  int
 			Findings                                        []string
+			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
 			continue
@@ -1124,6 +1128,16 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 		case "model_review":
 			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
 			st.Round = max(st.Round, step.Round)
+		case stepAdjudicated:
+			for i := range st.Reviews {
+				if !slices.Contains(st.Reviews[i].Findings, step.Finding) {
+					continue
+				}
+				if st.Reviews[i].Adjudicated == nil {
+					st.Reviews[i].Adjudicated = map[string]Adjudication{}
+				}
+				st.Reviews[i].Adjudicated[step.Finding] = Adjudication{By: step.By, Why: step.Why, When: step.Time}
+			}
 		}
 	}
 	return nil
@@ -1386,14 +1400,19 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 	return ChecksResult{}
 }
 
-// mainFailureSuffix names a head finding whose same check fails on main too:
-// the defect is pre-existing there, not this card's (Stage 19, finding 195).
-const mainFailureSuffix = " (also failing on main)"
+// mainFailureSuffix opens the note a head finding carries when the same
+// check fails on main too, closed with main's failing context and a
+// parenthesis: the defect is pre-existing there, not this card's (Stage
+// 19, finding 195).
+const mainFailureSuffix = " (also failing on main: "
 
 // annotateMainFailures reads main's state when a head run failed and marks
-// each finding whose check context also fails on main, so the agent's
-// session and the supervisor's guidance point at the real defect instead of
-// the card. Any error (no main branch, an unreadable status) logs and
+// each finding whose check also fails on main — the check, not the context
+// name, for main does not run the pull request's workflow: a head reports
+// pr / test (pull_request) where main reports ci / test (push) — so the
+// agent's session and the supervisor's guidance point at the real defect
+// instead of the card. A main run that has not reported the check counts
+// as passing. Any error (no main branch, an unreadable status) logs and
 // leaves the findings as they are: a pre-existing red must never sink the
 // gate's verdict.
 func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *ChecksResult) {
@@ -1402,7 +1421,7 @@ func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *Check
 		log.Printf("checks gate: main head of %s/%s: %v", repo.Owner, repo.Name, err)
 		return
 	}
-	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.HasSuffix(f, mainFailureSuffix) }) {
+	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.Contains(f, mainFailureSuffix) }) {
 		// the status of sha itself answers when no sha is given; an empty
 		// head would repeat it and mark the head's own failure as main's
 		return
@@ -1412,27 +1431,45 @@ func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *Check
 		log.Printf("checks gate: combined status of %s/%s at %s: %v", repo.Owner, repo.Name, mainSHA, err)
 		return
 	}
-	failing := failingContexts(cs)
+	failing := failingChecks(cs)
 	if len(failing) == 0 {
 		return
 	}
 	for i, finding := range res.Findings {
-		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok && failing[ctxName] {
-			res.Findings[i] += mainFailureSuffix
+		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok {
+			if mainCtx, onMain := failing[checkOf(ctxName)]; onMain {
+				res.Findings[i] += mainFailureSuffix + mainCtx + ")"
+			}
 		}
 	}
 }
 
-// failingContexts is the set of contexts a combined status reports as
-// failure or error.
-func failingContexts(cs CombinedStatus) map[string]bool {
-	set := map[string]bool{}
+// failingChecks maps the check of each context a combined status reports
+// as failure or error to that context: main's failing context, which
+// closes the note a head finding carries, for main's context names the
+// push run, not the pull request's.
+func failingChecks(cs CombinedStatus) map[string]string {
+	by := map[string]string{}
 	for _, s := range cs.Statuses {
 		if s.State == "failure" || s.State == "error" {
-			set[s.Context] = true
+			by[checkOf(s.Context)] = s.Context
 		}
 	}
-	return set
+	return by
+}
+
+// checkOf names the check a context runs, without the workflow before
+// the separator or the event after it: pr / test (pull_request) and
+// ci / test (push) both run test, which plain test already names.
+func checkOf(context string) string {
+	check := context
+	if _, after, ok := strings.Cut(check, " / "); ok {
+		check = after
+	}
+	if before, _, ok := strings.Cut(check, " ("); ok {
+		check = before
+	}
+	return check
 }
 
 // jobLogMaxLines and jobLogMaxBytes bound the log tail a finding carries
