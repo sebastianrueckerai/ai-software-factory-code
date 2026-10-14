@@ -93,7 +93,9 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 }
 
 // HealPass starts a workflow for every agent task not yet done or
-// failed; main runs it at boot and every minute. Starting is idempotent, so
+// failed, except a queued card of a lane: those start under the work
+// bound only, one pull per project below in filing order. Main runs it
+// at boot and every minute. Starting is idempotent, so
 // this heals an intake that stored its task row but failed to start the
 // workflow, and a task whose workflow died (in review, or mid-completion)
 // before finishing it. For a task waiting on Forgejo (in review or on a
@@ -112,6 +114,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	if err := in.ResyncIssues(ctx); err != nil {
 		log.Printf("heal pass: issues: %v", err)
 	}
+	// pulls are the projects with queued cards of a lane: their oldest
+	// queued cards start below, under the work bound, once per project
+	pulls := map[string]bool{}
 	for _, status := range []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
@@ -151,6 +156,10 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					}
 					continue
 				}
+				if t.Lane != "" {
+					pulls[t.Repository] = true
+					continue
+				}
 			}
 			if err := wf.Start(ctx, t.ID); err != nil {
 				log.Printf("start open workflows: task %s: %v", t.ID, err)
@@ -165,6 +174,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 				healDependencyWait(ctx, store, wf, t)
 			}
 		}
+	}
+	for repository := range pulls {
+		pullQueued(ctx, store, wf, repository)
 	}
 	signalQueueHeads(ctx, store, wf)
 }

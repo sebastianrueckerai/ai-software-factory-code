@@ -327,6 +327,49 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if t.AdmittedAt == nil {
+		now := time.Now()
+		t.AdmittedAt = &now
+		s.tasks[id] = t
+	}
+	return nil
+}
+
+func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
+	n := 0
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+			continue
+		}
+		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+			(t.Status == "queued" && t.AdmittedAt != nil) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind == "agent" && t.Lane != "" && t.Status == "queued" {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return out, nil
+}
+
 func (s *fakeStore) SetTaskPR(ctx context.Context, id string, number int64) error {
 	t, ok := s.tasks[id]
 	if !ok {

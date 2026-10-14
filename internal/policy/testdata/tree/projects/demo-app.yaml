@@ -4,6 +4,7 @@ merge_rule: auto
 objects: factory
 agents: coder
 process: maintenance
+work_in_progress: 2
 namespaces: [demo-staging, demo-prod]
 environments:
   - {namespace: demo-staging, path: deploy/staging, hostname: demo-staging.example.org}

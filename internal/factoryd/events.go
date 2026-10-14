@@ -92,6 +92,8 @@ var allDoneMu sync.Mutex
 func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, wf Workflows, t Task, final string) {
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, map[string]any{"state": final})
 	signalDependents(ctx, store, wf, t.ID)
+	// the freed slot goes to the oldest queued card of the same project
+	pullQueued(ctx, store, wf, t.Repository)
 	if t.Source != SourcePlan || t.Parent == "" || final != "done" {
 		return
 	}
