@@ -104,16 +104,14 @@ func TestCountBacklog(t *testing.T) {
 		t.Skipf("no database: %v", err)
 	}
 	defer s.Close()
-	if _, err := s.db.Exec(`TRUNCATE tasks`); err != nil {
+	if _, err := s.db.Exec(`TRUNCATE tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
-	base := Task{Repository: "o/r", Kind: "agent", Lane: policy.LaneBacklog, Status: "backlog", Objective: "b"}
 	for _, id := range []string{"t-backlog-1", "t-backlog-2"} {
-		if err := s.insertTask(ctx, Task(base), ""); err != nil {
+		if err := s.insertTask(ctx, Task{ID: id, Repository: "o/r", Kind: "agent", Lane: policy.LaneBacklog, Status: "backlog", Objective: "b"}, ""); err != nil {
 			t.Fatal(err)
 		}
-		base.ID = id
 	}
 	for _, tt := range []struct {
 		id, status, lane string
