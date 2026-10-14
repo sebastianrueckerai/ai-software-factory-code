@@ -2230,6 +2230,29 @@ func TestAdmitLeasesSkipsTerminatingNamespaces(t *testing.T) {
 	}
 }
 
+// The wait out of a terminating namespace is observed only where it holds
+// a live lease back: an ordinary teardown, whose task holds none, records
+// no namespace_wait step (the step on every teardown read as sessions
+// running in a dying namespace, roadmap 240).
+func TestAdmitLeasesObservesOnlyAWaitThatHoldsALeaseBack(t *testing.T) {
+	kube := newFakeKube()
+	r, _, _ := newTestRunner(t, Task{ID: "t1"}, kube, &fakeObjectStore{})
+	for _, id := range []string{"t1", "t3"} {
+		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
+		kube.terminating["factory-agents-"+id] = true
+	}
+	r.cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}}}
+	if err := r.AdmitLeases(context.Background()); err != nil {
+		t.Fatalf("AdmitLeases = %v, want nil", err)
+	}
+	if got := fmt.Sprint(stepsOf(t, r, "t1", "namespace", "leases")); got != "[map[leases:[203.0.113.7] namespace:factory-agents-t1 step:namespace_wait]]" {
+		t.Errorf("t1's timeline = %s, want one namespace_wait naming its lease", got)
+	}
+	if b, _ := r.timeline.Objects.Get(context.Background(), "sessions/t3/timeline.jsonl"); strings.TrimSpace(string(b)) != "" {
+		t.Errorf("t3's timeline = %s, want nothing for a teardown that holds no lease back", b)
+	}
+}
+
 func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	kube := newFakeKube()
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}

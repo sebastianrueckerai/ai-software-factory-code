@@ -1454,16 +1454,19 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 	}
 	var errs []error
 	for _, info := range infos {
+		ns := info.Name
+		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 		if info.Terminating {
 			// its contents are being garbage-collected away: a policy
 			// write there fails and the namespace needs none any more.
-			// The wait out is observable in factoryd's log and on the
-			// task's timeline (roadmap 188).
-			r.observeNamespaceWait(ctx, info.Name)
+			// A wait that holds a live lease back is observable in
+			// factoryd's log and on the task's timeline (roadmap 188);
+			// an ordinary teardown holds nothing back and says nothing.
+			if len(leased[id]) > 0 {
+				r.observeNamespaceWait(ctx, ns, leased[id])
+			}
 			continue
 		}
-		ns := info.Name
-		id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 		if id == ns || strings.HasPrefix(id, "ci-") {
 			continue
 		}
@@ -1502,13 +1505,13 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 // namespace observable: factoryd's log names the namespace and the live
 // leases it holds back, and the task's timeline carries one namespace_wait
 // step per round that still found it terminating.
-func (r *Runner) observeNamespaceWait(ctx context.Context, ns string) {
+func (r *Runner) observeNamespaceWait(ctx context.Context, ns string, leases []string) {
 	id := strings.TrimPrefix(ns, r.cfg.AgentNamespacePrefix)
 	if id == ns || id == "" {
 		return // not an agent namespace: no task to record on
 	}
-	log.Printf("task %s: namespace %s is terminating: waited out; its egress policy admits nothing until it is gone or active again", id, ns)
-	r.record(ctx, id, "namespace_wait", map[string]any{"namespace": ns, "waited": "terminating"})
+	log.Printf("task %s: namespace %s is terminating: waited out; its egress policy admits none of the leased servers %v until it is gone or active again", id, ns, leases)
+	r.record(ctx, id, "namespace_wait", map[string]any{"namespace": ns, "waited": "terminating", "leases": leases})
 }
 
 // BindTaskNamespace puts factoryd's RoleBinding into a task namespace, as
