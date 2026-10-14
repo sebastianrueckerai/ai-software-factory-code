@@ -223,8 +223,8 @@ console.log(JSON.stringify({
 			`<span class="chev" aria-hidden="true">⌃</span>`},
 		{"unread", "2"},
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
-		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>`},
-		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>` +
+		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
+		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
 			`<span class="tacts"><button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
 		{"pendingRow", `[1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +

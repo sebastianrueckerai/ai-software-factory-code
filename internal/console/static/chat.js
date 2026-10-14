@@ -236,7 +236,7 @@ var chatView = (function () {
     var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
     return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
       (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
-      "</h3><span class=\"thint\">" + esc(hint) + "</span>" +
+      "</h3><span class=\"thint" + (t.inbox || t.state === "archived" ? "" : " when") + "\">" + esc(hint) + "</span>" +
       (t.inbox || t.state === "archived" || !t.messages ? "" : "<span class=\"tacts\"><button type=\"button\" data-archive>Archive</button>" +
         "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
   }

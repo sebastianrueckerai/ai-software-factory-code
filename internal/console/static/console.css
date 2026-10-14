@@ -807,10 +807,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .thead { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 4px 14px 0; flex: none; }
 .thead .ttl { display: block; margin: 0; min-width: 0; overflow: hidden; font-size: 13.5px; font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
 .thead .ttl .tmark { width: auto; margin-right: 6px; vertical-align: -1px; }
-.thead .rename { height: auto; max-width: 100%; padding: 0; overflow: hidden; border: 0; background: none; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
+.thead .rename { display: block; height: auto; max-width: 100%; padding: 0; overflow: hidden; text-align: left; border: 0; background: none; color: inherit; font: inherit; text-overflow: ellipsis; white-space: nowrap; cursor: text; }
 .thead .rename:hover { text-decoration: underline dotted var(--text-faint); }
 .thead .rename-in { width: 100%; height: 26px; font-size: 13.5px; font-weight: 600; }
 .thead .thint { flex: 1 1 40px; min-width: 0; overflow: hidden; color: var(--text-faint); font: 11.5px var(--font-mono); white-space: nowrap; text-overflow: ellipsis; }
+.thead .thint.when { flex: none; }
 .thead.inbox .ttl { color: var(--need-text); }
 .chat-queued { margin: 2px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .msg.poke .av { border-color: var(--need-text); color: var(--need-text); }
