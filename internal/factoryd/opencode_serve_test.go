@@ -229,3 +229,21 @@ func servedRequests(t *testing.T, dir string) []servedRequest {
 	}
 	return out
 }
+
+// A subagent's finished tool call becomes the session's tool_use line, so
+// its writes keep the supervisor's write clock; its other parts stay out.
+func TestServeMapperCountsASubagentsToolCalls(t *testing.T) {
+	m := &serveMapper{session: "ses_a", sessions: map[string]bool{"ses_a": true}}
+	ev := func(s string) served { return m.event([]byte(s), time.UnixMilli(5)) }
+	ev(`{"type":"session.created","properties":{"info":{"id":"ses_b","parentID":"ses_a"}}}`)
+	out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"tool","tool":"edit","state":{"status":"completed"}}}}`)
+	if out.line == nil || !strings.Contains(string(out.line), `"type":"tool_use"`) || !strings.Contains(string(out.line), `"sessionID":"ses_a"`) {
+		t.Fatalf("a subagent's tool call = %s, want the session's tool_use line", out.line)
+	}
+	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_b","type":"text","time":{"end":5}}}}`); out.line != nil {
+		t.Fatalf("a subagent's text became a line: %s", out.line)
+	}
+	if out := ev(`{"type":"message.part.updated","properties":{"part":{"sessionID":"ses_c","type":"tool","state":{"status":"completed"}}}}`); out.line != nil {
+		t.Fatalf("an unrelated session's tool call became a line: %s", out.line)
+	}
+}

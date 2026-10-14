@@ -26,6 +26,7 @@ classes:
       escalate_to_human: {}
       # the factory manual: what the factory is, the card states, the gates. Free.
       manual: {}
+      delegate: {}
   analyzer:
     session: report
     models: [coding-cheap, coding-frontier]

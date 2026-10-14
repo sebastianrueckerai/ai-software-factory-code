@@ -2268,3 +2268,28 @@ func TestRekeyFailureStays502WhenConnected(t *testing.T) {
 		t.Fatalf("%d holds left open, want every hold released", n)
 	}
 }
+
+// A cheaper alias of the class runs on the session's key (a subagent's
+// calls, roadmap 222, item 6): its calls cost at most the session's, so
+// the session's hold bounds them. A dearer alias stays refused.
+func TestAgentCallsACheaperAliasOfTheClass(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-frontier", ID: "42", BudgetEUR: 10, Status: "running"})
+	dear := testPrice
+	dear.In, dear.Out = testPrice.In*10, testPrice.Out*10
+	prices := fakePrices{"coding-cheap": testPrice, "coding-frontier": dear}
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: prices})
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+		t.Fatalf("coding-cheap under a frontier session = %d %s, want 200 through LiteLLM", rr.Code, rr.Body.String())
+	}
+	if rows := store.ledger; len(rows) != 1 || rows[0].taskID != "42" || rows[0].ref != "coding-cheap" {
+		t.Fatalf("ledger = %+v, want the cheap call booked on the task", rows)
+	}
+
+	store = newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
+	s = NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: prices})
+	if rr := doChat(t, s.Routes("test"), chatBody("coding-frontier")); rr.Code != http.StatusForbidden {
+		t.Fatalf("coding-frontier under a cheap session = %d, want 403", rr.Code)
+	}
+}

@@ -94,6 +94,7 @@ func main() {
 			HTTP: &http.Client{Timeout: 120 * time.Second}},
 		Escalator:     factoryd,
 		PlanFiler:     factoryd,
+		Delegator:     factoryd,
 		Cloud:         cloud,
 		Telemetry:     tel,
 		FactorydToken: cfg.FactorydToken,

@@ -368,6 +368,7 @@ type workerEnv struct {
 	repoURL, repoToken, pushURL, pushToken                    string
 	gatewayURL, tokenFile, model                              string
 	strongerModel                                             string
+	cheapModel                                                string
 	answerTokens, headroomTokens                              int
 	steps                                                     int
 	findings, answers, posterInfo, tools                      []string
