@@ -1,4 +1,4 @@
-FROM golang:1.25-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
+FROM golang:1.25.14-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
 # builds the same digest at any wall-clock time.

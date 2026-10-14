@@ -385,3 +385,22 @@ func TestRunnerWarmCacheTakesTheCommitsClock(t *testing.T) {
 		}
 	}
 }
+
+// One Go builds what ships and what CI tests with: the golang base of every
+// Dockerfile names the same exact version, each pinned by digest. Hand-
+// derived from the three files: go1.25.14, alpine for the gateway's and
+// the sandbox's build stages, Debian for the runner's toolchain stage.
+func TestDockerfilesBuildWithOneGo(t *testing.T) {
+	from := regexp.MustCompile(`(?m)^FROM golang:([0-9.]+)(-alpine)?@sha256:[0-9a-f]{64}\b`)
+	want := map[string]string{"Dockerfile": "1.25.14", "Dockerfile.sandbox": "1.25.14", "Dockerfile.runner": "1.25.14"}
+	for file, version := range want {
+		b, err := os.ReadFile(filepath.Join("..", "..", file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		m := from.FindAllStringSubmatch(string(b), -1)
+		if len(m) != 1 || m[0][1] != version {
+			t.Errorf("%s: golang bases %v, want one at %s pinned by digest", file, m, version)
+		}
+	}
+}
