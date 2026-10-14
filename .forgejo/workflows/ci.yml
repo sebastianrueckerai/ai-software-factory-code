@@ -11,9 +11,17 @@ env:
   # main's image builder (roadmap 242), the buildkitd release the pull
   # request build VM runs. The dind's builtin builder takes the exporter's
   # rewrite-timestamp and still writes the wall clock into the layers; a
-  # buildkitd rewrites every layer time to the commit's. Each image job
+  # buildkitd rewrites every layer time to the image's epoch. Each image job
   # makes its own on the pod's network, as the job runs, to reach the build
   # cache.
+  # Each image's inputs in the build context: its epoch is the newest
+  # commit touching them (roadmap 250), so a commit that touches none
+  # keeps the image's digest. They mirror each Dockerfile's COPY lines;
+  # the runner's warm step bind-mounts the context and compiles every Go
+  # package in it.
+  GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal
+  SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
+  RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance
   BUILDKIT: moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
 jobs:
   test:
@@ -22,17 +30,19 @@ jobs:
     # jobs run on the factory's gVisor pods and never touch this runner, so
     # nothing an untrusted run wrote reaches a main job (ruling 226's line,
     # kept without main running cold). The test environment is the CI runner
-    # image itself — the same image the PR jobs test in, Go 1.25 and PG 17
+    # image itself — the same image the PR jobs test in, Go and PG 17
     # preinstalled — built from this commit's Dockerfile.runner on the layer
     # cache main's image job writes (ruling 111: main writes that cache).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: build the CI runner image on the layer cache
-        # roadmap 232: the commit's clock, so a content-identical tree builds
-        # the same digest at any wall-clock time
+        # roadmap 232: the runner image's epoch, the one its image job
+        # builds with, so the layers after its ARG come from the cache
         run: |
-          EPOCH=$(git log -1 --pretty=%ct)
+          EPOCH=$(git log -1 --pretty=%ct -- $RUNNER_INPUTS)
           docker build -f Dockerfile.runner -t ci-runner:test --build-arg SOURCE_DATE_EPOCH=$EPOCH --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
       - name: test and vet with the warm caches
         # the checkout travels as a tar stream: the job container's filesystem
@@ -49,12 +59,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: registry login
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build and push gateway image
         run: |
           SHA=${GITHUB_SHA::7}
-          EPOCH=$(git log -1 --pretty=%ct)
+          EPOCH=$(git log -1 --pretty=%ct -- $GATEWAY_INPUTS)
           B=image-gateway
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
           # buildx takes no TLS endpoint from the environment, only a context
@@ -73,12 +85,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: registry login
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build and push sandbox image
         run: |
           SHA=${GITHUB_SHA::7}
-          EPOCH=$(git log -1 --pretty=%ct)
+          EPOCH=$(git log -1 --pretty=%ct -- $SANDBOX_INPUTS)
           B=image-sandbox
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
           # buildx takes no TLS endpoint from the environment, only a context
@@ -101,12 +115,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: registry login
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build and push CI runner image
         run: |
           SHA=${GITHUB_SHA::7}
-          EPOCH=$(git log -1 --pretty=%ct)
+          EPOCH=$(git log -1 --pretty=%ct -- $RUNNER_INPUTS)
           B=image-runner
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
           # buildx takes no TLS endpoint from the environment, only a context
