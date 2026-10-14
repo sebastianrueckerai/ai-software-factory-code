@@ -142,6 +142,26 @@ func (s *PGStore) RollHead(ctx context.Context, taskID string) (string, error) {
 	return head.String, err
 }
 
+// RebaseRolls puts task's roll markings back where its branch is: two
+// RollCommit runs can overlap (an attempt outliving its timeout), and the
+// later one then finds the branch at an earlier commit the store itself
+// wrote, its requests marked past it. Only a marking at that head is on
+// the branch; the ones past it go back to pending, the next write
+// carrying them on top. It reports whether any request of the task is
+// marked at head at all: false means the branch is at a commit factoryd
+// does not know, another writer's move.
+func (s *PGStore) RebaseRolls(ctx context.Context, taskID, head string) (bool, error) {
+	var recorded bool
+	err := s.db.QueryRowContext(ctx, `WITH stale AS (
+		UPDATE roll_requests SET committed = false, head = ''
+		WHERE task_id = $1 AND committed AND head <> $2 AND EXISTS (
+			SELECT 1 FROM roll_requests r WHERE r.task_id = $1 AND r.committed AND r.head = $2)
+		RETURNING 1)
+		SELECT EXISTS (SELECT 1 FROM roll_requests WHERE task_id = $1 AND committed AND head = $2)`,
+		taskID, head).Scan(&recorded)
+	return recorded, err
+}
+
 // RollTaskPRs are the pull requests of repository's roll tasks.
 func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT pr_number FROM tasks WHERE source = $1 AND repository = $2 AND pr_number <> 0 ORDER BY pr_number`,
@@ -635,22 +655,43 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 			return "", err
 		}
 		if head != written {
-			// a run that died between its write and its record finds
-			// its own commit: the one it would write, on what it wrote
-			// before or on the base it cut the branch from
-			own, err := r.ownCommit(ctx, fork, head, cmp.Or(written, t.SHA), pending)
+			// the branch at a head the store itself wrote for this task
+			// (an earlier commit of the roll, not the newest) is
+			// factoryd's own: the markings past it are not on the branch,
+			// and the write below carries them on top of it — a
+			// concurrent RollCommit whose write this call read the branch
+			// before and the store after
+			recorded, err := r.store.RebaseRolls(ctx, t.ID, head)
 			if err != nil {
 				return "", err
 			}
-			if !own {
-				return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll builds on and adopts only its own commits",
-					branch, head, cmp.Or(written, "(none recorded)"))
+			if !recorded {
+				// a run that died between its write and its record finds
+				// its own commit: the one it would write, on what it wrote
+				// before or on the base it cut the branch from
+				own, err := r.ownCommit(ctx, fork, head, cmp.Or(written, t.SHA), pending)
+				if err != nil {
+					return "", err
+				}
+				if !own {
+					return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll builds on and adopts only its own commits",
+						branch, head, cmp.Or(written, "(none recorded)"))
+				}
+				if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(pending), head); err != nil {
+					return "", err
+				}
+				r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": head, "rolls": rollSHAs(pending), "adopted": true})
+				return head, nil
 			}
-			if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(pending), head); err != nil {
+			// the rebase freed requests the branch lacks; the write
+			// builds on the branch as it is now and marks at the head it
+			// writes, never at the one it read first
+			if head, err = r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch); err != nil {
 				return "", err
 			}
-			r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": head, "rolls": rollSHAs(pending), "adopted": true})
-			return head, nil
+			if pending, err = r.store.UncommittedRolls(ctx, t.ID); err != nil {
+				return "", err
+			}
 		}
 	}
 	if len(pending) == 0 {

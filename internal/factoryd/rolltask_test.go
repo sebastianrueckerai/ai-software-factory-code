@@ -105,6 +105,20 @@ func (s *fakeStore) RollHead(ctx context.Context, taskID string) (string, error)
 	return last.Head, nil
 }
 
+func (s *fakeStore) RebaseRolls(ctx context.Context, taskID, head string) (bool, error) {
+	recorded := slices.ContainsFunc(s.rolls, func(r RollRequest) bool {
+		return r.TaskID == taskID && r.Committed && r.Head == head
+	})
+	if recorded {
+		for i, r := range s.rolls {
+			if r.TaskID == taskID && r.Committed && r.Head != head {
+				s.rolls[i].Committed, s.rolls[i].Head = false, ""
+			}
+		}
+	}
+	return recorded, nil
+}
+
 func (s *fakeStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, t := range s.tasks {
@@ -931,6 +945,47 @@ func TestRollCommitAcceptsAQueueStagedMerge(t *testing.T) {
 		if !r.Committed {
 			t.Fatalf("roll %+v left uncommitted", r)
 		}
+	}
+}
+
+// Two RollCommit runs overlapped (the later attempt read the branch
+// before the earlier one's write landed and the store after its record):
+// the branch sits at the roll's FIRST commit while the store's newest
+// marking is past it. That head is factoryd's own, so the guard does not
+// fail the task: the marking past the branch goes back to pending and the
+// fold is written on top of the branch, recorded at the head actually
+// written.
+func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
+	first := k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx))
+	folded := k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerNewIdx), sha256Of(runnerRebuilt))
+	f := &rollForgejo{branches: map[string]string{"factory/t-roll": "roll-commit-1"},
+		files: map[string]map[string]string{forkRepo + "@factory/t-roll": first},
+		blobs: map[string]string{forkRepo + "@factory/t-roll k8s/factoryd.yaml": "blob-f1"}}
+	runner, store := newRollRunner(t, f,
+		RollRequest{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-1",
+			Changes: map[string]string{"gateway": sha256Of(gwNewIdx)}},
+		RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 61, State: RollOpened, TaskID: "t-roll", Committed: true, Head: "roll-commit-2",
+			Changes: map[string]string{"worker": sha256Of(workerNewIdx)}, Summary: "roll c2c2c2c: worker"},
+		RollRequest{SHA: commitHR, Repository: codeRepo, RunID: 63, State: RollOpened, TaskID: "t-roll",
+			Changes: map[string]string{"ci-runner": sha256Of(runnerRebuilt)}, Summary: "roll c3c3c3c: runner"})
+	var head string
+	out, err := execActivity(t, runner, ActivityRollCommit, "t-roll")
+	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
+		t.Fatalf("head %q err %v", head, err)
+	}
+	want := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: worker\n\nroll c3c3c3c: runner",
+		"files": []any{map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f1",
+			"content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))}}}
+	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(want) {
+		t.Fatalf("commit %v\nwant %v", f.commits, want)
+	}
+	for _, r := range store.rolls {
+		if !r.Committed || r.Head != "roll-commit-1" {
+			t.Fatalf("roll %+v, want committed at roll-commit-1", r)
+		}
+	}
+	if got, _ := store.RollHead(context.Background(), "t-roll"); got != "roll-commit-1" {
+		t.Fatalf("recorded head %q", got)
 	}
 }
 

@@ -425,6 +425,10 @@ type Store interface {
 	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
 	// RollHead is the branch commit RollCommit last wrote for a roll task.
 	RollHead(ctx context.Context, taskID string) (string, error)
+	// RebaseRolls frees task's roll markings made past the head its branch
+	// sits at, and reports whether any request is marked at that head at
+	// all (RebaseRolls).
+	RebaseRolls(ctx context.Context, taskID, head string) (bool, error)
 	// SetTaskSHA sets the commit a task's branch was cut from, its base.
 	SetTaskSHA(ctx context.Context, id, sha string) error
 	// The merge queue (queue.go).
