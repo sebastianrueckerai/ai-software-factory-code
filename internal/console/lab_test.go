@@ -263,13 +263,13 @@ func compactedScene(now time.Time) labScene {
 func assistedScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	running := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a1", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
-		Process: "spec", Repository: "sf/code", IssueNumber: 7, Size: "small", BudgetEUR: 2, SpentEUR: 0.31,
+		Process: "spec", Repository: "sf/code", IssueNumber: 7, Size: "small", BudgetEUR: 2, SpentEUR: 0.31, CreatedAt: ago(40 * time.Minute),
 		Objective: "Speed up the find box.\n\nAcceptance:\n- The find answers in under 100 ms\n"}}
 	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Lane: policy.LaneReady,
-		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2,
+		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2, CreatedAt: ago(30 * time.Minute),
 		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in member lands on the board\n"}}
 	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog,
-		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small",
+		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small", CreatedAt: ago(2 * time.Hour),
 		Objective: "Trim the roll notes.\n\nAcceptance:\n- The roll comment fits on one line\n"}}
 	msgs := []factoryd.ChatMessage{
 		{Role: "user", Content: "Start the login redirect card; the slots are free.", At: ago(9 * time.Minute)},
