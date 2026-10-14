@@ -73,7 +73,8 @@ var answerKinds = []string{factoryd.EventQuestionAnswered, factoryd.EventSession
 	factoryd.EventPlanAccepted, factoryd.EventPlanChangesRequested, factoryd.EventPlanRejected, factoryd.EventCardClosed}
 
 // resolveChoice decides card id with choice as its state asks: a pending
-// merge approves on Approve, a pending plan accepts on Accept, a waiting
+// merge approves on Approve and a pending plan accepts on Accept, each
+// under the role its board button and chat tool need, a waiting
 // question takes the choice as the member's answer, a human-lane
 // escalation closes with it. A card answered since the escalation asked
 // at asked, or waiting no more, says so: the first answer wins.
@@ -100,8 +101,14 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 		switch {
 		case q.TaskID != id:
 		case q.Kind == factoryd.ApprovalMerge && choice == "Approve":
+			if err := c.admit(ctx, accessTable["approve_merge"], a, t.Repository, "task "+id); err != nil {
+				return "", err
+			}
 			return c.doApprove(ctx, a, q.ID)
 		case q.Kind == factoryd.ApprovalPlan && choice == "Accept":
+			if err := c.admit(ctx, accessTable["accept_plan"], a, t.Repository, "task "+id); err != nil {
+				return "", err
+			}
 			var spec factoryd.PlanSpec
 			if err := json.Unmarshal(q.Spec, &spec); err != nil {
 				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")

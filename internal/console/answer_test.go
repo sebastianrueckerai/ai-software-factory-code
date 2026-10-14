@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"slices"
@@ -102,4 +103,45 @@ func TestChatEscalate(t *testing.T) {
 			t.Errorf("choices %q = %v", choices, err)
 		}
 	}
+}
+
+// An answer that approves a merge or accepts a plan needs an approver, as
+// the board's buttons and the chat's tools do: a writer on the notify
+// list hears the refusal, and both requests stay pending.
+func TestChatAnswerNeedsAnApprover(t *testing.T) {
+	r, _ := newReadsRig(t)
+	r.ledger.approvers = []string{"alice"}
+	r.approvals.rows = append(r.approvals.rows,
+		factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-e", Project: "sf/code", PRNumber: 9, Status: "pending",
+			Spec: json.RawMessage(`{"risk_class":"low","head_sha":"abc"}`)},
+		factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: "t-p", Project: "sf/code", Status: "pending",
+			Spec: json.RawMessage(`{"revision":1,"sha256":"5e1f"}`)})
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	for _, e := range []struct{ task, text, choice string }{
+		{"t-e", "Merge PR #9 of #13 waits for you: risk class low.", "Approve"},
+		{"t-p", "Plan #20 waits for your acceptance: revision 1, 3 cards.", "Accept"},
+	} {
+		if err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox}); err != nil {
+			t.Fatal(err)
+		}
+		if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+			"message": {strconv.FormatInt(r.chat.next, 10)}, "choice": {e.choice}}); code != http.StatusNoContent {
+			t.Fatalf("the answer = %d %q", code, body)
+		}
+	}
+	rows, _ := r.chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 50)
+	var notes []string
+	for _, m := range rows {
+		if m.Kind == factoryd.MessagePoke {
+			notes = append(notes, m.Content)
+		}
+	}
+	equal(t, "the notes", notes, []string{
+		"The answer did not land: Only the approvers of project ai-software-factory-code may authorize spend.",
+		"The answer did not land: Only the approvers of project ai-software-factory-code may accept a plan.",
+	})
+	equal(t, "the requests", []string{r.approvals.rows[len(r.approvals.rows)-2].Status, r.approvals.rows[len(r.approvals.rows)-1].Status}, []string{"pending", "pending"})
 }
