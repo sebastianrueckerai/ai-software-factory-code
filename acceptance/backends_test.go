@@ -399,6 +399,16 @@ func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.T
 
 func (s *acceptanceStore) ClearRollHold(context.Context, string) error { return nil }
 
+func (s *acceptanceStore) PutLiveSession(context.Context, factoryd.LiveSession) error { return nil }
+
+func (s *acceptanceStore) SetLiveSessionLines(context.Context, string, int) error { return nil }
+
+func (s *acceptanceStore) LiveSession(context.Context, string) (factoryd.LiveSession, bool, error) {
+	return factoryd.LiveSession{}, false, nil
+}
+
+func (s *acceptanceStore) DeleteLiveSession(context.Context, string) error { return nil }
+
 func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
 	return factoryd.RollHold{}, false, nil
 }

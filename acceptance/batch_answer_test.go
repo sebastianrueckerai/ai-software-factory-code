@@ -425,6 +425,16 @@ func (s *accBatchStore) SetRollHold(ctx context.Context, taskID string, since, u
 	panic("unused")
 }
 func (s *accBatchStore) ClearRollHold(ctx context.Context, taskID string) error { panic("unused") }
+func (s *accBatchStore) PutLiveSession(ctx context.Context, l factoryd.LiveSession) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetLiveSessionLines(ctx context.Context, taskID string, lines int) error {
+	panic("unused")
+}
+func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factoryd.LiveSession, bool, error) {
+	return factoryd.LiveSession{}, false, nil
+}
+func (s *accBatchStore) DeleteLiveSession(ctx context.Context, taskID string) error { return nil }
 func (s *accBatchStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
 	panic("unused")
 }
