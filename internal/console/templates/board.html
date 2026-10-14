@@ -8,13 +8,13 @@
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">
 <section class="column" aria-labelledby="col-approvals"><h3 id="col-approvals">Approvals <span class="count">{{len .Approvals}}</span></h3>
-{{range .Approvals}}{{template "approval" .}}{{end}}
+<div class="cards">{{range .Approvals}}{{template "approval" .}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-escalations"><h3 id="col-escalations">Escalations <span class="count">{{len .Escalations}}</span></h3>
-{{range .Escalations}}{{template "escalation" .}}{{end}}
+<div class="cards">{{range .Escalations}}{{template "escalation" .}}{{end}}</div>
 </section>
 <section class="column" aria-labelledby="col-human"><h3 id="col-human">Human tasks <span class="count">{{len .HumanTasks}}</span></h3>
-{{range .HumanTasks}}{{template "card" .}}{{end}}
+<div class="cards">{{range .HumanTasks}}{{template "card" .}}{{end}}</div>
 </section>
 </div>
 </section>
@@ -22,14 +22,14 @@
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
 {{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
-{{range $col.Cards}}{{template "card" .}}{{end}}
+<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}</div>
 </section>
 {{end}}</div>
 </section>
 {{else}}<div class="lane five">
 {{range $i, $col := .Columns}}<section class="column{{if eq $col.Title "Done"}} fold{{end}}" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
-{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
-{{range $col.Cards}}{{template "card" .}}{{end}}
+<div class="cards">{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
+{{range $col.Cards}}{{template "card" .}}{{end}}</div>
 </section>
 {{end}}</div>
 {{end}}</div>{{end}}

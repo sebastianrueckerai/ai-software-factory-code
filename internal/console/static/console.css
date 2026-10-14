@@ -148,12 +148,15 @@ footer#live:empty { display: none; }
 /* columns: sunken panels with corner marks, the title in small capitals
    and the count in mono on one baseline */
 .lane { display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 6px; }
-.column { display: flex; flex-direction: column; min-height: 4rem; min-width: 0; background: var(--bg-panel); border: 1px solid var(--line-strong); padding: 0 6px 6px; }
-.column > h3 { display: flex; flex: none; align-items: baseline; gap: 8px; height: 32px; margin: 0 -6px 6px; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--text-muted); font-size: 13.5px; line-height: 31px; white-space: nowrap; overflow: hidden; }
+.column { display: flex; flex-direction: column; min-height: 4rem; min-width: 0; background: var(--bg-panel); border: 1px solid var(--line-strong); }
+.column > h3 { display: flex; flex: none; align-items: baseline; gap: 8px; height: 32px; margin: 0; padding: 0 10px; border-bottom: 1px solid var(--line); color: var(--text-muted); font-size: 13.5px; line-height: 31px; white-space: nowrap; overflow: hidden; }
 .column > h3 .count { margin-left: auto; color: var(--text); font-size: 12px; font-weight: 400; letter-spacing: 0; font-variant-caps: normal; }
+/* the column's body holds the cards; on a desktop it alone scrolls, down
+   only and only when the cards overflow, so the marks and the head stay */
+.cards { padding: 6px 6px 0; }
 .lane.five { grid-template-columns: minmax(12.5rem, 1.5fr) repeat(3, minmax(8.5rem, 1fr)); gap: 6px; overflow-x: auto; }
 .lane.five .column { min-width: 0; }
-.lane.five table { display: block; overflow-x: auto; }
+.lane.five table { table-layout: fixed; }
 .lane:not(.five) .column:has(.approval.plan) { grid-column: span 2; }
 /* Needs you: the first column, lit amber, the loudest thing on the board */
 #needs-you { scroll-margin-top: 1rem; }
@@ -572,9 +575,7 @@ body:has(#screen) #flash { flex: none; }
 #board { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .lane { flex: 1; min-height: 0; }
 .lane.five { grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); overflow: visible; }
-.lane.five .column { overflow-y: auto; }
-.lane.five .column > h3 { position: sticky; top: 0; background: inherit; z-index: 1; }
-.lane.five #needs-you:has(.card) > h3 { background: var(--need-tint); }
+.lane.five .cards { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: inset 0 2px 0 var(--accent); }
 .chat-head { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 2px 14px 0; border-bottom: 1px solid var(--line); flex: none; }
 .chat-head h2 { margin: 0; font-size: 14px; font-variant-caps: normal; letter-spacing: 0; }
@@ -670,7 +671,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   #board { overflow-y: auto; }
   .lane.five { flex: none; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(220px, auto); }
   .lane.five #needs-you { grid-column: 1 / -1; }
-  .lane.five .column { overflow: visible; }
+  .lane.five .cards { overflow: visible; }
   /* the phone's order: Needs you, In progress, Queued, Done */
   .lane.five #needs-you { order: -2; }
   .lane.five .column:nth-child(3) { order: -1; }
@@ -711,7 +712,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .board-head .view-toggle { display: none; }
   #board { overflow: visible; }
   .lane, .lane.five { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
-  .lane.five .column { overflow: visible; }
+  .lane.five .cards { overflow: visible; }
   .column > h3 { height: 44px; line-height: 43px; }
   .choices { flex-direction: column; align-items: stretch; gap: 8px; }
   .choices button, .escalation form:not(.inline) button[type=submit], .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .approval form[action$="/split"] button, .transitions button { width: 100%; height: 44px; font-size: 14px; }
