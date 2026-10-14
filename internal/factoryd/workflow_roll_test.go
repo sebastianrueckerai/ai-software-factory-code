@@ -245,3 +245,33 @@ func TestPlanSessionWaitsForARollsHold(t *testing.T) {
 		t.Fatalf("usage %+v, want %s of agent time, the session's only", h.usage, planSession)
 	}
 }
+
+// A roll under a project's merge queue takes no turn in it: its stages go
+// straight to the approval with no EnterQueue and no SyncWithMain, so a
+// card merges past a roll that waits (roadmap 222, item 1).
+func TestWorkflowRollTakesNoQueueTurn(t *testing.T) {
+	g, commits := newRollHarnessWith(t, func(g *gateHarness) {
+		g.taskConfig = &TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+			Stages: testStages(), Queue: policy.QueueProject}
+	}, "r1")
+	g.env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (int, error) {
+		t.Errorf("a roll entered the merge queue")
+		return 0, nil
+	})
+	g.env.OnActivity(ActivitySyncWithMain, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
+			t.Errorf("a roll synced with main")
+			return SyncResult{From: from, To: from}, nil
+		})
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(*commits) != 1 {
+		t.Fatalf("RollCommit calls %v", *commits)
+	}
+	if want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "settle"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}

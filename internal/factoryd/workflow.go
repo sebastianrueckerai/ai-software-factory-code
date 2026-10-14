@@ -390,6 +390,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerScreening = workflow.GetVersion(ctx, "screen-answers", workflow.DefaultVersion, versionScreenAnswers)
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollGap)
+	run.rollQueue = workflow.GetVersion(ctx, "roll-no-queue", workflow.DefaultVersion, versionRollNoQueue)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
 	run.sessionRefusals = workflow.GetVersion(ctx, "provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals)
@@ -648,6 +649,12 @@ const (
 	// Every code and plan session first waits while a roll holds sessions
 	// (AwaitRollHold), outside its agent time.
 	versionRollGap workflow.Version = 1
+	// versionRollNoQueue (change id "roll-no-queue", roadmap 222, the
+	// speed round's item 1): a roll takes no turn in its project's merge
+	// queue: its stages go straight to the approval, so cards merge past
+	// a roll that waits, and it merges without a sync (only rolls touch
+	// k8s/*.yaml, one roll task is open per repository).
+	versionRollNoQueue workflow.Version = 1
 	// versionProviderWait (change id "provider-wait", ruling 267): a
 	// provider_refused session is no attempt and takes no agent time: the
 	// task waits on the provider (ProviderWait, then a timer raced by the
@@ -740,6 +747,7 @@ type taskRun struct {
 	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
 	answerSlice       workflow.Version
 	rollGap           workflow.Version
+	rollQueue         workflow.Version
 	providerWait      workflow.Version
 	planAnswers       workflow.Version
 	sessionRefusals   workflow.Version
