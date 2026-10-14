@@ -752,7 +752,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		choices[i] = r.untrusted(t, c)
 	}
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id}
+	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason)}
 	if len(choices) > 0 {
 		step["choices"], asked["choices"] = choices, choices
 	}

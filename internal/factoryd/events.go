@@ -32,6 +32,11 @@ const (
 	// (roadmap 208): detail {"command", "exit", "session"}. Only green
 	// runs are recorded; the trail is the card's evidence.
 	EventAcceptancePassed = "acceptance_passed"
+	// EventApprovalRequested is factoryd's record of an approval it opened
+	// for a card, a merge's or a plan's (roadmap 239): detail {"approval",
+	// "kind", and "pr" and "class" for a merge, "revision" and "cards"
+	// for a plan}.
+	EventApprovalRequested = "approval_requested"
 )
 
 // StepEvent is the timeline step every event is recorded under.

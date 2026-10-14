@@ -59,6 +59,13 @@ type toolInput struct {
 	Autonomy   string `json:"autonomy,omitempty"`
 	Content    string `json:"content,omitempty"`
 	BacklogCap int    `json:"backlog_cap,omitempty"`
+	// Old and New are a document edit's passage and its replacement,
+	// BaseSHA256 the hash the document was read with; Find narrows a
+	// document read to the lines that hold it.
+	Old        string `json:"old,omitempty"`
+	New        string `json:"new,omitempty"`
+	BaseSHA256 string `json:"base_sha256,omitempty"`
+	Find       string `json:"find,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -175,7 +182,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 				return "", err
 			}
 		}
-		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, cardTitle(k)))
+		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, factoryd.CardTitle(k)))
 	}
 	if in.DependsOn != "" {
 		d, err := t.card(toolInput{TaskID: in.DependsOn})
@@ -186,11 +193,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if in.Remove {
 			edge = "no longer depends on"
 		}
-		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, cardTitle(d)))
+		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
 	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
-		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}} {
+		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
@@ -411,21 +418,9 @@ func (t *turn) answer(in toolInput) (string, error) {
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
 
-// cardTitle is the face's title of t: the summary a writer set, the plan
-// key of a planned card, else the objective's first paragraph.
-func cardTitle(t factoryd.Task) string {
-	if t.HumanSummary != "" {
-		return t.HumanSummary
-	}
-	if t.PlanKey != "" {
-		return t.PlanKey
-	}
-	return titleClause(t.Objective)
-}
-
 // cardLine is t on one line for the agent.
 func cardLine(t factoryd.Task) string {
-	s := fmt.Sprintf("#%d %s %q %s (%s)", t.IssueNumber, t.ID, cardTitle(t), t.Status, factoryd.StatusMeaning(t.Status))
+	s := fmt.Sprintf("#%d %s %q %s (%s)", t.IssueNumber, t.ID, factoryd.CardTitle(t), t.Status, factoryd.StatusMeaning(t.Status))
 	if t.Gate != "" {
 		s += fmt.Sprintf(", gate %s (%s)", t.Gate, factoryd.GateMeaning(t.Gate))
 	}
@@ -908,15 +903,27 @@ var tools = []chatTool{
 			note, err := t.c.doSplit(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
 		}},
-	{name: "write_doc", title: "Write a document", write: true,
-		params: map[string]any{"path": str("the file's path under docs/ of the document repository: docs/roadmap.md, a file under docs/plans/ or docs/board/, or a new docs/<name>.md"),
-			"content":     str("the file's full new content"),
-			"base_sha256": str("the sha256 of the content the file was last read with; a stale hash refuses and returns the current content")},
-		required: []string{"path", "content"},
-		about:    "Commit a document to the project's document repository, straight to master: the path allow-list under docs/, the size cap, the roadmap's structure check on a roadmap edit, and the content-hash compare-and-swap. The member's OK at every level.",
+	{name: "read_doc", title: "Read a document",
+		params: map[string]any{"path": str(docPathWords),
+			"find": str("a word or passage: answers only the lines holding it, each with its number, instead of the file's first 20 KiB")},
+		required: []string{"path"},
+		about:    "A document of the project's document repository at master with its base_sha256, the hash write_doc's edit carries: its first 20 KiB, or the lines holding find.",
 		fits:     "the project's document repository",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, in.Path, in.Content, in.SHA256)
+			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find)
+			return s, nil, err
+		}},
+	{name: "write_doc", title: "Write a document", write: true,
+		params: map[string]any{"path": str(docPathWords),
+			"old":         str("an edit's passage, exactly as read_doc answered it and once in the file"),
+			"new":         str("the passage that replaces old; empty removes it"),
+			"content":     str("a new file's full content; an existing file takes old and new"),
+			"base_sha256": str("the base_sha256 read_doc answered: an edit carries it, and a stale one refuses with the file's current hash")},
+		required: []string{"path"},
+		about:    "Commit a document to the project's document repository, straight to master: an edit of one passage of an existing file, or a new file. The path allow-list under docs/, the size cap, the roadmap's structure check on a roadmap edit, one commit at a time, and the content-hash compare-and-swap. The member's OK at every level.",
+		fits:     "the project's document repository",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
 			return note, nil, err
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
@@ -930,6 +937,29 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
+		}},
+	{name: "notes_read", title: "Read the scratchpad",
+		about: "The project's scratchpad: working notes every thread of the chat reads and writes, round state and findings in flight. It steers nothing.",
+		fits:  "the project's chat",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.notesText()
+			return s, nil, err
+		}},
+	{name: "notes_write", title: "Write the scratchpad", write: true,
+		params: map[string]any{"text": str("a note to append as its own paragraph"),
+			"old": str("a passage to replace, once in the scratchpad"), "new": str("the passage that replaces old; empty removes it")},
+		about: "Append a note to the project's scratchpad, or replace one passage of it. It steers nothing: what becomes direction graduates into the roadmap with write_doc and leaves the scratchpad.",
+		fits:  "the project's chat",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.writeNotes(in.Text, in.Old, in.New)
+			return s, nil, err
+		}},
+	{name: "active_threads", title: "Read the member's threads",
+		about: "The member's other active threads on the project: each one's title, last turn, whether a turn runs on it and the member's newest message there; then the scratchpad's tail.",
+		fits:  "the project's chat",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.activeThreads()
+			return s, nil, err
 		}},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

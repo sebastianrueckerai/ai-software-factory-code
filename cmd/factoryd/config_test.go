@@ -96,7 +96,7 @@ func TestConfigCheck(t *testing.T) {
 		"the old workflow file": {func(dir string) {
 			write(t, filepath.Join(dir, "workflow.yaml"), "# yaml-language-server: $schema=schema/workflow.schema.json\nstages: []\n")
 			write(t, filepath.Join(dir, "schema/workflow.schema.json"), "{}\n")
-		}, []string{`workflow.yaml: unknown file "workflow.yaml": the tree holds policy.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`,
+		}, []string{`workflow.yaml: unknown file "workflow.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`,
 			"schema/workflow.schema.json is not a schema factoryd writes"}},
 	} {
 		t.Run(name, func(t *testing.T) {

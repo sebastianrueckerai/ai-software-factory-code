@@ -1,7 +1,9 @@
 package console
 
 import (
+	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -192,4 +194,43 @@ func TestChatThreadsByNumber(t *testing.T) {
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/rename", url.Values{"conversation": {"2"}, "title": {strings.Repeat("x", 81)}}); code != http.StatusBadRequest {
 		t.Fatalf("an 81-character title = %d %q, want 400", code, body)
 	}
+}
+
+// The inbox (roadmap 239): the list makes it and pins it first; a poke in
+// it counts unread; reading another thread leaves its badge, and opening
+// it clears it.
+func TestChatInboxBadge(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("first reply")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	list := func() []factoryd.ChatConversation {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
+		var out []factoryd.ChatConversation
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(rec.Code, err)
+		}
+		return out
+	}
+	unread := func(l []factoryd.ChatConversation) map[int64]int64 {
+		out := map[int64]int64{}
+		for _, c := range l {
+			out[c.Number] = c.Unread
+		}
+		return out
+	}
+	first := list()
+	if len(first) != 2 || !first[0].Inbox || first[0].Number != 2 {
+		t.Fatalf("the list = %+v, want the inbox 2 first, then thread 1", first)
+	}
+	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#7 failed: Feed page.", Conversation: 2}
+	if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", poke); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the unread turns after the poke", unread(list()), map[int64]int64{1: 1, 2: 1})
+	r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=1", nil), ck)
+	equal(t, "the unread turns after thread 1 was read", unread(list()), map[int64]int64{1: 0, 2: 1})
+	r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=2", nil), ck)
+	equal(t, "the unread turns after the inbox was read", unread(list()), map[int64]int64{1: 0, 2: 0})
 }

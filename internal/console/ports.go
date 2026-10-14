@@ -105,11 +105,24 @@ type Chat interface {
 	MarkSeen(ctx context.Context, repository, login string, n int64) error
 	QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error)
 	StartQueued(ctx context.Context, repository, login string, id int64) error
+	// the inbox thread, made the first time it is asked for; the archive
+	// and its restore; the hard delete, which answers the rows it took
+	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
+	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
 	// since a time, and its calls' totals
 	SaveSummary(ctx context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error
 	ThreadTokens(ctx context.Context, thread string, since time.Time) (int, error)
 	ThreadTotals(ctx context.Context, thread string) (int, float64, error)
+}
+
+// Notes is the projects' scratchpads (factoryd.PGStore): one per
+// project, open to every thread of its chat, steering nothing (roadmap
+// 239). PutNotes writes only when the scratchpad still hashes to base.
+type Notes interface {
+	Notes(ctx context.Context, repository string) (factoryd.Notes, error)
+	PutNotes(ctx context.Context, repository, login, content, base string) (bool, error)
 }
 
 // Sessions is the console's logins (factoryd.PGStore's console_sessions):

@@ -631,6 +631,16 @@ func (f *accBatchChat) RenameConversation(context.Context, string, string, int64
 
 func (f *accBatchChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (f *accBatchChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
+
+func (f *accBatchChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
+	return true, nil
+}
+
+func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
+	return 0, nil
+}
+
 func (f *accBatchChat) QueueChatMessage(_ context.Context, _, _ string, _ int64, text string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -67,7 +67,8 @@ var chatView = (function () {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
     }
     var esc1 = m.kind === "escalation";
-    var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" + (esc1 ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+    var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
+      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
     var body = saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.choices && m.choices.length && !esc1) {
@@ -156,6 +157,23 @@ var chatView = (function () {
     return (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
       ", compacted</summary>" + historyHTML(old, login, proposals) + "</details>" : "") +
       factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals);
+  }
+  // paletteOf is the commands the box's value names: those whose /name
+  // starts with it while it is a slash and one word; null otherwise
+  function paletteOf(commands, value) {
+    if (value.charAt(0) !== "/" || /\s/.test(value)) return null;
+    return commands.filter(function (c) { return ("/" + c.name).indexOf(value) === 0; });
+  }
+  function paletteHTML(list, sel) {
+    return list.map(function (c, i) {
+      return "<button type=\"button\" role=\"option\" id=\"cmd-" + esc(c.name) + "\" aria-selected=\"" + (i === sel) + "\" data-cmd=\"" + esc(c.name) +
+        "\"><b>/" + esc(c.name) + "</b><span>" + esc(c.words) + "</span></button>";
+    }).join("");
+  }
+  // expand is text as the turn sends it: a command's /name its message
+  function expand(commands, text) {
+    var c = commands.filter(function (c) { return c.message && "/" + c.name === text; })[0];
+    return c ? c.message : text;
   }
   // when is a thread's last turn as the switcher shows it: the time today,
   // yesterday, else n days ago; now is the reader's clock
@@ -272,7 +290,7 @@ var chatView = (function () {
     }).join("");
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
 })();
 
@@ -282,6 +300,8 @@ var chatView = (function () {
   var log = document.getElementById("chat-log");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
+  var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
+  var commands = commandsEl ? JSON.parse(commandsEl.textContent || "null") || [] : [];
   var sum = panel.querySelector(".sw-sum");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
   var baseTitle = document.title;
@@ -422,7 +442,7 @@ var chatView = (function () {
     var shown = n === open, command = text === "/compact";
     var into = document.createElement("div");
     if (shown) {
-      if (!command) add(log, chatView.userHTML(login, text, new Date()));
+      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date()));
       add(log, chatView.agentHTML(new Date(), ""));
       scrollEnd(true);
       into = log.lastElementChild;
@@ -437,6 +457,11 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
 
+  // a drawer's "From your chat thread" opens that thread here
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-open-thread]");
+    if (b && Number(b.dataset.openThread) !== open) load(Number(b.dataset.openThread));
+  });
   // #n in the model's text opens card n's drawer over the board
   document.addEventListener("click", function (e) {
     var ref = e.target.closest("a.cardref");
@@ -494,10 +519,56 @@ var chatView = (function () {
 
   form.addEventListener("submit", function (e) {
     e.preventDefault();
+    if (pal.list) command(pal.list[pal.sel].name);
+    else send();
+  });
+  // the commands: "/" at the start of the box opens the palette, the
+  // arrows choose, Enter runs, Escape closes; the chips run theirs
+  function drawPalette() {
+    pal.list = chatView.paletteOf(commands, input.value);
+    if (pal.list && !pal.list.length) pal.list = null;
+    palette.hidden = !pal.list;
+    input.setAttribute("aria-expanded", String(!!pal.list));
+    if (!pal.list) {
+      input.removeAttribute("aria-activedescendant");
+      return;
+    }
+    pal.sel = Math.min(pal.sel, pal.list.length - 1);
+    palette.innerHTML = chatView.paletteHTML(pal.list, pal.sel);
+    input.setAttribute("aria-activedescendant", "cmd-" + pal.list[pal.sel].name);
+  }
+  function command(name) {
+    input.value = "";
+    drawPalette();
+    if (name === "new") {
+      fresh.click();
+      return;
+    }
+    input.value = "/" + name;
     send();
+  }
+  input.addEventListener("input", function () {
+    pal.sel = 0;
+    drawPalette();
+  });
+  form.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-cmd]");
+    if (b) command(b.dataset.cmd);
   });
   input.addEventListener("keydown", function (e) {
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    if (pal.list && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      pal.sel = (pal.sel + (e.key === "ArrowDown" ? 1 : pal.list.length - 1)) % pal.list.length;
+      drawPalette();
+    } else if (pal.list && e.key === "Escape") {
+      e.stopPropagation();
+      pal.list = null;
+      palette.hidden = true;
+      input.setAttribute("aria-expanded", "false");
+    } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing && pal.list) {
+      e.preventDefault();
+      command(pal.list[pal.sel].name);
+    } else if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send();
     } else if (e.key === "Escape") {

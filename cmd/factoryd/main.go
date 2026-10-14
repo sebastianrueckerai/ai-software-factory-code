@@ -316,6 +316,7 @@ func main() {
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current}
 	go monthAlarm.Loop(ctx, time.Minute)
+	go (&factoryd.Poker{Store: store, Current: policyLoader.Current}).Loop(ctx, 5*time.Second)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics}
 	go ciRuns.Run(ctx)
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
@@ -453,6 +454,7 @@ func main() {
 		Steer:          runner.MessageSession,
 		AttemptFunded:  runner.AttemptFunded,
 		Chat:           store,
+		Notes:          store,
 		Operator:       operator,
 		Pulses:         store,
 		Mirrors: struct {

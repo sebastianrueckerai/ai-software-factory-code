@@ -380,7 +380,7 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := slices.Sorted(maps.Keys(schemas)); !slices.Equal(got, []string{"policy.schema.json", "process.schema.json", "project.schema.json"}) {
+	if got := slices.Sorted(maps.Keys(schemas)); !slices.Equal(got, []string{"commands.schema.json", "policy.schema.json", "process.schema.json", "project.schema.json"}) {
 		t.Fatalf("schema files = %v", got)
 	}
 	var walk func(where string, s *jsonschema.Schema)

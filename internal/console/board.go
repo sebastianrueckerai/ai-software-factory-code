@@ -22,7 +22,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -539,45 +538,6 @@ func fineStates(k card, wide bool) []fine {
 	return out
 }
 
-// titleCap bounds the face's title in runes; titleEllipsis ends a title
-// cut to it.
-const (
-	titleCap      = 80
-	titleEllipsis = "…"
-)
-
-// titleClause is the face's title from the objective, on one line: the
-// objective's first paragraph, the title as the issue was filed, in full —
-// a blank line ends the paragraph, a full stop never does. Only a title
-// longer than titleCap runes is shortened, at a word boundary with an
-// ellipsis, never mid-word. The objective is sanitised as a brief carries
-// it, so a hidden comment in it shows on no face.
-func titleClause(objective string) string {
-	var words []string
-	for _, line := range strings.Split(sanitize.Inbound(objective), "\n") {
-		if strings.TrimSpace(line) == "" {
-			if len(words) > 0 {
-				break
-			}
-			continue
-		}
-		words = append(words, strings.Fields(line)...)
-	}
-	s := strings.Join(words, " ")
-	if r := []rune(s); len(r) > titleCap {
-		cut := r[:titleCap-len([]rune(titleEllipsis))]
-		end := len(cut)
-		for end > 0 && cut[end-1] != ' ' {
-			end--
-		}
-		if end == 0 {
-			end = len(cut) // one word longer than the cap: cut it
-		}
-		s = strings.TrimRight(string(cut[:end]), " ,;:") + titleEllipsis
-	}
-	return s
-}
-
 // statusClasses are the pill's classes, one hue per state: running the
 // accent blue, a wait amber, review violet, done green, failed red, closed
 // grey; waiting-poster wears the hollow pill. closing counts as running.
@@ -1086,6 +1046,9 @@ type boardData struct {
 	// selector changes (roadmap 239); empty: no policy in force.
 	Autonomy       string
 	AutonomyLevels []string
+	// Commands are the chat's commands, its own and the config tree's
+	// (roadmap 239).
+	Commands []policy.Command
 	// PolicyVersion, PolicyCommit and PolicyTreeURL are the configuration
 	// version factoryd runs, as /policy shows it: its number and its
 	// commit, linked to the commit's tree in Forgejo. All zero when the
@@ -1270,7 +1233,7 @@ func (c *Console) card(t factoryd.Task) card {
 		if t.PlanKey != "" {
 			return t.PlanKey
 		}
-		return titleClause(t.Objective)
+		return factoryd.TitleClause(t.Objective)
 	}())
 	if t.BudgetEUR > 0 {
 		k.NearBudget = nearBudget(t.SpentEUR, t.BudgetEUR)
@@ -1784,7 +1747,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 	}
 	f.Project, d.Writes, d.Approver = shown.Name, writable[shown.Name], v.approves(shown.Repository)
+	d.Commands = policy.BuiltinCommands
 	if v, ok := c.inForce(ctx); ok {
+		d.Commands = v.ChatCommands()
 		if pc, ok := v.Projects[shown.Name]; ok && shown.Name != "" {
 			d.Autonomy, d.AutonomyLevels = pc.Autonomy, policy.AutonomyValues
 			if d.Autonomy == "" {
@@ -2409,6 +2374,39 @@ type drawerData struct {
 	Runs []run
 	Life string
 	Need *need
+	// Thread is the chat thread the card came from, nil for none.
+	Thread *threadLink
+}
+
+// threadLink is the chat thread behind a card as its drawer names it:
+// the member's whose it is, its number, and for the viewer's own thread
+// its title, "" once deleted.
+type threadLink struct {
+	Number     int64
+	Who, Title string
+	Own        bool
+}
+
+// cardThread is the chat thread behind card t: the one its oldest event
+// from the chat names; nil for none (roadmap 239's card link).
+func (c *Console) cardThread(ctx context.Context, t factoryd.Task, viewer string) *threadLink {
+	events, err := c.cfg.Events.TaskEvents(ctx, t.ID, startEvents)
+	if err != nil {
+		log.Printf("console: the events of %s: %v", t.ID, err)
+		return nil
+	}
+	var l *threadLink
+	for _, e := range events {
+		if n, ok := e.Detail["thread"].(float64); ok && e.Via == factoryd.ViaChat && n > 0 {
+			l = &threadLink{Number: int64(n), Who: e.Actor, Own: e.Actor == viewer}
+		}
+	}
+	if l != nil && l.Own && c.cfg.Chat != nil {
+		if th, ok, err := c.cfg.Chat.Conversation(ctx, t.Repository, viewer, l.Number); err == nil && ok {
+			l.Title = cmp.Or(th.Title, "untitled")
+		}
+	}
+	return l
 }
 
 // Age is the card's time in its stage, or in all once it ended.
@@ -2518,6 +2516,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)
+		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
 		var err error
 		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
 			problem("related cards", err)

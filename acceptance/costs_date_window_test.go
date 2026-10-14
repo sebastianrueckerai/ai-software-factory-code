@@ -586,6 +586,16 @@ func (f *acceptChat) RenameConversation(context.Context, string, string, int64, 
 
 func (f *acceptChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (f *acceptChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
+
+func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
+	return true, nil
+}
+
+func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
+	return 0, nil
+}
+
 func (f *acceptChat) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
 	if err := f.AddChatMessage(ctx, repository, login, factoryd.ChatMessage{Role: "user", Content: text, Kind: factoryd.MessageQueued, Conversation: n}); err != nil {
 		return 0, err

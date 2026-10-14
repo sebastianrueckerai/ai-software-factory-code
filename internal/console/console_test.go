@@ -659,6 +659,7 @@ type fakeLedger struct {
 	monthCaps map[string]float64 // budget.month_eur by project file
 	processes map[string]policy.Process
 	chat      *policy.ChatConfig // the policy's chat block
+	commands  policy.Commands    // commands.yaml
 	approvers []string           // the policy's; nil: sebastian
 	files     map[string]policy.ProjectConfig
 	calls     map[string][]policy.ModelCall // by task
@@ -737,7 +738,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
-			Processes: l.processes}}
+			Processes: l.processes, Commands: l.commands}}
 	maps.Copy(v.Tree.Projects, l.files)
 	if l.approvers != nil {
 		v.Document.Approvers = l.approvers

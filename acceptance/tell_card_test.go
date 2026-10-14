@@ -204,7 +204,7 @@ func TestTellCardAtRunningSession(t *testing.T) {
 		"Told #11 (its session reads the message): The session of #11 has your message. It cannot be undone.")
 	checkEvents(t, r, factoryd.Event{Repository: repository, TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
 		Detail: map[string]any{"text": "Rebase on main first.", "autonomy": "manual", "decider": "member", "merge_rule": "human",
-			"chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now())}})
+			"chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(1)}})
 }
 
 // TestTellCardAtApprovalGate is the live check of the routing's second

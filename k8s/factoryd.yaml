@@ -534,6 +534,12 @@ spec:
         # tree factory/ of its main with it every 30 s (ruling 183)
         - name: FORGEJO_CONFIG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-config, key: token}}
+        # factory-docs: write collaborator on the document repository
+        # sf/ai-software-factory only, write:repository limited to it; the
+        # chat's write_doc commits there with it (roadmap 239, the
+        # 2026-10-13 plan); absent, write_doc says no token is seated
+        - name: FORGEJO_DOCS_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-docs, key: token, optional: true}}
         # factory-registry-read: a read:package token, member of org sf's
         # team factory-registry-read (packages read, no repository); the
         # roller reads main CI's images with it and can overwrite no tag

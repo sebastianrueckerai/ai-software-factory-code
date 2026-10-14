@@ -822,11 +822,25 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .esc-l { color: var(--need-text); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .msg.esc .esc-b { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--need) 38%, var(--line)); border-left: 3px solid var(--need); background: color-mix(in srgb, var(--need) 4%, var(--bg-raised)); }
 .decider { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
+.msg .who .rep { color: var(--text-faint); font: 11.5px var(--font-mono); }
 .decider::before { content: "⚙ "; }
 .msg.sum .av { border-style: dashed; color: var(--text-faint); font: 12px/1 var(--font-mono); }
 .msg.sum .av::before { content: none; }
 .msg.sum .said { color: var(--text-muted); font-size: 13px; }
 .msg .choices { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.chat-form { position: relative; }
+.palette { position: absolute; left: 14px; right: 14px; bottom: calc(100% - 4px); z-index: 15; display: flex; flex-direction: column; padding: 4px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }
+.palette[hidden] { display: none; }
+.palette button { display: flex; align-items: baseline; gap: 10px; height: 30px; margin: 0; padding: 0 10px; border: 0; border-radius: 2px; background: none; color: var(--text-muted); font-size: 12.5px; text-align: left; cursor: pointer; }
+.palette button b { color: var(--accent); font: 600 12.5px var(--font-mono); }
+.palette button[aria-selected="true"], .palette button:hover { background: var(--bg-hover); color: var(--text); }
+.own { display: flex; align-items: flex-start; gap: 10px; margin: 8px 0 0; }
+.own-l { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.own .chat-own { margin: 0; }
+.cmds { display: inline-flex; gap: 4px; }
+.cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
+.cmd:hover { color: var(--text); border-color: var(--text-faint); }
+.thread-link { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .compacted { margin: 0 0 16px; }
 .compacted > summary { color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .compacted[open] > summary { margin-bottom: 10px; }
@@ -839,6 +853,9 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat.sw-collapsed .ttable { display: none; }
   .chat.sw-collapsed .sw-sum { display: flex; }
   .msg .choices button { width: 100%; height: 44px; }
+  .cmd { min-height: 44px; }
+  .cmds { gap: 8px; }
+  .palette button { height: 44px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

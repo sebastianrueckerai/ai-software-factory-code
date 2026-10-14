@@ -47,16 +47,19 @@ func TestChatPanel(t *testing.T) {
 </div>
 <form id="chat-form" class="chat-form composer" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
+<div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
+<script type="application/json" id="chat-commands">[{"name":"compact","words":"the older turns of this thread become a summary"},{"name":"new","words":"a new thread"}]</script>
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
-<textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
+<textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
 <button type="submit">Send</button></div>
-<p class="chat-own">This is your own thread with the project agent; other members have theirs.</p>
+<div class="own"><div class="own-l"><span class="cmds"><button type="button" class="cmd" data-cmd="compact" title="the older turns of this thread become a summary">/compact</button><button type="button" class="cmd" data-cmd="new" title="a new thread">/new</button></span>
+<p class="chat-own">This is your own thread with the project agent; other members have theirs.</p></div></div>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 </div><script src="/static/chat.js" defer></script>
 </section>
 <div id="board" data-project="ai-software-factory-code"`,
-		`<dt><kbd>/</kbd></dt><dd>write to the project agent</dd>
+		`<dt><kbd>/</kbd></dt><dd>write to the project agent; <kbd>/</kbd> at the start of the box lists the commands</dd>
 <dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>
 <dt><kbd>Escape</kbd></dt><dd>in the chat's input: leave it</dd>`,
 	} {
@@ -127,6 +130,8 @@ var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
   {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "call_1", name: "new_card", arguments: args,
     result: "Proposed to sebastian: File a card, title Cache metrics, lane ready. Nothing runs until they press Do it.", proposal: "tok1"}]}];
 var now = new Date("2026-10-11T12:00:00Z");
+var cmds = [{name: "compact", words: "the older turns of this thread become a summary"}, {name: "new", words: "a new thread"},
+  {name: "standup", words: "what moved", message: "What moved since yesterday?"}];
 var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2},
   {number: 2, title: "world", state: "active", current: true, last_at: "2026-10-11T09:30:04Z", unread: 0, working: true},
   {number: 4, title: "", state: "active", last_at: "2026-10-10T18:00:00Z", unread: 0},
@@ -146,6 +151,11 @@ console.log(JSON.stringify({
     {id: 3, role: "user", content: "b1", at: "2026-10-11T09:31:00Z"}], "sebastian", [], {summary: "the cache was fixed", summary_upto: 2}),
   escalation: chatView.factoryHTML({id: 8, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:13:00Z",
     choices: ["Postgres", "SQLite"]}),
+  palette: JSON.stringify([chatView.paletteOf(cmds, "/"), chatView.paletteOf(cmds, "/c"), chatView.paletteOf(cmds, "/x"), chatView.paletteOf(cmds, "/c x"),
+    chatView.paletteOf(cmds, "hi")].map(function (l) { return l && l.map(function (c) { return c.name; }); })),
+  paletteHTML: chatView.paletteHTML(cmds.slice(0, 2), 1),
+  expand: [chatView.expand(cmds, "/standup"), chatView.expand(cmds, "/compact"), chatView.expand(cmds, "/standup now")].join("|"),
+  repeated: chatView.factoryHTML({id: 9, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:14:00Z", repeats: 2}),
   queue: (function () {
     var started = [], drawn = [], busy = false;
     var q = chatView.queue(function (text) { started.push(text); busy = true; }, function () { return busy; },
@@ -213,6 +223,12 @@ console.log(JSON.stringify({
 			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
 		{"escalation", `<div class="msg agent poke esc" data-message="8"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:13Z</time> <span class="esc-l">needs you</span></p>` +
 			`<div class="esc-b"><div class="said"><p>Which store?</p></div></div></div>`},
+		{"palette", `[["compact","new","standup"],["compact"],[],null,null]`},
+		{"paletteHTML", `<button type="button" role="option" id="cmd-compact" aria-selected="false" data-cmd="compact"><b>/compact</b><span>the older turns of this thread become a summary</span></button>` +
+			`<button type="button" role="option" id="cmd-new" aria-selected="true" data-cmd="new"><b>/new</b><span>a new thread</span></button>`},
+		{"expand", `What moved since yesterday?|/compact|/standup now`},
+		{"repeated", `<div class="msg agent poke" data-message="9"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:14Z</time> <span class="rep">3 times</span></p>` +
+			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div></div>`},
 		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
 		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +

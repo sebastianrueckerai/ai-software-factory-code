@@ -28,10 +28,11 @@ type fileKind struct {
 }
 
 var (
-	kindPolicy  = fileKind{"policy", reflect.TypeFor[Document]()}
-	kindProject = fileKind{"project", reflect.TypeFor[ProjectConfig]()}
-	kindProcess = fileKind{"process", reflect.TypeFor[Process]()}
-	fileKinds   = []fileKind{kindPolicy, kindProject, kindProcess}
+	kindPolicy   = fileKind{"policy", reflect.TypeFor[Document]()}
+	kindProject  = fileKind{"project", reflect.TypeFor[ProjectConfig]()}
+	kindProcess  = fileKind{"process", reflect.TypeFor[Process]()}
+	kindCommands = fileKind{"commands", reflect.TypeFor[Commands]()}
+	fileKinds    = []fileKind{kindPolicy, kindProject, kindProcess, kindCommands}
 )
 
 func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
@@ -81,7 +82,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go process.go
+//go:embed policy.go project.go risk.go process.go commands.go
 var typeSources embed.FS
 
 var (

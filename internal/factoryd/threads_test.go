@@ -119,13 +119,26 @@ func TestPGStoreChatThreads(t *testing.T) {
 		t.Fatal(ok, err)
 	}
 
-	// the inbox: lazy-created once, the poke lands in it with its choices
+	// the inbox: lazy-created once, the poke lands in it with its choices;
+	// the archive left no current thread, so the next one, 3, gets its row
+	// first and the inbox is 4
 	n, err := s.EnsureInbox(ctx, repo, login)
-	if err != nil || n != 3 {
-		t.Fatalf("EnsureInbox = %d, %v, want 3", n, err)
+	if err != nil || n != 4 {
+		t.Fatalf("EnsureInbox = %d, %v, want 4", n, err)
 	}
-	if n, err := s.EnsureInbox(ctx, repo, login); err != nil || n != 3 {
-		t.Fatalf("EnsureInbox again = %d, %v, want the same 3", n, err)
+	if n, err := s.EnsureInbox(ctx, repo, login); err != nil || n != 4 {
+		t.Fatalf("EnsureInbox again = %d, %v, want the same 4", n, err)
+	}
+	if n, err := s.CurrentConversation(ctx, repo, login); err != nil || n != 3 {
+		t.Fatalf("the current thread = %d, %v, want 3", n, err)
+	}
+	// a member with no thread yet: their current thread gets its row
+	// first, so the inbox never takes the number their first message uses
+	if n, err := s.EnsureInbox(ctx, repo, "bob"); err != nil || n != 2 {
+		t.Fatalf("bob's EnsureInbox = %d, %v, want 2", n, err)
+	}
+	if n, err := s.CurrentConversation(ctx, repo, "bob"); err != nil || n != 1 {
+		t.Fatalf("bob's current thread = %d, %v, want 1", n, err)
 	}
 	poke := ChatMessage{Role: "assistant", Kind: "poke", Content: "Card #9 waits on you.", Choices: []string{"Answer it", "Skip"}, Conversation: n}
 	if err := s.AddChatMessage(ctx, repo, login, poke); err != nil {

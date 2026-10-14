@@ -1462,6 +1462,8 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 			return PlanRef{}, err
 		}
 		r.record(ctx, taskID, "approval_requested", map[string]any{"approval": id, "revision": rev.Revision, "sha256": rev.SHA256})
+		r.timeline.RecordRow(ctx, taskID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
+			map[string]any{"approval": id, "kind": ApprovalPlan, "revision": rev.Revision, "cards": len(p.Cards)})
 	}
 	if t.Status != "waiting-human" {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "running"}, "waiting-human"); err != nil {

@@ -152,3 +152,21 @@ func TestChatCompactByHand(t *testing.T) {
 	}
 	equal(t, "the thread's read", []any{got.Thread.Summary, got.Thread.SummaryUpto, got.Thread.Compactions}, []any{"the cache was fixed", int64(2), 1})
 }
+
+// A command of the config tree's sends its message: the turn stores and
+// sends the message, not the name; any other /word is text (roadmap 239).
+func TestChatCommandSendsItsMessage(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.ledger.commands = policy.Commands{Commands: []policy.Command{{Name: "standup", Words: "what moved", Message: "What moved since yesterday?"}}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Two cards.")}, {say("No such command.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"/standup"}})
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"/standupx"}})
+	equal(t, "the first call", contents(t, g.calls()[0]), []string{"user What moved since yesterday?"})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	var said []string
+	for _, m := range rows {
+		said = append(said, m.Role+" "+m.Content)
+	}
+	equal(t, "the thread", said, []string{"user What moved since yesterday?", "assistant Two cards.", "user /standupx", "assistant No such command."})
+}

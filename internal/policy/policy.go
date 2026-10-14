@@ -104,7 +104,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-	"write_doc", "set_autonomy"}
+	"read_doc", "write_doc", "set_autonomy", "notes_read", "notes_write", "active_threads"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -126,6 +126,15 @@ const (
 	// auto; no file names it.
 	AutonomyFullAuto = "full auto"
 )
+
+// AutonomyMeaning is each autonomy state's meaning in one line, as the
+// level control and the inbox's poke on a change show it (C14).
+var AutonomyMeaning = map[string]string{
+	AutonomyManual:     "every action of the agent confirms, as today",
+	AutonomyAssisted:   "the agent starts and files ready work by itself; direction, money and merges still ask",
+	AutonomyAutonomous: "the chat's remaining confirms go off; merges follow the merge rule; direction and money still ask",
+	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money",
+}
 
 // AutonomyValues are the autonomy values a project file may name.
 var AutonomyValues = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomous}

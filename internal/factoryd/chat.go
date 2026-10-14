@@ -45,6 +45,10 @@ type ChatMessage struct {
 	// Decider names who acted on a poke's action, the level and the agent,
 	// when the agent acted alone ("assisted level · started by the agent").
 	Decider string `json:"decider,omitempty"`
+	// TaskID is the card a poke is about, Repeats how often the same poke
+	// came again after it (74's rule: repeats only count).
+	TaskID  string `json:"task_id,omitempty"`
+	Repeats int    `json:"repeats,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -369,15 +373,33 @@ const InboxTitle = "Inbox"
 
 // EnsureInbox is login's inbox thread on repository, created the first
 // time one past their highest: the one thread the agent and factoryd
-// speak in uninvited (roadmap 239). It never becomes their current one.
+// speak in uninvited (roadmap 239). It never becomes their current one:
+// a current thread with no row yet gets its row first, so the inbox never
+// takes its number.
 func (s *PGStore) EnsureInbox(ctx context.Context, repository, login string) (int64, error) {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, inbox)
+	return ensureInbox(ctx, s.db, repository, login)
+}
+
+// sqlRunner is a database or a transaction.
+type sqlRunner interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func ensureInbox(ctx context.Context, db sqlRunner, repository, login string) (int64, error) {
+	if _, err := db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, current)
+		SELECT $1, $2, `+currentConversation+`, true
+		WHERE NOT EXISTS (SELECT 1 FROM chat_conversations WHERE repository = $1 AND login = $2 AND (current OR inbox))
+		ON CONFLICT DO NOTHING`, repository, login); err != nil {
+		return 0, err
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, inbox)
 		SELECT $1, $2, coalesce(max(conversation), 0) + 1, $3, true FROM chat_conversations WHERE repository = $1 AND login = $2
 		ON CONFLICT (repository, login) WHERE inbox DO NOTHING`, repository, login, InboxTitle); err != nil {
 		return 0, err
 	}
 	var n int64
-	err := s.db.QueryRowContext(ctx, `SELECT conversation FROM chat_conversations WHERE repository = $1 AND login = $2 AND inbox`,
+	err := db.QueryRowContext(ctx, `SELECT conversation FROM chat_conversations WHERE repository = $1 AND login = $2 AND inbox`,
 		repository, login).Scan(&n)
 	return n, err
 }
@@ -398,6 +420,20 @@ func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, 
 }
 
 func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, m ChatMessage) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	id, err := insertChatMessage(ctx, tx, repository, login, m)
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
+}
+
+// insertChatMessage inserts m through tx as addChatMessage stores it.
+func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login string, m ChatMessage) (int64, error) {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
 		b, err := json.Marshal(StampReadAt(m.ToolCalls, time.Now()))
@@ -414,11 +450,6 @@ func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, 
 		}
 		choices = b
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
 	conv := m.Conversation
 	if conv <= 0 {
 		if err := tx.QueryRowContext(ctx, `SELECT `+currentConversation, repository, login).Scan(&conv); err != nil {
@@ -437,12 +468,10 @@ func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, 
 		return 0, err
 	}
 	var id int64
-	if err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider).Scan(&id); err != nil {
-		return 0, err
-	}
-	return id, tx.Commit()
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID).Scan(&id)
+	return id, err
 }
 
 // MessageQueued is the kind of a member's message that waits for the
@@ -467,7 +496,7 @@ func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -479,7 +508,7 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {

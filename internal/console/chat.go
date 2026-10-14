@@ -83,6 +83,8 @@ type turn struct {
 	a   actor
 	p   factoryd.Project
 	cfg policy.ChatConfig
+	// tree is the configuration in force: the chat's commands
+	tree policy.Tree
 	// send writes one event of the stream; after a failed write, which a
 	// member who left causes, it writes no more
 	send func(event string, data any)
@@ -110,7 +112,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	if pc, ok := v.Projects[p.Name]; ok {
 		a.level, a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
-	return &turn{c: c, r: r, a: a, p: p,
+	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree,
 		cfg: v.Document.ChatOf(v.Projects[p.Name]), freshRead: time.Now()}, true
 }
 
@@ -228,7 +230,8 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 // proposals and applied lines in the order they happen, then done (or
 // error, which ends it). Every GitHub token in the message is scrubbed
 // before it is stored or sent, and the turn starts with the server's
-// line saying so.
+// line saying so. A command of the config tree's, /name alone, sends its
+// message; any other /word is text.
 func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -238,6 +241,9 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if text == "" || len(text) > chatMessageMax {
 		http.Error(w, "a message of up to 8 KiB is required", http.StatusBadRequest)
 		return
+	}
+	if m, ok := t.tree.CommandMessage(strings.TrimPrefix(text, "/")); ok && strings.HasPrefix(text, "/") {
+		text = m
 	}
 	text, scrubbed := scrubTokens(text)
 	notice := ""
@@ -794,13 +800,16 @@ func (c *Console) chatNew(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatConversations answers GET /projects/{name}/chat/conversations: the
-// member's threads on the project, the inbox first, then the active by
-// their last message, the archived last, each with its unread turns and
-// whether a turn runs on it.
+// member's threads on the project, the inbox first (made here the first
+// time), then the active by their last message, the archived last, each
+// with its unread turns and whether a turn runs on it.
 func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
+	}
+	if _, err := c.cfg.Chat.EnsureInbox(r.Context(), t.p.Repository, t.a.s.user); err != nil {
+		log.Printf("console: the inbox of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
 	list, err := c.cfg.Chat.Conversations(r.Context(), t.p.Repository, t.a.s.user)
 	if err != nil {

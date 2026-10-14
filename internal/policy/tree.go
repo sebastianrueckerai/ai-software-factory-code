@@ -30,6 +30,8 @@ type Tree struct {
 	// Templates are templates/<name>/ by name: each file's text by its
 	// slash path inside the template's directory.
 	Templates map[string]map[string]string `json:"templates,omitempty"`
+	// Commands is commands.yaml, the chat's commands.
+	Commands Commands `json:"commands,omitempty"`
 }
 
 // The tree's files, relative to its directory.
@@ -50,7 +52,7 @@ func ProjectFile(name string) string { return DirProjects + "/" + name + ".yaml"
 // Validate checks every file of a tree, as ParseTree does after decoding;
 // for a tree read back from Postgres.
 func (t Tree) Validate() error {
-	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document)))}
+	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document))), inFile(FileCommands, t.Commands.Validate())}
 	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
 		errs = append(errs, inFile(ProcessFile(name), t.Processes[name].Validate()))
 	}
@@ -90,6 +92,8 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 		case name == FilePolicy:
 			t.Document, err = parseFile(b, FilePolicy, kindPolicy, func(d Document) error { return errors.Join(d.Validate(), checkSessions(d)) })
 			policyOK = err == nil
+		case name == FileCommands:
+			t.Commands, err = parseFile(b, FileCommands, kindCommands, Commands.Validate)
 		case path.Dir(name) == DirProcesses && path.Ext(name) == ".yaml":
 			if !projectFileName.MatchString(stem) {
 				err = errors.New("the file name: lowercase letters, digits and dashes, at most 37")
@@ -112,7 +116,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 				t.Templates[dir][file] = string(b)
 			}
 		default:
-			err = fmt.Errorf("unknown file %q: the tree holds %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/ and %s/", name, FilePolicy, DirProcesses, DirProjects, DirSchema)
+			err = fmt.Errorf("unknown file %q: the tree holds %s, %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/ and %s/", name, FilePolicy, FileCommands, DirProcesses, DirProjects, DirSchema)
 		}
 		if err != nil {
 			broken = true
@@ -254,14 +258,17 @@ func (t Tree) checkLinks() error {
 }
 
 // Header is the first line of the tree's file name (policy.yaml,
-// processes/<name>.yaml, projects/<name>.yaml): the reference to its
-// schema yaml-language-server reads, relative to the file.
+// commands.yaml, processes/<name>.yaml, projects/<name>.yaml): the
+// reference to its schema yaml-language-server reads, relative to the
+// file.
 func Header(name string) string {
 	kind := kindPolicy
-	switch path.Dir(name) {
-	case DirProcesses:
+	switch {
+	case name == FileCommands:
+		kind = kindCommands
+	case path.Dir(name) == DirProcesses:
 		kind = kindProcess
-	case DirProjects:
+	case path.Dir(name) == DirProjects:
 		kind = kindProject
 	}
 	rel := strings.Repeat("../", strings.Count(name, "/")) + DirSchema + "/" + kind.schemaFile()

@@ -39,6 +39,10 @@ type fakeChat struct {
 	// by repository, login and thread
 	titles map[string]string
 	seen   map[string]int64
+	// inboxes are the members' inbox threads as made, by repository and
+	// login; archived the archived threads by repository, login and thread
+	inboxes  map[string]factoryd.ChatConversation
+	archived map[string]bool
 	// summaries are the threads' compactions by repository, login and
 	// thread; tokens the newest call's tokens by thread reference, which a
 	// test sets, and totals its calls' sums
@@ -106,15 +110,86 @@ func (f *fakeChat) CurrentConversation(_ context.Context, repository, login stri
 func (f *fakeChat) NewConversation(_ context.Context, repository, login string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	highest := int64(1)
+	return f.startNew(repository, login), nil
+}
+
+// highest is the member's highest thread number, 1 for none; f.mu held.
+func (f *fakeChat) highest(repository, login string) int64 {
+	n := max(f.inboxes[repository+" "+login].Number, 1)
 	for _, m := range f.msgs[repository+" "+login] {
-		highest = max(highest, m.Conversation)
+		n = max(n, m.Conversation)
 	}
+	return n
+}
+
+// startNew makes a thread past the highest the member's current one;
+// f.mu held.
+func (f *fakeChat) startNew(repository, login string) int64 {
+	n := f.highest(repository, login) + 1
 	if f.started == nil {
 		f.started = map[string]int64{}
 	}
-	f.started[repository+" "+login] = highest + 1
-	return highest + 1, nil
+	f.started[repository+" "+login] = n
+	return n
+}
+
+func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	if in, ok := f.inboxes[k]; ok {
+		return in.Number, nil
+	}
+	if f.inboxes == nil {
+		f.inboxes = map[string]factoryd.ChatConversation{}
+	}
+	made := at.Add(time.Duration(f.next) * time.Second)
+	f.inboxes[k] = factoryd.ChatConversation{Number: max(f.highest(repository, login), f.current(repository, login)) + 1,
+		Title: factoryd.InboxTitle, State: factoryd.ThreadActive, Inbox: true, FirstAt: made, LastAt: made}
+	return f.inboxes[k].Number, nil
+}
+
+func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	if f.inboxes[k].Number == n || !slices.ContainsFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == n }) {
+		return false, nil
+	}
+	if f.archived == nil {
+		f.archived = map[string]bool{}
+	}
+	f.archived[fmt.Sprint(k, " ", n)] = archived
+	if archived && f.current(repository, login) == n {
+		f.startNew(repository, login)
+	}
+	return true, nil
+}
+
+func (f *fakeChat) DeleteConversation(_ context.Context, repository, login string, n int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	before := len(f.msgs[k])
+	if f.inboxes[k].Number != n {
+		f.msgs[k] = slices.DeleteFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == n })
+	}
+	gone := int64(before - len(f.msgs[k]))
+	if gone == 0 {
+		return 0, factoryd.ErrNotFound
+	}
+	tk := fmt.Sprint(k, " ", n)
+	delete(f.titles, tk)
+	delete(f.seen, tk)
+	delete(f.summaries, tk)
+	delete(f.archived, tk)
+	f.proposals = slices.DeleteFunc(f.proposals, func(p *fakeProposal) bool {
+		return p.Repository == repository && p.Login == login && p.Conversation == n
+	})
+	if f.current(repository, login) == n {
+		f.startNew(repository, login)
+	}
+	return gone, nil
 }
 
 func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {
@@ -128,6 +203,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 	k := repository + " " + login
 	cur := f.current(repository, login)
 	var out []factoryd.ChatConversation
+	if in, ok := f.inboxes[k]; ok {
+		out = append(out, in)
+	}
 	for _, m := range f.msgs[k] {
 		i := slices.IndexFunc(out, func(c factoryd.ChatConversation) bool { return c.Number == m.Conversation })
 		if i < 0 {
@@ -139,6 +217,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		}
 		if title := f.titles[fmt.Sprint(k, " ", m.Conversation)]; title != "" {
 			out[i].Title = title
+		}
+		if f.archived[fmt.Sprint(k, " ", m.Conversation)] {
+			out[i].State, out[i].Current = factoryd.ThreadArchived, false
 		}
 		if sum, ok := f.summaries[fmt.Sprint(k, " ", m.Conversation)]; ok {
 			out[i].Summary, out[i].SummaryUpto, out[i].Compactions = sum.Text, sum.Upto, f.compacts[fmt.Sprint(k, " ", m.Conversation)]
@@ -152,7 +233,16 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		}
 	}
 	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
-		return cmp.Or(b.LastAt.Compare(a.LastAt), cmp.Compare(b.Number, a.Number))
+		rank := func(c factoryd.ChatConversation) int {
+			switch {
+			case c.Inbox:
+				return 0
+			case c.State == factoryd.ThreadArchived:
+				return 2
+			}
+			return 1
+		}
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), b.LastAt.Compare(a.LastAt), cmp.Compare(b.Number, a.Number))
 	})
 	return out
 }
@@ -1119,7 +1209,7 @@ func TestChatProposalIsStored(t *testing.T) {
 	filed := "Filed sf/code#41 in lane ready."
 	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"` + filed + `"}`,
 		`applied {"result":"` + filed + `","tool":"new_card"}`, `done {}`})
-	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics", "size": "small"}}
+	card := factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled, Detail: map[string]any{"lane": "ready", "title": "Cache metrics", "size": "small", "thread": int64(1)}}
 	chatRows(t, r.events, before, "sebastian", card)
 	stored, _ = chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	doRow := stored[0]
@@ -1320,7 +1410,7 @@ func TestChatSteerAndComment(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-r","text":"Rebase on main first."},"duration_ms":0,"name":"steer","result":"The session of #11 has your message."}`,
 		`applied {"result":"The session of #11 has your message.","tool":"steer"}`, `done {}`})
 	equal(t, "steered", steered, []string{"t-r sebastian: Rebase on main first."})
-	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered, Detail: map[string]any{"text": "Rebase on main first."}}
+	steer := factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered, Detail: map[string]any{"text": "Rebase on main first.", "thread": int64(1)}}
 	chatRows(t, r.events, before, "sebastian", commented, steer)
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the steer's stored result", stored[0].ToolCalls[0].Result, "The session of #11 has your message. It cannot be undone.")
@@ -1446,7 +1536,8 @@ func TestChatToolsArePolicys(t *testing.T) {
 // A writer's new conversation answers 204 and records no event; the next
 // turn replays and stores only it, and GET answers it with its number,
 // while ?conversation=1 answers the old one and the list names both,
-// newest first, with their counts. A non-writer starts none.
+// newest first after the inbox the list makes, with their counts. A
+// non-writer starts none.
 func TestChatNewConversation(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -1476,7 +1567,8 @@ func TestChatNewConversation(t *testing.T) {
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
-		`[{"number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
+		`[{"number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
+			`{"number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
 			`{"number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)

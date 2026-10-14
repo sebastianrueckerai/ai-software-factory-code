@@ -197,6 +197,9 @@ type Config struct {
 	Operator *factoryd.OperatorModel
 	// Pulses are the projects' pulses (factoryd.PGStore); nil shows none.
 	Pulses Pulses
+	// Notes are the projects' scratchpads (factoryd.PGStore); nil: the
+	// chat's notes tools say there is none.
+	Notes Notes
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// GitHubSync brings a project's GitHub default branch back as a pull

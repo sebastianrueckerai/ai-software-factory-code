@@ -159,7 +159,7 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 	case writable && th.State == factoryd.ThreadArchived:
 		return th, refuse(http.StatusConflict, fmt.Sprintf("Conversation %d is archived: restore it to write in it.", n))
 	}
-	t.conv = n
+	t.conv, t.a.thread = n, n
 	return th, nil
 }
 
@@ -218,7 +218,7 @@ func (t *turn) parallelTurns() int {
 // it, the member's current one for a row stored before threads.
 func (t *turn) inThread(n int64) error {
 	if n > 0 {
-		t.conv = n
+		t.conv, t.a.thread = n, n
 		return nil
 	}
 	cur, err := t.c.cfg.Chat.CurrentConversation(t.r.Context(), t.p.Repository, t.a.s.user)
@@ -226,6 +226,6 @@ func (t *turn) inThread(n int64) error {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return refuse(http.StatusInternalServerError, "cannot read the conversation")
 	}
-	t.conv = cur
+	t.conv, t.a.thread = cur, cur
 	return nil
 }

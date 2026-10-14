@@ -35,6 +35,9 @@ type actor struct {
 	// autonomy state, the rule and the chat task behind its actions, and
 	// who decided, the agent unconfirmed or the member (roadmap 239).
 	level, mergeRule, chatTask, decider string
+	// thread is the chat thread the action came from, which its event
+	// names so the card shows the conversation behind it
+	thread int64
 }
 
 // button is the actor of the request's button.
@@ -183,10 +186,14 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
+// threadKinds are the events that leave a chat action's thread on its
+// card: a thread that files or steers a card (roadmap 239's card link).
+var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered}
+
 // record writes what a just did as one event row, their login the actor,
 // even once they left: the action took effect. A chat actor's row names
 // the autonomy state, the decider and the chat task behind it (roadmap
-// 239's recording).
+// 239's recording), and a filing's or a steer's thread (its card link).
 func (c *Console) record(ctx context.Context, a actor, repository, taskID string, issue int64, kind string, detail map[string]any) {
 	if a.level != "" {
 		if detail == nil {
@@ -202,6 +209,12 @@ func (c *Console) record(ctx context.Context, a actor, repository, taskID string
 		if a.chatTask != "" {
 			detail["chat_task"] = a.chatTask
 		}
+	}
+	if a.thread > 0 && slices.Contains(threadKinds, kind) {
+		if detail == nil {
+			detail = map[string]any{}
+		}
+		detail["thread"] = a.thread
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
 		Actor: a.s.user, Via: a.via, Detail: detail})

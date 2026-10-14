@@ -951,6 +951,8 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": in.PR.Number, "commit": in.Commit, "class": in.Gates.Policy.Class})
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
+		map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class})
 	return nil
 }
 

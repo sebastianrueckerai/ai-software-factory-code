@@ -70,6 +70,13 @@ func TestEditProjectFile(t *testing.T) {
 	if got = string(out); !strings.Contains(got, "autonomy: autonomous") || !strings.Contains(got, "backlog_cap: 3") {
 		t.Errorf("editProjectFile = %s, want autonomous with cap 3", got)
 	}
+	// an existing cap changes as an integer: a quoted "5" fails the schema
+	if out, err = editProjectFile(out, policy.AutonomyAutonomous, 5); err != nil {
+		t.Fatal(err)
+	}
+	if got = string(out); !strings.Contains(got, "backlog_cap: 5\n") {
+		t.Errorf("editProjectFile = %s, want backlog_cap: 5 unquoted", got)
+	}
 	out, err = editProjectFile(out, policy.AutonomyManual, 0)
 	if err != nil {
 		t.Fatal(err)

@@ -3,9 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -96,7 +94,7 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, level string, backlog
 		"branch": "main", "message": message,
 		"files": []map[string]string{{"operation": "update", "path": path,
 			"content": base64.StdEncoding.EncodeToString(out), "sha": file.SHA}}},
-		http.StatusOK, nil); err != nil {
+		http.StatusCreated, nil); err != nil {
 		return &forgejoRefusal{"commit the project file", err}
 	}
 	detail := map[string]any{"from": from, "to": level}
@@ -162,7 +160,7 @@ func editProjectFile(raw []byte, level string, backlogCap int) ([]byte, error) {
 	switch {
 	case backlogCap > 0 && backlogCap != policy.DefaultBacklogCap:
 		if i := index("backlog_cap"); i >= 0 {
-			m.Content[i+1].SetString(strconv.Itoa(backlogCap))
+			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(backlogCap), "!!int", 0
 		} else {
 			m.Content = append(m.Content, scalar("backlog_cap", "!!str"), scalar(strconv.Itoa(backlogCap), "!!int"))
 		}
@@ -243,93 +241,181 @@ func roadmapFindings(content string) []string {
 	return out
 }
 
-// doWriteDoc commits content to path under docs/ of the project's
-// document repository, straight to master, as the docs writer (the
-// 2026-10-13 plan's one door, roadmap 239's additions): the allow-list,
-// the size cap, the roadmap's structure check, the repository's one
-// commit at a time, and the content-hash compare-and-swap, whose stale
-// refusal carries the current content.
-func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path, content, baseHash string) (string, error) {
+// docPathWords name the document roots a document tool takes.
+const docPathWords = "the file's path under docs/ of the document repository: docs/roadmap.md, a file under docs/plans/ or docs/board/, or a new docs/<name>.md"
+
+// docFinds bounds the lines a find answers.
+const docFinds = 12
+
+// docRepoOf checks a document tool's repository, token and path, and
+// answers the repository.
+func (c *Console) docRepoOf(docRepo, path string) (factoryd.Repo, error) {
 	switch {
 	case docRepo == "":
-		return "", refuse(http.StatusConflict, "the project names no document repository (chat.doc_repo); nothing to write")
+		return factoryd.Repo{}, refuse(http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents")
 	case c.cfg.DocsToken == "":
-		return "", refuse(http.StatusConflict, "no docs writer token is seated (FORGEJO_DOCS_TOKEN); nothing to write")
+		return factoryd.Repo{}, refuse(http.StatusConflict, "no docs writer token is seated (FORGEJO_DOCS_TOKEN); the documents cannot be reached")
 	case !docRootOK(path):
-		return "", refuse(http.StatusBadRequest, path+" is outside the document roots: docs/roadmap.md, docs/plans/, docs/board/ or docs/<name>.md")
-	case strings.TrimSpace(content) == "":
-		return "", refuse(http.StatusBadRequest, "an empty document writes nothing; delete is not a chat's to do")
-	case len(content) > docMax:
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("the document is over the cap of %d bytes", docMax))
-	}
-	if path == "docs/roadmap.md" {
-		if f := roadmapFindings(content); len(f) > 0 {
-			return "", refuse(http.StatusUnprocessableEntity, "The roadmap edit breaks the file's structure: "+strings.Join(f, "; ")+".")
-		}
+		return factoryd.Repo{}, refuse(http.StatusBadRequest, path+" is outside the document roots: docs/roadmap.md, docs/plans/, docs/board/ or docs/<name>.md")
 	}
 	repo, err := factoryd.SplitRepo(docRepo)
 	if err != nil {
-		return "", refuse(http.StatusConflict, "the document repository is no owner/name")
+		return factoryd.Repo{}, refuse(http.StatusConflict, "the document repository is no owner/name")
 	}
-	l := docLock(docRepo)
-	l.Lock()
-	defer l.Unlock()
-	base := "/api/v1/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name)
+	return repo, nil
+}
+
+// docAPI is repo's API path.
+func docAPI(repo factoryd.Repo) string {
+	return "/api/v1/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name)
+}
+
+// docFile is path's content and blob sha on repo's master; present false
+// when there is no such file.
+func (c *Console) docFile(ctx context.Context, repo factoryd.Repo, path string) (content, blob string, present bool, err error) {
 	var file struct {
 		Content string `json:"content"`
 		SHA     string `json:"sha"`
 	}
-	present := true
-	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, base+"/contents/"+path+"?ref=master", nil, http.StatusOK, &file); err != nil {
+	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, docAPI(repo)+"/contents/"+path+"?ref=master", nil, http.StatusOK, &file); err != nil {
 		var api *apiError
-		if !errors.As(err, &api) || api.status != http.StatusNotFound {
-			return "", &forgejoRefusal{"read the document", err}
+		if errors.As(err, &api) && api.status == http.StatusNotFound {
+			return "", "", false, nil
 		}
-		present = false
+		return "", "", false, &forgejoRefusal{"read the document", err}
 	}
-	current := ""
-	if present {
-		raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
-		if err != nil {
-			return "", refuse(http.StatusInternalServerError, "cannot decode the document")
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
+	if err != nil {
+		return "", "", false, refuse(http.StatusInternalServerError, "cannot decode the document")
+	}
+	return string(raw), file.SHA, true, nil
+}
+
+// readDoc is read_doc: path at master with its base_sha256, its first
+// docShown bytes or the lines holding find.
+func (c *Console) readDoc(ctx context.Context, docRepo, path, find string) (string, error) {
+	repo, err := c.docRepoOf(docRepo, path)
+	if err != nil {
+		return "", err
+	}
+	content, _, present, err := c.docFile(ctx, repo, path)
+	switch {
+	case err != nil:
+		return "", err
+	case !present:
+		return path + " does not exist on master: write_doc with content makes it.", nil
+	}
+	head := fmt.Sprintf("%s on %s@master: %d bytes, base_sha256 %s.", path, docRepo, len(content), factoryd.ContentHash(content))
+	if find == "" {
+		if len(content) > docShown {
+			return head + " Its first 20 KiB; find narrows to the lines holding a word.\n\n" + textutil.Truncate(content, docShown), nil
 		}
-		current = string(raw)
-		if baseHash == "" {
-			return "", refuse(http.StatusConflict, docCurrent(path, current, "it exists; write against what is there"))
+		return head + "\n\n" + content, nil
+	}
+	var b strings.Builder
+	n, size := 0, 0
+	for i, l := range strings.Split(content, "\n") {
+		if !strings.Contains(strings.ToLower(l), strings.ToLower(find)) {
+			continue
 		}
-		sum := sha256.Sum256([]byte(current))
-		if baseHash != hex.EncodeToString(sum[:]) {
-			return "", refuse(http.StatusConflict, docCurrent(path, current, "the file changed since you read it"))
+		if n == docFinds || size+len(l) > docShown {
+			fmt.Fprintf(&b, "… more lines hold it: narrow find.\n")
+			break
 		}
-	} else if baseHash != "" {
-		return "", refuse(http.StatusConflict, path+" does not exist; write it without base_sha256")
+		n, size = n+1, size+len(l)
+		fmt.Fprintf(&b, "line %d: %s\n", i+1, l)
+	}
+	if n == 0 {
+		return head + fmt.Sprintf(" No line holds %q.", find), nil
+	}
+	return head + "\n\n" + b.String(), nil
+}
+
+// docEdit is write_doc's change: Old replaced by New in an existing file,
+// or Content for a new one, against the file read with hash Base.
+type docEdit struct{ Old, New, Content, Base string }
+
+// doWriteDoc commits edit to path under docs/ of the project's document
+// repository, straight to master, as the docs writer (the 2026-10-13
+// plan's one door, roadmap 239's additions): the allow-list, the size cap,
+// the roadmap's structure check, the repository's one commit at a time,
+// and the content-hash compare-and-swap, whose stale refusal names the
+// file's current hash and whether the edit's passage is still there.
+func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path string, edit docEdit) (string, error) {
+	repo, err := c.docRepoOf(docRepo, path)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case edit.Content != "" && edit.Old != "":
+		return "", refuse(http.StatusBadRequest, "content writes a new file and old and new edit an existing one: send one of the two")
+	case edit.Content == "" && edit.Old == "":
+		return "", refuse(http.StatusBadRequest, "an edit names the passage old and its replacement new; a new file takes content")
+	}
+	l := docLock(docRepo)
+	l.Lock()
+	defer l.Unlock()
+	current, blob, present, err := c.docFile(ctx, repo, path)
+	if err != nil {
+		return "", err
+	}
+	next := edit.Content
+	hash := factoryd.ContentHash(current)
+	switch {
+	case present && edit.Content != "":
+		return "", refuse(http.StatusConflict, fmt.Sprintf("%s exists: edit a passage of it with old and new, base_sha256 %s", path, hash))
+	case present && edit.Base != hash && strings.Count(current, edit.Old) == 1:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("%s changed since it was read: its base_sha256 is now %s, and the passage old is still there once, so the same edit with that base_sha256 applies", path, hash))
+	case present && edit.Base != hash:
+		return "", refuse(http.StatusConflict, docCurrent(path, current, "it changed since it was read and the passage old is no longer there once"))
+	case present && strings.Count(current, edit.Old) == 0:
+		return "", refuse(http.StatusUnprocessableEntity, "the passage old is not in "+path+": read_doc it with find and copy the passage exactly")
+	case present && strings.Count(current, edit.Old) > 1:
+		return "", refuse(http.StatusUnprocessableEntity, fmt.Sprintf("the passage old is in %s %d times: widen it until it is there once", path, strings.Count(current, edit.Old)))
+	case present:
+		next = strings.Replace(current, edit.Old, edit.New, 1)
+	case edit.Old != "":
+		return "", refuse(http.StatusNotFound, path+" does not exist on master: a new file takes content")
+	case edit.Base != "":
+		return "", refuse(http.StatusConflict, path+" does not exist on master: write it without base_sha256")
+	}
+	switch {
+	case strings.TrimSpace(next) == "":
+		return "", refuse(http.StatusBadRequest, "the document would be empty; delete is not a chat's to do")
+	case len(next) > docMax:
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("the document would be %d bytes, over the cap of %d", len(next), docMax))
+	}
+	if path == "docs/roadmap.md" {
+		if f := roadmapFindings(next); len(f) > 0 {
+			return "", refuse(http.StatusUnprocessableEntity, "The roadmap edit breaks the file's structure: "+strings.Join(f, "; ")+".")
+		}
 	}
 	message := fmt.Sprintf("docs: %s (chat, %s)", path, a.s.user)
-	change := map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString([]byte(content))}
+	change := map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString([]byte(next))}
 	if present {
-		change["operation"] = "update"
-		change["sha"] = file.SHA
+		change["operation"], change["sha"] = "update", blob
 	}
 	var committed struct {
 		Commit struct {
 			SHA string `json:"sha"`
 		} `json:"commit"`
 	}
-	if err := c.api(ctx, c.cfg.DocsToken, http.MethodPost, base+"/contents", map[string]any{
+	if err := c.api(ctx, c.cfg.DocsToken, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
 		"branch": "master", "message": message, "files": []map[string]string{change}},
-		http.StatusOK, &committed); err != nil {
+		http.StatusCreated, &committed); err != nil {
 		return "", &forgejoRefusal{"commit the document", err}
 	}
 	log.Printf("console: %s wrote %s on %s via %s", a.s.user, path, docRepo, a.via)
-	return fmt.Sprintf("Committed %s to %s@master: %s.", cmp.Or(committed.Commit.SHA, "the change"), docRepo, path), nil
+	return fmt.Sprintf("Committed %s to %s@master: %s, now base_sha256 %s.", cmp.Or(committed.Commit.SHA, "the change"), docRepo, path,
+		factoryd.ContentHash(next)), nil
 }
 
-// docCurrent is the refusal a stale or missing compare-and-swap answers:
-// the state and the file's current content, which the writer re-applies
-// its edit on top of.
+// docCurrent is the refusal a stale compare-and-swap answers when the
+// edit's passage is gone: the state, the file's current hash and content,
+// which the writer re-applies its edit on top of.
 func docCurrent(path, current, why string) string {
-	return fmt.Sprintf("%s: %s. Its current content:\n\n%s", path, why,
-		textutil.Truncate(current, docShown))
+	return fmt.Sprintf("%s: %s. Its base_sha256 is now %s; its current content:\n\n%s", path, why,
+		factoryd.ContentHash(current), textutil.Truncate(current, docShown))
 }
 
 // capNote is the backlog cap's note in a level change's answer.

@@ -32,8 +32,8 @@ func TestTitleClause(t *testing.T) {
 			factoryd.IssueObjective("Speed up the board", ""),
 			"Speed up the board"},
 	} {
-		if got := titleClause(tc.objective); got != tc.want {
-			t.Errorf("%s: titleClause = %q, want %q", tc.name, got, tc.want)
+		if got := factoryd.TitleClause(tc.objective); got != tc.want {
+			t.Errorf("%s: factoryd.TitleClause = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }

@@ -243,7 +243,7 @@ func TestChatNewCardSize(t *testing.T) {
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nSize: large")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large"}})
+		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason

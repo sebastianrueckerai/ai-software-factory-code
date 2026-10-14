@@ -16,11 +16,12 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
-  threads: ["mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
+  threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 unread", "New"],
+  poke: ["Inbox", "Why is the session store card waiting?", "1 unread"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
-  assisted: ["Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
+  assisted: ["Inbox", "Board", "autonomy", "assisted", "manual", "autonomous", "Moved #8 to lane ready",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "Board", "New task", "Projects", "Resources", "Costs", "Policy", "Alerts", "Log out", "sebastian", "Theme",
@@ -147,6 +148,37 @@ async function text(page) {
       if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
       if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
       if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+    }
+    if (sc === "threads") {
+      // the commands (C14): "/" at the start of the box opens the palette, the arrows
+      // choose, Escape closes it; /compact and /new also sit as chips under the box
+      const box = p.page.locator("#chat-input"), pal = p.page.locator("#chat-palette");
+      await box.click();
+      await p.page.keyboard.type("/");
+      if (!(await pal.isVisible())) fails.push("commands: / at the start of the box opens no palette");
+      else {
+        const opts = await pal.getByRole("option").allInnerTexts();
+        if (!opts.some((o) => o.includes("/compact")) || !opts.some((o) => o.includes("/new"))) fails.push("commands: the palette lists " + opts.join(", "));
+        await p.page.keyboard.press("ArrowDown");
+        if (!(await pal.locator('[aria-selected="true"]').innerText()).includes("/new")) fails.push("commands: ArrowDown does not choose /new");
+        await p.page.keyboard.press("Escape");
+        if (await pal.isVisible()) fails.push("commands: Escape does not close the palette");
+      }
+      await box.fill("");
+      if ((await p.page.locator("#chat-form .cmd").count()) !== 2) fails.push("commands: not two chips under the box");
+    }
+    if (sc === "poke") {
+      // a poke on another thread: the inbox row first, its badge, and the sum in the tab title (C14)
+      const first = p.page.locator("#thread-rows .trow").first();
+      if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
+      if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
+      const title = await p.page.title();
+      if (!title.startsWith("(2) ")) fails.push('poke: the tab title is "' + title + '", want the sum (2) first');
+      await first.click();
+      await p.page.waitForTimeout(600);
+      const log = await p.page.locator("#chat").innerText();
+      for (const w of ["#616 is done", "needs you", "Merge PR #612 of #606 waits for you"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      if ((await p.page.title()).startsWith("(2) ")) fails.push("poke: opening the inbox leaves its count in the tab title");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();

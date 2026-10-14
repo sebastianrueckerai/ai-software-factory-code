@@ -800,6 +800,16 @@ func (a *AcceptanceRig) RenameConversation(context.Context, string, string, int6
 
 func (a *AcceptanceRig) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (a *AcceptanceRig) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
+
+func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
+	return true, nil
+}
+
+func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, error) {
+	return 0, nil
+}
+
 func (a *AcceptanceRig) QueueChatMessage(_ context.Context, repository, login string, _ int64, text string) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -133,6 +133,7 @@ var accessTable = map[string]accessRule{
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
+	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember,
 	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "projects": rFactory, "policy": rFactory,
 
 	// chat tools: writes
@@ -166,6 +167,7 @@ var accessTable = map[string]accessRule{
 	"delete_comment":   rCard,
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
 	"write_doc":        {need: writer, scope: scChat},
+	"notes_write":      {need: writer, scope: scChat},
 }
 
 // admit refuses a unless they hold rule's roles over repository, whose

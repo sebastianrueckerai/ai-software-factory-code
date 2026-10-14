@@ -163,10 +163,13 @@ type labScene struct {
 	working []int64
 	// summaries are the compacted threads' summaries by thread
 	summaries map[int64]factoryd.ThreadSummary
+	// inbox is the member's inbox thread, 0 for one the list makes; open
+	// the thread the chat opens, 0 for the last message's
+	inbox, open int64
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
-	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene}
+	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -190,6 +193,26 @@ func threadsScene(now time.Time) labScene {
 	return s
 }
 
+// pokeScene is the threads scene with the inbox: the question on #603
+// and the merge of #612 read, and the factory's poke on #616's end
+// arriving while the session store thread is open, so the inbox row and
+// the tab title carry its badge (roadmap 239, C14).
+func pokeScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.inbox, s.open = 5, 4
+	s.chat = append(s.chat,
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: "t-603", At: ago(45 * time.Minute),
+			Content: "#603 needs you: Which store should the session table use? The plan named Postgres; the brief allows SQLite for a single replica.",
+			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: "t-606", At: ago(12 * time.Minute),
+			Content: "Merge PR #612 of #606 waits for you: risk class high.", Choices: []string{"Approve", "Deny"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-616", At: ago(time.Minute),
+			Content: "#616 is done: Chat form: center the Send button. €0.01 in all."})
+	s.seen[5] = int64(len(s.chat) - 1)
+	return s
+}
+
 // compactedScene is the threads scene with the open thread compacted: its
 // first turns fold behind one line, the summary turn and the last two
 // turns follow (roadmap 239, C14).
@@ -210,8 +233,9 @@ func compactedScene(now time.Time) labScene {
 
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent started the login card itself (its applied move in the chat, the
-// event naming it the decider), one card works, one backlog card waits,
-// and the board head's selector shows the level.
+// event naming it the decider, the inbox's poke with its decider line),
+// one card works, one backlog card waits, and the board head's selector
+// shows the level.
 func assistedScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	running := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a1", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
@@ -229,13 +253,15 @@ func assistedScene(now time.Time) labScene {
 			ID: "call_1", Name: "move_card", Arguments: `{"task_id":"t-a2","lane":"ready"}`, ReadAt: ago(9*time.Minute - 5*time.Second),
 			Result: "Moved #8 to lane ready; it leaves the backlog once factoryd picks it up."}}},
 		{Role: "assistant", At: ago(9*time.Minute - 3*time.Second), Content: "#8 is queued for a work slot; #7 runs its session. The ready check passed: criteria, size, budget and room."},
+		{Conversation: 2, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-a2", At: ago(9*time.Minute - 4*time.Second),
+			Content: `Started #8 "Fix the login redirect".`, Decider: "assisted level · started by the agent"},
 	}
 	events := []factoryd.Event{
 		{Kind: factoryd.EventCardMoved, TaskID: "t-a2", IssueNumber: 8, Actor: "sebastian", Via: factoryd.ViaChat, At: ago(9 * time.Minute),
 			Detail: map[string]any{"lane": "ready", "autonomy": "assisted", "merge_rule": "human", "decider": "agent",
 				"chat_task": factoryd.ChatTaskID("ai-software-factory-code", now)}},
 	}
-	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting},
+	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting}, inbox: 2, open: 1,
 		chat: msgs, events: events, spend: 1.2, chatSpend: 0.18, drawer: "t-a1",
 		pulse: factoryd.Pulse{Repository: "sf/code", At: now, Sentence: "One card works, one queues for a slot, one waits in the backlog."}}
 }
@@ -255,7 +281,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads or compacted", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted or poke", name)
 	}
 	now := time.Now()
 	s := scene(now)
@@ -284,6 +310,11 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.chat.mu.Lock()
 	r.chat.msgs, r.chat.started, r.chat.proposals, r.chat.next = map[string][]factoryd.ChatMessage{}, nil, nil, int64(len(s.chat))
 	r.chat.titles, r.chat.seen, r.chat.summaries, r.chat.compacts = nil, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
+	r.chat.inboxes, r.chat.archived = nil, nil
+	if s.inbox > 0 {
+		r.chat.inboxes = map[string]factoryd.ChatConversation{"sf/code sebastian": {Number: s.inbox, Title: factoryd.InboxTitle,
+			State: factoryd.ThreadActive, Inbox: true, FirstAt: now.Add(-time.Hour), LastAt: now.Add(-time.Hour)}}
+	}
 	for i, m := range s.chat {
 		m.ID, m.Conversation = int64(i+1), cmp.Or(m.Conversation, 1)
 		r.chat.msgs["sf/code sebastian"] = append(r.chat.msgs["sf/code sebastian"], m)
@@ -296,7 +327,7 @@ func (r *rig) labSeed(name string) (string, error) {
 		r.chat.compacts[fmt.Sprint("sf/code sebastian ", n)] = 1
 	}
 	if len(s.chat) > 0 {
-		r.chat.started = map[string]int64{"sf/code sebastian": s.chat[len(s.chat)-1].Conversation}
+		r.chat.started = map[string]int64{"sf/code sebastian": cmp.Or(s.open, s.chat[len(s.chat)-1].Conversation)}
 	}
 	for _, p := range s.proposals {
 		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p})
@@ -591,7 +622,7 @@ func busyScene(now time.Time) labScene {
 			"Working: #606 at 3/4 checks and near its budget; #611 and #614 in their sessions",
 			"Spend: €61.40 of the €120 cap this month"}}
 
-	s.chat, s.proposals = busyChat(now, drawer, queued.Task, cardTitle)
+	s.chat, s.proposals = busyChat(now, drawer, queued.Task, factoryd.CardTitle)
 	s.alerts = []factoryd.Alert{
 		{ID: 41, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
 		{ID: 40, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: drawer.ID, RaisedAt: ago(58 * time.Minute),
