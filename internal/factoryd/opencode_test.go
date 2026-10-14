@@ -218,7 +218,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40)
+	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 // rejected call continues the loop (processor.ts:200-201, 647); steps caps
 // every agent that loops (session/prompt.ts:1178-1179).
 func TestOpencodeConfigGolden(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40)
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,7 +277,7 @@ func TestOpencodeConfigGolden(t *testing.T) {
 		t.Fatalf("config =\n%s\nwant\n%s", indented.String(), want)
 	}
 	for _, steps := range []int{0, -1} {
-		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps); err == nil {
+		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, ""); err == nil {
 			t.Errorf("steps %d accepted: a session must not run uncapped", steps)
 		}
 	}
@@ -944,7 +944,7 @@ func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
 // The stronger model is declared beside the session's, so a running
 // session can switch to it (roadmap 222, item 5); none twice.
 func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, "coding-frontier", "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, "", "coding-frontier", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -964,5 +964,36 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 	oc.SetModel("factory/coding-frontier")
 	if p, id := oc.model(); p != "factory" || id != "coding-frontier" {
 		t.Fatalf("model after the switch = %s/%s", p, id)
+	}
+}
+
+// Under a frontier session the general and explore agents run on the cheap
+// model, declared beside the session's (roadmap 222, item 6); the work
+// guide names the rule once a class lists delegate.
+func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-frontier", 10000, 40, "factory/coding-cheap", "coding-cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Agent    map[string]map[string]any `json:"agent"`
+		Provider map[string]struct {
+			Models map[string]json.RawMessage `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(got, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent["general"]["model"] != "factory/coding-cheap" || cfg.Agent["explore"]["model"] != "factory/coding-cheap" || cfg.Agent["build"]["model"] != nil {
+		t.Fatalf("agents = %v, want general and explore on the cheap model, build on the session's", cfg.Agent)
+	}
+	if models := cfg.Provider["factory"].Models; len(models) != 2 || models["coding-cheap"] == nil {
+		t.Fatalf("models = %v, want the cheap model declared", models)
+	}
+	if g := workGuide([]string{policy.ToolEscalate, policy.ToolDelegate}); !strings.Contains(g, downARung) {
+		t.Fatalf("guide without the rule: %s", g)
+	}
+	if g := workGuide([]string{policy.ToolEscalate}); strings.Contains(g, "down a rung") {
+		t.Fatalf("guide names the rule without the tool: %s", g)
 	}
 }

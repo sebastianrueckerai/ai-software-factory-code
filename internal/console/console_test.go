@@ -1204,14 +1204,25 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`href="https://git.example/sf/code/issues/11"`, `href="https://git.example/sf/code/pulls/12"`,
-		`href="/tasks/t-q/timeline"`, "€1.23 / €5.00",
+		`href="https://git.example/sf/code/pulls/12"`,
 		"cannot reach the database", `action="/tasks/t-e/answer"`, `name="csrf" value="` + s.csrf + `"`,
 		"human work", "load test", "8.9900 EUR per month",
 		`data-project="ai-software-factory-code"`, `<script src="/static/htmx.min.js"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
+		}
+	}
+	// the issue, the timeline and the spend under 80 percent live in the drawer
+	for id, wants := range map[string][]string{
+		"t-q": {`href="https://git.example/sf/code/issues/11"`, `href="/tasks/t-q/timeline"`},
+		"t-r": {"€1.23 of €5.00"},
+	} {
+		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer", nil), ck).Body.String()
+		for _, want := range wants {
+			if !strings.Contains(drawer, want) {
+				t.Errorf("the drawer of %s lacks %q:\n%s", id, want, drawer)
+			}
 		}
 	}
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
@@ -1232,7 +1243,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 func TestBoardShowsTheConfigVersion(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	line := `Configuration version 4 · commit <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a>`
+	line := `<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a></dd>`
 	for _, path := range []string{"/", "/?view=wide", "/board"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, line) {
@@ -1244,7 +1255,7 @@ func TestBoardShowsTheConfigVersion(t *testing.T) {
 		t.Fatalf("/board is not the bare board fragment: %.200s", frag)
 	}
 	r.c.cfg.Policies = noPolicy{r.ledger}
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String(); strings.Contains(body, "Configuration version") {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String(); strings.Contains(body, "<dt>configuration</dt>") {
 		t.Errorf("board shows a configuration version with no policy read: %.200s", body)
 	}
 }
@@ -1915,7 +1926,7 @@ func TestRepeatedButtonsNameTheirRow(t *testing.T) {
 	page := r.do(httptest.NewRequest(http.MethodGet, "/resources", nil), ck).Body.String()
 	for _, want := range []string{
 		`aria-label="Approve resource request 3 of t-res"`, `aria-label="Deny resource request 3 of t-res"`,
-		`aria-label="Approve as you: merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
+		`aria-label="Approve merge PR #9 of t-m"`, `aria-label="Deny merge PR #9 of t-m"`,
 	} {
 		if !strings.Contains(board, want) {
 			t.Errorf("board lacks %s", want)
@@ -1987,10 +1998,13 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code",
 			CreatedAt: asked, FinishedAt: &finished})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{"2 h 5 min in all", `<span class="gate">checks</span> for 25 min`, "47 min in all"} {
+	for _, want := range []string{`<span class="elapsed">25 min</span>`, `<span class="gate">checks for 25 min</span>`, "47 min in all"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
 		}
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 25 min, 2 h 5 min in all</dd>") {
+		t.Errorf("the drawer's Status lacks the stage's time and the total:\n%s", drawer)
 	}
 	if strings.Count(body, `class="gate"`) != 1 {
 		t.Error("a finished task shows a gate")
@@ -2020,7 +2034,7 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
 		Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if want := `<span class="gate">merge queue, 2 ahead,</span> for 6 min`; !strings.Contains(body, want) {
+	if want := `<span class="gate">merge queue, 2 ahead, for 6 min</span>`; !strings.Contains(body, want) {
 		t.Fatalf("board lacks %q", want)
 	}
 }
@@ -2301,9 +2315,9 @@ func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
 		}
 		return body[start : start+strings.Index(body[start:], "</section>")]
 	}
-	// the five columns: needs you, queued, working, verifying, done
+	// the four columns: needs you, queued, in progress, done (C8)
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	needs, verifying := column(five, "needs-you"), column(five, "col-3")
+	needs, verifying := column(five, "needs-you"), column(five, "col-2")
 	if strings.Contains(needs, "roll c1c1c1c") || !strings.Contains(verifying, "roll c1c1c1c") {
 		t.Errorf("the roll with its checks in flight is not in the verifying column only:\nneeds you %s\nverifying %s", needs, verifying)
 	}

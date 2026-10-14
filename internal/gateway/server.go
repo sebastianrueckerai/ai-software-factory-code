@@ -47,6 +47,21 @@ var (
 	_ Pricer        = (*policy.PriceBook)(nil)
 )
 
+// cheaperThan: alias costs less per token than session, the session's
+// alias, on some rate and more on none, so a call on it is bounded by the
+// session's hold. An alias without a price, or priced the same, is not.
+func (s *Server) cheaperThan(ctx context.Context, alias, session string) bool {
+	a, err := s.opts.Prices.Price(ctx, alias)
+	if err != nil {
+		return false
+	}
+	b, err := s.opts.Prices.Price(ctx, session)
+	if err != nil {
+		return false
+	}
+	return a.In <= b.In && a.Out <= b.Out && a.CacheRead <= b.CacheRead && (a.In < b.In || a.Out < b.Out)
+}
+
 // maxBodyBytes caps the proxied request body at the trust boundary. Large
 // enough for 1M-token contexts (about 4 MB of text), var so tests can lower
 // it.
@@ -66,6 +81,8 @@ type ServerOptions struct {
 	Escalator Escalator
 	// PlanFiler is the file_plan tool's hand-over to factoryd.
 	PlanFiler PlanFiler
+	// Delegator is the delegate tool's hand-over to factoryd.
+	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).
 	Cloud *Cloud
 	// Telemetry receives the spans and metrics; nil = none.
@@ -240,8 +257,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	// a stronger model comes only by the climb, which starts a session on it
-	if purpose == "" && chatReq.Model != task.ModelAlias {
+	// a stronger model comes only by the climb; a cheaper alias of the
+	// class (a subagent's, roadmap 222, item 6) runs on the session's key
+	if purpose == "" && chatReq.Model != task.ModelAlias && !s.cheaperThan(ctx, chatReq.Model, task.ModelAlias) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
 			fmt.Sprintf("model %q is not the model %q of the task's session (tasks.model_alias); a stronger model comes only by the climb", chatReq.Model, task.ModelAlias),
 			chatReq.Model, http.StatusForbidden, "permission_error")

@@ -26,7 +26,6 @@ const SignalQueueTurn = "queue_turn"
 
 // GateMergeQueue is the gate of a task waiting behind others in its
 // project's merge queue.
-const GateMergeQueue = "merge-queue"
 
 // queueRecheck is how long a waiting task waits for queue_turn before it
 // asks for its place again.

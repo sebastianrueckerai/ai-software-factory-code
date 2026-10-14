@@ -138,10 +138,6 @@ func (t Task) Standing() string {
 // maxAgentSummary bounds the agent's last word kept on the task row.
 const maxAgentSummary = 2000
 
-// FinalStatuses end a task: merged or given up, and closed, an issue
-// closed as not reproducible (ruling 150).
-var FinalStatuses = []string{"done", "failed", "closed"}
-
 // Final reports whether status ends a task.
 func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 
@@ -425,6 +421,10 @@ type Store interface {
 	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
 	// RollHead is the branch commit RollCommit last wrote for a roll task.
 	RollHead(ctx context.Context, taskID string) (string, error)
+	// RebaseRolls frees task's roll markings made past the head its branch
+	// sits at, and reports whether any request is marked at that head at
+	// all (RebaseRolls).
+	RebaseRolls(ctx context.Context, taskID, head string) (bool, error)
 	// SetTaskSHA sets the commit a task's branch was cut from, its base.
 	SetTaskSHA(ctx context.Context, id, sha string) error
 	// The merge queue (queue.go).

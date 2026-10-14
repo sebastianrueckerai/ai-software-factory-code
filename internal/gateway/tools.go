@@ -18,6 +18,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -27,6 +28,33 @@ import (
 type Escalator interface {
 	Escalate(ctx context.Context, taskID string, e Escalation) error
 }
+
+// Delegator files the delegate tool's child card with factoryd (roadmap
+// 222, item 6).
+type Delegator interface {
+	Delegate(ctx context.Context, taskID string, d Delegation) (Delegated, error)
+}
+
+// Delegation is a delegate call: the child card's title and brief.
+type Delegation struct {
+	Title string `json:"title"`
+	Brief string `json:"brief"`
+}
+
+// Delegated is the child card factoryd filed.
+type Delegated struct {
+	Issue  int64  `json:"issue"`
+	TaskID string `json:"task_id"`
+}
+
+// DelegateIn is the delegate tool's input.
+type DelegateIn struct {
+	Title string `json:"title" jsonschema:"the child card's title, one line"`
+	Brief string `json:"brief" jsonschema:"the brief a weaker model acts on alone: the files, the change, how to check it"`
+}
+
+// maxDelegateBrief bounds a delegate call's brief.
+const maxDelegateBrief = 16 << 10
 
 // PlanFiler files a planner session's plan (the file_plan tool):
 // factoryd checks the whole plan json and stores it as the session's
@@ -115,6 +143,21 @@ func escalateRetries(err error) bool {
 		return true
 	}
 	return pe.status >= 500 || pe.status == http.StatusConflict
+}
+
+func (f *Factoryd) Delegate(ctx context.Context, taskID string, d Delegation) (Delegated, error) {
+	var res Delegated
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/delegations",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			Delegation
+		}{taskID, d})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
 }
 
 func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error) {
@@ -276,10 +319,20 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
 			return s.requestInfo(ctx, c, in), nil, nil
 		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
+		"routine, well-specified work this card need not do itself. Give it a title and a brief a weaker model acts on alone: the files, the change, how to check it. " +
+		"The card depends on this one and builds on its merge. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in DelegateIn) (*mcp.CallToolResult, any, error) {
+			return s.delegate(ctx, c, in), nil, nil
+		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFilePlan, Description: "File the plan: hand the complete plan json over and it is checked at once. " +
 		"A refusal names every finding; correct the plan and file it again in this session. A filed plan is this session's answer; end the session. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
+			return s.manualRead(c), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -631,6 +684,20 @@ func (s *Server) requestInfo(ctx context.Context, c *toolCaller, in RequestInfoI
 		"asked the issue's author; this session will end. The task resumes with the author's answer. Stop working now.")
 }
 
+// manualRead answers the manual tool with the factory manual from
+// internal/manual, the one source the project agent's manual reads too.
+// Free, for the classes that list it.
+func (s *Server) manualRead(c *toolCaller) *mcp.CallToolResult {
+	tool := policy.ToolManual
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: manual.Text()}}}
+}
+
 // maxPlanJSON bounds the plan the gateway passes on: factoryd's check
 // refuses a larger plan, so the session learns it here, without the
 // hand-over.
@@ -665,6 +732,34 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 	s.auditTool(c, tool, "plan_filed", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: fmt.Sprintf("filed as revision %d; it is this session's answer. You may end the session.", res.Revision)}}}
+}
+
+// delegate files the child card with factoryd; the session goes on.
+func (s *Server) delegate(ctx context.Context, c *toolCaller, in DelegateIn) *mcp.CallToolResult {
+	tool := policy.ToolDelegate
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	title, brief := strings.TrimSpace(in.Title), strings.TrimSpace(in.Brief)
+	if title == "" || len(title) > 255 || brief == "" || len(brief) > maxDelegateBrief {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("title (1 to 255 characters) and brief (at most %d bytes) are required", maxDelegateBrief))
+	}
+	if s.opts.Delegator == nil {
+		return s.refuseTool(c, tool, "refused_capability", "no delegation hand-over is wired")
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.Delegator.Delegate(ctx, c.task.ID, Delegation{Title: title, Brief: brief})
+	if err != nil {
+		s.auditTool(c, tool, "error_delegate", err.Error(), &c.task.SpentEUR, nil)
+		return toolError("the card did not reach factoryd: " + err.Error())
+	}
+	s.auditTool(c, tool, "delegated", fmt.Sprintf("issue #%d, task %s", res.Issue, res.TaskID), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: fmt.Sprintf("filed as issue #%d (card %s) on the cheap rung; it starts when this card has landed. Carry on with this card.", res.Issue, res.TaskID)}}}
 }
 
 // handOver gives factoryd what the agent asks, which stops the session.

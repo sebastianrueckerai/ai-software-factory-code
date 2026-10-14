@@ -890,19 +890,28 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 
 // refuseWorkflowDirChange returns a terminal error when any workflow
 // directory's tree entry in commit (on the fork, where the branch was
-// pushed) differs from the task base's (on the task's repository).
+// pushed) differs from both the task base's and main's current head's
+// (on the task's repository): a branch that merges main forward carries
+// main's own workflow edits, and only an entry main does not hold is the
+// task's own change.
 func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo, commit string) error {
 	base := t.SHA
+	mainHead, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
+	if err != nil {
+		return err
+	}
 	if base == "" {
-		head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
-		if err != nil {
-			return err
-		}
-		base = head
+		base = mainHead
 	}
 	was, err := r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, base, WorkflowDirs...)
 	if err != nil {
 		return err
+	}
+	var main map[string]string
+	if mainHead != base {
+		if main, err = r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, mainHead, WorkflowDirs...); err != nil {
+			return err
+		}
 	}
 	fork := r.forgejo.Fork(repo)
 	now, err := r.forgejo.TreeEntries(ctx, fork.Owner, fork.Name, commit, WorkflowDirs...)
@@ -910,8 +919,8 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 		return err
 	}
 	for _, dir := range WorkflowDirs {
-		if was[dir] != now[dir] {
-			return terminalError("branch %s changes %s/ (commit %s against base %s); factoryd opens no pull request that edits a workflow directory", taskBranch(t), dir, commit, base)
+		if now[dir] != was[dir] && (main == nil || now[dir] != main[dir]) {
+			return terminalError("branch %s changes %s/ (commit %s against base %s and main %s); factoryd opens no pull request that edits a workflow directory", taskBranch(t), dir, commit, base, mainHead)
 		}
 	}
 	return nil

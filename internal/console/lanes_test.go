@@ -104,10 +104,10 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	for title, want := range map[string][]string{
-		"Backlog":      {"card 2", "card 3"},
+		"Backlog":      {`title="k2"`, `title="k3"`},
 		"Plan":         {"Another spec"},
-		"Ready":        {"card 4", `<span class="chip waiting">waiting on #3, #5</span>`},
-		"Done":         {"Link shortener", `<span class="badge">plan</span>`, "card 5", `<span class="badge">ready</span>`},
+		"Ready":        {`title="k4"`, `<span class="chip waiting">waiting on #3, #5</span>`},
+		"Done":         {"Link shortener", `title="k5"`},
 		"code Backlog": {"an improvement"},
 		"code Running": {"fix the cache", `<span class="badge">ready</span>`},
 	} {
@@ -128,12 +128,17 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 		}
 	}
 	for _, n := range []string{"2", "3", "4", "5"} {
-		if !strings.Contains(body, `card `+n+`</h4>`) {
+		if !strings.Contains(body, `<strong class="title" title="k`+n+`">`) {
 			t.Fatalf("card %s missing", n)
 		}
 	}
-	if got := strings.Count(body, `<span class="chip plan">part of plan #1</span>`); got != 4 {
-		t.Errorf("%d cards read part of plan #1, want its 4 cards", got)
+	// the plan's three cards still in play wear the chip; its done card's
+	// row has none, and its drawer names the plan
+	if got := strings.Count(body, `<span class="chip plan">from plan #1</span>`); got != 3 {
+		t.Errorf("%d cards read from plan #1, want its 3 cards in play", got)
+	}
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span>`) {
+		t.Errorf("the done card's drawer does not name its plan:\n%s", d)
 	}
 	if !strings.Contains(body, `<option value="linkshort" selected>linkshort</option>`) || strings.Contains(body, "every project") {
 		t.Errorf("board lacks the project select, or offers every project")
@@ -558,14 +563,19 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	done := col(t, body, "Done")
+	for _, want := range []string{`action="/tasks/t-plan/start-plan"`, `>Start plan (2 in backlog)</button>`} {
+		if !strings.Contains(done, want) {
+			t.Errorf("the plan in Done lacks %q:\n%s", want, done)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
 		`<li><a href="https://git.example/linkshort/linkshort/issues/2">#2</a> backlog</li>`,
 		`<li><a href="https://git.example/linkshort/linkshort/issues/4">#4</a> waiting-deps</li>`,
 		`<li><a href="https://git.example/linkshort/linkshort/issues/5">#5</a> done</li>`,
-		`action="/tasks/t-plan/start-plan"`, `>Start plan (2 in backlog)</button>`,
 	} {
-		if !strings.Contains(done, want) {
-			t.Errorf("the plan in Done lacks %q:\n%s", want, done)
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
 		}
 	}
 	ak, as := r.as(t, "alice")

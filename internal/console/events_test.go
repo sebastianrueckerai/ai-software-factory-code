@@ -747,9 +747,13 @@ func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
 	}
 	running.CreatedAt = running.CreatedAt.Add(-time.Hour)
 	r.tasks.set("", running)
-	for _, want := range [][]string{{": ping"}, {"event: board", "data:"}} {
-		if got := nextMessage(t, br); !slices.Equal(got, want) {
-			t.Fatalf("after the card's age changed: %q, want %q", got, want)
+	// the status panel names the card's stage age, so the counters change too
+	for got := nextMessage(t, br); ; got = nextMessage(t, br) {
+		if slices.Equal(got, []string{"event: board", "data:"}) {
+			break
+		}
+		if !slices.Equal(got, []string{": ping"}) && (len(got) != 2 || got[0] != "event: counters") {
+			t.Fatalf("after the card's age changed: %q, want the board event", got)
 		}
 	}
 }
@@ -869,16 +873,23 @@ func TestStreamSendsTheCounters(t *testing.T) {
 			}
 		}
 	}
-	const status = "\n<strong class=\"pname\">ai-software-factory-code</strong>\n" +
-		"<span class=\"state\" data-state=\"waiting on you\"><span aria-hidden=\"true\">●</span> waiting on you</span>\n" +
-		"<span class=\"fig\">1 working</span>\n<a href=\"#needs-you\" class=\"fig need\">2 need you</a>\n" +
-		"<a href=\"/costs\" class=\"fig\" title=\"spend this UTC month against the project's month cap\">€0.00 / €50.00</a>\n"
-	moved()
-	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 1, 0, 0}) {
-		t.Errorf("counters %+v, want %q and 2 0 1 0 0", got, status)
+	// the strip's cells, as the status template renders them
+	status := func(s string) bool {
+		for _, cell := range []string{`<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>`,
+			`<span class="cell"><span><b class="n">1</b> working</span></span>`, `<a href="#needs-you" class="cell needs on"><span><b class="n">2</b> need you</span></a>`,
+			`<a href="/costs" class="cell spend" title="spend this UTC month against the project's month cap"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`} {
+			if !strings.Contains(s, cell) {
+				return false
+			}
+		}
+		return true
 	}
-	if got := next(teal); got.Status != status || !slices.Equal(got.Counts, []int{2, 0, 0, 0, 0}) {
-		t.Errorf("teal's counters %+v, want %q and 2 0 0 0 0", got, status)
+	moved()
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 1, 0}) {
+		t.Errorf("counters %+v, want the strip and 2 0 1 0", got)
+	}
+	if got := next(teal); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 0, 0, 0}) {
+		t.Errorf("teal's counters %+v, want the strip and 2 0 0 0", got)
 	}
 	// unchanged: two heartbeats pass after the event without counters
 	moved()
@@ -893,8 +904,8 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	queued := factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Repository: "sf/code", IssueNumber: 12, Objective: "queue it"}
 	r.tasks.set("", running, queued)
 	moved()
-	if got := next(br); got.Status != status || !slices.Equal(got.Counts, []int{2, 1, 1, 0, 0}) {
-		t.Errorf("counters after a queued card %+v, want 2 1 1 0 0", got)
+	if got := next(br); !status(got.Status) || !slices.Equal(got.Counts, []int{2, 1, 1, 0}) {
+		t.Errorf("counters after a queued card %+v, want 2 1 1 0", got)
 	}
 }
 
@@ -1046,7 +1057,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	for _, want := range []string{`<div id="board" data-project="ai-software-factory-code" data-query="?project=ai-software-factory-code">`,
-		`<footer id="live" role="status"></footer>`} {
+		`<p class="stream" id="live" role="status"></p>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)
 		}
@@ -1055,7 +1066,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 		t.Error("the board page still polls")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil), ck).Body.String()
-	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<p id=\"status-line\" hx-swap-oob=\"innerHTML\">\n<strong class=\"pname\">ai-software-factory-code</strong>") {
+	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<div id=\"status-line\" hx-swap-oob=\"innerHTML\"><div class=\"strip\" role=\"group\" aria-label=\"Status of the project\">") {
 		t.Errorf("the board fragment carries no status line out of band:\n%s", frag)
 	}
 
@@ -1067,7 +1078,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
     querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
-    getAttribute: function () { return null; }, addEventListener: function () {},
+    getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {},
     appendChild: function (c) { this.children.push(c); return c; }};
   return Object.assign(e, props);
 }
@@ -1134,7 +1145,8 @@ es.on.board({data: ""});
 byID.drawer.hidden = true;
 listeners.drawerclosed.forEach(function (fn) { fn(); });
 out.released = requests;
-out.said = log.children.map(function (m) { return [m.className, m.dataset.key, m.children[0].textContent, m.children[1].textContent].join(" | "); });
+// a turn: the avatar, the who line (the name and the time), the text
+out.said = log.children.map(function (m) { var who = m.children[1]; return [m.className, m.dataset.key, who.children[0].textContent + " · " + who.children[1].textContent, m.children[2].textContent].join(" | "); });
 out.timers = timers;
 setImmediate(function () {
   out.steer = byID["steer-input"].value;
@@ -1208,10 +1220,13 @@ func TestBoardActivityLine(t *testing.T) {
 		t.Errorf("the escalated card without an event lacks its question: %.400s", got)
 	}
 	hhmm := at.UTC().Format("15:04")
-	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm, "t-fin": "status done at " + hhmm} {
+	for id, want := range map[string]string{"t-rev": "status in-review, gate checks, at " + hhmm} {
 		if got := card(id); !strings.Contains(got, `class="activity">`+want+`<`) {
 			t.Errorf("the card whose newest event is its status lacks %q: %.400s", want, got)
 		}
+	}
+	if got := card("t-fin"); strings.Contains(got, `activity`) {
+		t.Errorf("a finished card claims an activity line: %.400s", got)
 	}
 	if got := card("t-b"); strings.Contains(got, `activity`) {
 		t.Errorf("a card with neither claims an activity line: %.400s", got)

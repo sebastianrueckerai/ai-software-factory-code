@@ -351,6 +351,9 @@ func main() {
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
+	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
+	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
+		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget})))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {

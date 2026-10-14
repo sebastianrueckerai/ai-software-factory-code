@@ -1,11 +1,12 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
+<div class="board-head"><h2 id="board-title">Board</h2><form method="get" action="/" class="filter"><label for="accent-filter" class="visually-hidden">Accent</label><select id="accent-filter" name="accent">
+<option value=""{{if not .Accent}} selected{{end}}>every accent</option>
+{{range accents}}<option value="{{.}}"{{if eq . $.Accent}} selected{{end}}>{{.}}</option>
+{{end}}</select><input type="hidden" name="project" value="{{.Project}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
+<a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
+<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
-{{if .Status.Project}}{{with .Pulse}}<div id="pulse" class="pulse{{if .Prominent}} prominent{{end}}"><details class="pulse-fold">
-<summary title="the most useful thing to know now; click for more"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}}>⚠</span> <span class="pulse-say">{{.Sentence}}</span><span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
-<ul class="pulse-bullets">{{range .Bullets}}<li>{{.}}</li>{{end}}</ul>
-</details></div>{{end}}{{end}}
-{{if .PolicyCommit}}<p class="meta" id="config">Configuration version {{.PolicyVersion}} · commit <a href="{{.PolicyTreeURL}}"><code>{{.PolicyCommit}}</code></a></p>{{end}}
 {{if eq .View "wide"}}<section aria-labelledby="human-lane" id="needs-you">
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">
@@ -29,59 +30,73 @@
 {{end}}</div>
 </section>
 {{else}}<div class="lane five">
-{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
+{{range $i, $col := .Columns}}<section class="column{{if eq $col.Title "Done"}} fold{{end}}" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{$col.Count}}</span></h3>
 {{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
 {{range $col.Cards}}{{template "card" .}}{{end}}
 </section>
 {{end}}</div>
 {{end}}</div>{{end}}
 
-{{define "status"}}{{with .Status}}
-<strong class="pname">{{.Project}}</strong>
-<span class="state" data-state="{{.State}}"><span aria-hidden="true">●</span> {{.State}}</span>
-<span class="fig">{{.Working}} working</span>
-{{if .Waiting}}<span class="fig">{{.Waiting}} waiting on the provider</span>
-{{end}}<a href="#needs-you" class="fig{{if .NeedYou}} need{{end}}">{{.NeedYou}} need you</a>
-{{if $.Factory}}<a href="/costs" class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</a>{{else}}<span class="fig" title="spend this UTC month against the project's month cap">{{eur2 .Spend.EUR}} / {{eur2 .CapEUR}}</span>{{end}}
-{{with .GitHub}}<span class="fig">GitHub: {{.}}</span>
-{{end}}{{end}}{{end}}
+{{define "status"}}{{with .Status}}<div class="strip" role="group" aria-label="Status of the project">
+<span class="cell state" data-state="{{.State}}"><i class="dot" aria-hidden="true"></i>{{.State}}</span>
+<span class="cell"><span><b class="n">{{.Working}}</b> working</span></span>
+{{if .Waiting}}<span class="cell warn"><span><b class="n">{{.Waiting}}</b> waiting on the provider</span></span>
+{{end}}<a href="#needs-you" class="cell needs{{if .NeedYou}} on{{end}}"><span><b class="n">{{.NeedYou}}</b> need you</span></a>
+{{if $.Factory}}<a href="/costs" class="cell spend{{gaugeClass .Spend.EUR .CapEUR}}" title="spend this UTC month against the project's month cap">{{else}}<span class="cell spend{{gaugeClass .Spend.EUR .CapEUR}}" title="spend this UTC month against the project's month cap">{{end}}<span><b class="n">{{eur2 .Spend.EUR}}</b> <span class="of">/ {{eur2 .CapEUR}}</span></span><span class="gauge" role="meter" aria-label="Spend of the month cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{pct .Spend.EUR .CapEUR}}"><i style="width:{{pct .Spend.EUR .CapEUR}}%"></i></span><span class="pct">{{pct .Spend.EUR .CapEUR}}%</span>{{if $.Factory}}</a>{{else}}</span>{{end}}
+{{with .GitHub}}<span class="cell gh">GitHub: {{.}}</span>
+{{end}}<button type="button" class="cell xp" id="status-toggle" aria-expanded="false" aria-controls="status-panel" aria-label="The status in detail" title="The status in detail"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+</div>
+<ul class="pulse-bullets" id="pulse-bullets" hidden>{{with $.Pulse}}{{range .Bullets}}<li>{{.}}</li>{{end}}{{end}}</ul>
+<div class="sp" id="status-panel" role="region" aria-label="The status in detail" hidden>
+<section><h3>In progress</h3>{{with $.InProgress}}<ul>{{range .}}<li><a class="sp-link" href="#card={{.ID}}"><span class="ref-plain">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> {{.Title}} · <span class="s-{{.Stage}}">{{.Stage}}</span> · <span class="mono">{{.StageAge}}</span></a></li>{{end}}</ul>{{else}}<p class="none">none</p>{{end}}</section>
+<section><h3>Needs you</h3>{{with $.NeedLinks}}<ul>{{range .}}<li><a class="sp-link" href="{{.Href}}">{{.Words}}</a></li>{{end}}</ul>{{else}}<p class="none">none</p>{{end}}</section>
+<section><h3>Spend</h3><div class="sp-g{{gaugeClass .TodayEUR .DayCapEUR}}"><span class="lbl">today</span><span class="fig">{{eur2 .TodayEUR}} of {{eur2 .DayCapEUR}} day cap</span><span class="gauge" role="meter" aria-label="today" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{pct .TodayEUR .DayCapEUR}}"><i style="width:{{pct .TodayEUR .DayCapEUR}}%"></i></span></div><div class="sp-g{{gaugeClass .Spend.EUR .CapEUR}}"><span class="lbl">this month</span><span class="fig">{{eur2 .Spend.EUR}} of {{eur2 .CapEUR}}</span><span class="gauge" role="meter" aria-label="this month" aria-valuemin="0" aria-valuemax="100" aria-valuenow="{{pct .Spend.EUR .CapEUR}}"><i style="width:{{pct .Spend.EUR .CapEUR}}%"></i></span></div>{{if gt .Spend.EUR .CapEUR}}<p class="sp-note">the month cap is passed</p>{{end}}</section>
+<section><h3>Provider, GitHub, configuration</h3><dl class="sp-dl"><dt>provider</dt><dd{{if .Waiting}} class="warn"{{end}}>{{if .Waiting}}{{.Waiting}} waiting on the provider{{else}}ok{{end}}</dd><dt>GitHub</dt><dd>{{if .GitHub}}<a href="{{.GitHubURL}}">GitHub: {{.GitHub}}</a>{{else}}none{{end}}</dd>{{if $.PolicyCommit}}<dt>configuration</dt><dd>version {{$.PolicyVersion}} · <a href="{{$.PolicyTreeURL}}"><code>{{$.PolicyCommit}}</code></a></dd>{{end}}</dl></section>
+</div>{{end}}{{end}}
 
 {{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}
-<p id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</p>{{end}}{{end}}
+<div id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</div>{{end}}{{end}}
 
 {{define "filter"}}<input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="accent" value="{{.Accent}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{end}}
 
-{{define "escalation"}}<article class="card escalation">
+{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
 {{template "card" .Card}}
-{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
+{{template "escalation-actions" .}}</article>{{end}}
+
+{{define "escalation-actions"}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
 <button type="submit" name="answer" value="{{.}}">{{.}}</button>
 </form>
-{{end}}</div>
-{{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer">
+{{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
+</div>
+{{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
-<label for="answer-{{.Card.ID}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
-<textarea id="answer-{{.Card.ID}}" name="answer" rows="3" required></textarea>
+<label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
+<textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" required></textarea>
 <button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
 </form>{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
-<label for="fund-{{$.Card.ID}}">Fund this card, EUR</label>
-<input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}" name="eur" required>
-<label for="fund-reason-{{$.Card.ID}}">why</label>
-<input type="text" id="fund-reason-{{$.Card.ID}}" name="reason" maxlength="2000" required>
+<label for="fund-{{$.Card.ID}}{{$.Suffix}}">Fund this card, EUR</label>
+<input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}{{$.Suffix}}" name="eur" required>
+<label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">why</label>
+<input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="2000" required>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
 </form>{{end}}{{end}}
-{{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
+{{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</p>
+{{end}}{{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
-</article>{{end}}
+{{end}}
 
-{{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}">
-{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
+{{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
+{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>{{if ne .Filter.View "wide"}} <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
 {{if eq .Filter.View "wide"}}{{template "merge-facts" .}}{{else}}{{template "merge-brief" .}}{{end}}
-{{else}}<h4 id="approval-{{.ID}}">Resource request</h4>
-<dl class="facts">
+{{else}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">Resource request</h4>{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
+{{if ne .Filter.View "wide"}}<p class="need-line"><b>{{.Resource.ServerType}}</b>{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}} · {{.Resource.Purpose}}</p>
+<p class="need-line">{{lease .Resource.LeaseMinutes}} · {{eur4 .Monthly}} EUR per month, this lease {{eur4 .Resource.ReservationEUR}} EUR · {{.Project}}</p>
+{{with .Resource.BeyondEnvelope}}<p class="need-line beyond"><b>Beyond the envelope</b> {{range $i, $v := .}}{{if $i}}; {{end}}{{$v}}{{end}}</p>
+{{end}}{{else}}<dl class="facts">
 <dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>
 <dt>Purpose</dt><dd>{{.Resource.Purpose}}</dd>
 <dt>Lease</dt><dd>{{lease .Resource.LeaseMinutes}}</dd>
@@ -89,24 +104,25 @@
 <dt>Project</dt><dd>{{.Project}}</dd>
 <dt>Beyond the envelope</dt><dd>{{range $i, $v := .Resource.BeyondEnvelope}}{{if $i}}; {{end}}{{$v}}{{end}}</dd>
 </dl>
-{{end}}<p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
-{{end}}{{if .Approver}}<form method="post" action="/approvals/{{.ID}}/approve">
+{{end}}{{end}}{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
+{{end}}{{if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
+{{end}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>{{end}}
-<button type="submit" aria-label="{{if eq .Kind "merge"}}Approve as you: merge PR #{{.PRNumber}}{{else}}Approve resource request {{.ID}}{{end}} of {{.TaskID}}">Approve{{if eq .Kind "merge"}} as you{{end}}</button>
-</form>{{else}}<p class="meta">Only the project's approvers may approve.</p>{{end}}
-{{template "split" .}}
-<form method="post" action="/approvals/{{.ID}}/deny">
+<button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
+</form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
+<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">Deny</button>
+{{template "split" .}}</div>
+<form method="post" action="/approvals/{{.ID}}/deny" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}" hidden>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
-<textarea id="note-{{.ID}}" name="note" rows="2" required></textarea>
+<label for="note-{{.ID}}{{.IDSuffix}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
+<textarea id="note-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
 {{if eq .Kind "merge"}}<fieldset><legend>Deny by</legend>
 <label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
 <label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
 </fieldset>{{end}}
 <button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>
-</form>{{end}}
+</form>
+<p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
 
 {{define "split"}}{{if and .Approver (eq .Kind "merge") (eq .Merge.RiskClass "large")}}<form method="post" action="/tasks/{{.TaskID}}/split" hx-post="/tasks/{{.TaskID}}/split" hx-target="#board" hx-swap="outerHTML" hx-confirm="Split PR #{{.PRNumber}}? A planner splits it into 2 or 3 cards, which start on their own; this card then closes." class="inline">
@@ -125,22 +141,11 @@
 {{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
 {{end}}</dl>{{end}}
 
-{{define "merge-brief"}}<dl class="facts">
-<dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
-<dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</dd>
-{{if .Merge.Recommendation}}<dt>Agent's recommendation</dt><dd class="reason">{{.Merge.Recommendation}}</dd>
-{{end}}</dl>
-<details class="more"><summary>More</summary>
-<dl class="facts">
-<dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
-{{with .Merge.Review.Findings}}<dt>Model review's findings</dt><dd>{{range $i, $f := .}}{{if $i}}<br>{{end}}- {{$f}}{{end}}</dd>
-{{end}}{{range $i, $r := .Merge.EarlierReviews}}<dt>Earlier review {{inc $i}}</dt><dd>{{if $r.Verdict}}{{$r.Verdict}}: {{$r.Summary}}{{else}}{{$r.Note}}{{end}}{{range $r.Findings}}<br>- {{.}}{{end}}</dd>
-{{end}}{{with .Merge.Audit}}<dt>Security audit</dt><dd>{{.Verdict}}{{if .Model}} ({{.Model}}{{if .Deployment}}, {{.Deployment}}{{end}}){{end}}{{range .Findings}}<br>- {{.Item}}{{if .File}}: <code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code>{{end}}: {{.Why}}{{end}}</dd>
-{{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
-{{end}}</dl>
-</details>{{end}}
+{{define "merge-brief"}}<p class="need-line"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
+{{with .Merge.Recommendation}}<p class="need-line"><b>Recommendation</b> {{.}}</p>
+{{end}}{{end}}
 
-{{define "plan"}}<h4 id="approval-{{.ID}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
+{{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 <p class="spec">{{.SpecLines}}</p>
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
@@ -160,8 +165,8 @@
 {{end}}</div>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<label for="answer-{{$.ID}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
-<input type="text" id="answer-{{$.ID}}-{{$q.Index}}" name="answer" maxlength="1000" required>
+<label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
+<input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required>
 <button type="submit">Answer</button>
 </form></fieldset>
 {{end}}{{end}}{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
@@ -174,30 +179,25 @@
 </form>{{else}}<p class="meta">Only the project's approvers may accept a plan.</p>{{end}}
 <form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="changes-{{.ID}}">Changes you ask for, posted on the issue as you</label>
-<textarea id="changes-{{.ID}}" name="text" rows="3" required></textarea>
+<label for="changes-{{.ID}}{{.IDSuffix}}">Changes you ask for, posted on the issue as you</label>
+<textarea id="changes-{{.ID}}{{.IDSuffix}}" name="text" rows="3" required></textarea>
 <button type="submit" aria-label="Request changes to plan #{{.Issue}}">Request changes</button>
 </form>
 <form method="post" action="/tasks/{{.TaskID}}/plan/reject" hx-post="/tasks/{{.TaskID}}/plan/reject" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="reject-{{.ID}}">Reason to reject the plan</label>
-<textarea id="reject-{{.ID}}" name="note" rows="2" required></textarea>
+<label for="reject-{{.ID}}{{.IDSuffix}}">Reason to reject the plan</label>
+<textarea id="reject-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
 <button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>
 </form>{{end}}
 
-{{define "card"}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}" data-place="{{.Place}}"{{if and .Moves (eq .Filter.View "wide")}} draggable="true"{{end}}>
-<p class="line1"><span class="ref">{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}}</span> <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong>{{with .Accent}} <span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>
-<p class="line2"><span class="pill {{.StatusClass}}">{{.Status}}</span>{{if .Total}} <span class="elapsed">{{.Total}} in all</span>{{end}}{{with .Checks}} <span class="checks">{{.}} checks</span>{{end}}{{if gt .BudgetEUR 0.0}} <span class="spend{{if .NearBudget}} near{{end}}">{{eur2 .SpentEUR}} / {{eur2 .BudgetEUR}}{{if .NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{with .CallsText}} <span class="calls" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">{{.}}</span>{{end}}{{if .GateText}} <span class="gate">{{.GateText}}</span> for {{.GateAge}}{{end}}</p>
-{{if or .Activity .StaleText}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}
+{{define "card"}}{{if .Final}}<article class="card face final d-{{.Status}}{{with .Accent}} edge-{{.}}{{end}}" data-card="{{.ID}}" data-place="{{.Place}}">
+<p class="line1"><span class="ref">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong></p>
+<div class="dmeta"><span class="st"><span class="g" aria-hidden="true">{{.Glyph}}</span>{{.Status}}</span>{{with .Total}}<span class="elapsed">{{.}} in all</span>{{end}}{{with .Children}}<span class="chip rollup">{{.}}</span>{{end}}{{with .GitHubPRState}}<span class="github">GitHub: {{if $.GitHubPRURL}}<a href="{{$.GitHubPRURL}}">PR #{{$.GitHubPR}}</a> {{end}}{{.}}</span>{{end}}{{with .Plan}}{{if .CSRF}}<form method="post" action="/tasks/{{$.ID}}/start-plan" hx-post="/tasks/{{$.ID}}/start-plan" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Start plan #{{$.IssueNumber}}: {{.Backlog}} in backlog">Start plan ({{.Backlog}} in backlog)</button></form>{{end}}{{end}}{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{if .Closes}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-target="#board" hx-swap="outerHTML" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}</div>
+</article>{{else}}<article class="card face{{with .Accent}} edge-{{.}}{{end}}{{if .Stale}} stale{{end}}" data-card="{{.ID}}" data-place="{{.Place}}"{{if and .Moves (eq .Filter.View "wide")}} draggable="true"{{end}}>
+<p class="line1"><span class="ref">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong></p>
+<p class="line2"><span class="pill {{.StatusClass}}">{{if .Stage}}{{.Stage}}{{else}}{{.Status}}{{end}}</span>{{if .StageAge}} <span class="elapsed">{{.StageAge}}</span>{{end}}{{with .Checks}} <span class="checks">{{.}} checks</span>{{end}}{{if .NearBudget}} <span class="spend near">{{eur2 .SpentEUR}} / {{eur2 .BudgetEUR}} ⚠ near its budget</span>{{end}}{{if .GateText}} <span class="gate">{{.GateText}} for {{.GateAge}}</span>{{end}}{{range .Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{if and .PRURL (or (eq .Stage "verifying") (eq .Status "closing"))}} <a href="{{.PRURL}}" class="pr">PR #{{.PRNumber}}</a>{{end}}</p>
+{{if and .Speaks (or .Activity .StaleText)}}<p class="activity">{{if and .WaitingForActivity .IssueURL}}<a href="{{.IssueURL}}">answer on the issue</a> — {{end}}{{.Activity}}{{if and .Activity .StaleText}} — {{end}}{{.StaleText}}</p>{{end}}
 {{with .GitHubPRState}}<p class="github">GitHub: {{if $.GitHubPRURL}}<a href="{{$.GitHubPRURL}}">PR #{{$.GitHubPR}}</a> {{end}}{{.}}</p>{{end}}
-{{if or .Badge .Fine .ModelAlias .Blocked .Children .PlanIssue .WaitingOn}}<p class="chips">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}{{range .Fine}}<span class="pill fine {{.Class}}">{{.Words}}</span> {{end}}{{with .ModelAlias}}<span class="chip model">{{.}}</span> {{end}}{{if .Blocked}}<span class="chip blocked" title="{{.BlockedOn}}">blocked by {{.Blocked}}</span> {{end}}{{with .Children}}<span class="chip rollup">{{.}}</span> {{end}}{{if .PlanIssue}}<span class="chip plan">part of plan #{{.PlanIssue}}</span> {{end}}{{if .WaitingOn}}<span class="chip waiting">waiting on {{.WaitingOn}}</span>{{end}}</p>{{end}}
-{{if or (and .Plan .Plan.CSRF) .Retry .Moves .Closes}}<p class="transitions">{{with .Plan}}{{if .CSRF}}<form method="post" action="/tasks/{{$.ID}}/start-plan" hx-post="/tasks/{{$.ID}}/start-plan" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Start plan #{{$.IssueNumber}}: {{.Backlog}} in backlog">Start plan ({{.Backlog}} in backlog)</button></form>{{end}}{{end}}{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{range .Moves}}<form method="post" action="/cards/{{$.ID}}/lane" hx-post="/cards/{{$.ID}}/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="{{.Lane}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="lane" value="{{.Lane}}"><button type="submit" aria-label="Move #{{$.IssueNumber}} to lane {{.Lane}}">→ {{.Title}}</button></form>{{end}}{{if .Closes}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-target="#board" hx-swap="outerHTML" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}</p>{{end}}
-<details class="more"><summary>More</summary>
-<h4 class="objective">{{.Objective}}</h4>
-{{with .AgentSummary}}<p class="agent-summary">{{.}}</p>{{end}}
-{{with .Plan}}<ul class="children" aria-label="The plan's cards">{{range .Cards}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>{{end}}
-<p class="links">{{if .PRURL}}<a href="{{.PRURL}}">PR #{{.PRNumber}}</a> · {{end}}<a href="/tasks/{{.ID}}/timeline">timeline</a></p>
-{{if .MayWriteSummary}}<form method="post" action="/tasks/{{.ID}}/summary" hx-post="/tasks/{{.ID}}/summary" hx-target="#board" hx-swap="outerHTML" class="edit-form summary-edit"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<span class="edit-icon" aria-hidden="true" title="A writer's one-line summary of this card; the face shows it instead of the generated title">✎</span><label><span class="visually-hidden">Summary (up to 255 characters; empty restores the generated title)</span><input type="text" name="summary" maxlength="255" value="{{.HumanSummary}}" placeholder="{{.Title}}"></label><button type="submit">Save summary</button></form>{{end}}
-{{if .MayWriteSummary}}<form method="post" action="/tasks/{{.ID}}/accent" hx-post="/tasks/{{.ID}}/accent" hx-target="#board" hx-swap="outerHTML" class="edit-form accent-edit"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<label><span class="visually-hidden">Accent colour (never a state's colour, never in an agent's brief)</span><select name="value"><option value=""{{if not .Accent}} selected{{end}}>none</option>{{range $a := accents}}<option value="{{$a}}"{{if eq $a $.Accent}} selected{{end}}>{{$a}}</option>{{end}}</select></label><button type="submit">Set accent</button></form>{{end}}
-</details>
-</article>{{end}}
+{{if or .Badge .Blocked .Children .PlanIssue .WaitingOn .Accent}}<p class="chips">{{with .Badge}}<span class="badge">{{.}}</span> {{end}}{{if .Blocked}}<span class="chip blocked" title="{{.BlockedOn}}">blocked by {{.Blocked}}</span> {{end}}{{with .Children}}<span class="chip rollup">{{.}}</span> {{end}}{{if .PlanIssue}}<span class="chip plan">from plan #{{.PlanIssue}}</span> {{end}}{{if .WaitingOn}}<span class="chip waiting">waiting on {{.WaitingOn}}</span> {{end}}{{with .Accent}}<span class="chip accent-{{.}}">{{.}}</span>{{end}}</p>{{end}}
+{{if or (and .Plan .Plan.CSRF) .Retry .Moves .Closes}}<div class="transitions">{{with .Plan}}{{if .CSRF}}<form method="post" action="/tasks/{{$.ID}}/start-plan" hx-post="/tasks/{{$.ID}}/start-plan" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Start plan #{{$.IssueNumber}}: {{.Backlog}} in backlog">Start plan ({{.Backlog}} in backlog)</button></form>{{end}}{{end}}{{with .Retry}}<form method="post" action="/tasks/{{$.ID}}/retry" hx-post="/tasks/{{$.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<button type="submit" aria-label="Retry #{{$.IssueNumber}}">Retry</button></form>{{end}}{{range .Moves}}<form method="post" action="/cards/{{$.ID}}/lane" hx-post="/cards/{{$.ID}}/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="{{.Lane}}"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="lane" value="{{.Lane}}"><button type="submit" aria-label="Move #{{$.IssueNumber}} to lane {{.Lane}}">→ {{.Title}}</button></form>{{end}}{{if .Closes}}<form method="post" action="/tasks/{{.ID}}/close" hx-post="/tasks/{{.ID}}/close" hx-target="#board" hx-swap="outerHTML" hx-confirm="{{if .IssueNumber}}Close #{{.IssueNumber}}? Its issue closes as you, and the card ends.{{else}}Close {{.ID}}? The card ends.{{end}}" class="inline close"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" class="deny" aria-label="Close {{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}">Close</button></form>{{end}}</div>{{end}}
+</article>{{end}}{{end}}

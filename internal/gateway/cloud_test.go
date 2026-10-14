@@ -390,7 +390,7 @@ func TestCloudToolsListed(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "cloud_prices,commission_server,escalate_to_human,fal_run,file_plan,list_resources,release_resource,replicate_predict,request_info,resource_request_status,ssh_certificate,web_scrape,web_search"
+	want := "cloud_prices,commission_server,delegate,escalate_to_human,fal_run,file_plan,list_resources,manual,release_resource,replicate_predict,request_info,resource_request_status,ssh_certificate,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v", names)
 	}

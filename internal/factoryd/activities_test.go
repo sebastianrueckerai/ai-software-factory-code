@@ -460,6 +460,22 @@ func TestOpenPullRequestRefusesWorkflowDirChanges(t *testing.T) {
 	}
 }
 
+// A branch that merges main forward carries main's own workflow edit: the
+// entry at its head is one main holds, so the pull request opens (the
+// same entry on the task's own commit, made without merging, matches
+// neither the base's nor main's and stays refused above).
+func TestOpenPullRequestAllowsMainsWorkflowEditsThroughAMerge(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "m0", "mhead": "m0"}, mainHead: "mhead"}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+
+	if _, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1"); err != nil {
+		t.Fatalf("OpenPullRequest: %v, want no refusal: the workflow entry came from main through the merge", err)
+	}
+	if len(fj.created) != 1 {
+		t.Fatalf("pull requests created = %d, want 1", len(fj.created))
+	}
+}
+
 // A later attempt whose push touches .forgejo/ finds the PR an earlier
 // attempt opened: CI already ran from the refused tree, so the PR is
 // closed with the reason, not left open behind a failed task.

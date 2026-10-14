@@ -709,6 +709,10 @@ func (s *acceptanceStore) MarkRollsCommitted(context.Context, string, []string, 
 
 func (s *acceptanceStore) RollHead(context.Context, string) (string, error) { return "", nil }
 
+func (s *acceptanceStore) RebaseRolls(context.Context, string, string) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) SetTaskSHA(_ context.Context, id, sha string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

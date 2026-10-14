@@ -598,10 +598,14 @@ const (
 	ToolRequestStatus  = "resource_request_status"
 	ToolRequestInfo    = "request_info"
 	ToolFilePlan       = "file_plan"
+	ToolManual         = "manual"
+	// ToolDelegate files a small follow-up card on the cheap rung that
+	// starts when the caller's card has landed (roadmap 222, item 6).
+	ToolDelegate = "delegate"
 )
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

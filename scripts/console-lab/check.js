@@ -17,7 +17,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
   busy: ["Factory console", "Board", "New task", "Projects", "Resources", "Costs", "Policy", "Alerts", "Log out", "sebastian", "Theme",
-    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "Configuration version 4",
+    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
@@ -52,6 +52,8 @@ async function open(browser, viewport) {
 }
 
 async function text(page) {
+  // what a disclosure hides (the deny form, the own-answer box) counts once opened
+  await page.evaluate(() => document.querySelectorAll('button[aria-controls][aria-expanded="false"]').forEach((b) => b.click()));
   return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
     .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
 }
@@ -64,7 +66,11 @@ async function text(page) {
     const p = await open(browser, { width: 1440, height: 900 });
     await p.page.goto(base + "/", { waitUntil: "load" });
     await p.page.waitForTimeout(600);
+    // the status in detail opens on its chevron: its words count too
+    const xp = p.page.locator("#status-toggle");
+    if (await xp.count()) { await xp.click(); await p.page.waitForTimeout(200); }
     const low = (await text(p.page)).toLowerCase();
+    if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
     if (sc === "busy") {
       const theme0 = await p.page.evaluate(() => document.documentElement.dataset.theme);

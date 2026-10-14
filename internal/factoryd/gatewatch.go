@@ -13,26 +13,29 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The gates a task passes (stage 8 proposal 2.d); the task row's gate and
 // the timeline's durations name them alike.
 const (
-	GateIntake        = "intake"
-	GateSession       = "session"
-	GateChecks        = "checks"
-	GatePolicy        = "policy"
-	GateMigration     = "migration"
-	GateReproduction  = "reproduction"
-	GateReview        = "review"
-	GateApproval      = "approval"
-	GateMerge         = "merge"
-	GateHuman         = "human"
-	GateCommissioning = "commissioning"
-	GateScreening     = "screening"
-	GateAudit         = "audit"
-	GateProvider      = "provider"
+	GateIntake        = manual.GateIntake
+	GateSession       = manual.GateSession
+	GateChecks        = manual.GateChecks
+	GatePolicy        = manual.GatePolicy
+	GateMigration     = manual.GateMigration
+	GateReproduction  = manual.GateReproduction
+	GateReview        = manual.GateReview
+	GateApproval      = manual.GateApproval
+	GateMerge         = manual.GateMerge
+	GateHuman         = manual.GateHuman
+	GateCommissioning = manual.GateCommissioning
+	GateScreening     = manual.GateScreening
+	GateAudit         = manual.GateAudit
+	GateProvider      = manual.GateProvider
+	GateDependencies  = manual.GateDependencies
+	GateMergeQueue    = manual.GateMergeQueue
 )
 
 // StepGates are the timeline steps that end a gate, each carrying the

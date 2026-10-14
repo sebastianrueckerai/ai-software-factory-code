@@ -22,7 +22,6 @@ const (
 	// SignalDepEnded wakes a waiting card: a card it depends on ended.
 	SignalDepEnded = "dep_ended"
 	// GateDependencies is the gate of a card in waiting-deps.
-	GateDependencies = "dependencies"
 	// ActivityDependencies asks where a card's dependencies stand.
 	ActivityDependencies = "Dependencies"
 )

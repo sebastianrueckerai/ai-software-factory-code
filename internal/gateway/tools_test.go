@@ -163,6 +163,7 @@ type toolEnv struct {
 	providers *fakeProviders
 	escalator *fakeEscalator
 	filer     *fakePlanFiler
+	delegator *fakeDelegator
 	session   *mcp.ClientSession
 }
 
@@ -173,12 +174,13 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	providers := newFakeProviders(t)
 	esc := &fakeEscalator{}
 	filer := &fakePlanFiler{}
+	delegator := &fakeDelegator{}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc, PlanFiler: filer,
+		Escalator: esc, PlanFiler: filer, Delegator: delegator,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -188,7 +190,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, delegator: delegator, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -244,7 +246,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "escalate_to_human,fal_run,file_plan,replicate_predict,request_info,web_scrape,web_search"
+	want := "delegate,escalate_to_human,fal_run,file_plan,manual,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1033,5 +1035,76 @@ func TestWebToolsRefuseLocalTargets(t *testing.T) {
 	}
 	if len(e.providers.calls) != 0 || len(e.toolLedger()) != 0 {
 		t.Fatalf("provider called: %v", e.providers.calls)
+	}
+}
+
+// manual reads the factory manual into the session: the loop, the card
+// states, the gates. Free, for the classes that list it; a class without
+// it is refused like any hidden tool.
+func TestManualTool(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
+	e := newToolEnv(t, running("coder"), v)
+	text, isErr := e.call(t, "manual", nil)
+	if isErr || !strings.Contains(text, "Signals and members file cards") ||
+		!strings.Contains(text, "backlog: waits in the backlog") ||
+		!strings.Contains(text, "approval: a human approves the merge") {
+		t.Fatalf("manual = %q", text)
+	}
+	delete(v.Document.Classes["coder"].Tools, "manual")
+	off := newToolEnv(t, running("coder"), v)
+	if text, isErr := off.call(t, "manual", nil); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted manual = %q", text)
+	}
+}
+
+type fakeDelegator struct {
+	calls []Delegation
+	err   error
+}
+
+func (f *fakeDelegator) Delegate(ctx context.Context, taskID string, d Delegation) (Delegated, error) {
+	f.calls = append(f.calls, d)
+	return Delegated{Issue: 77, TaskID: "t-child"}, f.err
+}
+
+// The delegate tool hands the child card to factoryd and tells the agent
+// where it went; the session goes on. A brief or title missing is refused
+// before the hand-over.
+func TestDelegateTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index", "brief": "In store.go add an index on tasks.rung; a test reads it."})
+	if isErr || !strings.Contains(text, "issue #77 (card t-child) on the cheap rung") {
+		t.Fatalf("delegate = %q (%v)", text, isErr)
+	}
+	d := e.delegator
+	if len(d.calls) != 1 || d.calls[0].Title != "Add the index" || !strings.HasPrefix(d.calls[0].Brief, "In store.go") {
+		t.Fatalf("hand-over = %+v", d.calls)
+	}
+	if a := e.lastAudit(t); a.Decision != "delegated" || a.Tool != policy.ToolDelegate {
+		t.Fatalf("audit = %+v", a)
+	}
+	if text, isErr := e.call(t, policy.ToolDelegate, map[string]any{"title": "Add the index"}); !isErr || len(d.calls) != 1 {
+		t.Fatalf("a delegate without a brief = %q (%v), calls %d; want refused", text, isErr, len(d.calls))
+	}
+}
+
+func TestFactorydDelegateClient(t *testing.T) {
+	var body string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		body = string(b)
+		if r.URL.Path != "/internal/delegations" || r.Header.Get("Authorization") != "Bearer shared" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"issue": 77, "task_id": "t-child"}`)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Brief: "y"})
+	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","brief":"y"}` {
+		t.Fatalf("res %+v err %v body %s", res, err, body)
 	}
 }

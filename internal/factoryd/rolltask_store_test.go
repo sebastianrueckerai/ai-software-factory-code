@@ -158,6 +158,62 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 }
 
+// RebaseRolls frees the markings past the head the branch sits at, only
+// when the branch sits at a marking of the task's at all.
+func TestPGStoreRebaseRolls(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_requests, tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "rt1", Status: "in-review", Repository: "sf/ai-software-factory-code", Kind: "agent", Source: SourceRoll}); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []RollRequest{
+		{SHA: "b", Repository: "sf/ai-software-factory-code", RunID: 11, State: RollOpened, TaskID: "rt1"},
+		{SHA: "c", Repository: "sf/ai-software-factory-code", RunID: 12, State: RollOpened, TaskID: "rt1"},
+		{SHA: "d", Repository: "sf/ai-software-factory-code", RunID: 13, State: RollOpened, TaskID: "rt1"},
+	} {
+		if err := s.InsertRollRequest(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MarkRollsCommitted(ctx, "rt1", []string{"b"}, "commit-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRollsCommitted(ctx, "rt1", []string{"c"}, "commit-2"); err != nil {
+		t.Fatal(err)
+	}
+	recorded, err := s.RebaseRolls(ctx, "rt1", "commit-1")
+	if err != nil || !recorded {
+		t.Fatalf("rebase onto commit-1: %t %v", recorded, err)
+	}
+	if head, err := s.RollHead(ctx, "rt1"); err != nil || head != "commit-1" {
+		t.Fatalf("roll head %q %v, want commit-1", head, err)
+	}
+	pending, err := s.UncommittedRolls(ctx, "rt1")
+	if err != nil || len(pending) != 2 || pending[0].SHA != "c" || pending[1].SHA != "d" {
+		t.Fatalf("uncommitted %+v %v, want c then d", pending, err)
+	}
+	var committed string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(sha, ',' ORDER BY sha) FROM roll_requests WHERE task_id = 'rt1' AND committed`).Scan(&committed); err != nil {
+		t.Fatal(err)
+	}
+	if committed != "b" {
+		t.Fatalf("committed %q, want b", committed)
+	}
+	if recorded, err := s.RebaseRolls(ctx, "rt1", "pushed-by-an-agent"); err != nil || recorded {
+		t.Fatalf("rebase onto a foreign head: %t %v", recorded, err)
+	}
+	if pending, _ := s.UncommittedRolls(ctx, "rt1"); len(pending) != 2 {
+		t.Fatalf("a foreign head moved the markings: %+v", pending)
+	}
+}
+
 // A roll's hold is in force until its until; RollHold answers the newest
 // of those in force, none past their until or cleared.
 func TestPGStoreRollHolds(t *testing.T) {

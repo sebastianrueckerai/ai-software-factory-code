@@ -49,11 +49,18 @@ var chatView = (function () {
     var d = new Date(at);
     return isNaN(d) ? "" : d.toISOString().slice(5, 16).replace("T", " ") + "Z";
   }
+  // a turn: a 22 px avatar at the left (the agent a cyan ring with a dot,
+  // the member a filled circle with their initial), the name and the time
+  // on one line above the text, the text at the full width
+  function whoHTML(name, at) {
+    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
+  }
   function userHTML(login, text, at) {
-    return "<div class=\"msg you\"><p class=\"who\">" + esc(login) + " · " + stamp(at) + "</p><p class=\"said\">" + esc(text) + "</p></div>";
+    return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
+      "<p class=\"said\">" + esc(text) + "</p></div>";
   }
   function agentHTML(at, parts) {
-    return "<div class=\"msg agent\"><p class=\"who\">project agent · " + stamp(at) + "</p>" + parts + "</div>";
+    return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
   }
   function saidHTML(text) {
     return "<div class=\"said\">" + md(text) + "</div>";
@@ -185,27 +192,14 @@ var chatView = (function () {
 (function () {
   var panel = document.getElementById("chat");
   if (!panel) return;
-  var log = document.getElementById("chat-log"), screen = document.getElementById("screen");
+  var log = document.getElementById("chat-log");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
   var fresh = document.getElementById("chat-new"), select = document.getElementById("chat-conversations");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
   var streaming = false, readOnly = false;
 
-  function showPane(name) {
-    screen.dataset.pane = name;
-    document.querySelectorAll("[data-pane-tab]").forEach(function (b) {
-      b.setAttribute("aria-selected", String(b.dataset.paneTab === name));
-    });
-    if (name === "chat") scrollEnd(true);
-  }
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
-  }
-  // the Chat tab counts the proposals not yet answered
-  function countOpen() {
-    var n = log.querySelectorAll("[data-doit]").length, count = document.getElementById("chat-open");
-    count.textContent = n ? String(n) : "";
-    count.hidden = !n;
   }
   // add puts html at the end of into, before the streaming cursor
   function add(into, html) {
@@ -262,7 +256,6 @@ var chatView = (function () {
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));
       else if (ev.event === "error") add(into, "<p class=\"chat-error\">" + chatView.esc(d.message) + "</p>");
       ended = ended || ev.event === "done" || ev.event === "error";
-      countOpen();
     }
     return fetch(url, {method: "POST", body: body,
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
@@ -285,7 +278,6 @@ var chatView = (function () {
       if (!ended) add(into, "<p class=\"chat-error\">the chat lost the connection, send again</p>");
       cursor.remove();
       setStreaming(false);
-      countOpen();
     });
   }
   function send() {
@@ -295,8 +287,6 @@ var chatView = (function () {
     waiting.add(text);
   }
   function turn(text) {
-    var start = log.querySelector(".chat-start");
-    if (start) start.remove();
     add(log, chatView.userHTML(login, text, new Date()));
     add(log, chatView.agentHTML(new Date(), ""));
     scrollEnd(true);
@@ -308,10 +298,6 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
 
-  document.addEventListener("click", function (e) {
-    var tab = e.target.closest("[data-pane-tab]");
-    if (tab) showPane(tab.dataset.paneTab);
-  });
   // #n in the model's text opens card n's drawer over the board
   document.addEventListener("click", function (e) {
     var ref = e.target.closest("a.cardref");
@@ -320,7 +306,6 @@ var chatView = (function () {
     var refs = document.querySelectorAll("#board [data-card] .ref");
     for (var i = 0; i < refs.length; i++) {
       if (refs[i].textContent.trim() === "#" + ref.dataset.issue) {
-        showPane("board");
         location.hash = "#card=" + refs[i].closest("[data-card]").dataset.card;
         return;
       }
@@ -393,7 +378,12 @@ var chatView = (function () {
     if (e.key !== "/" || e.ctrlKey || e.metaKey || e.altKey || (keys && !keys.hidden) ||
       e.target.closest("input, textarea, select, [contenteditable]")) return;
     e.preventDefault();
-    showPane("chat");
+    // the wide view hides the chat: "/" brings it back
+    var screen = document.getElementById("screen");
+    if (screen && screen.classList.contains("wide")) {
+      document.getElementById("view-toggle").click();
+      return;
+    }
     input.focus();
   });
   log.addEventListener("click", function (e) {
@@ -402,7 +392,6 @@ var chatView = (function () {
     var card = b.closest(".proposal");
     if (b.hasAttribute("data-skip")) {
       card.remove();
-      countOpen();
     } else if (b.hasAttribute("data-doit")) {
       var foot = card.querySelector(".pfoot");
       foot.textContent = "";
@@ -431,7 +420,6 @@ var chatView = (function () {
       log.innerHTML = data.messages.length ? chatView.historyHTML(data.messages, login, data.proposals) : intro;
       if (readOnly) add(log, "<p class=\"meta chat-old\">an old conversation; start a new one to continue</p>");
       scrollEnd(true);
-      countOpen();
       if (!readOnly) return listConversations(data.conversation);
     }).catch(function () {
       add(log, "<p class=\"chat-error\">The conversation could not be read; reload the page.</p>");

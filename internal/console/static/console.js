@@ -164,7 +164,10 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   // read them, set whatever the board's state: neither holds a form
   function counters(d) {
     var line = document.getElementById("status-line"), counts = document.querySelectorAll("#board .count");
-    if (line) line.innerHTML = d.status;
+    if (line) {
+      line.innerHTML = d.status;
+      document.dispatchEvent(new Event("statusswapped"));
+    }
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
@@ -190,9 +193,15 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     var msg = log.appendChild(document.createElement("div"));
     msg.className = "msg " + (agent ? "agent" : "you");
     msg.dataset.key = key;
-    var who = msg.appendChild(document.createElement("p")), text = msg.appendChild(document.createElement("p"));
+    var av = msg.appendChild(document.createElement("span")), who = msg.appendChild(document.createElement("p")), text = msg.appendChild(document.createElement("p"));
+    av.className = "av";
+    av.setAttribute("aria-hidden", "true");
+    av.textContent = agent ? "" : String(e.actor || "").charAt(0).toUpperCase();
     who.className = "who";
-    who.textContent = (agent ? "agent" : e.actor) + " · " + new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
+    var name = who.appendChild(document.createElement("span")), when = who.appendChild(document.createElement("time"));
+    name.className = "name";
+    name.textContent = agent ? "agent" : e.actor;
+    when.textContent = new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
     text.className = "said";
     text.textContent = d.text || "";
     if (end) box.scrollTop = box.scrollHeight;
@@ -219,6 +228,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else if (e.kind === "session_said") said(e);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
+        tickEvent(e);
         if (e.kind === "card_steered") said(e);
         // a new status may end the session, and its steer box with it
         if (e.kind === "task_status") chat(e.task_id);
@@ -228,47 +238,174 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     es.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
     es.addEventListener("board", function () { swapBoard(); });
   }
-  // The pulse under the status line: pulse_computing shows its typing
-  // indicator, pulse swaps its line in, and its fold stays as the member
-  // left it across the board's swaps.
-  var pulseOpen = false, pulseBusy = false;
-  function showPulse() {
-    var el = document.getElementById("pulse");
-    if (!el) return;
-    el.querySelector(".pulse-fold").open = pulseOpen;
-    el.querySelector(".typing").hidden = !pulseBusy;
+  // The pulse band: pulse_computing shows its typing indicator, pulse
+  // swaps its sentence and bullets in; the band's disclosure (the status
+  // in detail with the bullets) stays as the member left it across the
+  // counters' swaps of the strip.
+  var statusOpen = false, pulseBusy = false;
+  function showStatus() {
+    var panel = document.getElementById("status-panel"), bullets = document.getElementById("pulse-bullets"),
+      toggle = document.getElementById("status-toggle"), typing = document.querySelector && document.querySelector("#pulse .typing");
+    if (panel) panel.hidden = !statusOpen;
+    if (bullets) bullets.hidden = !statusOpen;
+    if (toggle) {
+      toggle.setAttribute("aria-expanded", String(statusOpen));
+      toggle.parentElement.classList.toggle("xp-open", statusOpen);
+    }
+    if (typing) typing.hidden = !pulseBusy;
   }
-  document.addEventListener("htmx:afterSettle", showPulse);
-  document.addEventListener("toggle", function (e) {
-    if (e.target.classList && e.target.classList.contains("pulse-fold")) pulseOpen = e.target.open;
-  }, true);
+  function toggleStatus(open) {
+    statusOpen = open === undefined ? !statusOpen : open;
+    showStatus();
+  }
+  document.addEventListener("htmx:afterSettle", showStatus);
+  document.addEventListener("statusswapped", showStatus);
+  document.addEventListener("click", function (e) {
+    var band = e.target.closest && e.target.closest("#pulse");
+    if (!band) return;
+    if (e.target.closest("#status-toggle")) return toggleStatus();
+    // a click anywhere on the band that is not a link, a button or a field
+    if (e.target.closest("a, button, input, select, textarea, label, form")) return;
+    toggleStatus();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && statusOpen && !e.target.closest("input, textarea, select")) {
+      var drawer = document.getElementById("drawer"), keys = document.getElementById("keys");
+      if (drawer && !drawer.hidden || keys && !keys.hidden) return;
+      toggleStatus(false);
+      var t = document.getElementById("status-toggle");
+      if (t) t.focus();
+    }
+  });
   function pulse(e) {
     var el = document.getElementById("pulse"), d = e.detail;
     pulseBusy = e.kind === "pulse_computing";
     if (!pulseBusy && d.sentence && !el) return swapBoard();
     if (!pulseBusy && d.sentence) {
       el.classList.toggle("prominent", !!d.prominent);
-      el.querySelector(".pulse-sign").hidden = !d.prominent;
-      el.querySelector(".pulse-say").textContent = d.sentence;
-      var ul = el.querySelector(".pulse-bullets");
-      ul.textContent = "";
-      (d.bullets || []).forEach(function (b) { ul.appendChild(document.createElement("li")).textContent = b; });
+      var sign = el.querySelector(".pulse-sign"), say = el.querySelector(".pulse-say"), ul = document.getElementById("pulse-bullets");
+      if (sign) sign.hidden = !d.prominent;
+      if (say) say.textContent = d.sentence;
+      if (ul) {
+        ul.textContent = "";
+        (d.bullets || []).forEach(function (b) { ul.appendChild(document.createElement("li")).textContent = b; });
+      }
     }
-    showPulse();
+    showStatus();
   }
+  // The ticker along the foot: the project's newest events, the live ones
+  // put first; the set is repeated to fill the width and scrolls at about
+  // 28 px a second, paused on hover (CSS) and still under reduced motion.
+  function tick() {
+    var track = document.getElementById("ticker-track");
+    if (!track || !track.firstElementChild) return;
+    var one = track.firstElementChild, width = track.parentElement.clientWidth || 1;
+    track.style.animation = "none";
+    while (track.children.length > 1) track.removeChild(track.lastElementChild);
+    var sw = one.scrollWidth || 1, k = Math.max(1, Math.ceil(width / sw));
+    var html = one.innerHTML, set = "";
+    for (var i = 0; i < k; i++) set += html;
+    one.innerHTML = set;
+    var twin = one.cloneNode(true);
+    twin.setAttribute("aria-hidden", "true");
+    track.appendChild(twin);
+    track.style.setProperty("--dur", Math.round(sw * k / 28) + "s");
+    void track.offsetWidth;
+    track.style.animation = "";
+  }
+  function tickEvent(e) {
+    var track = document.getElementById("ticker-track");
+    if (!track || !track.firstElementChild || !e.task_id) return;
+    var status = e.kind === "task_status" && e.detail ? e.detail.status : "", cls = {done: "done", failed: "failed", closed: "closed"}[status] || "event";
+    var glyph = {done: "✓", failed: "✕", closed: "⊘"}[status] || "·";
+    var card = document.querySelector && document.querySelector("[data-card=\"" + CSS.escape(e.task_id) + "\"] .title");
+    var words = card ? card.textContent.trim() : (status || e.kind + " by " + e.actor);
+    if (card && status && cls === "event") words += " · " + status;
+    var item = document.createElement("span");
+    item.className = "tk t-" + cls;
+    var when = item.appendChild(document.createElement("time"));
+    when.textContent = new Date(e.at).toISOString().slice(11, 16);
+    var g = item.appendChild(document.createElement("span"));
+    g.className = "g";
+    g.setAttribute("aria-hidden", "true");
+    g.textContent = glyph;
+    item.appendChild(document.createElement("b")).textContent = e.issue_number ? "#" + e.issue_number : e.task_id;
+    item.appendChild(document.createElement("span")).textContent = words;
+    var one = track.firstElementChild;
+    if (track.children.length > 1) {
+      // the set was repeated: keep one copy before putting the new item first
+      var items = one.children, n = items.length;
+      one.innerHTML = Array.prototype.slice.call(items, 0, n).map(function (x) { return x.outerHTML; }).join("");
+    }
+    one.insertBefore(item, one.firstChild);
+    while (one.children.length > 24) one.removeChild(one.lastElementChild);
+    tick();
+  }
+  document.addEventListener("DOMContentLoaded", tick);
+  window.addEventListener("resize", function () { tick(); });
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
     if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);
   });
 })();
 
-// The card drawer beside the board: #card=<id> in the URL opens it, on
-// load too, and a card's title links there; Escape or its ✕ closes it.
+// The whole card opens the drawer (item 226): a click anywhere on the
+// face that is not a link, a button or a field; the title's link is the
+// same door for the keyboard. A selection is left alone.
+document.addEventListener("click", function (e) {
+  if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
+  var card = e.target.closest("#board [data-card]");
+  if (!card || String(getSelection && getSelection())) return;
+  location.hash = "#card=" + card.dataset.card;
+});
+// On the phone the columns are sections: Done starts folded, a tap on a
+// column's title folds or unfolds it.
+(function () {
+  function narrow() { return window.innerWidth < 900; }
+  function fold() {
+    document.querySelectorAll("#board .column.fold").forEach(function (c) {
+      if (!c.dataset.folded) {
+        c.dataset.folded = narrow() ? "yes" : "no";
+        c.classList.toggle("folded", c.dataset.folded === "yes");
+      }
+      var h = c.querySelector(":scope > h3");
+      if (h) h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+    });
+  }
+  document.addEventListener("DOMContentLoaded", fold);
+  document.addEventListener("htmx:afterSettle", fold);
+  document.addEventListener("click", function (e) {
+    var h = e.target.closest && e.target.closest("#board .column > h3");
+    if (!h || !narrow()) return;
+    var c = h.parentElement;
+    c.classList.toggle("folded");
+    c.dataset.folded = c.classList.contains("folded") ? "yes" : "no";
+    h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+  });
+})();
+
+// A disclosure: a button with aria-controls reveals or hides the element it
+// names (the deny form, the own-answer box) and says so in aria-expanded.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("button[aria-controls][aria-expanded]");
+  if (!b || b.type === "submit") return;
+  var box = document.getElementById(b.getAttribute("aria-controls"));
+  if (!box) return;
+  var open = b.getAttribute("aria-expanded") !== "true";
+  b.setAttribute("aria-expanded", String(open));
+  box.hidden = !open;
+  if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
+});
+
+// The card drawer docked at the right edge over the board: #card=<id> in
+// the URL opens it, on load too, and a card links there; #card=<id>:<section>
+// opens it with that section of the overview open. Escape or its ✕
+// closes it.
 // Its tabs and related cards load into it by hx-get, and the URL follows
 // the card it shows.
 function drawer() { return document.getElementById("drawer"); }
 function showDrawer() {
-  var d = drawer(), m = /^#card=(.+)$/.exec(location.hash);
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
   document.body.classList.toggle("drawer-open", !!m);
   d.hidden = !m;
@@ -277,7 +414,9 @@ function showDrawer() {
     document.dispatchEvent(new Event("drawerclosed"));
     return;
   }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer", {target: "#drawer", swap: "innerHTML"}).then(function () {
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+    var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
+    if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
   });
@@ -324,6 +463,7 @@ document.addEventListener("htmx:afterSwap", function (e) {
       return;
     }
     if (e.target.closest("input, textarea, select, [contenteditable]")) return;
+    if (e.key === "w" && window.innerWidth < 900) return;
     if (e.key === "w") {
       e.preventDefault();
       document.getElementById("view-toggle").click();
