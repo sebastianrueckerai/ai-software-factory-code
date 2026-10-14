@@ -90,6 +90,77 @@ func TestStagesRedChecksKeepThenClimbThenCard(t *testing.T) {
 	}
 }
 
+// The approval stage reads the staged head's combined status before its
+// request (versionApprovalGreen): a green head creates the request
+// exactly as before, on that read.
+func TestStagesGreenHeadIsReadBeforeTheRequest(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.headChecks, []string{"c1"}) || len(g.approvals) != 1 || g.approvals[0].Commit != "c1" {
+		t.Fatalf("head reads %v, approvals %+v: want one read of c1 and its request", g.headChecks, g.approvals)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// A staged head whose combined status is red at the approval never gets a
+// request: the failing checks go back to the agent with their names, and
+// the request exists only from the next pass, on the head the green read
+// answered.
+func TestStagesRedHeadAtApprovalGoesBackToTheAgent(t *testing.T) {
+	finding := `check "vet-and-format": failure — go vet failed (https://git.example/sf/r/actions/runs/95)`
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksFailure, Findings: []string{finding}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" {
+		t.Fatalf("approvals = %+v, want one request, for the head the green read answered", g.approvals)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{finding}) {
+		t.Fatalf("sessions = %+v, want the failing check sent back", g.sessions)
+	}
+	if !slices.Equal(g.headChecks, []string{"c1", "c2"}) {
+		t.Fatalf("head reads = %v, want c1 then c2", g.headChecks)
+	}
+}
+
+// A staged head whose checks are still running at the approval goes back
+// with the pending checks named; no request exists while it runs.
+func TestStagesPendingHeadAtApprovalGoesBackToTheAgent(t *testing.T) {
+	pending := `check "test" is still pending on c1 (running)`
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksFailure, Findings: []string{pending}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c1" {
+		t.Fatalf("approvals = %+v, want one request once the head is green", g.approvals)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{pending}) {
+		t.Fatalf("sessions = %+v, want the pending check sent back", g.sessions)
+	}
+	if !slices.Equal(g.headChecks, []string{"c1", "c1"}) {
+		t.Fatalf("head reads = %v, want two reads of c1", g.headChecks)
+	}
+}
+
 // on_findings human sends red checks to the card after one session; the
 // other stages still run and no auto merge is tried.
 func TestStagesHumanFindingsGoToTheCard(t *testing.T) {

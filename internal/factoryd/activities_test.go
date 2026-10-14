@@ -555,6 +555,53 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	}
 }
 
+// HeadChecks reads the head's combined status once, without the checks
+// wait's polling: green passes, a failure answers its failing check as
+// WaitChecks reports it, and a head whose checks have not settled — some
+// still running, or none reported yet — answers the pending (or absent)
+// checks as the findings, which the approval sends back to the agent.
+func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
+	fj := &prForgejo{
+		statusesBySHA: map[string][]string{
+			"c1": {statusBody("success", [4]string{"success", "pr / test", "", ""})},
+			"m1": {statusBody("failure", [4]string{"failure", "pr / vet-and-format", "/sf/repo/actions/runs/7/jobs/0", "go vet failed"})},
+			"p1": {statusBody("pending",
+				[4]string{"success", "pr / vet", "", ""},
+				[4]string{"pending", "pr / test", "", "running"})},
+		},
+		statuses: []string{statusBody("")},
+	}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	r.forgejo.PublicURL = "https://git.example.org"
+	head := func(t *testing.T, sha string) ChecksResult {
+		t.Helper()
+		var res ChecksResult
+		val, err := execActivity(t, r, ActivityHeadChecks, "t1", sha)
+		if err != nil || val.Get(&res) != nil {
+			t.Fatalf("%s: %v", sha, err)
+		}
+		return res
+	}
+	if res := head(t, "c1"); res.State != ChecksSuccess || len(res.Findings) != 0 {
+		t.Fatalf("c1 = %+v, want green with no findings", res)
+	}
+	if res := head(t, "m1"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+		res.Findings[0] != `check "pr / vet-and-format": failure — go vet failed (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` {
+		t.Fatalf("m1 = %+v, want the failing check as the checks wait reports it", res)
+	}
+	if res := head(t, "p1"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+		res.Findings[0] != `check "pr / test" is still pending on p1 (running)` {
+		t.Fatalf("p1 = %+v, want the pending check named", res)
+	}
+	if res := head(t, "n0"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+		res.Findings[0] != "no check has reported on n0 yet" {
+		t.Fatalf("n0 = %+v, want the absent checks named", res)
+	}
+	if fj.polls != 1 || fj.pollsBySHA["c1"]+fj.pollsBySHA["m1"]+fj.pollsBySHA["p1"] != 3 {
+		t.Fatalf("polls = %d %+v: each head read once, no polling", fj.polls, fj.pollsBySHA)
+	}
+}
+
 // When a head check fails, the gate reads main's state for the same check:
 // a context also failing on main is named as such in the finding, so the
 // agent's session and the supervisor's guidance point at the pre-existing

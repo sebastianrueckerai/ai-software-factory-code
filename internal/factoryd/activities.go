@@ -74,6 +74,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunSession:                  r.RunSession,
 		ActivityOpenPullRequest:             r.OpenPullRequest,
 		ActivityWaitChecks:                  r.WaitChecks,
+		ActivityHeadChecks:                  r.HeadChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
 		ActivityBranchHead:                  r.BranchHead,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
@@ -1191,23 +1192,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 			return ChecksResult{}, err
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
-		res := checksResult(cs, r.forgejo.PublicURL, func(target string) ([]byte, error) {
-			// The bot collaborates on every project repository, so its
-			// session can read any of their logs; a status could name one
-			// outside this task's own run and pull another project's log
-			// (M1, review-task115.md).
-			prefix := "/" + repo.Owner + "/" + repo.Name + "/actions/runs/"
-			if !strings.HasPrefix(target, prefix) {
-				err := fmt.Errorf("target %q outside %s", target, prefix)
-				log.Printf("task %s: job log %s: %v", t.ID, target, err)
-				return nil, err
-			}
-			body, err := r.forgejo.JobLog(ctx, target)
-			if err != nil {
-				log.Printf("task %s: job log %s: %v", t.ID, target, err)
-			}
-			return body, err
-		})
+		res := checksResult(cs, r.forgejo.PublicURL, r.jobLogOf(ctx, t, repo))
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
 		}
@@ -1232,6 +1217,76 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		case <-time.After(min(r.cfg.ChecksPoll, time.Until(deadline))):
 		}
 	}
+}
+
+// HeadChecks reads the staged head's combined commit status once, without
+// the checks wait's polling: the read the approver does by hand, and the
+// one the approval stage asks before its request (versionApprovalGreen). A
+// red head answers its failing checks as WaitChecks reports them; one
+// whose checks are still running, or that no check has reported on yet,
+// answers the pending checks as the findings, and the approval sends them
+// back to the agent, which waits in the checks stage.
+func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return ChecksResult{}, err
+	}
+	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
+	if err != nil {
+		return ChecksResult{}, err
+	}
+	res := checksResult(cs, r.forgejo.PublicURL, r.jobLogOf(ctx, t, repo))
+	switch res.State {
+	case ChecksFailure:
+		r.annotateMainFailures(ctx, repo, &res)
+	case ChecksSuccess:
+	default:
+		res = ChecksResult{State: ChecksFailure, Findings: pendingCheckFindings(sha, cs)}
+	}
+	return res, nil
+}
+
+// jobLogOf is logOf for a head's failed checks: the tail of a check's job
+// log, when its target is an actions run of the task's own repository.
+// The bot collaborates on every project repository, so its session can
+// read any of their logs; a status could name one outside this task's own
+// run and pull another project's log (M1, review-task115.md).
+func (r *Runner) jobLogOf(ctx context.Context, t Task, repo Repo) func(target string) ([]byte, error) {
+	prefix := "/" + repo.Owner + "/" + repo.Name + "/actions/runs/"
+	return func(target string) ([]byte, error) {
+		if !strings.HasPrefix(target, prefix) {
+			err := fmt.Errorf("target %q outside %s", target, prefix)
+			log.Printf("task %s: job log %s: %v", t.ID, target, err)
+			return nil, err
+		}
+		body, err := r.forgejo.JobLog(ctx, target)
+		if err != nil {
+			log.Printf("task %s: job log %s: %v", t.ID, target, err)
+		}
+		return body, err
+	}
+}
+
+// pendingCheckFindings name the checks that have not finished on sha: a
+// combined state of pending, or none reported yet.
+func pendingCheckFindings(sha string, cs CombinedStatus) []string {
+	var out []string
+	for _, s := range cs.Statuses {
+		if s.State != "success" && s.State != "warning" {
+			finding := fmt.Sprintf("check %q is still %s on %s", s.Context, cmp.Or(s.State, "pending"), sha)
+			if s.Description != "" {
+				finding += " (" + s.Description + ")"
+			}
+			out = append(out, finding)
+		}
+	}
+	if len(out) == 0 && len(cs.Statuses) > 0 {
+		out = append(out, fmt.Sprintf("the checks on %s are not settled (combined state %q)", sha, cs.State))
+	}
+	if len(out) == 0 {
+		out = append(out, "no check has reported on "+sha+" yet")
+	}
+	return out
 }
 
 // BranchHead is the head of the task's branch on the fork when it holds
