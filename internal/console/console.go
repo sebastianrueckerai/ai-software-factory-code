@@ -169,6 +169,11 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
+	// AttemptFunded is the answer path's floor (ruling 322): "" when the
+	// task's remaining budget can fund a call on model, else the refusal
+	// the answer carries (factoryd's Runner.AttemptFunded); nil checks
+	// nothing.
+	AttemptFunded func(ctx context.Context, taskID, model string) (string, error)
 	// Chat keeps the project agent's conversations and chat tasks, and
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat

@@ -1340,6 +1340,40 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	}
 }
 
+// Ruling 322 (finding 215): the answer is refused before it is posted
+// when the task's remaining budget cannot fund a call. No comment goes
+// to the issue, and the refusal carries the message the card will carry.
+func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("cannot reach the database", []factoryd.Task{
+		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
+	}...)
+	refusal := "the remaining budget cannot fund a call: 0.004 EUR of the 2.000 EUR budget remains, and the cheapest call needs more; close this card and file a new one"
+	var asked string
+	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+		asked = taskID + " " + model
+		return refusal, nil
+	}
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), refusal) {
+		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
+	}
+	if asked != "t-e factory/coding-cheap" {
+		t.Fatalf("the floor read %q", asked)
+	}
+	if len(r.fg.comments) != 0 {
+		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
+	}
+	// a failed read is no refusal: the workflow's grant still guards the attempt
+	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+		return "", errors.New("the price book is down")
+	}
+	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("answer on a failed read = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin
