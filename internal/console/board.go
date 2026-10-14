@@ -519,6 +519,15 @@ type need struct {
 	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
+// Waiting is how long the item has waited for a member, in minutes or
+// hours and minutes; empty when the item's start is unknown.
+func (n need) Waiting() string {
+	if n.Since.IsZero() {
+		return ""
+	}
+	return minutes(time.Since(n.Since))
+}
+
 // viewWide is the board's wide view: the lanes as columns first, then the
 // task states, as the board was before the five columns.
 const viewWide = "wide"

@@ -683,8 +683,9 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		esc := escalationOf(t, body, "t-ch")
 		want := `<p class="reason">The agent asks: a replica or a shard?` + "\n" + `Why: the reads outgrow one node</p>` + "\n" +
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
-			choice("a replica") + choice("a shard") + choice("both") + "</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
+			choice("a replica") + choice("a shard") + choice("both") +
+			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
+			`<form method="post" action="/tasks/t-ch/answer" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" required></textarea>`
 		if !strings.Contains(esc, want) {

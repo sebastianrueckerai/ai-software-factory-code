@@ -384,14 +384,28 @@ document.addEventListener("click", function (e) {
   });
 })();
 
+// A disclosure: a button with aria-controls reveals or hides the element it
+// names (the deny form, the own-answer box) and says so in aria-expanded.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("button[aria-controls][aria-expanded]");
+  if (!b || b.type === "submit") return;
+  var box = document.getElementById(b.getAttribute("aria-controls"));
+  if (!box) return;
+  var open = b.getAttribute("aria-expanded") !== "true";
+  b.setAttribute("aria-expanded", String(open));
+  box.hidden = !open;
+  if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
+});
+
 // The card drawer docked at the right edge over the board: #card=<id> in
-// the URL opens it, on load too, and a card links there; Escape or its ✕
+// the URL opens it, on load too, and a card links there; #card=<id>:<section>
+// opens it with that section of the overview open. Escape or its ✕
 // closes it.
 // Its tabs and related cards load into it by hx-get, and the URL follows
 // the card it shows.
 function drawer() { return document.getElementById("drawer"); }
 function showDrawer() {
-  var d = drawer(), m = /^#card=(.+)$/.exec(location.hash);
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
   document.body.classList.toggle("drawer-open", !!m);
   d.hidden = !m;
@@ -400,7 +414,9 @@ function showDrawer() {
     document.dispatchEvent(new Event("drawerclosed"));
     return;
   }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer", {target: "#drawer", swap: "innerHTML"}).then(function () {
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+    var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
+    if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
   });

@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -38,6 +39,15 @@ type approvalCard struct {
 	Filter   boardFilter
 	CSRF     string
 	Approver bool
+}
+
+// Waiting is how long the request has waited for a member, in minutes
+// or hours and minutes; empty when its filing time is unknown.
+func (k approvalCard) Waiting() string {
+	if k.CreatedAt.IsZero() {
+		return ""
+	}
+	return minutes(time.Since(k.CreatedAt))
 }
 
 // planQuestion is a plan's question as its card shows it, numbered from 1.
