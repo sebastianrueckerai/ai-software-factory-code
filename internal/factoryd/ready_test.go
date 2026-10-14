@@ -53,7 +53,7 @@ type fakeCounts struct {
 }
 
 func (f fakeCounts) CountAdmitted(context.Context, string) (int, error) { return f.admitted, f.err }
-func (f fakeCounts) CountBacklog(context.Context, string) (int, error) { return f.backlog, f.err }
+func (f fakeCounts) CountBacklog(context.Context, string) (int, error)  { return f.backlog, f.err }
 
 func readyTree() policy.Tree {
 	return policy.Tree{Projects: map[string]policy.ProjectConfig{

@@ -15,7 +15,7 @@ import (
 const (
 	// EventAutonomyChanged records a project's autonomy level or backlog
 	// cap change (roadmap 239): detail {"from", "to", "backlog_cap"}.
-	EventAutonomyChanged = "autonomy_changed"
+	EventAutonomyChanged   = "autonomy_changed"
 	EventCardCreated       = "card_created"
 	EventCardEnteredLane   = "card_entered_lane"
 	EventTaskEnded         = "task_ended"

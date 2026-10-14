@@ -305,6 +305,8 @@ func (s *acceptTasks) add(t factoryd.Task) {
 	s.tasks = append(s.tasks, factoryd.BoardTask{Task: t})
 }
 
+func (*acceptTasks) CountAdmitted(context.Context, string) (int, error) { return 0, nil }
+
 // acceptObjects is the object store in memory.
 type acceptObjects map[string][]byte
 
@@ -319,6 +321,8 @@ type acceptEvents struct {
 	bus   *factoryd.EventBus
 	tasks *acceptTasks
 }
+
+func (*acceptTasks) CountBacklog(context.Context, string) (int, error) { return 0, nil }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
 	if e.Repository == "" || e.Kind == "" {

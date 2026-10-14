@@ -257,6 +257,8 @@ func (s *accBatchTasks) openCount() int {
 	return n
 }
 
+func (*accBatchTasks) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+
 // accBatchApprovals are the approval_requests rows in memory;
 // ResolveApprovals is factoryd.PGStore.ResolveApprovals on them.
 type accBatchApprovals struct {
@@ -559,6 +561,8 @@ func (s *accBatchStore) WaitingQueueHeads(ctx context.Context) ([]string, error)
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
 }
+
+func (*accBatchStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }
 
 // accBatchPolicies serves the fixture tree as the version in force.
 type accBatchPolicies struct{ tree policy.Tree }

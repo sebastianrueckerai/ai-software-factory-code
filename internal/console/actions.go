@@ -504,7 +504,7 @@ func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, 
 		}
 	}
 	log.Printf("console: %s started plan %s via %s: %d cards labelled agent, %d wait", a.s.user, t.ID, a.via, n, len(waits))
-		started := map[string]any{"cards": n}
+	started := map[string]any{"cards": n}
 	if len(waits) > 0 {
 		started["waiting"] = len(waits)
 	}
@@ -590,20 +590,20 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 	if a.via == factoryd.ViaChat {
 		if v, ok := c.inForce(ctx); ok {
 			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.ID, revision); err != nil {
-			log.Printf("console: the revision %d of plan %s: %v", revision, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")
-		} else if ok {
-			var p struct {
-				Cards []json.RawMessage `json:"cards"`
-			}
-			if err := json.Unmarshal(rev.Plan, &p); err == nil && len(p.Cards) > 0 {
-				if n, err := c.cfg.Tasks.CountBacklog(ctx, t.Repository); err != nil {
-					log.Printf("console: the backlog of %s: %v", t.Repository, err)
-				} else if room := v.Tree.BacklogCapOf(t.Repository) - n; len(p.Cards) > room {
-					return "", refuse(http.StatusConflict, fmt.Sprintf("The ready check refuses the acceptance: filing %d cards would pass the backlog cap of %d (%d cards wait now); it waits for room.", len(p.Cards), v.Tree.BacklogCapOf(t.Repository), n))
+				log.Printf("console: the revision %d of plan %s: %v", revision, t.ID, err)
+				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")
+			} else if ok {
+				var p struct {
+					Cards []json.RawMessage `json:"cards"`
+				}
+				if err := json.Unmarshal(rev.Plan, &p); err == nil && len(p.Cards) > 0 {
+					if n, err := c.cfg.Tasks.CountBacklog(ctx, t.Repository); err != nil {
+						log.Printf("console: the backlog of %s: %v", t.Repository, err)
+					} else if room := v.Tree.BacklogCapOf(t.Repository) - n; len(p.Cards) > room {
+						return "", refuse(http.StatusConflict, fmt.Sprintf("The ready check refuses the acceptance: filing %d cards would pass the backlog cap of %d (%d cards wait now); it waits for room.", len(p.Cards), v.Tree.BacklogCapOf(t.Repository), n))
+					}
 				}
 			}
-		}
 		}
 	}
 	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.s.user); {

@@ -801,4 +801,6 @@ func (s *acceptanceStore) finalOf(taskID string) (final, reason string) {
 	return t.Status, ""
 }
 
+func (s *acceptanceStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+
 var _ factoryd.Store = (*acceptanceStore)(nil)
