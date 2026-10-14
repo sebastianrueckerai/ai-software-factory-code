@@ -23,6 +23,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 var funcs = template.FuncMap{
@@ -1563,7 +1564,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Retry = &retry{CSRF: v.csrf}
 	}
 	if v.escalated(t) {
-		k.Reason, k.Choices, k.EscalationAlert = bt.Escalation, bt.Choices, bt.EscalationAlert
+		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the answer path's floor refuses
 		// the answer (ruling 322): the same card, to its project's approvers
@@ -1594,6 +1595,35 @@ func activityLine(e factoryd.Event) string {
 		return words + " at " + at
 	}
 	return fmt.Sprintf("%s by %s via %s at %s", e.Kind, e.Actor, e.Via, at)
+}
+
+// maxCardReason bounds what a card shows of an escalation body even
+// without bullets to cut (a screened author's reasons, an agent's ask).
+const maxCardReason = 2000
+
+// cardReason is what a needs-you card shows of an escalation body: its
+// question and state lines, with the findings history — the session
+// bullets an escalation carries for the issue — one pointer line (roadmap
+// 244). A card with a user decision names the decision and its context;
+// the transcript lives on the issue the answer happens on.
+func cardReason(body string) string {
+	var keep []string
+	dropped := false
+	for _, l := range strings.Split(body, "\n") {
+		if strings.HasPrefix(l, "- ") {
+			dropped = true
+			continue
+		}
+		keep = append(keep, l)
+	}
+	if dropped {
+		keep = append(keep, "- the findings history is on the issue")
+	}
+	s := strings.Join(keep, "\n")
+	if len(s) > maxCardReason {
+		s = textutil.Truncate(s, maxCardReason) + "\n- the rest is on the issue"
+	}
+	return s
 }
 
 // finishCards fills what each card's face reads per render rather than

@@ -139,6 +139,51 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	}
 }
 
+// Roadmap 244: a needs-you card shows the escalation's question and its
+// state lines; the findings history the escalation carries for the issue
+// is one pointer line, so the card stays a decision, not a transcript.
+func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
+	body := "the session cap is reached: every finding sent to the agent so far goes to a human\n" +
+		"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)\n" +
+		"- (15 earlier findings left out)\n" +
+		"- session, attempt 15: ran a grep in workflow_stages.go (exit 0)\n" +
+		"- session, attempt 15: ran a python splice on attempt2.diff (exit 0)"
+	want := "the session cap is reached: every finding sent to the agent so far goes to a human\n" +
+		"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)\n" +
+		"- the findings history is on the issue"
+	if got := cardReason(body); got != want {
+		t.Errorf("cardReason = %q, want the question and state lines with the pointer", got)
+	}
+	// a body without bullets (an agent's ask) passes through whole, and a
+	// bulletless body past the bound carries the rest pointer
+	ask := factoryd.AgentAsks + "which region?\nWhy: the replica serves one.\nRecommendation: fsn1"
+	if got := cardReason(ask); got != ask {
+		t.Errorf("cardReason of an ask = %q, want it unchanged", got)
+	}
+	long := strings.Repeat("a", maxCardReason+500)
+	if got := cardReason(long); !strings.HasPrefix(got, strings.Repeat("a", maxCardReason)) || !strings.HasSuffix(got, "- the rest is on the issue") {
+		t.Error("cardReason of a long bulletless body lacks its cut at the bound and the rest pointer")
+	}
+	// the rendered card carries the compact reason, the lane card and the
+	// drawer alike, and none of the history
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human",
+		Lane: "ready", Repository: "sf/code", Objective: "the card", CreatedAt: now, IssueNumber: 13},
+		Escalation: body, EscalatedAt: now.Add(-2 * time.Hour)}}
+	page := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)",
+		"- the findings history is on the issue"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the needs-you card lacks %q", want)
+		}
+	}
+	if strings.Contains(page, "attempt 15") {
+		t.Error("the needs-you card shows the findings history")
+	}
+}
+
 // The status line: the project, its state word, n working, n need you
 // (the Needs you column, whatever the accent) and the spend of its tasks
 // from the first UTC day of the month on against its month cap, the
