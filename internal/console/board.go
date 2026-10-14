@@ -138,23 +138,123 @@ func waitingSince(bt factoryd.BoardTask) time.Time {
 	return bt.CreatedAt
 }
 
-// arrival orders the four columns' cards newest first (Sebastian,
-// 2026-10-14): Queued by filing, In progress by admission, Done by
-// finishing; a card without the time keeps its filing time, and the
-// store's order holds among equals. Needs you stays oldest waiting first.
-func arrival(cols []column) {
-	at := func(k card) time.Time {
-		switch {
-		case slices.Contains([]string{"running", "closing", "in-review"}, k.Status) && k.AdmittedAt != nil:
-			return *k.AdmittedAt
-		case factoryd.Final(k.Status) && k.FinishedAt != nil:
-			return *k.FinishedAt
+// arrivedAt is when k arrived in its column (Sebastian, 2026-10-14, the
+// default order, newest first): its admission in progress, its finishing
+// when final, else its filing. Needs you stays oldest waiting first.
+func arrivedAt(k card) time.Time {
+	switch {
+	case slices.Contains([]string{"running", "closing", "in-review"}, k.Status) && k.AdmittedAt != nil:
+		return *k.AdmittedAt
+	case factoryd.Final(k.Status) && k.FinishedAt != nil:
+		return *k.FinishedAt
+	}
+	return k.CreatedAt
+}
+
+// arrange applies the column menus (C13) to the four columns after the
+// find: each of Queued, In progress and Done takes its order, then its
+// show, and gets its menu; the show narrows below the whole count the
+// find left, so the head reads "n of m".
+func arrange(d *boardData, f boardFilter) {
+	for _, m := range colMenus {
+		col, cf := &d.Columns[m.Col], f.col(m.Name)
+		col.Cards = ordered(col.Cards, cf.Order)
+		if cf.Only != "" {
+			col.Cards = slices.DeleteFunc(col.Cards, func(k card) bool { return !shows(k, cf.Only) })
 		}
-		return k.CreatedAt
+		col.Menu = menuOf(m, cf, f, d.cols()[m.Col].Cards)
 	}
-	for i := range cols {
-		slices.SortStableFunc(cols[i].Cards, func(a, b card) int { return at(b).Compare(at(a)) })
+}
+
+// ordered is cards in the menu's order, a clone: arrival newest first by
+// default, oldest first, next up (the store's rank), by stage (planning,
+// building, verifying) or by spend, the last two newest first among
+// equals.
+func ordered(cards []card, order string) []card {
+	out := slices.Clone(cards)
+	newest := func(a, b card) int { return arrivedAt(b).Compare(arrivedAt(a)) }
+	switch order {
+	case "next":
+	case "oldest":
+		slices.SortStableFunc(out, func(a, b card) int { return arrivedAt(a).Compare(arrivedAt(b)) })
+	case "stage":
+		slices.SortStableFunc(out, newest)
+		slices.SortStableFunc(out, func(a, b card) int { return cmp.Compare(stageRank(a.Stage), stageRank(b.Stage)) })
+	case "spend":
+		slices.SortStableFunc(out, newest)
+		slices.SortStableFunc(out, func(a, b card) int { return cmp.Compare(b.SpentEUR, a.SpentEUR) })
+	default:
+		slices.SortStableFunc(out, newest)
 	}
+	return out
+}
+
+func stageRank(stage string) int {
+	switch stage {
+	case "planning":
+		return 0
+	case "building":
+		return 1
+	case "verifying":
+		return 2
+	}
+	return 3
+}
+
+// shows is whether k stays under the menu's show only.
+func shows(k card, only string) bool {
+	switch only {
+	case "blocked":
+		return k.Blocked > 0 || k.WaitingOn != ""
+	case "exceptional":
+		return k.Stale || k.Provider || k.NearBudget || k.Retrying || k.Held
+	case "failed":
+		return k.Status == "failed"
+	}
+	if n, ok := strings.CutPrefix(only, "plan:"); ok {
+		return strconv.FormatInt(k.PlanIssue, 10) == n
+	}
+	return true
+}
+
+// menuOf is the column's menu for the head: Queued's shows gain one per
+// plan among whole, the column's cards before the show.
+func menuOf(m menuSpec, cf colFilter, f boardFilter, whole []card) *colMenu {
+	onlys := slices.Clone(m.Onlys)
+	if m.Name == "queued" {
+		var plans []int64
+		for _, k := range whole {
+			if k.PlanIssue > 0 && !slices.Contains(plans, k.PlanIssue) {
+				plans = append(plans, k.PlanIssue)
+			}
+		}
+		slices.Sort(plans)
+		for _, p := range plans {
+			onlys = append(onlys, option{fmt.Sprintf("plan:%d", p), fmt.Sprintf("from plan #%d", p)})
+		}
+	}
+	var state []string
+	if cf.Order != "" {
+		state = append(state, label(m.Orders, cf.Order))
+	}
+	if cf.Only != "" {
+		state = append(state, label(onlys, cf.Only))
+	}
+	clear := f
+	clear.setCol(m.Name, colFilter{})
+	return &colMenu{Name: m.Name, OnlyName: m.Name + "-only", Order: cf.Order, Only: cf.Only, Orders: m.Orders, Onlys: onlys,
+		State: strings.Join(state, " · "), ClearQuery: clear.query()}
+}
+
+// label is the choice's label, "from plan #n" for a plan the column no
+// longer holds.
+func label(options []option, value string) string {
+	for _, o := range options {
+		if o.Value == value {
+			return o.Label
+		}
+	}
+	return "from plan #" + strings.TrimPrefix(value, "plan:")
 }
 
 // find narrows the columns to the terms of q (C13): a word matches what
@@ -720,6 +820,9 @@ type column struct {
 	// Total is the column's count before the find narrowed it (C13); the
 	// head reads "n of m" when they differ.
 	Total int
+	// Menu is the column's menu (C13) in the four columns: Queued, In
+	// progress and Done have one, Needs you none.
+	Menu  *colMenu
 	Cards []card
 	// Needs is the five columns' Needs you: what the wide view's human
 	// lane holds and every card that needs the viewer, oldest first.
@@ -732,6 +835,18 @@ func (c column) Count() int {
 		return len(c.Needs)
 	}
 	return len(c.Cards)
+}
+
+// colMenu is a column's menu as its head renders it: its query names,
+// the choices with the current one, the non-default choices' labels as
+// the state line's words, and the board without this column's choices
+// as the state line's clear link.
+type colMenu struct {
+	Name, OnlyName string
+	Order, Only    string
+	Orders, Onlys  []option
+	State          string
+	ClearQuery     string
 }
 
 // need is an item of the human lane, or of the Needs you column: an
@@ -778,17 +893,114 @@ type boardFilter struct {
 	// Q is the find (C13): words and key:value terms that narrow every
 	// column, kept by every form, the poll, the fragments and the stream.
 	Q string
+	// Queued, Progress and Done are the column menus' choices (C13),
+	// read from queued, queued-only, progress, progress-only, done and
+	// done-only in the query.
+	Queued, Progress, Done colFilter
+}
+
+// colFilter is a column's order and show from its menu (C13): "" is the
+// default, arrival newest first and every card.
+type colFilter struct{ Order, Only string }
+
+// option is a menu's choice: its query value and its label.
+type option struct{ Value, Label string }
+
+// menuSpec is a column menu: its query name, its column and its choices;
+// the first of each is the default. Queued's shows gain "from plan #n"
+// per plan with queued cards.
+type menuSpec struct {
+	Name   string
+	Col    int
+	Orders []option
+	Onlys  []option
+}
+
+// colMenus are the three column menus; Needs you is always oldest
+// waiting first and has none.
+var colMenus = []menuSpec{
+	{"queued", colQueued, []option{{"", "newest first"}, {"oldest", "oldest first"}, {"next", "next up"}}, []option{{"", "all"}, {"blocked", "blocked only"}}},
+	{"progress", colProgress, []option{{"", "newest first"}, {"oldest", "oldest first"}, {"stage", "by stage"}, {"spend", "by spend"}}, []option{{"", "all"}, {"exceptional", "exceptional only"}}},
+	{"done", colDone, []option{{"", "newest first"}, {"oldest", "oldest first"}}, []option{{"", "all"}, {"failed", "failed only"}}},
+}
+
+// col is the menu's choices for the column named name.
+func (f boardFilter) col(name string) colFilter {
+	switch name {
+	case "queued":
+		return f.Queued
+	case "progress":
+		return f.Progress
+	case "done":
+		return f.Done
+	}
+	return colFilter{}
+}
+
+func (f *boardFilter) setCol(name string, c colFilter) {
+	switch name {
+	case "queued":
+		f.Queued = c
+	case "progress":
+		f.Progress = c
+	case "done":
+		f.Done = c
+	}
+}
+
+// readCols reads the menus' choices with get, a value the menu does not
+// offer reading as the default.
+func readCols(f *boardFilter, get func(string) string) {
+	for _, m := range colMenus {
+		c := colFilter{Order: get(m.Name), Only: get(m.Name + "-only")}
+		if !slices.ContainsFunc(m.Orders, func(o option) bool { return o.Value == c.Order }) {
+			c.Order = ""
+		}
+		if n, ok := strings.CutPrefix(c.Only, "plan:"); ok {
+			if _, err := strconv.ParseInt(n, 10, 64); err != nil {
+				c.Only = ""
+			}
+		} else if !slices.ContainsFunc(m.Onlys, func(o option) bool { return o.Value == c.Only }) {
+			c.Only = ""
+		}
+		f.setCol(m.Name, c)
+	}
+}
+
+// hidden is one field a form carries to keep the board's filter.
+type hidden struct{ Name, Value string }
+
+// Hidden are the filter's fields with a value, as a form's hidden
+// inputs, but those named in except: the find's form leaves out q, a
+// menu's form its own column's two.
+func (f boardFilter) Hidden(except ...string) []hidden {
+	fields := []hidden{{"project", f.Project}, {"view", f.View}, {"q", f.Q}}
+	for _, m := range colMenus {
+		c := f.col(m.Name)
+		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
+	}
+	var out []hidden
+	for _, h := range fields {
+		if h.Value != "" && !slices.Contains(except, h.Name) {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
+	f := boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
+	readCols(&f, r.PostFormValue)
+	return f
 }
 
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	return boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
+	f := boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
+	readCols(&f, q.Get)
+	return f
 }
 
 func (f boardFilter) wide() bool { return f.View == viewWide }
@@ -804,6 +1016,14 @@ func (f boardFilter) query() string {
 	}
 	if f.Q != "" {
 		q.Set("q", f.Q)
+	}
+	for _, m := range colMenus {
+		if c := f.col(m.Name); c.Order != "" {
+			q.Set(m.Name, c.Order)
+		}
+		if c := f.col(m.Name); c.Only != "" {
+			q.Set(m.Name+"-only", c.Only)
+		}
 	}
 	if q.Encode() == "" {
 		return ""
@@ -1644,9 +1864,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}
-	if !wide {
-		arrival(d.Columns)
-	}
 	for _, a := range v.pending {
 		if a.Project != shown.Repository {
 			continue
@@ -1689,6 +1906,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	})
 	d.whole = d.Columns
 	d.Columns = find(d.Columns, f.Q)
+	if !wide {
+		arrange(&d, f)
+	}
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)

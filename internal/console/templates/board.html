@@ -1,6 +1,6 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
 <div class="board-head"><h2 id="board-title">Board</h2>
-<form class="find{{if .Q}} on{{end}}" id="find" role="search" method="get" action="/"><input type="hidden" name="project" value="{{.Project}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}<label class="visually-hidden" for="q">Find on the board</label><input id="q" name="q" type="text" value="{{.Q}}" placeholder="Find: a word, #612, plan:558" autocomplete="off" spellcheck="false" aria-keyshortcuts="f">{{if .Q}}<a class="find-x" href="/{{.ClearQuery}}" aria-label="Clear the find" title="Clear the find">×</a>{{end}}</form>
+<form class="find{{if .Q}} on{{end}}" id="find" role="search" method="get" action="/">{{range .Hidden "q"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<label class="visually-hidden" for="q">Find on the board</label><input id="q" name="q" type="text" value="{{.Q}}" placeholder="Find: a word, #612, plan:558" autocomplete="off" spellcheck="false" aria-keyshortcuts="f">{{if .Q}}<a class="find-x" href="/{{.ClearQuery}}" aria-label="Clear the find" title="Clear the find">×</a>{{end}}</form>
 <a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
@@ -29,7 +29,10 @@
 </section>
 {{else}}<div class="lane five">
 {{range $i, $col := .Columns}}<section class="column{{if eq $col.Title "Done"}} fold{{end}}{{if and (eq $i 0) $col.Total}} lit{{end}}" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
-<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
+{{with $m := $col.Menu}}<details class="col-menu"><summary{{if .State}} class="on"{{end}} aria-label="Order and show, {{$col.Title}}{{with .State}}: {{.}}{{end}}" title="Order and show"></summary>
+<form method="get" action="/" class="menu-pop">{{range $.Hidden .Name .OnlyName}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Order</legend>{{range .Orders}}<label><input type="radio" name="{{$m.Name}}" value="{{.Value}}"{{if eq .Value $m.Order}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><fieldset><legend>Show</legend>{{range .Onlys}}<label><input type="radio" name="{{$m.OnlyName}}" value="{{.Value}}"{{if eq .Value $m.Only}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><button type="submit" class="apply">Apply</button></form></details>
+{{with .State}}<p class="col-state"><span>{{.}}</span><a class="col-x" href="/{{$m.ClearQuery}}" aria-label="Back to newest first and all" title="Back to newest first and all">×</a></p>{{end}}
+{{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
 {{range $col.Cards}}{{template "card" .}}{{end}}</div>
 </section>
 {{end}}</div>
@@ -57,7 +60,7 @@
 
 {{define "count"}}{{if ne .Total .Count}}<b>{{.Count}}</b> of {{.Total}}{{else}}{{.Count}}{{end}}{{end}}
 
-{{define "filter"}}<input type="hidden" name="project" value="{{.Project}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{with .Q}}<input type="hidden" name="q" value="{{.}}">{{end}}{{end}}
+{{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
 
 {{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
 {{template "card" .Card}}

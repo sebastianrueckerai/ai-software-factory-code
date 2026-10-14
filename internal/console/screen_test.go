@@ -89,9 +89,14 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
 		}
-		// the head, then the body that alone scrolls (never sideways)
-		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>\n<div class=\"cards\">") {
-			t.Errorf("the header of %s lacks the count %s or its body", title, counts[title])
+		// the head, then the menu on the three columns that have one (C13),
+		// then the body that alone scrolls (never sideways)
+		next := "<div class=\"cards\">"
+		if title != "Needs you" {
+			next = `<details class="col-menu">`
+		}
+		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>\n"+next) || !strings.Contains(col(t, body, title), `<div class="cards">`) {
+			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
 			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {
@@ -1004,5 +1009,101 @@ func TestFilterQueryCarriesTheFind(t *testing.T) {
 	}
 	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?q=%20x%20", nil)); got.Q != "x" {
 		t.Errorf("urlFilter trims to %q", got.Q)
+	}
+	if got := (boardFilter{Project: "p", Queued: colFilter{"oldest", "blocked"}, Done: colFilter{Only: "failed"}}).query(); got != "?done-only=failed&project=p&queued=oldest&queued-only=blocked" {
+		t.Errorf("query with the menus %q", got)
+	}
+	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?queued=sideways&queued-only=plan:x&done-only=failed", nil)); got.Queued != (colFilter{}) || got.Done != (colFilter{Only: "failed"}) {
+		t.Errorf("urlFilter reads unknown choices as %+v %+v", got.Queued, got.Done)
+	}
+}
+
+// The column menus (C13): Queued, In progress and Done take their order
+// and their show from the query, arrival newest first and every card
+// otherwise; the head says the non-default choices under it with a way
+// back and marks its ▾; the forms keep the choices; a value a menu does
+// not offer reads as the default; the show narrows under the find's
+// whole count.
+func TestColumnMenusOrderAndShow(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	task := func(id, status, lane string, filed time.Duration) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: lane, Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed), BudgetEUR: 2}
+	}
+	plan := task("t-plan", "done", "plan", 10*time.Hour)
+	plan.IssueNumber, plan.FinishedAt = 7, ago(9*time.Hour)
+	qb := task("t-q-b", "queued", "ready", 3*time.Hour) // from plan #7
+	qb.Parent, qb.Source = "t-plan", factoryd.SourcePlan
+	qc := task("t-q-c", "waiting-deps", "ready", 2*time.Hour)
+	qa := task("t-q-a", "queued", "ready", 30*time.Minute)
+	// build and planning filed inside the stale window, so with no event
+	// they wear no ring; verify is stale and near its budget
+	build := task("t-build", "running", "ready", 25*time.Minute)
+	build.AdmittedAt, build.SpentEUR = ago(20*time.Minute), 0.5
+	verify := task("t-verify", "in-review", "ready", 4*time.Hour)
+	verify.AdmittedAt, verify.SpentEUR = ago(time.Hour), 1.9
+	planning := task("t-planning", "running", "plan", 28*time.Minute)
+	planning.AdmittedAt, planning.SpentEUR = ago(24*time.Minute), 1
+	done := task("t-done", "done", "ready", 8*time.Hour)
+	done.FinishedAt = ago(time.Hour)
+	fail := task("t-fail", "failed", "ready", 7*time.Hour)
+	fail.FinishedAt = ago(30 * time.Minute)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: qa}, {Task: qb}, {Task: qc, WaitingOn: "#9"}, {Task: build}, {Task: verify}, {Task: planning}, {Task: plan}, {Task: done}, {Task: fail}}
+	page := func(query string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
+	}
+	for _, c := range []struct {
+		query, title string
+		items        []string
+		count        string
+	}{
+		{"", "Queued", []string{"t-q-a", "t-q-c", "t-q-b"}, "3"},
+		{"?queued=oldest", "Queued", []string{"t-q-b", "t-q-c", "t-q-a"}, "3"},
+		{"?queued=next", "Queued", []string{"t-q-a", "t-q-b", "t-q-c"}, "3"},
+		{"?queued-only=blocked", "Queued", []string{"t-q-c"}, "<b>1</b> of 3"},
+		{"?queued-only=plan:7", "Queued", []string{"t-q-b"}, "<b>1</b> of 3"},
+		{"", "In progress", []string{"t-build", "t-planning", "t-verify"}, "3"},
+		{"?progress=oldest", "In progress", []string{"t-verify", "t-planning", "t-build"}, "3"},
+		{"?progress=stage", "In progress", []string{"t-planning", "t-build", "t-verify"}, "3"},
+		{"?progress=spend", "In progress", []string{"t-verify", "t-planning", "t-build"}, "3"},
+		{"?progress-only=exceptional", "In progress", []string{"t-verify"}, "<b>1</b> of 3"},
+		{"", "Done", []string{"t-fail", "t-done", "t-plan"}, "3"},
+		{"?done=oldest", "Done", []string{"t-plan", "t-done", "t-fail"}, "3"},
+		{"?done-only=failed", "Done", []string{"t-fail"}, "<b>1</b> of 3"},
+		{"?done=sideways&done-only=nothing", "Done", []string{"t-fail", "t-done", "t-plan"}, "3"},
+		{"?q=t-q&queued-only=blocked", "Queued", []string{"t-q-c"}, "<b>1</b> of 3"},
+	} {
+		body := page(c.query)
+		if got := columnItems(t, body, c.title); !slices.Equal(got, c.items) {
+			t.Errorf("%s: %s holds %v, want %v", c.query, c.title, got, c.items)
+		}
+		if !strings.Contains(body, ">"+c.title+` <span class="count">`+c.count+"</span></h3>") {
+			t.Errorf("%s: the header of %s does not read %s", c.query, c.title, c.count)
+		}
+	}
+	body := page("?queued=oldest&queued-only=blocked")
+	for _, want := range []string{
+		`<p class="col-state"><span>oldest first · blocked only</span><a class="col-x" href="/?project=ai-software-factory-code" aria-label="Back to newest first and all"`,
+		`<summary class="on" aria-label="Order and show, Queued: oldest first · blocked only"`,
+		`<input type="radio" name="queued" value="oldest" checked><span>oldest first</span>`,
+		`<input type="radio" name="queued-only" value="blocked" checked><span>blocked only</span>`,
+		`<input type="radio" name="queued-only" value="plan:7"><span>from plan #7</span>`,
+		`data-query="?project=ai-software-factory-code&amp;queued=oldest&amp;queued-only=blocked"`,
+		// the find's form keeps the menus' choices, a menu's form the rest of the filter
+		`<form class="find" id="find" role="search" method="get" action="/"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><label`,
+		`<form method="get" action="/" class="menu-pop"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><fieldset><legend>Order</legend><label><input type="radio" name="done" value="" checked>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("under the Queued choices the board lacks %s", want)
+		}
+	}
+	if n := strings.Count(body, `<p class="col-state">`); n != 1 {
+		t.Errorf("%d state lines, want 1", n)
+	}
+	plain := page("")
+	if strings.Contains(plain, "col-state") || strings.Contains(plain, `<summary class="on"`) || strings.Count(plain, `<details class="col-menu">`) != 3 || strings.Contains(col(t, plain, "Needs you"), "col-menu") {
+		t.Error("by default the board shows a state line, a marked menu, not three menus, or one on Needs you")
 	}
 }

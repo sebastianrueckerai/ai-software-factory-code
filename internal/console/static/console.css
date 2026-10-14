@@ -487,7 +487,32 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .find-x { position: absolute; right: 2px; top: 2px; display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--text-muted); font: 15px/1 var(--font-mono); text-decoration: none; }
 .find-x:hover { color: var(--text); }
 .count b { font-weight: 500; color: var(--accent); }
+#needs-you.lit > h3 .count b { color: inherit; }
 .none-match { margin: 0 4px 6px; color: var(--text-faint); font: 11.5px var(--font-mono); }
+/* the column menus (C13): a ▾ at the head's right opens the column's
+   orders and shows as two radio groups; a column in another order or
+   with a show says so in cyan under its head, with × back to the default */
+.column:has(> .col-menu) > h3 { padding-right: 34px; }
+.col-menu { position: absolute; top: 0; right: 6px; display: flex; align-items: center; height: 32px; }
+.col-menu > summary { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; border: 1px solid transparent; border-radius: 2px; color: var(--text-faint); font: 12px var(--font-mono); list-style: none; cursor: pointer; transition: color .12s, border-color .12s, background-color .12s; }
+.col-menu > summary::-webkit-details-marker { display: none; }
+.col-menu > summary::after { content: "▾"; }
+.col-menu > summary:hover, .col-menu[open] > summary { color: var(--text); border-color: var(--line-strong); background: var(--bg-hover); }
+.col-menu > summary.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.menu-pop { position: absolute; right: 0; top: 30px; z-index: 15; min-width: 164px; padding: 4px 12px 8px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; }
+[data-theme=light] .menu-pop { box-shadow: 0 12px 32px rgba(29, 53, 87, .18); }
+.menu-pop fieldset { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 6px 0; border: 0; }
+.menu-pop fieldset + fieldset { border-top: 1px solid var(--line); }
+.menu-pop legend { float: left; width: 100%; margin: 0 0 3px; padding: 0; color: var(--text-faint); font-size: 11.5px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.menu-pop label { display: flex; align-items: center; gap: 8px; min-height: 22px; color: var(--text-muted); font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.menu-pop label:hover { color: var(--text); }
+.menu-pop input[type=radio] { margin: 0; accent-color: var(--accent); }
+.menu-pop input[type=radio]:checked + span { color: var(--text); }
+.menu-pop .apply { height: 24px; margin-top: 6px; padding: 0 10px; font-size: 12px; }
+.col-state { display: flex; align-items: center; gap: 6px; margin: 0; padding: 3px 6px 3px 10px; border-bottom: 1px solid var(--line); color: var(--accent); font: 11px/1.5 var(--font-mono); flex: none; }
+.col-state span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.col-x { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--text-muted); font: 15px/1 var(--font-mono); text-decoration: none; }
+.col-x:hover { color: var(--text); }
 .switch select { height: 28px; max-width: 240px; text-overflow: ellipsis; }
 
 /* the pulse band: one panel with the sentence at 20 px, the instrument
@@ -715,6 +740,14 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .find { flex: 1 1 100%; order: 5; margin: 0; }
   .find input { width: 100%; height: 44px; padding-right: 44px; font-size: 14px; }
   .find-x { top: 0; right: 0; width: 44px; height: 44px; font-size: 20px; }
+  .column:has(> .col-menu) > h3 { padding-right: 48px; }
+  .col-menu { left: 0; right: 0; height: 44px; pointer-events: none; }
+  .col-menu > summary { width: 44px; height: 44px; margin-left: auto; font-size: 14px; pointer-events: auto; }
+  .menu-pop { left: 0; right: 0; top: 43px; pointer-events: auto; }
+  .menu-pop label { min-height: 44px; }
+  .menu-pop .apply { height: 44px; }
+  .col-state { padding: 0 0 0 12px; }
+  .col-x { width: 44px; height: 44px; font-size: 20px; }
   #board { overflow: visible; }
   .lane, .lane.five { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
   .lane.five .cards { overflow: visible; }

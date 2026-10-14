@@ -26,7 +26,8 @@ const mustHave = {
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
-    "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558"],
+    "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
+    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only", "Apply"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
@@ -54,6 +55,7 @@ async function open(browser, viewport) {
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
+  await page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((d) => { d.open = true; }));
   return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
     .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
 }
@@ -130,6 +132,14 @@ async function text(page) {
       if (!faces || faces !== failed) fails.push("find: ?q=is:failed shows " + faces + " cards, " + failed + " of them failed");
       if (!(await p.page.locator("#find.on .find-x").count())) fails.push("find: no × while a find is on");
       if ((await p.page.locator("#board").getAttribute("data-query") || "").indexOf("q=is%3Afailed") < 0) fails.push("find: the board's query does not carry q");
+      // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
+      await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const state = await p.page.locator("#board .col-state").allInnerTexts();
+      if (!state.some((s) => s.includes("failed only"))) fails.push("menus: no state line reads failed only under ?done-only=failed (" + state.join(" | ") + ")");
+      if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
+      if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
+      if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();

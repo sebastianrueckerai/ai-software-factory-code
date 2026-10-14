@@ -452,3 +452,23 @@ document.addEventListener("htmx:afterSwap", function (e) {
     else localStorage.removeItem("view");
   });
 })();
+
+// The column menus (C13): a choice submits the menu's form, so the board
+// reloads with the column's order and show in its query; Escape or a
+// click outside closes an open menu. An open menu holds the board's
+// swaps, as any open disclosure does.
+document.addEventListener("change", function (e) {
+  var f = e.target.closest && e.target.closest("details.col-menu form");
+  if (f && e.target.type === "radio") f.requestSubmit();
+});
+document.addEventListener("click", function (e) {
+  document.querySelectorAll("details.col-menu[open]").forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") return;
+  var d = e.target.closest && e.target.closest("details.col-menu[open]");
+  if (!d) return;
+  d.open = false;
+  d.querySelector("summary").focus();
+  e.stopPropagation();
+}, true);
