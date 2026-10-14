@@ -694,6 +694,9 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
+	if why := c.unfundedAnswer(ctx, t); why != "" {
+		return "", refuse(http.StatusConflict, why)
+	}
 	kind := factoryd.EventQuestionAnswered
 	if c.capFactsOf(ctx, t).capped {
 		kind = factoryd.EventSessionGranted
@@ -722,6 +725,9 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	if f := c.capFactsOf(ctx, t); !f.capped || t.IssueNumber == 0 {
 		return "", wrongState(t, f, "a card at its session cap")
 	}
+	if why := c.unfundedAnswer(ctx, t); why != "" {
+		return "", refuse(http.StatusConflict, why)
+	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return "", &forgejoRefusal{"post the answer", err}
@@ -729,6 +735,22 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	log.Printf("console: %s granted %s a session via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventSessionGranted, commentDetail(posted))
 	return fmt.Sprintf("Your answer is on #%d; it grants the card one session.", t.IssueNumber), nil
+}
+
+// unfundedAnswer is the answer path's floor (ruling 322): the refusal a
+// card's remaining budget owes an answer, "" when one can run. A card
+// with no session yet (no model to price) and a failed read answer as
+// before: the workflow's grant refuses the attempt anyway.
+func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
+	if c.cfg.AttemptFunded == nil || t.ModelAlias == "" {
+		return ""
+	}
+	why, err := c.cfg.AttemptFunded(ctx, t.ID, t.ModelAlias)
+	if err != nil {
+		log.Printf("console: task %s's remaining budget: %v", t.ID, err)
+		return ""
+	}
+	return why
 }
 
 // doClose closes card id's issue as the member, its note commented first

@@ -100,6 +100,7 @@ const (
 	ActivityClearRollHold               = "ClearRollHold"
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
+	ActivityAttemptFunded               = "AttemptFunded"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -380,6 +381,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 		v21: workflow.GetVersion(ctx, "checks-rerun", workflow.DefaultVersion, versionChecksRerun),
 		v22: workflow.GetVersion(ctx, "poster-cap", workflow.DefaultVersion, versionPosterCap),
 		v23: workflow.GetVersion(ctx, "merge-conflict", workflow.DefaultVersion, versionMergeConflict)}
+	run.attemptFunded = workflow.GetVersion(ctx, "attempt-funded", workflow.DefaultVersion, versionAttemptFunded)
 	run.processes = workflow.GetVersion(ctx, "processes", workflow.DefaultVersion, versionProcesses)
 	run.depWait = workflow.GetVersion(ctx, "dep-wait", workflow.DefaultVersion, versionDepWait)
 	run.mergeQueue = workflow.GetVersion(ctx, "merge-queue", workflow.DefaultVersion, versionMergeQueue)
@@ -675,7 +677,20 @@ const (
 	// its alert still fires; one that stopped firing was a transient burst
 	// and the card closes itself as failed with no session.
 	versionAlertPreCheck workflow.Version = 1
+	// versionAttemptFunded (change id "attempt-funded", ruling 322,
+	// finding 215): an attempt whose task's remaining budget cannot fund
+	// a call is refused before it starts — no session, no key, no failure
+	// round — at the session loop's gate, wherever the answer that bought
+	// it came from (the console, a comment, a healed run). The card says
+	// why an answer will not run: close and refile; a budget action is
+	// finding 210's own card, not this one.
+	versionAttemptFunded workflow.Version = 1
 )
+
+// budgetRefused opens the card of a task whose remaining budget cannot
+// fund a call (ruling 322): an answer would start an attempt whose first
+// call the gateway must refuse, so none is granted.
+const budgetRefused = "the remaining budget cannot fund a call"
 
 // providerRefusals is how many sessions in a row the provider may refuse
 // before a human hears of it, with providerRefused opening the reason.
@@ -713,6 +728,7 @@ type taskRun struct {
 	v16, v17, v18     workflow.Version
 	v19, v20, v21     workflow.Version
 	v22, v23          workflow.Version
+	attemptFunded     workflow.Version // the attempt grant's floor (ruling 322)
 	processes         workflow.Version
 	depWait           workflow.Version
 	mergeQueue        workflow.Version
@@ -961,6 +977,18 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 	}
 	for attempt := u.Attempts + 1; ; attempt++ {
+		if t.attemptFunded >= versionAttemptFunded {
+			// the attempt is refused before it starts (ruling 322),
+			// whatever granted it: no session, no key, no failure round,
+			// and the card says why an answer will not run
+			if why := t.unfunded(model); why != "" {
+				final, end, _ := t.awaitHuman(why, escalationQuestion(why), nil)
+				if final != "" {
+					return t.finish(final, end)
+				}
+				continue
+			}
+		}
 		if attempt > t.cfg.MaxSessions+u.ExtraAttempts {
 			if t.v18 < versionSessionCap {
 				break
@@ -1226,6 +1254,19 @@ func (t *taskRun) climbed(stronger bool) bool {
 		}
 	}
 	return stronger
+}
+
+// unfunded is the attempt grant's floor (ruling 322): "" when the task's
+// remaining budget can fund the cheapest call of model, else the refusal
+// the card carries. A failed read is no refusal: the per-call hold still
+// guards the money.
+func (t *taskRun) unfunded(model string) string {
+	var why string
+	if err := workflow.ExecuteActivity(t.short, ActivityAttemptFunded, t.taskID, model).Get(t.ctx, &why); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read the attempt's funding", "task", t.taskID, "error", err)
+		return ""
+	}
+	return why
 }
 
 // grant is what a human answer buys; only a human raises a limit. One

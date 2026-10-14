@@ -179,6 +179,9 @@ func main() {
 		},
 		Workflows: &workflows,
 		Alerts:    signoz,
+		// the attempt grant's floor (ruling 322) reads the same price
+		// table the gateway's hold math prices a call with
+		Prices: &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL,
 		Token:      gatewayToken,
@@ -429,6 +432,7 @@ func main() {
 		ReconcileError: registrar.ReconcileError,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
+		AttemptFunded:  runner.AttemptFunded,
 		Chat:           store,
 		Operator:       operator,
 		Pulses:         store,
