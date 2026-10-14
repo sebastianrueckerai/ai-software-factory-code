@@ -146,7 +146,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
-		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
+		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
 			return MergeResult{}, nil
 		},
 		ActivityReportMergeFailure:          func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },

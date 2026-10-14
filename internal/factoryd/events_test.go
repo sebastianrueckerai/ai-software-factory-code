@@ -90,7 +90,7 @@ func TestEventsRecorded(t *testing.T) {
 	t.Run("pull_request_merged", func(t *testing.T) {
 		r, store, objects := newGateRunner(t, gateTask, &gateForgejo{mergeStatus: []int{http.StatusOK}})
 		store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
-		if _, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian"); err != nil {
+		if _, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", ""); err != nil {
 			t.Fatal(err)
 		}
 		if got := events(t, objects, "t1"); !slices.Equal(got, []string{"pull_request_merged factory-merge 9"}) {

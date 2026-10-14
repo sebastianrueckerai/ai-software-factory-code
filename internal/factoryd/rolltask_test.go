@@ -192,10 +192,12 @@ type rollForgejo struct {
 	commits     []map[string]any
 	synced      int
 	calls       []string
-	touched     map[string][]string // commit -> the files it changes against its first parent (the no-roll-merged fallback); unlisted: main.go
-	rolled      map[string][]string // commit -> the files it changes against the commit the last merged roll rolled; unlisted: touched, else main.go
-	forkParents map[string][]string // fork commit -> its parents (a merge commit has several)
-	forkDiffs   map[string][]string // fork "base...head" -> the files it changes
+	touched     map[string][]string            // commit -> the files it changes against its first parent (the no-roll-merged fallback); unlisted: main.go
+	rolled      map[string][]string            // commit -> the files it changes against the commit the last merged roll rolled; unlisted: touched, else main.go
+	forkParents map[string][]string            // fork commit -> its parents (a merge commit has several)
+	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
+	statuses    map[string][]map[string]string // commit -> its statuses (status, context)
+	pulls       []string                       // "head title" of every pull request opened
 }
 
 // mergeCommit is a test's multi-parent (merge) commit: it lists its
@@ -230,6 +232,21 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				return
 			}
 			io.WriteString(w, body)
+		case repo == codeRepo && r.Method == "POST" && p == "/pulls":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			f.pulls = append(f.pulls, in["head"]+" "+in["title"])
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{"number": 70 + len(f.pulls), "html_url": "https://git.example/pr", "head": map[string]any{"sha": "rev1"}, "base": map[string]any{"sha": "m1"}, "state": "open"})
+		case repo == codeRepo && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
+			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
+			state := "success"
+			for _, s := range f.statuses[sha] {
+				if s["status"] == "failure" {
+					state = "failure"
+				}
+			}
+			reply(map[string]any{"state": state, "statuses": f.statuses[sha]})
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)

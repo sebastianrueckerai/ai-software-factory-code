@@ -424,7 +424,15 @@ func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, sinc
 func (s *accBatchStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
 	panic("unused")
 }
-func (s *accBatchStore) ClearRollHold(ctx context.Context, taskID string) error { panic("unused") }
+func (s *accBatchStore) ClearRollHold(ctx context.Context, taskID string) error      { panic("unused") }
+func (s *accBatchStore) PauseQueue(ctx context.Context, p factoryd.QueuePause) error { panic("unused") }
+func (s *accBatchStore) QueuePause(ctx context.Context, project string) (factoryd.QueuePause, bool, error) {
+	return factoryd.QueuePause{}, false, nil
+}
+func (s *accBatchStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
+	panic("unused")
+}
+func (s *accBatchStore) ClearQueuePause(ctx context.Context, project string) error { panic("unused") }
 func (s *accBatchStore) PutLiveSession(ctx context.Context, l factoryd.LiveSession) error {
 	panic("unused")
 }

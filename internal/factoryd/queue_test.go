@@ -247,6 +247,37 @@ func TestQueueOneAtATime(t *testing.T) {
 		}
 	})
 
+	t.Run("paused", func(t *testing.T) {
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "fix", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		store.pauses = map[string]QueuePause{"linkshort/linkshort": {Project: "linkshort/linkshort", RunID: 5, SHA: "red1", FixTask: "fix"}}
+		ctx := context.Background()
+		// the queue's head waits behind the pause; the fix card takes the turn
+		if ahead, err := r.EnterQueue(ctx, "a1"); ahead != 1 || err != nil || store.tasks["a1"].Gate != GateMergeQueue {
+			t.Fatalf("a1 ahead %d %v, gate %q; want held by the pause", ahead, err, store.tasks["a1"].Gate)
+		}
+		if ahead, err := r.EnterQueue(ctx, "fix"); ahead != 0 || err != nil {
+			t.Fatalf("the fix card ahead %d %v, want its turn past the pause", ahead, err)
+		}
+		var paused []map[string]any
+		for _, l := range timelineLines(t, r, "a1") {
+			if l["step"] == "queue_paused" {
+				paused = append(paused, l)
+			}
+		}
+		if len(paused) != 1 || paused[0]["sha"] != "red1" || paused[0]["fix"] != "fix" {
+			t.Fatalf("queue_paused steps = %v, want one naming the red commit and the fix card", paused)
+		}
+		// a re-check records no second pause; the pause's end frees the head
+		if _, err := r.EnterQueue(ctx, "a1"); err != nil || len(timelineLines(t, r, "a1")) != 2 {
+			t.Fatalf("re-check: %v, timeline %v", err, timelineLines(t, r, "a1"))
+		}
+		delete(store.pauses, "linkshort/linkshort")
+		if ahead, err := r.EnterQueue(ctx, "a1"); ahead != 0 || err != nil {
+			t.Fatalf("a1 after the pause: ahead %d %v", ahead, err)
+		}
+	})
+
 	t.Run("workflow", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
 		turn := false
@@ -313,10 +344,35 @@ func timelineLines(t *testing.T, r *Runner, id string) []map[string]any {
 // policy, review and audit are not run again. Red checks there go back
 // to the agent with the prefix, never re-run as a head the agent left,
 // and the task leaves the queue; its next head queues again.
+// The cheap turn (roadmap 222, item 4): a sync that moves the head
+// without a file in common with main's new commits runs no second checks
+// stage. The approval comes at once on the synced head, and the merge
+// reads the checks' green on the head they ran on.
+func TestSyncSkipsTheRecheckWithoutAFileInCommon(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green)
+	q.sync = func(from string) SyncResult { return SyncResult{From: from, To: "m1", Main: "main1", Base: "b0"} }
+	q.onSessions(pushed("s1", "c1"))
+	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if !slices.Equal(q.checks, []string{"c1"}) {
+		t.Fatalf("checks ran on %v, want c1 alone", q.checks)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		t.Fatalf("steps = %v, want %v", q.steps, want)
+	}
+	if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) || !slices.Equal(q.checkedHeads, []string{"c1"}) || !q.approvals[0].Gates.ChecksPassed {
+		t.Fatalf("merges = %v, checked heads %v, checks passed %v; want the synced head merged on c1's green", q.merges, q.checkedHeads, q.approvals[0].Gates.ChecksPassed)
+	}
+}
+
 func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 	t.Run("green", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
-		q.sync = func(from string) SyncResult { return SyncResult{From: from, To: "m1", Main: "main1"} }
+		q.sync = func(from string) SyncResult {
+			return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
+		}
 		q.onSessions(pushed("s1", "c1"))
 		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 		if final := q.run(t); final != "done" {
@@ -342,7 +398,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 		})
 		q.sync = func(from string) SyncResult {
 			if from == "c1" {
-				return SyncResult{From: from, To: "m1", Main: "main1"}
+				return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
 			}
 			return SyncResult{From: from, To: from}
 		}
@@ -376,7 +432,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 		})
 		q.sync = func(from string) SyncResult {
 			if from == "c1" {
-				return SyncResult{From: from, To: "m1", Main: "main1"}
+				return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
 			}
 			return SyncResult{From: from, To: from}
 		}

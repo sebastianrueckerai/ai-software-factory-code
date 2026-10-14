@@ -56,6 +56,7 @@ type fakeStore struct {
 	alerts       []Alert
 	rolls        []RollRequest
 	liveSessions map[string]LiveSession
+	pauses       map[string]QueuePause
 	// monthSpend is MonthSpend's answer, monthRefusals MonthCapRefusal's
 	// by task
 	monthSpend    MonthSpend
@@ -697,6 +698,34 @@ func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since ti
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
+}
+
+func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) error {
+	if s.pauses == nil {
+		s.pauses = map[string]QueuePause{}
+	}
+	if _, ok := s.pauses[p.Project]; !ok {
+		s.pauses[p.Project] = p
+	}
+	return nil
+}
+
+func (s *fakeStore) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	p, ok := s.pauses[project]
+	return p, ok, nil
+}
+
+func (s *fakeStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
+	if p, ok := s.pauses[project]; ok {
+		p.RevertTask = taskID
+		s.pauses[project] = p
+	}
+	return nil
+}
+
+func (s *fakeStore) ClearQueuePause(ctx context.Context, project string) error {
+	delete(s.pauses, project)
+	return nil
 }
 
 func (s *fakeStore) PutLiveSession(ctx context.Context, l LiveSession) error {

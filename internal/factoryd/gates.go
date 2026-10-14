@@ -844,18 +844,22 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 // other failure is retried;
 // the last attempt reports it (timeline, comment) as Failed instead, so the
 // workflow keeps the approval and tries again later.
-func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
+// Merge merges commit, the pull request's head, on approver's approval;
+// checkedHead, when set, is the head the checks ran on, whose green holds
+// for commit (the cheap turn: main was merged in and touched no file of
+// the pull request). A run from before versionCheapTurn passes none.
+func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, lastAttempt(ctx))
+	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, lastAttempt(ctx))
 }
 
 // mergeAttempt is one Merge attempt; last reports a transient failure
 // instead of returning it.
-func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, last bool) (MergeResult, error) {
-	res, err := r.merge(ctx, t, repo, pr, commit, approver)
+func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, last bool) (MergeResult, error) {
+	res, err := r.merge(ctx, t, repo, pr, commit, approver, checkedHead)
 	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
 		res = MergeResult{Failed: textutil.Truncate(err.Error(), 500)}
 		r.reportMergeFailure(ctx, t, repo, pr, commit, approver, res.Failed)
@@ -914,7 +918,7 @@ func lastAttempt(ctx context.Context) bool {
 	return info.RetryPolicy != nil && info.RetryPolicy.MaximumAttempts > 0 && info.Attempt >= info.RetryPolicy.MaximumAttempts
 }
 
-func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string) (MergeResult, error) {
+func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return MergeResult{}, err
@@ -925,7 +929,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
 	}
-	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, commit)
+	cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, cmp.Or(checkedHead, commit))
 	if err != nil {
 		return MergeResult{}, err
 	}
