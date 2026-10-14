@@ -299,8 +299,11 @@ func main() {
 		log.Fatalf("temporal worker: %v", err)
 	}
 	go func() {
+		// nudged is the stale sweep's memory of its signals, task id → when
+		nudged := map[string]time.Time{}
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
+			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, gates, nudged)
 			select {
 			case <-ctx.Done():
 				return
@@ -348,6 +351,10 @@ func main() {
 	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
 		Kube: kube, Namespace: kube.Namespace(),
+		// a signal card's filing pins the deployed build's commit as its
+		// reproduction base (roadmap 194), from the rolls this factoryd
+		// records of its own Deployments
+		Rolls:     store,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
@@ -403,6 +410,9 @@ func main() {
 		},
 		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,
+		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
+			return runner.CloseCardDone(ctx, taskID, by, evidence)
+		},
 		SplitCard: func(ctx context.Context, taskID, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
 		},

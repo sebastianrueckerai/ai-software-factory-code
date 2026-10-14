@@ -155,6 +155,13 @@ type card struct {
 	// remaining budget cannot fund a call (ruling 322's floor), which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// AcceptanceClose is the approver's Close on a waiting card whose
+	// event trail shows one of its plan's acceptance commands run green
+	// in a session (roadmap 208): the work is its own evidence, so the
+	// close ends it done where an answer would buy the next session.
+	// nil hides the button; Evidence is the newest green run, the button's
+	// title.
+	AcceptanceClose *acceptanceCloseForm
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -192,6 +199,10 @@ type card struct {
 	// ring, and these words on its activity line.
 	Stale     bool
 	StaleText string
+	// stepAt is the card's newest timeline step's time: the work its own
+	// session last reported, an input to the stale ring beside the newest
+	// event.
+	stepAt time.Time
 	// Children roll up an accepted plan: n running, n done, n waiting.
 	Children string
 	// Blocked is how many cards this one depends on that are not done;
@@ -292,10 +303,6 @@ func nearBudget(spent, budget float64) bool {
 	return cents(spent)*5 >= cents(budget)*4
 }
 
-// staleAfter bounds how long a card may hold no event before its face
-// wears the amber ring.
-const staleAfter = 30 * time.Minute
-
 // newestChecksCount is the task's newest checks step: passed over total of
 // its jobs; "" when the steps hold none or it named no counts.
 func newestChecksCount(steps []map[string]any) string {
@@ -374,15 +381,31 @@ func onProvider(steps []map[string]any) bool {
 	return false
 }
 
+// newestStepOf is steps' newest step's time, the card's own work as the
+// stale ring reads it; a step without a time is skipped, and none
+// leaves the zero time.
+func newestStepOf(steps []map[string]any) time.Time {
+	for i := len(steps) - 1; i >= 0; i-- {
+		at, err := time.Parse(time.RFC3339, fmt.Sprint(steps[i]["time"]))
+		if err != nil {
+			continue
+		}
+		return at
+	}
+	return time.Time{}
+}
+
 // checksTTL is how long what a card's face reads from its timeline is
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
 // checks is a card's remembered checks count, retry, hold and wait on
-// the provider, and when they were read.
+// the provider, the newest timeline step's time, and when they were
+// read.
 type checks struct {
 	count                    string
 	retrying, held, provider bool
+	stepAt                   time.Time
 	at                       time.Time
 }
 
@@ -402,6 +425,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			k.Checks = got.count
 		}
 		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
+		k.stepAt = got.stepAt
 	})
 }
 
@@ -419,6 +443,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
 	for other, old := range c.checks {
@@ -476,6 +501,11 @@ type move struct{ Lane, Title, CSRF string }
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
+
+// acceptanceCloseForm is an approver's Close beside a waiting card's
+// answer box: the close ends the card done on its acceptance green
+// (roadmap 208), which the button's Evidence names.
+type acceptanceCloseForm struct{ CSRF, Evidence string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
@@ -542,22 +572,21 @@ func (n need) Waiting() string {
 // task states, as the board was before the five columns.
 const viewWide = "wide"
 
-// boardFilter is what the board was asked to show: the project, the
-// accent and the view; every form on it carries it back, so an action
-// keeps the view.
+// boardFilter is what the board was asked to show: the project and the
+// view; every form on it carries it back, so an action keeps the view.
 type boardFilter struct {
-	Project, Accent, View string
+	Project, View string
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent"), View: r.PostFormValue("view")}
+	return boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view")}
 }
 
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	return boardFilter{Project: q.Get("project"), Accent: q.Get("accent"), View: q.Get("view")}
+	return boardFilter{Project: q.Get("project"), View: q.Get("view")}
 }
 
 func (f boardFilter) wide() bool { return f.View == viewWide }
@@ -567,9 +596,6 @@ func (f boardFilter) query() string {
 	q := url.Values{}
 	if f.Project != "" {
 		q.Set("project", f.Project)
-	}
-	if f.Accent != "" {
-		q.Set("accent", f.Accent)
 	}
 	if f.View != "" {
 		q.Set("view", f.View)
@@ -611,7 +637,7 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
-	// Project, Accent and View are the board's filter, which every form
+	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
@@ -706,8 +732,30 @@ type tick struct {
 	At, Glyph, Ref, Words, Class string
 }
 
-// tickerLimit bounds the events the ticker shows.
-const tickerLimit = 24
+// tickerLimit bounds the events the ticker shows; tickerWindow is how far
+// back they reach, and tickerQuiet how many the ticker keeps regardless
+// of age when the window holds none.
+const (
+	tickerLimit  = 24
+	tickerWindow = 24 * time.Hour
+	tickerQuiet  = 5
+)
+
+// recentTicks keeps the rows of the last tickerWindow, newest first; a
+// quiet project keeps its newest tickerQuiet rows, so the ticker never
+// scrolls through old days beside today's events, and never stands empty.
+func recentTicks(rows []factoryd.Event, now time.Time) []factoryd.Event {
+	var recent []factoryd.Event
+	for _, e := range rows {
+		if now.Sub(e.At) <= tickerWindow {
+			recent = append(recent, e)
+		}
+	}
+	if len(recent) > 0 {
+		return recent
+	}
+	return rows[:min(len(rows), tickerQuiet)]
+}
 
 // tickerOf is the project's newest events as ticks, newest first: a
 // status row by its status word and glyph, any other row by its kind, the
@@ -719,7 +767,7 @@ func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project
 		return nil
 	}
 	var out []tick
-	for _, e := range rows {
+	for _, e := range recentTicks(rows, time.Now()) {
 		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
 		if e.IssueNumber > 0 {
 			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
@@ -888,13 +936,19 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	return word, minutes(now.Sub(since))
 }
 
-// minutes is a duration in whole minutes, or hours and minutes.
+// minutes is a duration in whole minutes, hours and minutes from an
+// hour, days and hours from a day; under a minute it says so.
 func minutes(d time.Duration) string {
 	m := int(d.Minutes())
-	if m < 60 {
+	switch {
+	case m < 1:
+		return "under a minute"
+	case m < 60:
 		return fmt.Sprintf("%d min", m)
+	case m < 24*60:
+		return fmt.Sprintf("%d h %d min", m/60, m%60)
 	}
-	return fmt.Sprintf("%d h %d min", m/60, m%60)
+	return fmt.Sprintf("%d d %d h", m/(24*60), m%(24*60)/60)
 }
 
 // span is a gate's duration to the second under an hour.
@@ -917,10 +971,6 @@ var errNoProject = errors.New("no such project")
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	f := urlFilter(r)
-	if f.Accent != "" && !factoryd.IsAccent(f.Accent) {
-		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
-		return
-	}
 	if f.View != "" && !f.wide() {
 		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
 		return
@@ -1149,6 +1199,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		if v.approves(t.Repository) && c.unfundedAnswer(ctx, t) != "" {
 			k.Fund = &fundForm{CSRF: v.csrf}
 		}
+		// the acceptance close is offered where the card's own trail
+		// proves the work (roadmap 208): the same card, to its approvers
+		if v.approves(t.Repository) {
+			if evidence, ok := c.acceptanceEvidence(ctx, t.ID); ok {
+				k.AcceptanceClose = &acceptanceCloseForm{CSRF: v.csrf, Evidence: evidence}
+			}
+		}
 	}
 	return k
 }
@@ -1184,12 +1241,20 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// question it waits on an answer to; a card with neither claims
 	// nothing. On a waiting card that reason is what the human owes it:
 	// it stands in place of the newest event. The stale ring — one whose
-	// newest event is older than half an hour wears it, one that never had
-	// an event its own age — comes only on a card that is running its
-	// work: never a final one, never one in the backlog, the plan lane or
-	// the queue; a card parked for a slot owes no work while it waits.
+	// newest activity is older than the stale window wears it, the
+	// newest of its newest event and its newest timeline step (its own
+	// session's last report), one that never had either its own age —
+	// comes only on a card that is running its work: never a final one,
+	// never one in the backlog, the plan lane or the queue; a card parked
+	// for a slot owes no work while it waits.
 	setActivity := func(k *card) {
-		ring := func(d time.Duration) bool { return d >= staleAfter }
+		lastAt := func(at time.Time) time.Time {
+			if k.stepAt.After(at) {
+				return k.stepAt
+			}
+			return at
+		}
+		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
 		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan" && k.Status != "queued"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
@@ -1201,9 +1266,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
 				k.StageAge = minutes(time.Since(e.At))
 			}
-			k.Stale = live && ring(time.Since(e.At))
+			k.Stale = live && ring(time.Since(lastAt(e.At)))
 			if k.Stale {
-				k.StaleText = "nothing for over " + minutes(time.Since(e.At))
+				k.StaleText = "nothing for over " + minutes(time.Since(lastAt(e.At)))
 			}
 			if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
 				k.Activity = reason()
@@ -1211,17 +1276,17 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			}
 			return
 		}
-		k.Stale = live && ring(time.Since(k.CreatedAt))
+		k.Stale = live && ring(time.Since(lastAt(k.CreatedAt)))
 		if k.Stale {
-			k.StaleText = "no event yet, " + minutes(time.Since(k.CreatedAt)) + " on the card"
+			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
 		}
 		if k.Reason != "" {
 			k.Activity = reason()
 		}
 	}
+	c.faceTimelines(ctx, each)
 	each(setActivity)
 	c.callTotals(ctx, each)
-	c.faceTimelines(ctx, each)
 	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
 		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
@@ -1265,7 +1330,7 @@ func callsLine(t policy.CallTotals) string {
 }
 
 // boardOf is the board of one project, f.Project or else the first the
-// viewer writes, narrowed to f.Accent ("" every accent), as the session's
+// viewer writes, the project's cards, as the session's
 // human sees it. The five columns are the default, the human lane folded
 // into Needs you; the wide view puts the lanes of the project's process
 // first in the fixed order backlog, plan, ready, then the state columns,
@@ -1386,12 +1451,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		if t.Status == "waiting-human" && v.planned[t.ID] {
 			escalations[t.ID] = bt
-		}
-		// the accent filter narrows the board to one accent; a card with
-		// none is in no accent's board, and an accent never changes how a
-		// state renders.
-		if f.Accent != "" && t.Accent != f.Accent {
-			continue
 		}
 		k := c.boardCard(ctx, v, bt)
 		switch {
@@ -1854,7 +1913,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?accent, ?view); an unknown card is
+// under the URL's filter (?project, ?view); an unknown card is
 // 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
 func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
@@ -1888,7 +1947,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 
 // cardFragment answers GET /cards/{id} to a writer of the card's project,
 // 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?accent, ?view) of the board it is
+// carrying the filter (?project, ?view) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	if _, k, _, ok := c.writableCard(w, r); ok {
@@ -1941,6 +2000,11 @@ func (d drawerData) Age() string {
 	var parts []string
 	if d.Card.StageAge != "" {
 		parts = append(parts, d.Card.StageAge)
+	}
+	// the card's place in the merge queue, the one gate worth a word here;
+	// the Time section holds the rest
+	if strings.HasPrefix(d.Card.GateText, "merge queue") {
+		parts = append(parts, strings.TrimSuffix(d.Card.GateText, ","))
 	}
 	if d.Card.Total != "" {
 		parts = append(parts, d.Card.Total+" in all")

@@ -1204,14 +1204,17 @@ func TestRunSessionStartsFromTheBranchHead(t *testing.T) {
 	}
 }
 
-// A first session (no branch, no given ref) starts at main as it is now
-// and records it as the task's base; a given ref leaves the base alone.
+// A first session on a row with no stamp (no branch, no given ref) starts
+// at main as it is now and records it as the task's base; a given ref, and
+// a row already stamped (by intake or an earlier start), leave the base
+// alone — the start ref reads the stamp, the fork point it names.
 func TestFirstSessionStartsAtMainHead(t *testing.T) {
-	for name, tc := range map[string]struct{ ref, wantStart, wantSHA string }{
-		"no ref": {"", "main2", "main2"},
-		"ref c3": {"c3", "c3", "seed1"},
+	for name, tc := range map[string]struct{ sha, ref, wantStart, wantSHA string }{
+		"no stamp": {"", "", "main2", "main2"},
+		"stamped":  {"seed1", "", "seed1", "seed1"},
+		"ref c3":   {"seed1", "c3", "c3", "seed1"},
 	} {
-		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "seed1"}
+		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: tc.sha}
 		kube := newFakeKube()
 		runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 		hub.mainHead = "main2"
@@ -1225,6 +1228,45 @@ func TestFirstSessionStartsAtMainHead(t *testing.T) {
 		if got, _, _ := store.Task(context.Background(), "t1"); got.SHA != tc.wantSHA {
 			t.Fatalf("%s: task sha = %q, want %s", name, got.SHA, tc.wantSHA)
 		}
+	}
+}
+
+// The base stamp is written once: the first session start stamps main's
+// head, and a later start, or a session-start retry while the branch does
+// not exist yet (the sandbox cut it but has not pushed it), reads that
+// stamp — the fork point the branch was cut from — instead of re-reading
+// main's head, which may have moved in between. A re-stamp made the
+// pull-request gate refuse a clean branch against a base it was not cut
+// from (task t-0c9745c86d12).
+func TestSessionStartStampsTheBaseOnce(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	ctx := context.Background()
+
+	// the first session start: no branch, no stamp: main's head is the
+	// start ref and becomes the task's base
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, resultLine(false, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if env := podEnv(kube.podAt(0)); env["REPO_SHA"] != "m0" {
+		t.Fatalf("first session's REPO_SHA = %q, want main's head m0", env["REPO_SHA"])
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.SHA != "m0" {
+		t.Fatalf("task sha = %q, want the first stamp m0", got.SHA)
+	}
+
+	// main moves before the retry; the branch, still unpushed, does not
+	// exist on the fork: the first stamp stays the start ref and the base
+	hub.mainHead = "main2"
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "m"}, nil, resultLine(false, "x")); err != nil {
+		t.Fatal(err)
+	}
+	if env := podEnv(kube.podAt(1)); env["REPO_SHA"] != "m0" {
+		t.Fatalf("retry's REPO_SHA = %q, want the first stamp m0, not main's moved head main2", env["REPO_SHA"])
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.SHA != "m0" {
+		t.Fatalf("task sha = %q, want the first stamp m0 kept", got.SHA)
 	}
 }
 

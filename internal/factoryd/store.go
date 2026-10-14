@@ -48,6 +48,12 @@ type Task struct {
 	// labelled repro, or the API's repro_command): GateReproduction runs it
 	// against the pull request head and it must pass. Empty = none.
 	ReproCommand string
+	// ReproBase is a signal card's pinned reproduction base (roadmap 194):
+	// the commit that was live when its alert fired, recorded at filing
+	// from the deployed build's roll. GateReproduction runs the base
+	// against that tree even though main has moved on; "" for every other
+	// card, whose base is SHA.
+	ReproBase string
 	// CreatedAt is when the work was asked for: the issue's created_at, or
 	// the API call (zero at CreateTask: now).
 	CreatedAt  time.Time
@@ -529,16 +535,16 @@ func insertTask(ctx context.Context, db interface {
 	}
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
-		                    objective, repository, sha, kind, issue_number, source, repro_command, created_at, gate, gate_since,
+		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
 		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, COALESCE($15, now()),
-		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN $16 ELSE '' END,
-		         CASE WHEN $11 = 'agent' AND $7 <> 'backlog' THEN COALESCE($15, now()) END, $17, $18, NULLIF($19, ''),
-		         NULLIF($20, ''), NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), $24, $25)
+		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
+	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
+	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
+	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26)
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
-		t.Objective, t.Repository, t.SHA, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
+		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size)
 	return err
 }
@@ -574,7 +580,7 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, kind, issue_number, source, pr_number,
+	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number,
 	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
@@ -584,7 +590,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
+		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
@@ -1258,4 +1264,21 @@ func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// DeployedCommit is the commit of deployment's newest recorded roll: the
+// tree its digest pins last rolled from, the one live when an alert on it
+// fires (roadmap 194). ok false when no roll of it is recorded.
+func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string, bool, error) {
+	var sha string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT sha FROM rolls WHERE deployment = $1 ORDER BY live_at DESC, applied_at DESC, pushed_at DESC, sha LIMIT 1`,
+		deployment).Scan(&sha)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return sha, true, nil
 }
