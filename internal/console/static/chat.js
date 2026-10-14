@@ -785,11 +785,11 @@ var chatView = (function () {
     }).catch(function () {});
   }
   // the fold: the table folds to its marks, on the phone to one summary row;
-  // kept per member in this browser
+  // folded until the member unfolds it, kept per member in this browser
   function folded() { return panel.classList.contains("sw-collapsed"); }
   function fold(on) {
     panel.classList.toggle("sw-collapsed", on);
-    try { localStorage.setItem(foldKey, on ? "1" : ""); } catch (e) {}
+    try { localStorage.setItem(foldKey, on ? "1" : "0"); } catch (e) {}
     panel.querySelectorAll("[data-swtoggle]").forEach(function (b) {
       b.setAttribute("aria-expanded", String(!on));
       if (b.classList.contains("swtg")) {
@@ -800,7 +800,7 @@ var chatView = (function () {
     });
     sum.innerHTML = chatView.sumHTML(threads, on);
   }
-  try { fold(localStorage.getItem(foldKey) === "1"); } catch (e) {}
+  try { fold(localStorage.getItem(foldKey) !== "0"); } catch (e) {}
   // postThread posts form to the chat's path, the open thread's number in it
   function postThread(path, form0) {
     return fetch(base + path, {method: "POST", body: new URLSearchParams(form0).toString(),

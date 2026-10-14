@@ -34,12 +34,12 @@ func TestChatPanel(t *testing.T) {
 	body := page(ck, code)
 	for _, want := range []string{
 		`<div id="screen" class="main with-chat">
-<section id="chat" class="chat with-threads" aria-labelledby="chat-title"`,
-		`<section id="chat" class="chat with-threads" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
+<section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title"`,
+		`<section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new" title="Start a new thread">New</button></div>
-<nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="true" aria-label="Fold the threads" title="Fold the threads">‹</button></div>
+<nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="false" aria-label="Unfold the threads" title="Unfold the threads">›</button></div>
 <div id="thread-rows" class="trows"></div></nav>
-<button type="button" class="sw-sum" data-swtoggle aria-expanded="true" aria-controls="switcher" hidden></button>
+<button type="button" class="sw-sum" data-swtoggle aria-expanded="false" aria-controls="switcher" hidden></button>
 <div class="chat-main">
 <div id="thread-head" class="thead"></div>
 <p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
