@@ -78,7 +78,7 @@
 {{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
-<textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" required></textarea>
+<textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required></textarea>
 <button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
 </form>{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}

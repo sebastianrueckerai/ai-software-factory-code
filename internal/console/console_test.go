@@ -1467,6 +1467,29 @@ func TestAnswerNamesItsCommentWhole(t *testing.T) {
 	}
 }
 
+// Roadmap 237: an answer reaches the sessions as at most
+// factoryd.MaxAnswer bytes, so the answer box refuses a longer one, naming
+// the bound and the answer's length, and posts nothing: 2000 two-byte "ä"
+// are 4000 bytes and go, one more byte is refused.
+func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {strings.Repeat("ä", 2000) + "a"}}), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "an answer of 1 to 4000 bytes is required; this one has 4001") {
+		t.Fatalf("an answer of 4001 bytes = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.comments) != 0 {
+		t.Fatal("the refused answer was posted")
+	}
+	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {strings.Repeat("ä", 2000)}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("an answer of 4000 bytes = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != strings.Repeat("ä", 2000) {
+		t.Fatalf("comment = %d bytes, want the 4000-byte answer whole", len(got))
+	}
+}
+
 // Ruling 322 (finding 215): the answer is refused before it is posted
 // when the task's remaining budget cannot fund a call. No comment goes
 // to the issue, and the refusal carries the message the card will carry:

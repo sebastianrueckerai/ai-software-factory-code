@@ -423,6 +423,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
 	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewSupervised)
 	run.answerBurst = workflow.GetVersion(ctx, "answer-burst", workflow.DefaultVersion, versionAnswerBurst)
+	run.planBurst = workflow.GetVersion(ctx, "plan-burst", workflow.DefaultVersion, versionPlanBurst)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -761,10 +762,16 @@ const (
 	// for a human's or the issue author's answer takes a comment that
 	// answers as the first of a burst (awaitBurst) and resumes once the
 	// answering party posted nothing for answerQuiet, at the latest
-	// answerMax after the first, with every comment of the burst; a
-	// comment the console names whole (SignalAnswerWhole) resumes it at
-	// once. A run from before the change resumes on the first comment.
+	// answerMax after the first, with every comment of the burst, which
+	// t.answers keeps in the order it was written; a comment the console
+	// names whole (SignalAnswerWhole) resumes it at once. A run from before
+	// the change resumes on the first comment.
 	versionAnswerBurst workflow.Version = 1
+	// versionPlanBurst (change id "plan-burst", roadmap 237): the plan's
+	// wait takes a writer's comment as the first of a burst (awaitBurst),
+	// so the planner goes back once with every part of a change request in
+	// parts. A run from before the change goes back on the first comment.
+	versionPlanBurst workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -803,7 +810,7 @@ const maxPosterAttempts = 2
 const infoWait = 14 * 24 * time.Hour
 
 // answerQuiet and answerMax bound an answer in parts (versionAnswerBurst):
-// an answer longer than maxAnswer travels as several comments.
+// an answer longer than MaxAnswer travels as several comments.
 const (
 	answerQuiet = 30 * time.Second
 	answerMax   = 3 * time.Minute
@@ -848,6 +855,7 @@ type taskRun struct {
 	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
 	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel, versionReviewSupervised)
 	answerBurst       workflow.Version // an answer's wait resumes after its burst (versionAnswerBurst)
+	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -2246,38 +2254,41 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
-	take := func() (heard []int64) {
+	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
+	// at is where the wait's next answer goes in t.answers, newest first:
+	// a burst reads in the order it was written (versionAnswerBurst)
+	at := 0
+	pass := func() (heard []int64, stop bool) {
+		if final, why, stop = t.decided(); stop {
+			return nil, true
+		}
 		var sig TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 			if !t.counted(SignalHumanComment, sig) {
 				continue
 			}
 			heard = append(heard, sig.Comment)
-			if t.v7 >= versionAnswers {
-				t.answers = append([]string{answerText(sig.Author, question, sig.Body)}, t.answers...)
-			} else {
+			if t.v7 < versionAnswers {
 				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
+				continue
+			}
+			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body))
+			if t.answerBurst >= versionAnswerBurst {
+				at++
 			}
 		}
-		return heard
+		answer = append(answer, t.drainChanges()...)
+		return heard, false
 	}
 	for {
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment} {
+		for _, n := range wake {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.Select(t.ctx)
-		if final, why, ok := t.decided(); ok {
+		heard, stop := pass()
+		if stop || len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
-		}
-		heard := take()
-		answer = append(answer, t.drainChanges()...)
-		if len(heard) > 0 && t.answerBurst >= versionAnswerBurst {
-			final, why, changes := t.awaitBurst([]string{SignalHumanComment}, take, heard)
-			if final != "" {
-				return final, why, nil
-			}
-			answer = append(answer, changes...)
 		}
 		if len(heard) > 0 || len(answer) > 0 {
 			return "", "", answer
@@ -2285,14 +2296,14 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 	}
 }
 
-// awaitBurst holds a wait that took heard, the first comments of an
+// awaitBurst holds a wait whose pass took heard, the first comments of an
 // answer, until the answering party has posted nothing for answerQuiet,
-// at the latest answerMax after them, so an answer in parts lands whole
-// (versionAnswerBurst); once the wait took the comment the console names
-// whole (SignalAnswerWhole) it resumes at once. take drains the wait's
-// comment signals, comments, and returns the ones that answer. final is a
-// decision that came meanwhile, changes the change requests.
-func (t *taskRun) awaitBurst(comments []string, take func() []int64, heard []int64) (final, why string, changes []string) {
+// at the latest answerMax after them, so an answer in parts lands whole;
+// once the wait took the comment the console names whole
+// (SignalAnswerWhole) it resumes at once. wake are the wait's signals;
+// pass takes what a wake brought and returns the comments that answer,
+// or stop when it ended the wait otherwise, which awaitBurst reports.
+func (t *taskRun) awaitBurst(wake []string, pass func() (heard []int64, stop bool), heard []int64) bool {
 	end := workflow.Now(t.ctx).Add(answerMax)
 	timerCtx, cancel := workflow.WithCancel(t.ctx)
 	defer func() { cancel() }()
@@ -2301,23 +2312,19 @@ func (t *taskRun) awaitBurst(comments []string, take func() []int64, heard []int
 	for {
 		closed := false
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range append([]string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalAnswerWhole}, comments...) {
+		for _, n := range append([]string{SignalAnswerWhole}, wake...) {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		sel.AddFuture(quiet, func(workflow.Future) { closed = true })
 		sel.Select(t.ctx)
-		if final, why, ok := t.decided(); ok {
-			return final, why, nil
-		}
 		var sig TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalAnswerWhole).ReceiveAsync(&sig) {
 			whole = max(whole, sig.Comment)
 		}
-		changes = append(changes, t.drainChanges()...)
-		more := take()
+		more, stop := pass()
 		heard = append(heard, more...)
-		if closed || slices.Contains(heard, whole) {
-			return "", "", changes
+		if stop || closed || slices.Contains(heard, whole) {
+			return stop
 		}
 		if len(more) > 0 {
 			cancel()
@@ -2350,9 +2357,12 @@ func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []stri
 	if left := infoWait - workflow.Now(t.ctx).Sub(since); left > 0 {
 		expiry = workflow.NewTimer(timerCtx, left)
 	}
-	comments := []string{SignalHumanComment, SignalPosterComment}
-	take := func() (heard []int64) {
-		for _, n := range comments {
+	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment, SignalPosterComment}
+	pass := func() (heard []int64, stop bool) {
+		if final, why, stop = t.decided(); stop {
+			return nil, true
+		}
+		for _, n := range []string{SignalHumanComment, SignalPosterComment} {
 			var sig TaskSignal
 			for workflow.GetSignalChannel(t.ctx, n).ReceiveAsync(&sig) {
 				if t.answersInfoRequest(n, sig) {
@@ -2361,29 +2371,22 @@ func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []stri
 				}
 			}
 		}
-		return heard
+		changes = append(changes, t.drainChanges()...)
+		return heard, false
 	}
 	for {
 		expired := expiry == nil
 		if !expired {
 			sel := workflow.NewSelector(t.ctx)
-			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment, SignalPosterComment} {
+			for _, n := range wake {
 				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 			}
 			sel.AddFuture(expiry, func(workflow.Future) { expired = true })
 			sel.Select(t.ctx)
 		}
-		if final, why, ok := t.decided(); ok {
+		heard, stop := pass()
+		if stop || len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
-		}
-		heard := take()
-		changes = t.drainChanges()
-		if len(heard) > 0 && t.answerBurst >= versionAnswerBurst {
-			final, why, more := t.awaitBurst(comments, take, heard)
-			if final != "" {
-				return final, why, nil
-			}
-			changes = append(changes, more...)
 		}
 		if len(heard) > 0 || len(changes) > 0 {
 			return "", "", changes
@@ -2418,7 +2421,7 @@ func (t *taskRun) answersInfoRequest(name string, sig TaskSignal) bool {
 
 // posterText is one answer of the issue's author as the sessions get it.
 func posterText(author, body string) string {
-	return author + ": " + textutil.Truncate(body, maxAnswer)
+	return author + ": " + textutil.Truncate(body, MaxAnswer)
 }
 
 // counted records a received signal on the timeline and reports whether it
@@ -2570,9 +2573,10 @@ const escalateFailed = "escalate: "
 // healedReason is what a healed run waiting for a human asks again.
 const healedReason = "factoryd restarted while the task waited for a human; the question above still stands."
 
-// maxAnswer bounds an answer's body in the list every later session gets
-// as the ANSWERS env var (Linux caps one at 128 KiB); the issue keeps it.
-const maxAnswer = 4000
+// MaxAnswer bounds an answer's body, in bytes, in the list every later
+// session gets as the ANSWERS or POSTER_INFO env var (envList bounds the
+// list); the issue keeps it whole, and the console refuses a longer one.
+const MaxAnswer = 4000
 
 // escalationQuestion is an escalation reason's first line, an agent's
 // question without its prefix.
@@ -2584,5 +2588,5 @@ func escalationQuestion(reason string) string {
 // answerText is one human answer as the sessions get it, tagged with the
 // question it answers.
 func answerText(author, question, body string) string {
-	return fmt.Sprintf("%s, to %q: %s", author, textutil.Truncate(question, 300), textutil.Truncate(body, maxAnswer))
+	return fmt.Sprintf("%s, to %q: %s", author, textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
 }

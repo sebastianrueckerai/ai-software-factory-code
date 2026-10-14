@@ -1154,10 +1154,38 @@ func (r *Runner) supervisionTick() time.Duration {
 	return t
 }
 
+// maxEnvString is Linux's bound on one "NAME=value" string of a
+// process's environment, its NUL included (MAX_ARG_STRLEN): exec refuses
+// a longer one, and the session's container never starts.
+const maxEnvString = 128 << 10
+
+// envList is answers' JSON as env var name's value, within maxEnvString:
+// the oldest whole answers go first (the front of a list oldest first,
+// the back of one newest first), and an entry where they were says how
+// many went.
+func envList(name string, answers []string, oldestFirst bool) string {
+	for dropped := 0; ; dropped++ {
+		list := answers[:len(answers)-dropped]
+		if oldestFirst {
+			list = answers[dropped:]
+		}
+		if dropped > 0 {
+			note := []string{fmt.Sprintf("(%d of the oldest answers left out: the list passed the 128 KiB one environment variable carries; the issue has them all)", dropped)}
+			if oldestFirst {
+				list = slices.Concat(note, list)
+			} else {
+				list = slices.Concat(list, note)
+			}
+		}
+		b, _ := json.Marshal(list)
+		if len(name)+len("=")+len(b)+len("\x00") <= maxEnvString || dropped == len(answers) {
+			return string(b)
+		}
+	}
+}
+
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	findingsJSON, _ := json.Marshal(s.findings)
-	answersJSON, _ := json.Marshal(s.answers)
-	posterJSON, _ := json.Marshal(s.posterInfo)
 	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities))
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
@@ -1176,8 +1204,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
 		{"name": "FINDINGS", "value": string(findingsJSON)},
-		{"name": "ANSWERS", "value": string(answersJSON)},
-		{"name": "POSTER_INFO", "value": string(posterJSON)},
+		{"name": "ANSWERS", "value": envList("ANSWERS", s.answers, false)},
+		{"name": "POSTER_INFO", "value": envList("POSTER_INFO", s.posterInfo, true)},
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},

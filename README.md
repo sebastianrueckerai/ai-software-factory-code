@@ -571,9 +571,14 @@ grace period, and the next session starts from it. Escalation moves the task to
 issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the
 task (change id `answers`, ruling 118), and every later session gets all
-of them, newest first, as `SessionInput.Answers` (worker env `ANSWERS`),
-each as `<author>, to "<the escalation's first line>": <answer>` (the
-answer cut to 4000 bytes; the issue keeps it whole). Escalate records its
+of them, newest first (the comments answering one escalation in the
+order they were written), as `SessionInput.Answers` (worker env
+`ANSWERS`), each as `<author>, to "<the escalation's first line>":
+<answer>` (the answer cut to 4000 bytes; the issue keeps it whole, and
+the console refuses a longer answer, naming the bound and its length).
+`ANSWERS` and `POSTER_INFO` stay within the 128 KiB Linux allows one
+environment string: the oldest whole answers are left out first, and a
+note in their place says how many. Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an
 escalation's comment, tagged with its question; ruling 120), so a run the
@@ -1008,6 +1013,8 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   after the first comment, with every comment of the burst, so an answer
   in parts lands whole. The console's answer box posts one comment and
   names it whole (signal `answer_whole`), which resumes the card at once.
+  A plan waiting on its approvers takes a writer's comments the same way
+  (change id `plan-burst`): the planner goes back once with every part.
   The next session's brief carries it under "Poster information", as
   information, never as instructions. The brief writes its own lines
   (repository, the author's standing) first and puts the issue's text and

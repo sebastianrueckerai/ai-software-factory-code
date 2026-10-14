@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -947,6 +949,51 @@ func TestPlanLoopCommentDuringSession(t *testing.T) {
 	}
 	if !slices.Equal(h.requests, []int{1, 2}) || !slices.Equal(h.created, []string{"2 sebastian 7"}) {
 		t.Fatalf("requests %v created %v", h.requests, h.created)
+	}
+}
+
+// Roadmap 237: a writer's change request in parts sends the planner back
+// once with every part: three comments 10 s apart on the waiting plan,
+// then quiet, start the second session 30 s after the third. A run from
+// before versionPlanBurst goes back on the first part and again with the
+// other two.
+func TestPlanLoopCommentInPartsGoesBackOnce(t *testing.T) {
+	part := func(i int) string { return fmt.Sprintf("writer alice asked for changes to the plan: part %d of 3", i) }
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		plans   [][]string
+		began   []time.Duration
+	}{
+		{"current", versionPlanBurst, [][]string{nil, {part(1), part(2), part(3)}}, []time.Duration{0, time.Hour + 50*time.Second}},
+		{"before plan-burst", workflow.DefaultVersion, [][]string{nil, {part(1)}, {part(2), part(3)}},
+			[]time.Duration{0, time.Hour, time.Hour + planSession}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+			h.env.OnGetVersion("plan-burst", workflow.DefaultVersion, versionPlanBurst).Return(tc.version)
+			start := h.env.Now()
+			var began []time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityRunPlan {
+					began = append(began, h.env.Now().Sub(start))
+				}
+			})
+			for i := range 3 {
+				h.signalAfter(time.Hour+time.Duration(i)*10*time.Second, SignalHumanComment,
+					TaskSignal{Author: "alice", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(701 + i)})
+			}
+			h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if len(h.plans) != len(tc.plans) || !slices.EqualFunc(h.plans, tc.plans, slices.Equal) {
+				t.Fatalf("RunPlan findings %q, want %q", h.plans, tc.plans)
+			}
+			if !slices.Equal(began, tc.began) {
+				t.Fatalf("planner sessions began %v after the start, want %v", began, tc.began)
+			}
+		})
 	}
 }
 

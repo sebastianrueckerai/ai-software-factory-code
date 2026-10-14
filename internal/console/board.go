@@ -31,6 +31,8 @@ var funcs = template.FuncMap{
 	"eur2": func(v float64) string { return fmt.Sprintf("\u20ac%.2f", v) },
 	// accents are the colour labels a writer may put on a card
 	"accents": func() []string { return factoryd.Accents },
+	// maxAnswer is the answer box's bound (answerFits)
+	"maxAnswer": func() int { return factoryd.MaxAnswer },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {

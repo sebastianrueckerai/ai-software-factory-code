@@ -273,8 +273,8 @@ var licenseQuestion = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", R
 
 // Roadmap 237: an answer in parts lands whole (card #756 got part 1 of
 // 12). Three comments 10 s apart, then quiet: the wait resumes once, 30 s
-// after the third, and the next session gets all three in their list's
-// order: the author's oldest first, the human's newest first.
+// after the third, and the next session gets all three in the order they
+// were written.
 func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -287,7 +287,7 @@ func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 		{"an information request", needsInfo("s1"), SignalPosterComment, "visitor", func(in SessionInput) []string { return in.PosterInfo },
 			[]string{"visitor: part 1 of 3", "visitor: part 2 of 3", "visitor: part 3 of 3"}},
 		{"an escalation", licenseQuestion, SignalHumanComment, "sebastian", func(in SessionInput) []string { return in.Answers },
-			[]string{`sebastian, to "Which license?": part 3 of 3`, `sebastian, to "Which license?": part 2 of 3`, `sebastian, to "Which license?": part 1 of 3`}},
+			[]string{`sebastian, to "Which license?": part 1 of 3`, `sebastian, to "Which license?": part 2 of 3`, `sebastian, to "Which license?": part 3 of 3`}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, began, _ := providerHarness(t, tc.first, pushed("s2", "c2"))
@@ -311,6 +311,27 @@ func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 				t.Fatalf("usage = %+v, want the one extra attempt one answer buys", u)
 			}
 		})
+	}
+}
+
+// The human's answers read newest first, an escalation's own burst in
+// the order it was written: two questions, each answered in two parts.
+func TestWorkflowAnswersReadNewestFirstEachBurstInOrder(t *testing.T) {
+	year := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "The agent asks: Which year?\nWhy: none\nRecommendation: 2026"}
+	h := newWorkflowHarness(t)
+	h.onSessions(licenseQuestion, year, pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	for i, at := range []time.Duration{time.Hour, time.Hour + 10*time.Second, 2 * time.Hour, 2*time.Hour + 10*time.Second} {
+		h.signalAfter(at, SignalHumanComment, TaskSignal{Author: "sebastian", Body: fmt.Sprintf("part %d of 2", i%2+1), Comment: int64(701 + i)})
+	}
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := []string{`sebastian, to "Which year?": part 1 of 2`, `sebastian, to "Which year?": part 2 of 2`,
+		`sebastian, to "Which license?": part 1 of 2`, `sebastian, to "Which license?": part 2 of 2`}
+	if len(h.sessions) != 3 || !slices.Equal(h.sessions[1].Answers, want[2:]) || !slices.Equal(h.sessions[2].Answers, want) {
+		t.Fatalf("sessions = %+v, want the third with %q", h.sessions, want)
 	}
 }
 

@@ -2345,6 +2345,50 @@ func TestWorkerPodSpecCarriesMigrationGlobs(t *testing.T) {
 	}
 }
 
+// Roadmap 237: ANSWERS and POSTER_INFO stay within the 128 KiB Linux
+// allows one "NAME=value" string with its NUL (MAX_ARG_STRLEN), so a
+// session's container always starts. 32 answers of 4000 bytes and an
+// oldest one of m make m + 128100 bytes of JSON (the bodies, 3 bytes per
+// entry for its quotes and comma, 1 for the brackets less one comma):
+// ANSWERS, 9 bytes with its "=" and NUL, holds m = 2963 whole and leaves
+// its oldest, the last, out at 2964; POSTER_INFO, 4 bytes longer, holds
+// 2959 and leaves its oldest, the first, out at 2960. A note says so where
+// the answer was.
+func TestWorkerPodSpecBoundsTheAnswers(t *testing.T) {
+	env := func(s sessionSpec) map[string]string {
+		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, s)
+		vars := map[string]string{}
+		for _, e := range pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
+			vars[e["name"].(string)] = e["value"].(string)
+		}
+		return vars
+	}
+	newer := slices.Repeat([]string{strings.Repeat("a", 4000)}, 32)
+	note := "(1 of the oldest answers left out: the list passed the 128 KiB one environment variable carries; the issue has them all)"
+	for _, tc := range []struct {
+		m           int
+		answers     []string // newest first
+		posterInfo  []string // oldest first
+		wantAnswers []string
+		wantPoster  []string
+	}{
+		{2959, nil, slices.Concat([]string{strings.Repeat("z", 2959)}, newer), nil, slices.Concat([]string{strings.Repeat("z", 2959)}, newer)},
+		{2960, nil, slices.Concat([]string{strings.Repeat("z", 2960)}, newer), nil, slices.Concat([]string{note}, newer)},
+		{2963, slices.Concat(newer, []string{strings.Repeat("z", 2963)}), nil, slices.Concat(newer, []string{strings.Repeat("z", 2963)}), nil},
+		{2964, slices.Concat(newer, []string{strings.Repeat("z", 2964)}), nil, slices.Concat(newer, []string{note}), nil},
+	} {
+		vars := env(sessionSpec{id: "s-1", answers: tc.answers, posterInfo: tc.posterInfo})
+		for name, want := range map[string][]string{"ANSWERS": tc.wantAnswers, "POSTER_INFO": tc.wantPoster} {
+			if got := vars[name]; got != jsonOf(want) {
+				t.Errorf("m %d: %s = %d bytes, want %d", tc.m, name, len(got), len(jsonOf(want)))
+			}
+			if n := len(name) + len("=") + len(vars[name]) + len("\x00"); n > 128<<10 {
+				t.Errorf("m %d: %s's string is %d bytes, over 128 KiB", tc.m, name, n)
+			}
+		}
+	}
+}
+
 // The climb in place (roadmap 222, item 5): on the start rung's first
 // attempt the cheap cap trips without a push, and the session goes on
 // instead of ending: the task's alias moves to the stronger one, the

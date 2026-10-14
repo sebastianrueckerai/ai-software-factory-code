@@ -1398,6 +1398,24 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	}
 }
 
+// Roadmap 237: the rebuilt answers read as the live run keeps them,
+// newest first, each escalation's comments in the order they were written.
+func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
+	answers, _, _ := answersFrom([]IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?\nWhy: open"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "part 1", CommentID: 101, Trusted: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "part 2", CommentID: 102, Trusted: true},
+		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 201, Trusted: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 202, Trusted: true},
+	})
+	want := []string{`sebastian, to "Which text?": a`, `sebastian, to "Which text?": b`,
+		`sebastian, to "Which file?": part 1`, `sebastian, to "Which file?": part 2`}
+	if !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
 // at the cap, the model reviews oldest first, the last round, and

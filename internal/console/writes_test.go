@@ -33,7 +33,9 @@ func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
 			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
-			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}})
+			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan, Process: "spec",
+			Repository: "sf/code", IssueNumber: 40, Objective: "Plan the shortener."}})
 	return r, g
 }
 
@@ -171,6 +173,29 @@ func TestChatGrantSession(t *testing.T) {
 	code, msg := refused(t, r, "grant_session", toolInput{TaskID: "t-e", Text: "yes"})
 	equal(t, "grant to a question", []any{code, msg}, []any{http.StatusConflict,
 		"Card #13 waits on a human: an answer, an approval or a decision, not a card at its session cap: answer it (answer)."})
+}
+
+// Roadmap 237: grant_session, answer and a comment on a card waiting for
+// an answer carry at most factoryd.MaxAnswer bytes, as the answer box
+// does, and post nothing longer. A comment on a card in the backlog, or
+// on a plan waiting on its approvers (the planner gets it whole), keeps
+// the 64 KiB bound.
+func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
+	r, _ := newWritesRig(t)
+	long := strings.Repeat("x", 4001)
+	for _, tc := range []struct{ tool, id string }{{"grant_session", "t-cap"}, {"answer", "t-e"}, {"comment", "t-e"}} {
+		code, msg := refused(t, r, tc.tool, toolInput{TaskID: tc.id, Text: long})
+		equal(t, tc.tool+" on "+tc.id, []any{code, msg}, []any{http.StatusBadRequest, "an answer of 1 to 4000 bytes is required; this one has 4001"})
+	}
+	equal(t, "the comments", len(r.fg.comments), 0)
+	_, s := r.loggedIn(t)
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+	for _, id := range []string{"t-m", "t-plan"} {
+		if _, _, err := r.c.doComment(t.Context(), a, id, long); err != nil {
+			t.Errorf("comment on %s: %v", id, err)
+		}
+	}
+	equal(t, "the comments", len(r.fg.comments), 2)
 }
 
 // set_dependency proposes; Do it stores the edge and makes the issue

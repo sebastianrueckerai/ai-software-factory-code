@@ -1103,13 +1103,15 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "planner session: "+errMessage(err))
 		case err != nil:
 			reason = "planner session failed: " + errMessage(err)
-			findings = append([]string{"the last planner session failed: " + errMessage(err)}, t.planComments(floor)...)
+			comments, _ := t.planComments(floor)
+			findings = append([]string{"the last planner session failed: " + errMessage(err)}, comments...)
 			continue
 		case res.Escalate != "":
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			reason, findings = "the planner filed no plan", append(res.Findings, t.planComments(floor)...)
+			comments, _ := t.planComments(floor)
+			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
@@ -1134,9 +1136,9 @@ func (t *taskRun) planRejected() (final, why string, ok bool) {
 
 // planComments takes the writers' comments signalled so far: each newer
 // than floor, the comment the session answered, asks for changes; the
-// console's acceptance comment asks for nothing.
-func (t *taskRun) planComments(floor int64) []string {
-	var out []string
+// console's acceptance comment asks for nothing. heard are the comments
+// that ask.
+func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment}
@@ -1147,38 +1149,37 @@ func (t *taskRun) planComments(floor int64) []string {
 			detail["ignored"] = "the console's acceptance comment"
 		default:
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
+			heard = append(heard, sig.Comment)
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
-	return out
+	return out, heard
 }
 
 // awaitPlan waits, at no cost, for the approvers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
 // findings the next planner session starts with. An accepted revision
 // files its cards and ends the task done; a refused acceptance, a
-// writer's comment, or the answer that leaves no question of the revision
-// open (versionPlanAnswers) goes back to the planner.
+// writer's comment and the rest of its burst (versionPlanBurst), or the
+// answer that leaves no question of the revision open
+// (versionPlanAnswers) goes back to the planner.
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findings []string) {
-	signals := []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected}
+	wake := []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected}
 	if t.planAnswers >= versionPlanAnswers {
-		signals = append(signals, SignalPlanAnswered)
+		wake = append(wake, SignalPlanAnswered)
 	}
-	for {
-		sel := workflow.NewSelector(t.ctx)
-		for _, n := range signals {
-			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
-		}
-		sel.Select(t.ctx)
+	answered := false
+	pass := func() (heard []int64, stop bool) {
 		var sig TaskSignal
 		if workflow.GetSignalChannel(t.ctx, SignalIssueClosed).ReceiveAsync(&sig) {
 			t.counted(SignalIssueClosed, sig)
-			return "closed", ReasonIssueClosed + " before the plan was accepted", nil
+			final, why = "closed", ReasonIssueClosed+" before the plan was accepted"
+			return nil, true
 		}
-		if final, why, ok := t.planRejected(); ok {
-			return final, why, nil
+		if final, why, stop = t.planRejected(); stop {
+			return nil, true
 		}
 		for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
 			if ref.Revision == 0 {
@@ -1192,19 +1193,40 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 			t.recordPlanSignal(SignalPlanAccepted, sig, "")
 			var res ChildrenResult
 			if err := workflow.ExecuteActivity(t.short, ActivityCreateChildren, t.taskID, ref.Revision, sig.Author, t.cfg.PolicyVersion).Get(t.ctx, &res); err != nil {
-				return "failed", "create the plan's cards: " + errMessage(err), nil
+				final, why = "failed", "create the plan's cards: "+errMessage(err)
+				return nil, true
 			}
 			if len(res.Refused) > 0 {
 				*ref = PlanRef{}
-				return "", "", res.Refused
+				findings = append(findings, res.Refused...)
+				return nil, true
 			}
-			return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil
+			final, why = "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues))
+			return nil, true
 		}
-		answered, err := t.planAnswered(ref)
+		ok, err := t.planAnswered(ref)
 		if err != nil {
-			return "failed", "count the plan's open questions: " + errMessage(err), nil
+			final, why = "failed", "count the plan's open questions: "+errMessage(err)
+			return nil, true
 		}
-		findings = t.planComments(floor)
+		answered = answered || ok
+		out, heard := t.planComments(floor)
+		findings = append(findings, out...)
+		return heard, false
+	}
+	for {
+		sel := workflow.NewSelector(t.ctx)
+		for _, n := range wake {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.Select(t.ctx)
+		heard, stop := pass()
+		if stop || len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
+			if final != "" {
+				return final, why, nil
+			}
+			return "", "", findings
+		}
 		if answered || len(findings) > 0 {
 			return "", "", findings
 		}

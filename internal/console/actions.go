@@ -802,8 +802,8 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 // is a grant, and its event session_granted as doGrantSession's.
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 64<<10 {
-		return "", refuse(http.StatusBadRequest, "an answer of up to 64 KiB is required")
+	if err := answerFits(text); err != nil {
+		return "", err
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -834,8 +834,8 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // doAnswer does, which the workflow's wait takes as the grant.
 func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
-	if text == "" || len(text) > 64<<10 {
-		return "", refuse(http.StatusBadRequest, "an answer of up to 64 KiB is required")
+	if err := answerFits(text); err != nil {
+		return "", err
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -855,6 +855,17 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	log.Printf("console: %s granted %s a session via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventSessionGranted, commentDetail(posted))
 	return fmt.Sprintf("Your answer is on #%d; it grants the card one session.", t.IssueNumber), nil
+}
+
+// answerFits refuses an answer the sessions would get cut: each answer
+// reaches them as at most factoryd.MaxAnswer bytes, so a longer one is
+// refused here, where its author sees why, and the issue never holds more
+// than the sessions read.
+func answerFits(text string) error {
+	if text == "" || len(text) > factoryd.MaxAnswer {
+		return refuse(http.StatusBadRequest, fmt.Sprintf("an answer of 1 to %d bytes is required; this one has %d", factoryd.MaxAnswer, len(text)))
+	}
+	return nil
 }
 
 // answerWhole tells card t's workflow that comment posted, the member's
@@ -1222,7 +1233,8 @@ func (c *Console) reaches(ctx context.Context, from, to string) (bool, error) {
 }
 
 // doComment posts text on card id's issue as the member, a writer of its
-// project; posted is the comment's id.
+// project; posted is the comment's id. On a card waiting for an answer the
+// comment is one, bounded as the answer box's.
 func (c *Console) doComment(ctx context.Context, a actor, id, text string) (posted int64, note string, err error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -1235,12 +1247,25 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 	if t.IssueNumber == 0 {
 		return 0, "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
+	if waitsOnAnswer(t) {
+		if err := answerFits(text); err != nil {
+			return 0, "", err
+		}
+	}
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return 0, "", &forgejoRefusal{"post the comment", err}
 	}
 	log.Printf("console: %s commented on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardCommented, commentDetail(posted))
 	return posted, fmt.Sprintf("Commented on #%d.", t.IssueNumber), nil
+}
+
+// waitsOnAnswer tells a card on which a writer's comment is an answer the
+// sessions get (factoryd's awaitHuman, waitPoster): one waiting on a
+// human or the issue's author, outside the plan lane, whose comments go to
+// the planner whole as change requests.
+func waitsOnAnswer(t factoryd.Task) bool {
+	return (t.Status == "waiting-human" || t.Status == "waiting-poster") && t.Lane != policy.LanePlan
 }
 
 // doDeleteComment deletes comment posted of card id as the member: the undo
