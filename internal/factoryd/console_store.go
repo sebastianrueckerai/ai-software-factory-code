@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -57,15 +59,15 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 // BoardTasks lists at most limit tasks for the console's board: those not
 // done or failed first, most urgent first, then those finished after
 // since, or failed holding a plan key while a card waits on them (their
-// Retry), newest first; a chat task is no card. The escalation reason
-// comes from the escalation's intake event, so a poll reads no timeline
-// object.
+// Retry), newest first, a finish stamp missing last; a chat task is no
+// card. The escalation reason comes from the escalation's intake event,
+// so a poll reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, since time.Time, limit int) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
 		 WHERE kind <> $5 AND (status NOT IN ('done', 'failed', 'closed') OR finished_at > $3
 		    OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
-		 ORDER BY status IN ('done', 'failed', 'closed'), priority DESC, finished_at DESC NULLS FIRST, id
+		 ORDER BY status IN ('done', 'failed', 'closed'), CASE WHEN status IN ('done', 'failed', 'closed') THEN NULL ELSE priority END DESC, finished_at DESC NULLS LAST, id
 		 LIMIT $4`, IntakeEscalation, AlertEscalation, since, limit, KindChat)
 	if err != nil {
 		return nil, err
@@ -91,4 +93,38 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 		return BoardTask{}, false, nil
 	}
 	return b, err == nil, err
+}
+
+// SortBoardTasks orders tasks in memory as BoardTasks' ORDER BY does: the
+// active block first, most urgent first, then the finished block by
+// finish time, newest first, a finish stamp missing last. The in-memory
+// fakes sort with it, so the test path and the store cannot drift apart;
+// ties keep their order, where the SQL tie-breaks by id.
+func SortBoardTasks(tasks []BoardTask) {
+	slices.SortStableFunc(tasks, boardTaskOrder)
+}
+
+// boardTaskOrder compares two cards as the board lists them.
+func boardTaskOrder(a, b BoardTask) int {
+	fa, fb := Final(a.Status), Final(b.Status)
+	if fa != fb {
+		if fa {
+			return 1
+		}
+		return -1
+	}
+	if !fa {
+		if c := cmp.Compare(b.Priority, a.Priority); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case a.FinishedAt == nil && b.FinishedAt == nil:
+		return 0
+	case a.FinishedAt == nil:
+		return 1
+	case b.FinishedAt == nil:
+		return -1
+	}
+	return b.FinishedAt.Compare(*a.FinishedAt)
 }

@@ -89,8 +89,9 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
 		}
-		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>") {
-			t.Errorf("the header of %s lacks the count %s", title, counts[title])
+		// the head, then the body that alone scrolls (never sideways)
+		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>\n<div class=\"cards\">") {
+			t.Errorf("the header of %s lacks the count %s or its body", title, counts[title])
 		}
 		for _, id := range items {
 			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {

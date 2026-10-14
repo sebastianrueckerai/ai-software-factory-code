@@ -100,6 +100,17 @@ async function text(page) {
           if (await d.isVisible()) fails.push("drawer: Escape does not close it");
         }
       }
+      // the columns never scroll themselves (item 0a of roadmap 236): a column's body
+      // scrolls down, only when its cards overflow, and never sideways
+      const scroll = await p.page.evaluate(() => Array.from(document.querySelectorAll("#board .column")).map((c) => {
+        const b = c.querySelector(":scope > .cards"), cs = b && getComputedStyle(b);
+        return { col: c.scrollHeight > c.clientHeight + 2 || c.scrollWidth > c.clientWidth + 2, body: !b || b.scrollWidth > b.clientWidth, y: cs && cs.overflowY, x: cs && cs.overflowX };
+      }));
+      scroll.forEach((s, i) => {
+        if (s.col) fails.push("busy: column " + i + " scrolls itself");
+        if (s.body) fails.push("busy: column " + i + " has no body or its body scrolls sideways");
+        if (s.y !== "auto" || s.x !== "hidden") fails.push("busy: column " + i + "'s body overflow is " + s.y + "/" + s.x + ", want auto/hidden");
+      });
       const doit = p.page.locator("#chat").getByRole("button", { name: "Do it", exact: true });
       if (!(await doit.count())) fails.push("chat: no Do it");
       else {
