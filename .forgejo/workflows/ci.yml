@@ -61,9 +61,12 @@ jobs:
           docker build -f Dockerfile.sandbox -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true .
+          docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
+          # the smoke run pulls what was pushed, not the local tag: the shared
+          # daemon dropped that between build and run once (run 967), and the
+          # published digest is the artifact everyone deploys anyway
           docker run --rm --entrypoint sh git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             -c "gcc --version && make --version && python3 --version"
-          docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
   image-runner:
     needs: test
     runs-on: ubuntu-latest
