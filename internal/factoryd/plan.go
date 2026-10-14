@@ -1030,6 +1030,9 @@ func (t *taskRun) planLoop() (string, error) {
 	wait := ref.Revision != 0
 	var findings []string
 	var ask string // a question for a human: the cap card, or a stop's
+	// carried are the findings of a session that could not start: the
+	// next one starts with them and what the wait brings
+	var carried []string
 	reason := "no session answered a plan"
 	refusals := 0 // refused sessions in a row (versionSessionRefusals)
 	// the comment the running or next session answers: writers' comments
@@ -1054,7 +1057,7 @@ func (t *taskRun) planLoop() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings, wait = next, false
+			findings, wait, carried = append(carried, next...), false, nil
 			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
 				t.grant(&u)
 			}
@@ -1115,7 +1118,7 @@ func (t *taskRun) planLoop() (string, error) {
 			findings = append([]string{"the last planner session failed: " + errMessage(err)}, comments...)
 			continue
 		case res.StartFailed:
-			reason, ask = "the planner session could not start", res.Escalate
+			reason, ask, carried = "the planner session could not start", res.Escalate, findings
 			continue
 		case res.Escalate != "":
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate

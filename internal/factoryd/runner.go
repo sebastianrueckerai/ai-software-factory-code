@@ -557,8 +557,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
 	lines := followed.lines
-	// ended names why the log ended without a result
+	// ended says why the log ended without a result, plain the generic
+	// words: how the pod ended when its diagnosis says, else the log's
+	// own error
 	ended := func(plain string) string {
+		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
+			if how := exitedHow(plain, d); how != "" {
+				return how
+			}
+		}
 		if err := followed.err(); err != nil {
 			return err.Error()
 		}
@@ -786,9 +793,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 				if out.result == nil {
 					out.noResult = ended("pod exited without a result")
-					if diag, dErr := r.kube.PodDiagnosis(ctx, ns, podName); dErr == nil {
-						out.noResult = cmp.Or(exitedHow(diag), out.noResult)
-					}
 				}
 				return out, nil
 			}
@@ -1042,16 +1046,16 @@ func waitsOn(d PodDiagnosis) string {
 	return ""
 }
 
-// exitedHow says how a pod ended without a result: its eviction, or the
-// first container that ended in failure, init containers first; "" when
-// its diagnosis says no more.
-func exitedHow(d PodDiagnosis) string {
+// exitedHow says how a pod ended without a result, plain the generic
+// words: its eviction, or plain and the first container that ended in
+// failure, init containers first; "" when its diagnosis says no more.
+func exitedHow(plain string, d PodDiagnosis) string {
 	if d.Reason == "Evicted" {
 		return "evicted: " + d.Message
 	}
 	for _, c := range d.Containers {
 		if c.State == "terminated" && (c.ExitCode != 0 || c.Reason != "Completed") {
-			s := fmt.Sprintf("pod exited without a result: container %s terminated with %s (exit code %d)", c.Name, c.Reason, c.ExitCode)
+			s := fmt.Sprintf("%s: container %s terminated with %s (exit code %d)", plain, c.Name, c.Reason, c.ExitCode)
 			if c.Message != "" {
 				s += ": " + c.Message
 			}

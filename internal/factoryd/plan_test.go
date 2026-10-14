@@ -1065,6 +1065,25 @@ func TestPlanLoopSessionThatCannotStartCostsNothing(t *testing.T) {
 	}
 }
 
+// The findings a planner session that could not start was given wait for
+// the session the answer starts: the last session's plan_invalid findings
+// come first, the comments the wait brought after them.
+func TestPlanLoopStartFailureKeepsTheFindings(t *testing.T) {
+	invalid := "plan: 1 cards; this process allows 2 to 12"
+	ask := startEscalation("image pull", "push the worker image or correct its reference",
+		"start failed: image pull: container clone waits with ErrImagePull: not found")
+	h := newPlanHarness(t, PlanResult{Findings: []string{invalid}}, PlanResult{Escalate: ask, StartFailed: true}, PlanResult{Findings: []string{invalid}})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "the image is pushed", Comment: 602})
+	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
+	if final := h.run(t); final != "failed" || len(h.plans) != 3 {
+		t.Fatalf("final %q after %d plans, finals %v", final, len(h.plans), h.finals)
+	}
+	want := []string{invalid, "writer alice asked for changes to the plan: the image is pushed"}
+	if !slices.Equal(h.plans[1], []string{invalid}) || !slices.Equal(h.plans[2], want) {
+		t.Fatalf("plans %q, want the third with %q", h.plans, want)
+	}
+}
+
 // A refused acceptance (a cycle found when the cards are filed) goes back
 // to the planner as its findings, and the next valid revision is accepted.
 func TestAcceptRefusesCycle(t *testing.T) {
