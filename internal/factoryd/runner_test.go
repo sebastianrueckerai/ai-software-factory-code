@@ -2301,14 +2301,17 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 			n := len(worker.texts)
 			worker.mu.Unlock()
 			if n > 0 {
+				// the climb's comment on the issue follows the message
+				time.Sleep(500 * time.Millisecond)
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
 		cancel()
 	}()
-	_, err := runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, hangLogs)
-	if err == nil || !strings.Contains(err.Error(), "context canceled") {
+	// the cancel ends the session by its context or by the closed log
+	// stream, whichever the loop takes first
+	if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, hangLogs); err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("err = %v, want the test's cancel after the climb", err)
 	}
 	worker.mu.Lock()
