@@ -117,3 +117,22 @@ func TestAQueuedCardDoesNotSpeak(t *testing.T) {
 		t.Errorf("a queued card speaks:\n%s", face)
 	}
 }
+
+// The page's policy allows no inline style (style-src 'self'), so a
+// template must set nothing by a style attribute: a width set that way is
+// dropped, and the gauge it drew stayed empty.
+func TestNoInlineStyle(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "spends", BudgetEUR: 10, SpentEUR: 5.1})
+	ck, _ := r.loggedIn(t)
+	for _, page := range []string{"/", "/?view=wide", "/cards/t-run/drawer?tab=overview", "/costs", "/tasks/t-run/timeline"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		if strings.Contains(body, ` style="`) {
+			t.Errorf("%s sets a style attribute, which the policy drops", page)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="gauge"><meter min="0" max="100" value="`) {
+		t.Errorf("the strip's gauge is not a meter")
+	}
+}
