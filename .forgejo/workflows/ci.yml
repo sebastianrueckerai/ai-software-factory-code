@@ -11,26 +11,29 @@ env:
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
 jobs:
   test:
+    # The warm Go caches of a main job live in docker named volumes on this
+    # runner's own dind, which only ubuntu-latest jobs reach — untrusted PR
+    # jobs run on the factory's gVisor pods and never touch this runner, so
+    # nothing an untrusted run wrote reaches a main job (ruling 226's line,
+    # kept without main running cold). The test environment is the CI runner
+    # image itself — the same image the PR jobs test in, Go 1.25 and PG 17
+    # preinstalled — built from this commit's Dockerfile.runner on the layer
+    # cache main's image job writes (ruling 111: main writes that cache).
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.25"
-      - name: PostgreSQL 17's server for scripts/pg-test.sh
-        # the job container (catthehacker/ubuntu) has none; apt takes PGDG's
-        # packages only signed by the key of this fingerprint, and the
-        # install creates no cluster
+      - name: build the CI runner image on the layer cache
+        run: docker build -f Dockerfile.runner -t ci-runner:test --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
+      - name: test and vet with the warm caches
+        # the checkout travels as a tar stream: the job container's filesystem
+        # holds it, and the dind daemon can bind-mount only its own paths
         run: |
-          mkdir -p /etc/apt/keyrings /etc/postgresql-common/createcluster.d
-          curl -fsSL -o /etc/apt/keyrings/pgdg.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
-          echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt $(. /etc/os-release && echo "$VERSION_CODENAME")-pgdg main" \
-            > /etc/apt/sources.list.d/pgdg.list
-          echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.d/no-main-cluster.conf
-          apt-get update -q
-          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends postgresql-17
-      - run: scripts/pg-test.sh go test -race -p 1 ./...
-      - run: go vet ./...
+          set -euo pipefail
+          tar -c . | docker run -i --rm --user 0:0 \
+            -v ci-go-build:/cache/go-build -v ci-go-mod:/modcache \
+            -e GOCACHE=/cache/go-build -e GOMODCACHE=/modcache -e GOPATH=/tmp/go \
+            --entrypoint /bin/bash ci-runner:test \
+            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race -p 1 ./... && go vet ./...'
   image:
     needs: test
     runs-on: ubuntu-latest
