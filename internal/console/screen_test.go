@@ -165,7 +165,7 @@ func TestStatusLineFigures(t *testing.T) {
 <a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
 <a href="/costs" class="cell spend" ` + title + `><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a>
 `
-	for _, query := range []string{"", "?view=wide", "?accent=teal"} {
+	for _, query := range []string{"", "?view=wide"} {
 		if got := line(query); got != code {
 			t.Errorf("board%s: status line\n%s\nwant\n%s", query, got, code)
 		}
@@ -384,7 +384,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 	}
 	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
 		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`,
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`,
 		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the wide view lacks %s", want)
@@ -395,7 +395,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 		t.Error("the wide view's poll answers the five columns")
 	}
 	if frag := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(frag,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`) {
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
 		t.Errorf("the card under the wide view's query keeps no view on its forms: %s", frag)
 	}
 	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
@@ -440,7 +440,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	for path, wants := range map[string][]string{
 		"/static/console.js": {`if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;`, `e.key === "Escape"`,
 			`e.key === "w"`, `e.key === "?"`, `window.addEventListener("hashchange", showDrawer);`, `"/drawer"`,
-			`if (drawer && !drawer.hidden) return true;`},
+			`if (el.querySelector("details[open]:not(.pulse-fold)")) return true;`},
 		"/static/theme.js": {`localStorage.getItem("view") !== "wide"`, `location.replace("/?" + q + location.hash);`},
 	} {
 		js := r.do(httptest.NewRequest(http.MethodGet, path, nil)).Body.String()
@@ -825,7 +825,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-30"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
-	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value="">`
+	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	if strings.Count(card, filter) != 2 {
 		t.Errorf("the merge card's approve and deny forms do not both carry the filter:\n%s", card)
 	}
@@ -836,7 +836,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}{
 		{"/approvals/30/approve", url.Values{"project": {"linkshort"}}, "/?project=linkshort"},
 		{"/approvals/3/deny", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}, "note": {"not now"}}, "/?project=ai-software-factory-code&view=wide"},
-		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}, "accent": {"teal"}}, "/?accent=teal&project=ai-software-factory-code"},
+		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post(tc.path, tc.form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
