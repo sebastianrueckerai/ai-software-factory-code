@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -175,6 +176,72 @@ func TestWorkflowRollMergesWithoutAGap(t *testing.T) {
 	}
 	if slices.ContainsFunc(g.steps, func(s string) bool { return s == "gap" || s == "clear" || s == "settle" }) {
 		t.Fatalf("steps %v; want no gap and no hold", g.steps)
+	}
+}
+
+// A fold delivered during a roll's session-gap wait stops the merge: the
+// gap wait's race takes no roll_folded, so once the gap is over the wait
+// drains folds again and returns the folded verdict like its selector
+// loop does; the next round commits the folded images and asks for the
+// merge again, which the new approval carries through.
+func TestWorkflowRollFoldDuringTheGapWaitStopsTheMerge(t *testing.T) {
+	g, commits := newRollHarnessWith(t, func(g *gateHarness) { g.gapDelay = 10 * time.Minute }, "r1", "r2")
+	g.env.OnGetVersion("roll-gap", workflow.DefaultVersion, versionRollNoGap).Return(versionRollGap)
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(time.Hour+time.Minute, SignalRollFolded, TaskSignal{Author: "factory-agent", PR: 9, Body: "roll c2c2c2c: worker folded in"})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "policy", "repro r2", "review r2", "approval r2", "gap", "merge", "settle"}
+	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
+		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
+	}
+	if !slices.Equal(g.merges, []string{"9 r2 sebastian"}) {
+		t.Fatalf("merges = %v", g.merges)
+	}
+}
+
+// A roll whose gap found no fold merges its approved head.
+func TestWorkflowRollMergesAfterItsGapWithoutAFold(t *testing.T) {
+	g, commits := newRollHarness(t, "r1")
+	g.env.OnGetVersion("roll-gap", workflow.DefaultVersion, versionRollNoGap).Return(versionRollGap)
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "settle"}
+	if !slices.Equal(g.steps, want) || len(*commits) != 1 {
+		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
+	}
+	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) {
+		t.Fatalf("merges = %v", g.merges)
+	}
+}
+
+// A stray roll_folded on a task that is no roll changes nothing: it
+// sleeps in its channel until the run ends and is drained.
+func TestWorkflowNoRollIgnoresAStrayRollFolded(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRollCommit, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (string, error) {
+			t.Errorf("a stray roll_folded ran a roll commit: %s", taskID)
+			return "", nil
+		})
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalRollFolded, TaskSignal{Author: "factory-agent", PR: 9, Body: "roll c2c2c2c: worker folded in"})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 1 {
+		t.Fatalf("sessions = %+v, want the one", h.sessions)
+	}
+	if strings.Contains(h.logs.String(), "unhandled signals") {
+		t.Fatalf("log:\n%s", h.logs.String())
 	}
 }
 
