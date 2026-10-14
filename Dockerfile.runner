@@ -60,7 +60,7 @@ RUN echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  /tmp
       && tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane \
       && rm /tmp/crane.tar.gz
 
-# Go 1.25 toolchain, pre-installed so a job never downloads it mid-run: taken
+# The Go toolchain, pre-installed so a job never downloads it mid-run: taken
 # from the pinned golang base image stage instead of go.dev/dl, which redirects
 # to dl.google.com and that host is unreachable here.
 COPY --from=go-toolchain /usr/local/go /usr/local/go

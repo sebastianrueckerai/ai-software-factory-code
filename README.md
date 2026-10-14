@@ -95,7 +95,7 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   asks, one token only); the worker waits 30 s at most and pushes
   `factory/<id>` to the fork `factory-agent/<repo>`.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
-  the Go 1.25 toolchain (ruling 99, the same pin as the runner
+  the Go toolchain (ruling 99, the same pin as the runner
   image) and PostgreSQL 17's server for `scripts/pg-test.sh`; its
   egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
@@ -1825,7 +1825,7 @@ ephemeral runner registration are torn down when the pod finishes or its
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go 1.25 toolchain, gosec, PostgreSQL 17's server for
+node, the Go toolchain, gosec, PostgreSQL 17's server for
 `scripts/pg-test.sh`, `buildctl` and `crane`, and nothing that builds
 images: no rootless BuildKit comes up under gVisor, and a root build pod
 in the cluster was the one exception the admission policy had to make.
