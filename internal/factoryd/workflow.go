@@ -44,6 +44,10 @@ const (
 	// folded into a roll task (ruling 178): it wakes the approval wait and
 	// is never a finding.
 	SignalRollFolded = "roll_folded"
+	// SignalStaleNudge is the stale sweep's wake-up of a live-status card
+	// quiet for the stale window: SignalWithStart starts a workflow that
+	// died; a live one has no handler and drops it.
+	SignalStaleNudge = "stale_nudge"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on

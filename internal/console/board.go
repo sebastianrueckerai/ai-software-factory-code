@@ -199,6 +199,10 @@ type card struct {
 	// ring, and these words on its activity line.
 	Stale     bool
 	StaleText string
+	// stepAt is the card's newest timeline step's time: the work its own
+	// session last reported, an input to the stale ring beside the newest
+	// event.
+	stepAt time.Time
 	// Children roll up an accepted plan: n running, n done, n waiting.
 	Children string
 	// Blocked is how many cards this one depends on that are not done;
@@ -299,10 +303,6 @@ func nearBudget(spent, budget float64) bool {
 	return cents(spent)*5 >= cents(budget)*4
 }
 
-// staleAfter bounds how long a card may hold no event before its face
-// wears the amber ring.
-const staleAfter = 30 * time.Minute
-
 // newestChecksCount is the task's newest checks step: passed over total of
 // its jobs; "" when the steps hold none or it named no counts.
 func newestChecksCount(steps []map[string]any) string {
@@ -381,15 +381,31 @@ func onProvider(steps []map[string]any) bool {
 	return false
 }
 
+// newestStepOf is steps' newest step's time, the card's own work as the
+// stale ring reads it; a step without a time is skipped, and none
+// leaves the zero time.
+func newestStepOf(steps []map[string]any) time.Time {
+	for i := len(steps) - 1; i >= 0; i-- {
+		at, err := time.Parse(time.RFC3339, fmt.Sprint(steps[i]["time"]))
+		if err != nil {
+			continue
+		}
+		return at
+	}
+	return time.Time{}
+}
+
 // checksTTL is how long what a card's face reads from its timeline is
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
 // checks is a card's remembered checks count, retry, hold and wait on
-// the provider, and when they were read.
+// the provider, the newest timeline step's time, and when they were
+// read.
 type checks struct {
 	count                    string
 	retrying, held, provider bool
+	stepAt                   time.Time
 	at                       time.Time
 }
 
@@ -409,6 +425,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			k.Checks = got.count
 		}
 		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
+		k.stepAt = got.stepAt
 	})
 }
 
@@ -426,6 +443,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
 	for other, old := range c.checks {
@@ -1203,12 +1221,20 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// question it waits on an answer to; a card with neither claims
 	// nothing. On a waiting card that reason is what the human owes it:
 	// it stands in place of the newest event. The stale ring — one whose
-	// newest event is older than half an hour wears it, one that never had
-	// an event its own age — comes only on a card that is running its
-	// work: never a final one, never one in the backlog, the plan lane or
-	// the queue; a card parked for a slot owes no work while it waits.
+	// newest activity is older than the stale window wears it, the
+	// newest of its newest event and its newest timeline step (its own
+	// session's last report), one that never had either its own age —
+	// comes only on a card that is running its work: never a final one,
+	// never one in the backlog, the plan lane or the queue; a card parked
+	// for a slot owes no work while it waits.
 	setActivity := func(k *card) {
-		ring := func(d time.Duration) bool { return d >= staleAfter }
+		lastAt := func(at time.Time) time.Time {
+			if k.stepAt.After(at) {
+				return k.stepAt
+			}
+			return at
+		}
+		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
 		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan" && k.Status != "queued"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
@@ -1220,9 +1246,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
 				k.StageAge = minutes(time.Since(e.At))
 			}
-			k.Stale = live && ring(time.Since(e.At))
+			k.Stale = live && ring(time.Since(lastAt(e.At)))
 			if k.Stale {
-				k.StaleText = "nothing for over " + minutes(time.Since(e.At))
+				k.StaleText = "nothing for over " + minutes(time.Since(lastAt(e.At)))
 			}
 			if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
 				k.Activity = reason()
@@ -1230,17 +1256,17 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			}
 			return
 		}
-		k.Stale = live && ring(time.Since(k.CreatedAt))
+		k.Stale = live && ring(time.Since(lastAt(k.CreatedAt)))
 		if k.Stale {
-			k.StaleText = "no event yet, " + minutes(time.Since(k.CreatedAt)) + " on the card"
+			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
 		}
 		if k.Reason != "" {
 			k.Activity = reason()
 		}
 	}
+	c.faceTimelines(ctx, each)
 	each(setActivity)
 	c.callTotals(ctx, each)
-	c.faceTimelines(ctx, each)
 	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
 		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
