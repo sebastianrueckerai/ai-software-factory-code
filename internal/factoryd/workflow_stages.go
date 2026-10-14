@@ -76,6 +76,10 @@ func (t *taskRun) stages(commit string) verdict {
 	// pass ends (findings sent back, the task's end) is cancelled before
 	// its findings land anywhere
 	t.cancelReview()
+	if t.checkedRead >= versionCheckedHead {
+		// nor a checked head: a later pass reads its own head's checks
+		t.checkedHead = ""
+	}
 	return v
 }
 
@@ -671,11 +675,14 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // is. Success leaves the request to approve as before; a red or pending
 // head goes back through the checks stage's on_findings with the failing
 // or pending checks named, so no approval request exists while the head
-// is not green; after the merge queue's last re-run of a head red at its
-// merge they go on the card instead (versionRedHeadRestage).
+// is not green. After the cheap turn it reads the checked head, whose
+// checks hold for the synced one (versionCheckedHead).
 func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 	if t.approvalGreen < versionApprovalGreen {
 		return verdict{}, false
+	}
+	if t.checkedRead >= versionCheckedHead {
+		commit = cmp.Or(t.checkedHead, commit)
 	}
 	var checks ChecksResult
 	if err := workflow.ExecuteActivity(t.short, ActivityHeadChecks, t.taskID, commit).Get(t.ctx, &checks); err != nil {
@@ -695,16 +702,6 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 		for i, f := range findings {
 			findings[i] = queuePrefix + f
 		}
-	}
-	if t.restages >= maxRestages {
-		// red after the queue's last re-run (versionRedHeadRestage): a
-		// human's, not the agent's
-		lines := []string{fmt.Sprintf(restagedRed, maxRestages)}
-		for _, f := range findings {
-			lines = append(lines, policy.StageChecks+": "+f)
-		}
-		*card = append(lines, *card...)
-		return verdict{}, false
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 	var capped []string

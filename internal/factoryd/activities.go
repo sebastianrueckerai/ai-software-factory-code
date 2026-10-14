@@ -115,6 +115,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityEnterQueue:                  r.EnterQueue,
 		ActivitySyncWithMain:                r.SyncWithMain,
 		ActivityLeaveQueue:                  r.LeaveQueue,
+		ActivityWithdrawApproval:            r.WithdrawApproval,
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
 		ActivityCreateChildren:              r.CreateChildren,
@@ -740,6 +741,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if strings.HasPrefix(reason, budgetRefused) {
 		// no answer can run (ruling 322): the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
+	}
+	if strings.HasPrefix(reason, leftQueue) {
+		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
 	}
 	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) + "\n\n" + next
 	if strings.HasPrefix(reason, screeningAsks) {

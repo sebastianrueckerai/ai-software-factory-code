@@ -508,18 +508,24 @@ task that waited), `queue_synced`, `queue_left`.
 
 From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
-human: it takes its turn again. A red main pauses the queue, so that turn
-comes once a fix made main green; main is merged in, and a head that
-moved runs its checks. With nothing new from main the head's own checks
-are waited on and the red ones run again on an empty commit
-(`RerunChecks`); red checks that pass there, on the same tree, are flaky
-(`checks_flaky {commit, head, checks}`) and never a finding. A green head
-goes to the approval again (dismissed stale approvals make it a new
-card or the rule `auto`). Each pushed head gets at most three such
-re-runs; still red after the third, the card names the checks with their
-log tails (`the checks are still red after 3 re-runs: a human decides the
-merge`), and a red merge then waits for a human as before, holding the
-turn. No model call is made on the way.
+human: its approval request is withdrawn (an approval sent meanwhile
+finds none open) and it takes its turn again. A red main pauses the
+queue, so that turn comes once a fix made main green; main is merged in,
+and a head that moved runs its checks. With nothing new from main the
+head's own checks are waited on and the red ones run again on an empty
+commit (`RerunChecks`); red checks that pass there, on the same tree, are
+flaky (`checks_flaky {commit, head, checks}`) and never a finding. A
+green head goes to the approval again (dismissed stale approvals make it
+a new card or the rule `auto`). A queue entry gets at most three such
+re-runs; still red after the third, the head leaves the queue, so the
+cards behind it merge, and waits outside it for a human: the escalation
+names the red checks with their log tails. A reply puts it back at the
+queue's end as a new entry with three re-runs afresh; a change request
+sends the task to the agent, whose fix enters the queue anew. No model
+call is made on the way. From change id `checked-head` on, the approval
+stage's green read after a cheap turn reads the head whose checks hold,
+not the synced head whose checks just started, and no checked head
+outlives its pass.
 
 ## Supervision
 

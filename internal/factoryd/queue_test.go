@@ -123,6 +123,10 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		q.reruns = append(q.reruns, sha)
 		return sha + "-rerun", nil
 	})
+	env.OnActivity(ActivityWithdrawApproval, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) error {
+		q.steps = append(q.steps, "withdraw")
+		return nil
+	})
 	return q
 }
 
@@ -556,11 +560,12 @@ func redTest(sha string) ChecksResult {
 
 var redAtMerge = MergeResult{Refusal: "the checks are red on c1: the merge waits for a green head", RedHead: true}
 
-// A queue head red at its merge takes its turn again (roadmap 202): a
-// transient failure runs its checks once more on an empty commit and the
-// rule auto merges the green re-run without a card; a red main pauses the
-// queue (one ahead), and the turn after it merges main's fix in, whose
-// green head goes to a new card. No session runs.
+// A queue head red at its merge takes its turn again (roadmap 202), its
+// approval request withdrawn first: a transient failure runs its checks
+// once more on an empty commit and the rule auto merges the green re-run
+// without a card; a red main pauses the queue (one ahead), and the turn
+// after it merges main's fix in, whose green head goes to a new card. No
+// session runs.
 func TestQueueRedHeadIsReStaged(t *testing.T) {
 	t.Run("a transient failure", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, checksOnRead(map[string][]ChecksResult{
@@ -577,7 +582,7 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 		if want := []string{"9 c1 " + AutoApprover, "9 c1-rerun " + AutoApprover}; !slices.Equal(q.merges, want) {
 			t.Fatalf("merges = %v, want %v", q.merges, want)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "merge", "sync c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "merge", "withdraw", "sync c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if len(q.approvals) != 0 || len(q.sessions) != 1 || !slices.Equal(q.checkedHeads, []string{"", ""}) {
@@ -607,7 +612,7 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 		if len(q.reruns) != 0 || !slices.Equal(q.checks, []string{"c1", "m1"}) {
 			t.Fatalf("reruns %v, checks on %v; want main's merge checked, no re-run", q.reruns, q.checks)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval c1", "merge", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval c1", "merge", "withdraw", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 m1 sebastian"}) || !slices.Equal(q.approvals[1].WhyHuman, q.approvals[0].WhyHuman) || len(q.sessions) != 1 {
@@ -616,52 +621,85 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 	})
 }
 
-// A head still red after its third re-run waits for a human: the card
-// names the check with its log's tail, and a red merge then keeps the
-// wait as before, without a fourth re-run or a session.
-func TestQueueRedHeadWaitsForAHumanAfterThreeReruns(t *testing.T) {
-	q := newQueueHarness(t, policy.QueueProject, checksOnRead(map[string][]ChecksResult{
-		"c1":                   {{State: ChecksSuccess}, redTest("c1")},
-		"c1-rerun":             {redTest("c1-rerun")},
-		"c1-rerun-rerun":       {redTest("c1-rerun-rerun")},
-		"c1-rerun-rerun-rerun": {redTest("c1-rerun-rerun-rerun")},
-	}))
-	q.headAnswers = func(sha string) ChecksResult {
-		if sha == "c1-rerun-rerun-rerun" {
-			return redTest(sha)
+// A head still red after its third re-run leaves the queue, so the cards
+// behind it merge, and waits outside it for a human: the escalation names
+// the check with its log's tail, and no session runs. A reply puts it
+// back at the queue's end as a new entry (one ahead now), where its own
+// checks, green by then, go to a new card; a change request instead
+// sends the agent, whose fix enters the queue anew.
+func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
+	const tail = `check "pr / test": failure — 1 test failed (https://git.example/sf/r/actions/runs/96)` + "\n--- FAIL: TestRace on c1-rerun-rerun-rerun"
+	const asked = "the checks are still red after the merge queue's re-runs, so the pull request left the queue until a human answers\n\n" + tail
+	harness := func(t *testing.T, last []ChecksResult) *queueHarness {
+		q := newQueueHarness(t, policy.QueueProject, checksOnRead(map[string][]ChecksResult{
+			"c1":                   {{State: ChecksSuccess}, redTest("c1")},
+			"c1-rerun":             {redTest("c1-rerun")},
+			"c1-rerun-rerun":       {redTest("c1-rerun-rerun")},
+			"c1-rerun-rerun-rerun": last,
+		}))
+		q.merge = []MergeResult{redAtMerge, {Merged: true}}
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		return q
+	}
+	reran := func(t *testing.T, q *queueHarness) {
+		t.Helper()
+		if want := []string{"c1", "c1-rerun", "c1-rerun-rerun"}; !slices.Equal(q.reruns, want) {
+			t.Fatalf("reruns = %v, want %v", q.reruns, want)
 		}
-		return ChecksResult{State: ChecksSuccess}
-	}
-	q.merge = []MergeResult{redAtMerge}
-	q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
-	q.onSessions(pushed("s1", "c1"))
-	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	q.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	q.signalAfter(6*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
-	if final := q.run(t); final != "failed" || q.finals[0][1] != "pull request closed without merge" {
-		t.Fatalf("final = %v", q.finals)
-	}
-	if want := []string{"c1", "c1-rerun", "c1-rerun-rerun"}; !slices.Equal(q.reruns, want) {
-		t.Fatalf("reruns = %v, want %v", q.reruns, want)
-	}
-	if len(q.approvals) != 2 || q.approvals[1].Commit != "c1-rerun-rerun-rerun" {
-		t.Fatalf("approvals = %+v, want a second card for the third re-run's head", q.approvals)
-	}
-	want := []string{"the checks are still red after 3 re-runs: a human decides the merge",
-		"checks: check \"pr / test\": failure — 1 test failed (https://git.example/sf/r/actions/runs/96)\n--- FAIL: TestRace on c1-rerun-rerun-rerun"}
-	if !slices.Equal(q.approvals[1].WhyHuman, want) {
-		t.Fatalf("the card's why = %q, want %q", q.approvals[1].WhyHuman, want)
-	}
-	if want := []string{"9 c1 sebastian", "9 c1-rerun-rerun-rerun sebastian"}; !slices.Equal(q.merges, want) {
-		t.Fatalf("merges = %v, want %v", q.merges, want)
-	}
-	if len(q.sessions) != 1 || !slices.Equal(q.leaves, []string{"pull request closed without merge"}) {
-		t.Fatalf("%d sessions, leaves %q; want the agent never asked and the turn held to the close", len(q.sessions), q.leaves)
-	}
-	for _, r := range q.recorded {
-		if r.step == "checks_flaky" {
-			t.Fatalf("a red re-run recorded flaky: %v", r.detail)
+		if !slices.Equal(q.escalated, []string{asked}) || q.leaves[0] != leftQueue {
+			t.Fatalf("escalated %q, leaves %q; want the red check's tail asked outside the queue", q.escalated, q.leaves)
 		}
+	}
+
+	t.Run("an answer", func(t *testing.T) {
+		q := harness(t, []ChecksResult{redTest("c1-rerun-rerun-rerun"), redTest("c1-rerun-rerun-rerun"), {State: ChecksSuccess}})
+		q.ahead = func(call int) int { return map[int]int{6: 1}[call] }
+		q.onSessions(pushed("s1", "c1"))
+		q.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the runner is back", Comment: 700})
+		q.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q (%v)", final, q.finals)
+		}
+		reran(t, q)
+		if len(q.enters) != 7 || q.enters[5] != 3*time.Hour || q.enters[6] != 3*time.Hour+queueRecheck {
+			t.Fatalf("EnterQueue ran at %v, want the answer's re-entry at 3h behind one entry", q.enters)
+		}
+		if !slices.Contains(q.states, "in-review") || len(q.sessions) != 1 {
+			t.Fatalf("states %v, %d sessions; want in review after the answer, no session", q.states, len(q.sessions))
+		}
+		if len(q.approvals) != 2 || q.approvals[1].Commit != "c1-rerun-rerun-rerun" || !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 c1-rerun-rerun-rerun sebastian"}) {
+			t.Fatalf("approvals %+v, merges %v", q.approvals, q.merges)
+		}
+	})
+
+	t.Run("a change request", func(t *testing.T) {
+		q := harness(t, []ChecksResult{redTest("c1-rerun-rerun-rerun")})
+		q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+		q.signalAfter(3*time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "TestRace is real: fix it"})
+		q.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q (%v)", final, q.finals)
+		}
+		reran(t, q)
+		if len(q.sessions) != 2 || !slices.Equal(q.sessions[1].Findings, []string{"reviewer sebastian requested changes: TestRace is real: fix it"}) {
+			t.Fatalf("%d sessions, second's findings %q", len(q.sessions), q.sessions)
+		}
+		if len(q.enters) != 6 || q.enters[5] != 3*time.Hour || !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+			t.Fatalf("EnterQueue ran at %v, merges %v; want c2 entering anew after the change request", q.enters, q.merges)
+		}
+	})
+}
+
+// The escalation of a head that left the queue says what a reply does.
+func TestQueueLeftEscalationSaysWhatAReplyDoes(t *testing.T) {
+	task := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9}
+	runner, hub, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	if _, err := execActivity(t, runner, ActivityEscalate, "t1", leftQueue+"\n\n"+redTest("c1").Findings[0], []string(nil)); err != nil {
+		t.Fatal(err)
+	}
+	want := "```\n\nReply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
+	if len(hub.comments) != 1 || !strings.HasSuffix(hub.comments[0], want) {
+		t.Fatalf("comments %q", hub.comments)
 	}
 }
 
@@ -697,6 +735,84 @@ func TestQueueFlakyCheckIsAStepNotAFinding(t *testing.T) {
 	}
 	if !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 c1-rerun sebastian"}) {
 		t.Fatalf("merges = %v", q.merges)
+	}
+}
+
+// The re-stage withdraws the request the red merge left open: the
+// console's approve then finds none pending and says so, instead of an
+// approval the workflow would drop.
+func TestWithdrawApprovalClosesTheRequest(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	ctx := context.Background()
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", PRNumber: 9})
+	if _, err := execActivity(t, r, ActivityWithdrawApproval, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	a := store.approvals[0]
+	if a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != "withdrawn: the checks were red at the merge; the merge queue runs them again, and a green head gets a new request" {
+		t.Fatalf("approval = %+v, want withdrawn by factoryd", a)
+	}
+	wf := &fakeWorkflows{}
+	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil || len(wf.signals) != 0 {
+		t.Fatalf("ApproveMerge = %v, signals %q; want the request not open, no signal", err, wf.signals)
+	}
+}
+
+// After a cheap turn the approval stage reads the green of the head the
+// checks ran on, not the synced head whose checks have only started: the
+// synced head merges on that green, and no session hears of its pending
+// checks.
+func TestCheapTurnReadsTheCheckedHead(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green)
+	q.sync = func(from string) SyncResult {
+		if from == "c1" {
+			return SyncResult{From: from, To: "m1", Main: "main1", Base: "b0"}
+		}
+		return SyncResult{From: from, To: from}
+	}
+	reads := 0
+	q.headAnswers = func(sha string) ChecksResult {
+		if sha == "m1" {
+			if reads++; reads == 1 {
+				return ChecksResult{State: ChecksFailure, Findings: []string{`check "test" is still pending on m1 (running)`}}
+			}
+		}
+		return ChecksResult{State: ChecksSuccess}
+	}
+	q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if !slices.Equal(q.headChecks, []string{"c1"}) || len(q.sessions) != 1 {
+		t.Fatalf("the approval read %v, %d sessions; want c1's green read, no session", q.headChecks, len(q.sessions))
+	}
+	if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) || !slices.Equal(q.checkedHeads, []string{"c1"}) {
+		t.Fatalf("merges %v on checked heads %v; want m1 merged on c1's green", q.merges, q.checkedHeads)
+	}
+}
+
+// A pass ends with no checked head: after a cheap turn's card went back
+// to the agent, the next pass reads and merges on its own head's checks.
+func TestCheckedHeadEndsWithItsPass(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green)
+	q.sync = func(from string) SyncResult {
+		if from == "c1" {
+			return SyncResult{From: from, To: "m1", Main: "main1", Base: "b0"}
+		}
+		return SyncResult{From: from, To: from}
+	}
+	q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	q.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+	q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if !slices.Equal(q.headChecks, []string{"c1", "c2"}) {
+		t.Fatalf("the approvals read %v, want c1 for the cheap turn and c2 for the next pass", q.headChecks)
+	}
+	if !slices.Equal(q.merges, []string{"9 c2 sebastian"}) || !slices.Equal(q.checkedHeads, []string{""}) {
+		t.Fatalf("merges %v on checked heads %v; want c2 merged on its own checks", q.merges, q.checkedHeads)
 	}
 }
 

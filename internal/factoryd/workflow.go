@@ -425,6 +425,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerBurst = workflow.GetVersion(ctx, "answer-burst", workflow.DefaultVersion, versionAnswerBurst)
 	run.planBurst = workflow.GetVersion(ctx, "plan-burst", workflow.DefaultVersion, versionPlanBurst)
 	run.redRestage = workflow.GetVersion(ctx, "red-head-restage", workflow.DefaultVersion, versionRedHeadRestage)
+	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -776,12 +777,20 @@ const (
 	versionPlanBurst workflow.Version = 1
 	// versionRedHeadRestage (change id "red-head-restage", roadmap 202
 	// with 67): a queue head whose checks are red at its merge goes back
-	// through its turn instead of waiting for a human: main is merged in,
-	// or its red checks run again on an empty commit, at most maxRestages
-	// times per pushed head (restage); red checks that pass on the same
-	// tree are recorded flaky, never findings, and a head still red after
-	// the last re-run waits for a human, its card naming the checks.
+	// through its turn instead of waiting for a human, its approval
+	// request withdrawn meanwhile: main is merged in, or its red checks
+	// run again on an empty commit, at most maxRestages times per queue
+	// entry (restage); red checks that pass on the same tree are recorded
+	// flaky, never findings. A head still red after the last re-run
+	// leaves the queue and waits outside it for a human, the escalation
+	// naming the checks; an answer puts it back at the queue's end.
 	versionRedHeadRestage workflow.Version = 1
+	// versionCheckedHead (change id "checked-head"): the approval stage's
+	// green read (headGreen) reads the cheap turn's checked head, whose
+	// checks hold for the synced head, not the synced head whose own
+	// checks just started; and a pass ends with no checked head, so a
+	// later pass reads and merges on its own head's checks.
+	versionCheckedHead workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -868,6 +877,7 @@ type taskRun struct {
 	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
 	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
 	restages          int              // the re-stage under way, from 1; 0 outside restage
+	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)

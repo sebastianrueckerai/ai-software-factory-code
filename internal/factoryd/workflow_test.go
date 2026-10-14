@@ -179,7 +179,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySyncWithMain: func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
 			return SyncResult{}, nil
 		},
-		ActivityLeaveQueue: func(ctx context.Context, taskID, why string) error { return nil },
+		ActivityLeaveQueue:       func(ctx context.Context, taskID, why string) error { return nil },
+		ActivityWithdrawApproval: func(ctx context.Context, taskID string) error { return nil },
 		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},

@@ -83,6 +83,8 @@ func escalationSource(reason string) string {
 		return "provider"
 	case strings.HasPrefix(reason, budgetRefused):
 		return "budget"
+	case strings.HasPrefix(reason, leftQueue):
+		return "queue"
 	}
 	return "supervisor"
 }

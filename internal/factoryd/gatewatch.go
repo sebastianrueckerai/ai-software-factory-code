@@ -81,7 +81,7 @@ var activityGates = map[string]string{
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
-	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityBranchHead, ActivityScreenAnswer,
+	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
 	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityHeadChecks, ActivitySetGate}
 
