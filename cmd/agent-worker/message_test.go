@@ -52,7 +52,7 @@ func mustHash(t *testing.T, hexed string) [32]byte {
 func TestMessageEndpoint(t *testing.T) {
 	var sent []string
 	var answer error
-	h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(ctx context.Context, text string) error {
+	h := messageHandler(mustHash(t, testMessageHash), newPushGate(), func(ctx context.Context, text, model string) error {
 		if dl, ok := ctx.Deadline(); !ok || time.Until(dl) > harness.MessageTimeout {
 			t.Errorf("hand-over deadline %v (set %v), want within %s", time.Until(dl), ok, harness.MessageTimeout)
 		}
@@ -105,7 +105,7 @@ func TestMessageEndpoint(t *testing.T) {
 func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	dir, e, base, mainHead, fork := changedSession(t)
 	gate := newPushGate()
-	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string) error { return nil })
+	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil })
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(body))
 		req.Header.Set("Authorization", auth)

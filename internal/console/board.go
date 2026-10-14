@@ -1580,7 +1580,7 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 // createTask files the issue as the human (doFileCard).
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 	_, issue, err := c.doFileCard(r.Context(), button(r), r.PostFormValue("project"), r.PostFormValue("title"),
-		r.PostFormValue("body"), r.PostFormValue("lane"), r.PostFormValue("priority"), r.PostFormValue("size"))
+		r.PostFormValue("body"), r.PostFormValue("lane"), r.PostFormValue("priority"), r.PostFormValue("size"), "", "")
 	if err != nil {
 		c.fail(w, r, err)
 		return

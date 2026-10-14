@@ -940,3 +940,29 @@ func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
 		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(nil, RoleFeature), want)
 	}
 }
+
+// The stronger model is declared beside the session's, so a running
+// session can switch to it (roadmap 222, item 5); none twice.
+func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, "coding-frontier", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Provider map[string]struct {
+			Models map[string]json.RawMessage `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(got, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	models := cfg.Provider["factory"].Models
+	if len(models) != 2 || models["coding-cheap"] == nil || models["coding-frontier"] == nil {
+		t.Fatalf("models = %v, want both rungs", models)
+	}
+	oc := &Opencode{Model: "factory/coding-cheap"}
+	oc.SetModel("factory/coding-frontier")
+	if p, id := oc.model(); p != "factory" || id != "coding-frontier" {
+		t.Fatalf("model after the switch = %s/%s", p, id)
+	}
+}

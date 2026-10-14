@@ -75,6 +75,9 @@ type SupervisorConfig struct {
 	// CheckIn is the task's resolved check_in (policy.Time); 0 = no
 	// check-in.
 	CheckIn time.Duration
+	// CheapCap: a session on the start rung's first attempt has this long
+	// to push before it climbs in place (roadmap 222, item 5); 0 = none.
+	CheapCap time.Duration
 }
 
 func (c SupervisorConfig) validate() error {
@@ -123,6 +126,9 @@ type Supervisor struct {
 
 	// no_write's anchor: the last write, or its last continue
 	noWriteFrom time.Time
+	// started is the session's start; pushed, that it pushed (the cheap cap)
+	started time.Time
+	pushed  bool
 }
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
@@ -134,7 +140,7 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	}
 	cfg = cfg.withDefaults()
 	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
-		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}}
+		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}, started: now}
 	s.scheduleCheckIn(now.Add(checkInQuiet - 1))
 	return s, nil
 }
@@ -166,6 +172,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	s.lastSeen = at
 	s.noteFinding(ev)
+	if ev.Kind == harness.EventPushed {
+		s.pushed = true
+	}
 	switch {
 	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
 		s.sinceChange++
@@ -186,6 +195,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	traced := s.traces.observe(ev)
 	if !at.Before(s.deadline) {
 		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
+	}
+	if trip := s.cheapCap(at); trip != nil {
+		return trip
 	}
 	if traced != nil {
 		return s.trip(traced)
@@ -235,6 +247,9 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if !now.Before(s.deadline) {
 		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}
+	if trip := s.cheapCap(now); trip != nil {
+		return trip
+	}
 	if trip := s.checkIn(now); trip != nil {
 		return trip
 	}
@@ -243,6 +258,20 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	}
 	return nil
 }
+
+// cheapCap trips once the start rung's first attempt ran CheapCap without
+// a push: the decision is the climb, no supervisor call.
+func (s *Supervisor) cheapCap(at time.Time) *Trip {
+	if s.cfg.CheapCap <= 0 || s.pushed || at.Sub(s.started) < s.cfg.CheapCap {
+		return nil
+	}
+	detail := fmt.Sprintf("the cheap rung's %s passed without a push", s.cfg.CheapCap)
+	return s.trip(&Trip{Kind: TripCheapCap, Detail: detail, decided: &Decision{Action: ActionRetryStronger, Reason: detail}})
+}
+
+// Climbed: the session switched to the stronger rung in place; the cheap
+// cap no longer applies.
+func (s *Supervisor) Climbed() { s.cfg.CheapCap = 0 }
 
 // AgentAsks opens an agent escalation's reason, before its question;
 // agentAsksAuthor an information request's.
@@ -406,6 +435,9 @@ const (
 	TripCheckIn TripKind = "check_in"
 	// progress detectors (ruling 141), their waits in the policy
 	TripNoWrite TripKind = "no_write"
+	// TripCheapCap: the start rung's first attempt ran its cap without a
+	// push (roadmap 222, item 5)
+	TripCheapCap TripKind = "cheap_cap"
 )
 
 // Detector defaults; each has an env override in cmd/factoryd.

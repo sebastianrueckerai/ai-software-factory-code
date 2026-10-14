@@ -34,7 +34,10 @@ func parseHash(hexed string) ([32]byte, error) {
 // messageHandler serves factoryd's two requests into the pod, each with
 // the session's bearer: POST /message {text}, handed to send, the
 // harness's Message, and POST /push {token}, which gate takes.
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(context.Context, string) error) http.Handler {
+// messageHandler serves factoryd's messages: text for the agent's next
+// turn, with model when the session continues on another model from then
+// on (roadmap 222, item 5).
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool {
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -50,7 +53,8 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(context.Cont
 			return
 		}
 		var in struct {
-			Text string `json:"text"`
+			Text  string `json:"text"`
+			Model string `json:"model"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil || strings.TrimSpace(in.Text) == "" {
 			http.Error(w, "want {\"text\": \"...\"}", http.StatusBadRequest)
@@ -58,7 +62,7 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(context.Cont
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), harness.MessageTimeout)
 		defer cancel()
-		switch err := send(ctx, in.Text); {
+		switch err := send(ctx, in.Text, in.Model); {
 		case err == nil:
 			w.WriteHeader(http.StatusNoContent)
 		case errors.Is(err, harness.ErrNotSupported):
@@ -151,7 +155,7 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 }
 
 // serveMessages listens on harness.MessagePort until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(context.Context, string) error, log func(string, ...any)) (stop func(), err error) {
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, log func(string, ...any)) (stop func(), err error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
 	if err != nil {
 		return nil, fmt.Errorf("message endpoint: %w", err)

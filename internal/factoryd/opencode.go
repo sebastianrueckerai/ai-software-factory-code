@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -58,14 +59,18 @@ type Opencode struct {
 	GatewayURL string // the proxy forwards model calls here
 	TokenFile  string // projected ServiceAccount JWT, re-read per request
 	Model      string // default "factory/factory-main"
-	Budget     TokenBudget
-	Steps      int // the agent's step cap, policy limits.steps
-	HTTP       *http.Client
+	// Stronger is the ladder's stronger model, declared beside Model so a
+	// running session can switch to it (SetModel, roadmap 222, item 5)
+	Stronger string
+	Budget   TokenBudget
+	Steps    int // the agent's step cap, policy limits.steps
+	HTTP     *http.Client
 
 	mu        sync.Mutex
 	base      string    // the running server's URL
 	sessionID string    // the running session; "" when none runs
 	eventTap  io.Writer // the fixture recorder's copy of the event stream
+	switched  string    // the model every later prompt names, after SetModel
 }
 
 var _ harness.Harness = (*Opencode)(nil)
@@ -78,14 +83,26 @@ func (o *Opencode) binary() string {
 }
 
 func (o *Opencode) model() (provider, modelID string) {
-	m := o.Model
-	if m == "" {
-		m = "factory/factory-main"
-	}
+	o.mu.Lock()
+	m := cmp.Or(o.switched, o.Model, "factory/factory-main")
+	o.mu.Unlock()
+	return splitModel(m)
+}
+
+func splitModel(m string) (provider, modelID string) {
 	if i := strings.Index(m, "/"); i >= 0 {
 		return m[:i], m[i+1:]
 	}
 	return "factory", m
+}
+
+// SetModel makes every later prompt name model: opencode reads the model
+// from the newest user message on each turn, so the running session
+// continues on it (the in-session climb, roadmap 222, item 5).
+func (o *Opencode) SetModel(model string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.switched = model
 }
 
 // Prepare validates the budget (a headroomless budget must fail the task,
@@ -136,7 +153,11 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	defer func() { proxy.Shutdown(context.Background()); <-done }() // #nosec G104 -- shutdown error is inconsequential once the run is over
 
 	provider, modelID := o.model()
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps)
+	var more []string
+	if p, id := splitModel(o.Stronger); o.Stronger != "" && p == provider && id != modelID {
+		more = append(more, id)
+	}
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -710,12 +731,29 @@ const mcpTimeoutMS = 150000
 // request_info and escalate_to_human; doom_loop is allowed, since a denied
 // one fails the stream and ends the session unseen by the model; a rejected
 // tool call continues the loop as an error the model sees.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int) ([]byte, error) {
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
 	baseURL := proxyURL + "/v1"
 	capped := map[string]any{"steps": steps}
+	models := map[string]any{}
+	for _, id := range append([]string{modelID}, more...) {
+		if id == "" {
+			continue
+		}
+		models[id] = map[string]any{
+			"name":      "Factory model",
+			"reasoning": true,
+			"interleaved": map[string]any{
+				"field": "reasoning_content",
+			},
+			"limit": map[string]any{
+				"context": 200000,
+				"output":  outputLimit,
+			},
+		}
+	}
 	cfg := map[string]any{
 		"agent":        map[string]any{"build": capped, "general": capped, "explore": capped},
 		"permission":   map[string]any{"question": "deny", "doom_loop": "allow"},
@@ -734,19 +772,7 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 					// The identity proxy replaces this on every request.
 					"apiKey": "sandbox-dummy",
 				},
-				"models": map[string]any{
-					modelID: map[string]any{
-						"name":      "Factory model",
-						"reasoning": true,
-						"interleaved": map[string]any{
-							"field": "reasoning_content",
-						},
-						"limit": map[string]any{
-							"context": 200000,
-							"output":  outputLimit,
-						},
-					},
-				},
+				"models": models,
 			},
 		},
 	}

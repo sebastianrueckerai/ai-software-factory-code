@@ -21,38 +21,40 @@ import (
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID    string `json:"task_id,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Body      string `json:"body,omitempty"`
-	Lane      string `json:"lane,omitempty"`
-	Text      string `json:"text,omitempty"`
-	Question  int    `json:"question,omitempty"`
-	Note      string `json:"note,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Revision  int    `json:"revision,omitempty"`
-	SHA256    string `json:"sha256,omitempty"`
-	Summary   string `json:"summary,omitempty"`
-	Accent    string `json:"accent,omitempty"`
-	Login     string `json:"login,omitempty"`
-	N         int    `json:"n,omitempty"`
-	Ref       string `json:"ref,omitempty"`
-	Path      string `json:"path,omitempty"`
-	SHA       string `json:"sha,omitempty"`
-	WithDiff  bool   `json:"with_diff,omitempty"`
-	Remote    string `json:"remote,omitempty"`
-	From      int    `json:"from,omitempty"`
-	To        int    `json:"to,omitempty"`
-	Query     string `json:"query,omitempty"`
-	Size      string `json:"size,omitempty"`
-	By        string `json:"by,omitempty"`
-	FromDate  string `json:"from_date,omitempty"`
-	ToDate    string `json:"to_date,omitempty"`
-	State     string `json:"state,omitempty"`
-	ID        int64  `json:"id,omitempty"`
-	Verdict   string `json:"verdict,omitempty"`
-	DependsOn string `json:"depends_on,omitempty"`
-	Remove    bool   `json:"remove,omitempty"`
-	Mode      string `json:"mode,omitempty"`
+	TaskID     string `json:"task_id,omitempty"`
+	Title      string `json:"title,omitempty"`
+	Body       string `json:"body,omitempty"`
+	Lane       string `json:"lane,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Question   int    `json:"question,omitempty"`
+	Note       string `json:"note,omitempty"`
+	Action     string `json:"action,omitempty"`
+	Revision   int    `json:"revision,omitempty"`
+	SHA256     string `json:"sha256,omitempty"`
+	Summary    string `json:"summary,omitempty"`
+	Accent     string `json:"accent,omitempty"`
+	Login      string `json:"login,omitempty"`
+	N          int    `json:"n,omitempty"`
+	Ref        string `json:"ref,omitempty"`
+	Path       string `json:"path,omitempty"`
+	SHA        string `json:"sha,omitempty"`
+	WithDiff   bool   `json:"with_diff,omitempty"`
+	Remote     string `json:"remote,omitempty"`
+	From       int    `json:"from,omitempty"`
+	To         int    `json:"to,omitempty"`
+	Query      string `json:"query,omitempty"`
+	Size       string `json:"size,omitempty"`
+	Rung       string `json:"rung,omitempty"`
+	RungReason string `json:"rung_reason,omitempty"`
+	By         string `json:"by,omitempty"`
+	FromDate   string `json:"from_date,omitempty"`
+	ToDate     string `json:"to_date,omitempty"`
+	State      string `json:"state,omitempty"`
+	ID         int64  `json:"id,omitempty"`
+	Verdict    string `json:"verdict,omitempty"`
+	DependsOn  string `json:"depends_on,omitempty"`
+	Remove     bool   `json:"remove,omitempty"`
+	Mode       string `json:"mode,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -682,13 +684,15 @@ var tools = []chatTool{
 		}},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
-			"lane": enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
-			"size": enum("the card's size, which sets its budget; none for the default budget", policy.CardSizes...)},
+			"lane":        enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
+			"size":        enum("the card's size, which sets its budget; none for the default budget", policy.CardSizes...),
+			"rung":        enum("the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text", factoryd.RungCheap, factoryd.RungFrontier),
+			"rung_reason": str("one line: why that rung, required with a rung")},
 		required: []string{"title", "lane"},
 		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
 		fits:     "a lane of the project",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size, in.Rung, in.RungReason)
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,

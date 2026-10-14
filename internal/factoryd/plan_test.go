@@ -1703,3 +1703,18 @@ func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
 		t.Fatalf("final %q, backoffs %v, usage %+v, plans %q; want the second with %q", final, *backoffs, h.usage, h.plans, want)
 	}
 }
+
+// A card's rung and reason reach its issue as a Rung line intake reads
+// (roadmap 222, item 5); a card without one carries none.
+func TestCardFactsRungLine(t *testing.T) {
+	facts := cardFacts(PlanCard{Size: "small", Rung: RungFrontier, RungReason: "touches the queue"})
+	if !strings.HasSuffix(facts, "Size: small\nRung: frontier, touches the queue\n") {
+		t.Fatalf("facts = %q", facts)
+	}
+	if facts := cardFacts(PlanCard{Size: "small"}); strings.Contains(facts, "Rung") {
+		t.Fatalf("facts = %q, want no rung line", facts)
+	}
+	if got := cardFindings(PlanCard{Key: "a", Title: "t", Brief: "b", Size: "small", Rung: "huge"}, testLimits, 0); !slices.ContainsFunc(got, func(f string) bool { return strings.Contains(f, "rung huge") }) {
+		t.Fatalf("findings = %q, want the rung refused", got)
+	}
+}

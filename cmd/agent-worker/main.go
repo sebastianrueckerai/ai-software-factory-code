@@ -146,6 +146,7 @@ func run(log func(string, ...any)) int {
 		GatewayURL: env.gatewayURL,
 		TokenFile:  env.tokenFile,
 		Model:      env.model,
+		Stronger:   env.strongerModel,
 		Budget:     factoryd.TokenBudget{AnswerTokens: env.answerTokens, HeadroomTokens: env.headroomTokens},
 		Steps:      env.steps,
 	}
@@ -156,7 +157,12 @@ func run(log func(string, ...any)) int {
 	}
 
 	gate := newPushGate()
-	stopMessages, err := serveMessages(env.messageHash, gate, oc.Message, log)
+	stopMessages, err := serveMessages(env.messageHash, gate, func(ctx context.Context, text, model string) error {
+		if model != "" {
+			oc.SetModel(model)
+		}
+		return oc.Message(ctx, text)
+	}, log)
 	if err != nil {
 		log("%v", err)
 		endBrief(err)
@@ -361,6 +367,7 @@ type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
 	repoURL, repoToken, pushURL, pushToken                    string
 	gatewayURL, tokenFile, model                              string
+	strongerModel                                             string
 	answerTokens, headroomTokens                              int
 	steps                                                     int
 	findings, answers, posterInfo, tools                      []string
@@ -400,6 +407,7 @@ func loadEnv() (workerEnv, error) {
 	e.gatewayURL = str("GATEWAY_URL")
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
+	e.strongerModel = str("STRONGER_MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")

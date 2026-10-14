@@ -434,6 +434,45 @@ func askedBudget(body string) (size string, eur float64) {
 	return size, eur
 }
 
+// The model rungs a card starts on (roadmap 222, item 5): the ladder's
+// start, or its stronger alias.
+const (
+	RungCheap    = "cheap"
+	RungFrontier = "frontier"
+)
+
+// askedRung is the issue body's last line "Rung: <rung>, <reason>", key
+// in any case; "" without one.
+func askedRung(body string) (rung, reason string) {
+	for l := range strings.Lines(body) {
+		key, v, _ := strings.Cut(l, ":")
+		if strings.ToLower(strings.TrimSpace(key)) != "rung" {
+			continue
+		}
+		r, why, _ := strings.Cut(strings.TrimSpace(v), ",")
+		if r = strings.ToLower(strings.TrimSpace(r)); r == RungCheap || r == RungFrontier {
+			rung, reason = r, strings.TrimSpace(why)
+		}
+	}
+	return rung, reason
+}
+
+// rungOf is the rung a card filed with body and size starts on: the
+// body's Rung line, else frontier for a large card or one that names
+// factoryd's own package, else cheap. A plan card's session runs on the
+// stronger rung regardless (plan.go).
+func rungOf(body, size string) string {
+	if rung, _ := askedRung(body); rung != "" {
+		return rung
+	}
+	if size == "large" || strings.Contains(body, "internal/factoryd") || slices.ContainsFunc(askedDirectories(body), func(d string) bool {
+		return strings.HasPrefix(d, "internal/factoryd")
+	}) {
+		return RungFrontier
+	}
+	return RungCheap
+}
+
 // askedDirectories are the directories a writer's issue body names for its
 // card's map: its last line "Directories: <dir>, <dir>", key in any case;
 // none without one.
@@ -594,6 +633,8 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
 		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, eur),
+		Size:         size,
+		Rung:         rungOf(issue.Body, size),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",

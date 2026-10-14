@@ -246,6 +246,19 @@ func TestChatNewCardSize(t *testing.T) {
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large"}})
 }
 
+// A rung on new_card reaches the issue as a Rung line with its reason
+// (roadmap 222, item 5); a rung without a reason is refused.
+func TestChatNewCardRung(t *testing.T) {
+	r, g := newWritesRig(t)
+	args := `{"title":"Cache metrics","body":"Count hits.","lane":"ready","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
+	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane ready."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nSize: small\nRung: frontier, touches the queue")
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", ""); err == nil {
+		t.Fatal("a rung without a reason was filed")
+	}
+}
+
 // The face offers a writer Close on a card in the backlog or waiting on a
 // human, behind a confirm, and on no running or final card; the answer
 // form of a card at its session cap says what the answer does, and its

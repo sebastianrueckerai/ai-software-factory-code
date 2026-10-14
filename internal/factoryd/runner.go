@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -113,6 +114,7 @@ type Runner struct {
 	timeline   *Timeline
 	supervisor *SupervisorModel
 	stopWait   time.Duration
+	cheapCap   time.Duration // cheapAttemptCap; a test shortens it
 	// workerPort replaces harness.MessagePort in tests
 	workerPort int
 
@@ -298,7 +300,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		alerts:  cfg.Alerts,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
-			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, booted: time.Now()}, nil
+			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap, booted: time.Now()}, nil
 }
 
 // WorkflowConfig is what TaskWorkflow captures at its start: the limits of
@@ -363,6 +365,8 @@ type sessionSpec struct {
 	cache string
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
+	// attempt is the session's attempt number (1 for the first)
+	attempt int
 	// agentTime and checkIn are the task's resolved values (policy.Time,
 	// via TaskConfig for every session kind, RunSession's and
 	// reportSession's alike): supervisorConfig's WallClockCap and
@@ -398,6 +402,7 @@ type sessionOutcome struct {
 	decision  *Decision
 	digest    string
 	noResult  string
+	model     string // the model the session ended on
 	findings  []string
 }
 
@@ -454,11 +459,14 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
+	if s.attempt == 1 && r.canClimb(s) {
+		supCfg.CheapCap = r.cheapCap
+	}
 	sup, err := NewSupervisor(supCfg, deadline.Add(-supCfg.WallClockCap), time.Now())
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.findings = sup.Findings() }()
+	defer func() { out.findings, out.model = sup.Findings(), s.model }()
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
 	var messages []string
@@ -690,6 +698,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
 			return false, nil
+		case d.Action == ActionRetryStronger && r.canClimb(s):
+			// the climb in place (roadmap 222, item 5): the session goes on
+			// on the stronger model; a switch that fails ends it as before
+			if err := r.climb(ctx, t, &s, ns, podName, sup, trip, d); err == nil {
+				sup.Climbed()
+				sup.Resume(time.Now())
+				r.commentDecision(ctx, t, s, trip, d, out.digest, "The session continues on the stronger model from here, without a new session.")
+				return false, nil
+			} else {
+				out.decision = &d
+				stop(trip)
+				note = fmt.Sprintf("The switch to the stronger model failed (%v): the session stopped, and the next one starts on it.", err)
+			}
 		case d.Action == ActionMessage:
 			err := r.message(ctx, t, s, ns, podName, d.Guidance)
 			if err == nil || errors.Is(err, harness.ErrNotRunning) {
@@ -771,6 +792,40 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		}
 	}
+}
+
+// cheapAttemptCap is how long the start rung's first attempt has to push
+// before the session climbs in place (roadmap 222, item 5).
+const cheapAttemptCap = 8 * time.Minute
+
+// canClimb: the session runs on the ladder's start and a stronger rung
+// exists to switch to.
+func (r *Runner) canClimb(s sessionSpec) bool {
+	return s.model == r.cfg.Models.Start && r.cfg.Models.Stronger != "" && r.cfg.Models.Stronger != s.model
+}
+
+// climb switches the running session to the stronger model: the gateway
+// admits its calls on the new alias from the next one (tasks.model_alias)
+// and the worker names the model on every later prompt. The session's
+// record and the events table keep the switch.
+func (r *Runner) climb(ctx context.Context, t Task, s *sessionSpec, ns, pod string, sup *Supervisor, trip *Trip, d Decision) error {
+	from, to := s.model, r.cfg.Models.Stronger
+	if err := r.store.SetTaskModelAlias(ctx, t.ID, aliasOf(to)); err != nil {
+		return err
+	}
+	text := fmt.Sprintf("factoryd: this session continues on the stronger model, %s: %s. Carry on from where you are.", aliasOf(to), d.Reason)
+	if err := r.postWorker(ctx, ns, pod, s.messageToken, "/message", map[string]string{"text": text, "model": to}); err != nil {
+		if undo := r.store.SetTaskModelAlias(ctx, t.ID, aliasOf(from)); undo != nil {
+			log.Printf("task %s: restore the session's alias: %v", t.ID, undo)
+		}
+		return err
+	}
+	s.model = to
+	minutes := time.Since(sup.started).Minutes()
+	detail := map[string]any{"session": s.id, "from": aliasOf(from), "to": aliasOf(to), "trip": string(trip.Kind), "reason": d.Reason, "minutes": math.Round(minutes*10) / 10}
+	r.record(ctx, t.ID, "model_switched", detail)
+	r.timeline.recordEvent(ctx, t.ID, EventModelSwitched, detail)
+	return nil
 }
 
 // supervisorConfig is the session supervisor's configuration with the
@@ -1104,6 +1159,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
+		{"name": "STRONGER_MODEL", "value": r.cfg.Models.Stronger},
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},

@@ -93,6 +93,10 @@ type PlanCard struct {
 	DependsOn   []string `json:"depends_on"`
 	Acceptance  []string `json:"acceptance"`
 	Size        string   `json:"size"`
+	// Rung and RungReason: the model rung the card starts on and why,
+	// cheap or frontier; "" lets intake derive it (roadmap 222, item 5)
+	Rung       string `json:"rung,omitempty"`
+	RungReason string `json:"rung_reason,omitempty"`
 }
 
 // PlanRevision is one valid plan of a plan task, as stored.
@@ -301,6 +305,9 @@ func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 	}
 	if n, ok := sizeLines(bound)[c.Size]; ok && bound > 0 && n >= bound {
 		add("size %s plans up to %d changed lines and the bound is %d: split the card", c.Size, n, bound)
+	}
+	if c.Rung != "" && c.Rung != RungCheap && c.Rung != RungFrontier {
+		add("rung %s: want cheap, frontier or none", c.Rung)
 	}
 	switch {
 	case slices.Contains(policy.CardSizes, c.Size):
@@ -574,6 +581,9 @@ func cardFacts(c PlanCard) string {
 		fmt.Fprintf(&b, "- %s\n", a)
 	}
 	fmt.Fprintf(&b, "Size: %s\n", c.Size)
+	if c.Rung != "" {
+		fmt.Fprintf(&b, "Rung: %s, %s\n", c.Rung, cmp.Or(strings.TrimSpace(c.RungReason), "the planner's choice"))
+	}
 	return b.String()
 }
 
@@ -601,8 +611,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
-		"role: foundation, feature or integration. "
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
 			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +

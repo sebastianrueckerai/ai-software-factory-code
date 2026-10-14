@@ -66,7 +66,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
 	g := planGuide(testShape, testLimits)
-	if !strings.Contains(g, `"size": "small|medium|large"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
+	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the member; their answers come back to you with your last plan, "+
 			"and a plan with open questions cannot be accepted until they are answered.") || strings.Count(g, "question") != 3 {
 		t.Fatalf("planGuide names questions %d times, want 3 (the format's key, the sentence's two):\n%s", strings.Count(g, "question"), g)
