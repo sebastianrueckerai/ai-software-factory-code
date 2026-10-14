@@ -27,7 +27,52 @@ jobs:
     runs-on: pr-untrusted
     steps:
       - uses: actions/checkout@v4
-      - run: scripts/pg-test.sh go test -race -p 1 ./...
+      # Affected-package selection. It lives in this file for the same reason
+      # the image map in `changes` does (.forgejo is closed to agent edits,
+      # ruling 90): a pull request must not be able to edit the code that
+      # decides which of its packages get tested. One rule covers every input
+      # the package walk cannot see — workflows, scripts, Dockerfiles,
+      # migrations, testdata, go.mod: any non-Go file in the diff selects the
+      # whole suite, as does any surprise in the walk itself. Fail open to
+      # more testing, never less. go vet, gofmt and gosec stay wholesale in
+      # their own jobs, so every package is still compiled and checked.
+      - name: select the packages the diff reaches
+        id: select
+        run: |
+          set -euo pipefail
+          base=${{ github.event.pull_request.base.sha }}
+          full() { echo "./..."; exit 0; }
+          # checkout is shallow (HEAD only); fetch just the one base commit to diff against.
+          git fetch -q --depth=1 origin "$base" || { echo "cannot fetch the base commit: full suite"; full; }
+          changed=$(git diff --name-only "$base" HEAD)
+          echo "changed files:"
+          echo "$changed"
+          [ -n "$changed" ] || { echo "empty diff: full suite"; full; }
+          if echo "$changed" | grep -qvE '\.go$'; then
+            echo "a non-Go input changed: full suite"
+            full
+          fi
+          mapfile -t dirs < <(echo "$changed" | while IFS= read -r f; do dirname "$f"; done | sort -u)
+          for d in "${dirs[@]}"; do
+            compgen -G "$d/*.go" >/dev/null || { echo "$d holds no Go files at HEAD: full suite"; full; }
+          done
+          changed_pkgs=$(go list "${dirs[@]/#/.\/}" 2>/dev/null) || { echo "go list failed on a changed directory: full suite"; full; }
+          pkgs=$(
+            go list -test -f '{{.ImportPath}} {{join .Deps " "}}' ./... 2>/dev/null |
+              awk -v changed="$changed_pkgs" '
+                BEGIN { n = split(changed, c, " "); for (i = 1; i <= n; i++) want[c[i]] = 1 }
+                $1 ~ /\.test$/ {
+                  p = substr($1, 1, length($1) - 5)
+                  for (i = 2; i <= NF; i++) if ($i in want) { print p; break }
+                }
+                END { for (p in want) print p }
+              ' | sort -u
+          ) || pkgs=""
+          [ -n "$pkgs" ] || { echo "the walk named no package: full suite"; full; }
+          echo "packages to test: $pkgs"
+          echo "pkgs=$pkgs" >> "$GITHUB_OUTPUT"
+      - name: test the affected packages
+        run: scripts/pg-test.sh go test -race -p 1 ${{ steps.select.outputs.pkgs || './...' }}
   vet-and-format:
     runs-on: pr-untrusted
     steps:
