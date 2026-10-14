@@ -5,7 +5,6 @@ import (
 	"log"
 	"maps"
 	"net/http"
-	"net/url"
 	"slices"
 	"time"
 
@@ -112,6 +111,6 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Version": v, "Projects": projects,
 		"LoadedAt":    v.LoadedAt.UTC().Format(time.RFC3339),
 		"ActivatedAt": v.ActivatedAt.UTC().Format(time.RFC3339), "Document": string(doc), "Dir": c.cfg.ConfigDir,
-		"At":   c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(v.Commit) + "/" + c.cfg.ConfigDir,
+		"At":   c.configTree(v.Commit),
 		"Main": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir})
 }

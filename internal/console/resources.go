@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"slices"
 	"strconv"
 	"time"
@@ -57,7 +56,7 @@ func (c *Console) envelopeOf(ctx context.Context, v policy.Version, repo string)
 
 // fileLink is project name's file at version v's commit.
 func (c *Console) fileLink(v policy.Version, name string) string {
-	return c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(v.Commit) + "/" + c.cfg.ConfigDir + "/" + policy.DirProjects + "/" + name + ".yaml"
+	return c.configTree(v.Commit) + "/" + policy.DirProjects + "/" + name + ".yaml"
 }
 
 type projectView struct {

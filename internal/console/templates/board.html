@@ -5,6 +5,7 @@
 <summary title="the most useful thing to know now; click for more"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}}>⚠</span> <span class="pulse-say">{{.Sentence}}</span><span class="typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span><span class="pulse-more" aria-hidden="true"></span></summary>
 <ul class="pulse-bullets">{{range .Bullets}}<li>{{.}}</li>{{end}}</ul>
 </details></div>{{end}}{{end}}
+{{if .PolicyCommit}}<p class="meta" id="config">Configuration version {{.PolicyVersion}} · commit <a href="{{.PolicyTreeURL}}"><code>{{.PolicyCommit}}</code></a></p>{{end}}
 {{if eq .View "wide"}}<section aria-labelledby="human-lane" id="needs-you">
 <h2 id="human-lane">Human lane</h2>
 <div class="lane">

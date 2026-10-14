@@ -577,6 +577,19 @@ type boardData struct {
 	Problems    []string
 	Approver    bool // may authorize the shown project's spend (rulings 128, 254)
 	Factory     bool // writes the factory's own code: the layout links the factory-level pages
+	// PolicyVersion, PolicyCommit and PolicyTreeURL are the configuration
+	// version factoryd runs, as /policy shows it: its number and its
+	// commit, linked to the commit's tree in Forgejo. All zero when the
+	// policy could not be read, where the board shows no line.
+	PolicyVersion int64
+	PolicyCommit  string
+	PolicyTreeURL string
+}
+
+// configTree is commit's tree of the configuration directory in Forgejo,
+// as /policy, the board and the resources page link it.
+func (c *Console) configTree(commit string) string {
+	return c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(commit) + "/" + c.cfg.ConfigDir
 }
 
 // counts are the board's column counts in the page's order, the wide
@@ -766,6 +779,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 type boardView struct {
 	user, csrf      string
 	policy          policy.Version
+	policyOK        bool // the policy could be read; false leaves the board's version line off
 	filter          boardFilter
 	byRepo          map[string]factoryd.Project
 	byID            map[string]factoryd.Task
@@ -782,7 +796,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
 		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, merging: map[string]bool{}}
-	v.policy, _ = c.inForce(ctx)
+	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
@@ -1029,6 +1043,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
 	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r)}
+	if v.policyOK {
+		d.PolicyVersion, d.PolicyCommit, d.PolicyTreeURL = v.policy.ID, v.policy.Commit, c.configTree(v.policy.Commit)
+	}
 	if err != nil {
 		return d, err
 	}
