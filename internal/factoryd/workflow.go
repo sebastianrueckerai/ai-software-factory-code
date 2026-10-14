@@ -1257,25 +1257,28 @@ func (t *taskRun) lifecycle() (string, error) {
 			// again on the branch it pushed.
 			return t.finish("done", acceptanceReason(res.Acceptance))
 		}
+		// a session that ends without a push hands on the findings it was
+		// given with its own: the next one may be the first to act on them
+		carried := slices.Concat(findings, res.Findings)
 		switch res.Outcome {
 		case OutcomeWallClock:
 			if t.keepWork < versionKeepWork {
 				return t.finish("failed", "wall-clock cap reached")
 			}
-			findings = res.Findings
+			findings = carried
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
 			continue
 		case OutcomeRetryStronger:
 			// at the top rung this is a redirect: Stronger stays Stronger
-			model, findings = t.cfg.Models.Stronger, res.Findings
+			model, findings = t.cfg.Models.Stronger, carried
 			if t.v18 >= versionSessionCap {
 				t.sessionReturn(res, attempt, last)
 			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused:
-			findings = res.Findings
+			findings = carried
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
@@ -1288,7 +1291,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				if final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(res.Findings, answer...)
+				findings = append(carried, answer...)
 				t.grantPoster(&u)
 				continue
 			}
@@ -1300,7 +1303,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(res.Findings, answer...)
+			findings = append(carried, answer...)
 			t.grant(&u)
 			continue
 		}

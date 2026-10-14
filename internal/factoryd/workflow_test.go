@@ -484,7 +484,7 @@ func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 
 // Ruling 177: sessions that run out of attempts without a pushed commit
 // open the card with every finding so far; the answer buys one more
-// session, which starts from the last findings.
+// session, which starts with every finding the sessions handed on.
 func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
@@ -511,7 +511,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	}
 	fourth := h.sessions[3]
 	if fourth.Attempt != 4 || fourth.Model != "factory/coding-frontier" || fourth.ParentSessionID != "s3" ||
-		!slices.Equal(fourth.Findings, []string{"f3"}) ||
+		!slices.Equal(fourth.Findings, []string{"f1", "f2", "f3"}) ||
 		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReached + `": the key is blocked, use the other one`}) {
 		t.Fatalf("fourth attempt = %+v", fourth)
 	}
@@ -1717,6 +1717,36 @@ func TestWorkflowSessionThatCannotStartTakesNoAgentTime(t *testing.T) {
 	}
 }
 
+// A session that ends without a push hands on the findings it was given:
+// the red checks a session was sent to fix reach the next session with
+// the line that says how the first one ended, and after a supervisor's
+// climb and a human's answer they are still there.
+func TestWorkflowUnpushedSessionHandsOnItsFindings(t *testing.T) {
+	cfg := testWorkflowConfig
+	cfg.MaxSessions = 6
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	red := []string{"check ci/test failed: TestParse: want 3, got 4"}
+	died := "previous session ended without a pushed commit: pod exited without a result"
+	h.onSessions(pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "pod exited without a result", Findings: []string{died}},
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s3", Findings: []string{"supervisor: looped on go test"}},
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s4", Reason: "which parser?"},
+		pushed("s5", "c5"))
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: red}, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the strict one", Comment: 602})
+	h.signalAfter(8*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 5 {
+		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
+	}
+	want := [][]string{nil, red, {red[0], died}, {red[0], died, "supervisor: looped on go test"}, {red[0], died, "supervisor: looped on go test"}}
+	for i, w := range want {
+		if !slices.Equal(h.sessions[i].Findings, w) {
+			t.Errorf("session %d findings = %q, want %q", i+1, h.sessions[i].Findings, w)
+		}
+	}
+}
+
 // The slice a human answer buys is a quarter of the task's resolved agent
 // time, floored at min(minSession, WallClockCap) so the attempt it buys is
 // never born under the 5 minutes a session needs to start (ruling 237,
@@ -1873,7 +1903,8 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 // Ruling 118: every human answer of the task travels with every later
 // session as its own list, newest first, not as a finding, each with the
 // question it answers (the escalation's first line): after two
-// escalations the third session carries both answers.
+// escalations the third session carries both answers, and the findings
+// both sessions handed on.
 func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
@@ -1891,13 +1922,13 @@ func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	if s := h.sessions[1]; !slices.Equal(s.Answers, []string{`sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran x"}) {
 		t.Fatalf("second session = %+v", s)
 	}
-	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{`sebastian, to "which text?": write ok`, `sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran y"}) {
+	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{`sebastian, to "which text?": write ok`, `sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran x", "ran y"}) {
 		t.Fatalf("third session = %+v", s)
 	}
 }
 
-// Workflows started before versionAnswers keep an answer as a finding of
-// the next session only.
+// Workflows started before versionAnswers keep an answer as a finding,
+// handed on with the sessions' own findings.
 func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnGetVersion("answers", workflow.DefaultVersion, versionAnswers).Return(workflow.DefaultVersion)
@@ -1913,7 +1944,8 @@ func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
 		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
 	}
-	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran y", "human sebastian answered the escalation: write ok"}) {
+	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran x", "human sebastian answered the escalation: docs/a.txt",
+		"ran y", "human sebastian answered the escalation: write ok"}) {
 		t.Fatalf("third session = %+v", s)
 	}
 }
