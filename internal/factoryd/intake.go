@@ -834,12 +834,13 @@ func FileAgentTask(ctx context.Context, store interface {
 // FileFactoryPRTask files a card for pull request prNumber, which factoryd
 // opened outside any card's workflow (a GitHub sync, a schema copy, a
 // template update): the issue through FileTask as the roller files its
-// roll task (no lane where ready is moved by approvers), then store.SetTaskPR
-// links the already open pull request to the row, then enterLane starts the
-// workflow, whose run finds the pull request recorded and verifies it
-// instead of opening one. t.Source names the kind (SourceGitHubSync,
-// SourceSchemaCopy or SourceTemplateUpdate); TaskConfig gives such a card
-// ready's process and class with no lane. tl records the card's events.
+// roll task, then store.SetTaskPR links the already open pull request to
+// the row, then enterLane starts the workflow, whose run finds the pull
+// request recorded and verifies it instead of opening one. t.Source names
+// the kind (SourceGitHubSync, SourceSchemaCopy or SourceTemplateUpdate);
+// fileEntry gives such a card ready's class and no lane, like a roll, so
+// the workflow starts at once and moves running before its verify reaches
+// in-review. tl records the card's events.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	SetTaskPR(ctx context.Context, id string, number int64) error

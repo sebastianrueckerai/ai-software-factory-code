@@ -241,7 +241,10 @@ func (in *Intake) move(ctx context.Context, via string, p Project, t Task, name 
 // fileEntry is the entry of agent task t, which factoryd files as the bot
 // (FileAgentTask), into project p's process: the default entry, lane
 // ready, where ready is moved by writers, else the backlog. A roll takes
-// ready's class and no lane. It returns the task and its labels.
+// ready's class and no lane. So does a card for a pull request factoryd
+// opened outside any card's workflow (factoryPRSources): its run verifies
+// the pull request linked to it the way a roll's verifies its roll, which
+// no card queued in a lane could (FileFactoryPRTask).
 func fileEntry(p Project, t Task, labels []string) (Task, []string, error) {
 	ready, ok := laneOf(p.Lanes, policy.LaneReady)
 	if !ok {
@@ -249,7 +252,7 @@ func fileEntry(p Project, t Task, labels []string) (Task, []string, error) {
 	}
 	t.Kind, t.Status, t.RequiredCapabilities = "agent", "queued", []string{ready.Class}
 	switch {
-	case t.Source == SourceRoll:
+	case t.Source == SourceRoll || factoryPRSources(t.Source):
 	case ready.MovedBy == policy.MovedByWriters:
 		t.Lane, t.Process = policy.LaneReady, p.Process
 	default:

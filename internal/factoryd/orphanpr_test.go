@@ -52,8 +52,8 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	if !slices.Equal(wf.started, []string{"t-schema"}) {
 		t.Fatalf("started %v, want the workflow started once", wf.started)
 	}
-	// a project whose ready lane the approvers move files the card in the
-	// backlog instead, with the pull request linked all the same
+	// a project whose ready lane the approvers moves files the card with no
+	// lane all the same, like a roll: ready's class, workflow started
 	p := seedProject("sf/r")
 	p.Process, p.Lanes = "gated", approversLanes
 	store, wf = newFakeStore(), &fakeWorkflows{}
@@ -61,8 +61,41 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Status != "backlog" || got.Lane != "backlog" || store.tasks["t-sync"].PRNumber != 11 || len(wf.started) != 0 {
-		t.Fatalf("task = %+v, stored %+v, started %v; want a backlog card with pull request #11 linked and no workflow", got, store.tasks["t-sync"], wf.started)
+	if got.Status != "queued" || got.Lane != "" || got.Process != "" ||
+		!slices.Equal(got.RequiredCapabilities, []string{policy.ClassCoder}) ||
+		store.tasks["t-sync"].PRNumber != 11 || !slices.Equal(wf.started, []string{"t-sync"}) {
+		t.Fatalf("task = %+v, stored %+v, started %v; want a no-lane card of ready's class with pull request #11 linked and the workflow started", got, store.tasks["t-sync"], wf.started)
+	}
+}
+
+// fileEntry gives every factory pull request source the roll's entry:
+// ready's class, queued, no lane, the workflow started at once. The lane
+// the writers' ready move gave these cards before (finding 224) queued
+// them behind a session start their run never takes: its verify finds the
+// pull request linked and moves in-review straight from queued, which the
+// task state machine refuses.
+func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
+	ctx := context.Background()
+	for name, source := range map[string]string{
+		"github sync": SourceGitHubSync, "schema copy": SourceSchemaCopy, "template update": SourceTemplateUpdate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f, labels := fileStub(t)
+			store, wf := newFakeStore(), &fakeWorkflows{}
+			got, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", []string{"improvement"},
+				Task{ID: "t1", Source: source}, 9)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Status != "queued" || got.Lane != "" || got.Process != "" ||
+				!slices.Equal(got.RequiredCapabilities, []string{policy.ClassCoder}) ||
+				store.tasks["t1"].PRNumber != 9 || !slices.Equal(wf.started, []string{"t1"}) {
+				t.Fatalf("task = %+v, stored %+v, started %v; want the roll's entry with pull request #9 linked", got, store.tasks["t1"], wf.started)
+			}
+			if !slices.Equal(*labels, []string{"improvement", "state/queued"}) {
+				t.Fatalf("labels %v", *labels)
+			}
+		})
 	}
 }
 
@@ -236,6 +269,93 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 		if strings.HasPrefix(call, "POST /api/v1/repos/sf/repo/pulls ") || strings.Contains(call, "/pulls/main/") {
 			t.Fatalf("calls %v: the card's pull request was adopted, never opened nor looked up by branch", calls)
 		}
+	}
+}
+
+// The card of each factory pull request source runs its linked pull
+// request through the gates the way a roll does: running first, then
+// in-review past the stages. The state machine refuses in-review from
+// queued (finding 224), so the run's states say running before in-review.
+// No session, no RollCommit: nothing writes the card's branch, the pull
+// request exists; the adopted head reaches the gates as it is.
+func TestFactoryPRCardRunsItsGatesFromRunning(t *testing.T) {
+	for name, source := range map[string]string{
+		"github sync": SourceGitHubSync, "schema copy": SourceSchemaCopy, "template update": SourceTemplateUpdate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarness(t)
+			g.state = RunState{Status: "queued", FactoryPR: true, Source: source,
+				PR: PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}, Head: "c7"}
+			g.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					t.Errorf("a factory pull request card ran a session: %+v", in)
+					return SessionResult{}, nil
+				})
+			g.env.OnActivity(ActivityRollCommit, mock.Anything, "t1").Return(
+				func(ctx context.Context, taskID string) (string, error) {
+					t.Errorf("a factory pull request card ran RollCommit: nothing writes its branch")
+					return "", nil
+				})
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, sha string) (PullRequest, error) {
+					t.Errorf("OpenPullRequest called for head %s: the card's pull request was already open", sha)
+					return PullRequest{Number: 9}, nil
+				})
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if want := []string{"policy", "repro c7", "review c7", "approval c7", "merge"}; !slices.Equal(g.steps, want) {
+				t.Fatalf("steps = %v, want %v: the linked pull request runs the gates", g.steps, want)
+			}
+			if !slices.Equal(g.states, []string{"running", "in-review"}) {
+				t.Fatalf("states = %v, want running before in-review: in-review from queued is refused", g.states)
+			}
+			if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
+				t.Fatalf("merges = %v", g.merges)
+			}
+			if len(g.sessions) != 0 {
+				t.Fatalf("sessions = %v, want none: the card's work is the open pull request", g.sessions)
+			}
+		})
+	}
+}
+
+// Findings on a factory pull request card's head end it, like a roll's:
+// no session answers them and no RollCommit writes what they ask, the
+// pull request exists already.
+func TestFactoryPRCardFailsOnFindingsItCannotAnswer(t *testing.T) {
+	g := newGateHarness(t)
+	g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate,
+		PR: PullRequest{Number: 9}, Head: "c7"}
+	red := "check \"pr / test (pull_request)\": failure"
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}})
+	if final := g.run(t); final != "failed" {
+		t.Fatalf("final = %q", final)
+	}
+	if reason := g.finals[0][1]; reason != "factory pull request: checks findings went back to the agent: "+red {
+		t.Fatalf("reason = %q", reason)
+	}
+	if len(g.sessions) != 0 {
+		t.Fatalf("sessions = %v, want none", g.sessions)
+	}
+}
+
+// The task state machine refuses in-review from queued, the move the
+// factory pull request card's old lane entry asked of its run (finding
+// 224); the gate path enters from running.
+func TestSetStateRefusesInReviewFromQueued(t *testing.T) {
+	r, _, _ := newActivityRunner(t, withStatus(prTask, "queued"), &prForgejo{})
+	_, err := execActivity(t, r, ActivitySetState, "t1", "in-review")
+	if err == nil || !strings.Contains(err.Error(), "task t1 is queued, cannot move to in-review") {
+		t.Fatalf("err = %v, want the queued card's refusal", err)
+	}
+	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivitySetState, "t1", "in-review"); err != nil {
+		t.Fatal(err)
 	}
 }
 

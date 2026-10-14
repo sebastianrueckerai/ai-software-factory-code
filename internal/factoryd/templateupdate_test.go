@@ -373,8 +373,8 @@ func TestTemplateUpdateFilesCard(t *testing.T) {
 	}
 	row := got[0]
 	if row.Source != SourceTemplateUpdate || row.PRNumber != 1 || row.IssueNumber != 1 || row.Repository != "demo-app/demo-app" ||
-		row.Status != "queued" || row.Lane != policy.LaneReady {
-		t.Fatalf("stored row = %+v, want a queued ready card of pull request #1 and issue #1", row)
+		row.Status != "queued" || row.Lane != "" {
+		t.Fatalf("stored row = %+v, want a queued no-lane card of pull request #1 and issue #1", row)
 	}
 	if len(wf.started) != 1 || wf.started[0] != row.ID {
 		t.Fatalf("started %v, want the card's run", wf.started)

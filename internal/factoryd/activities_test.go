@@ -1816,3 +1816,58 @@ func TestAlertPreCheckPassesWhenFiring(t *testing.T) {
 		t.Fatal("pre-check = false, want true: the fingerprint still fires")
 	}
 }
+
+// stubPrices is a Pricer answering one price for every alias.
+type stubPrices struct {
+	price policy.Price
+	err   error
+}
+
+func (p stubPrices) Price(context.Context, string) (policy.Price, error) { return p.price, p.err }
+
+// The attempt grant's floor is the hold machinery's own minimum (ruling
+// 322): policy.Fit at the task's remaining budget refuses an attempt whose
+// cheapest call cannot fit policy.MinCallTokens output tokens, and the
+// refusal names the state and the way out. A model that cannot be priced
+// fails open: the per-call hold still guards the money.
+func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
+	cheap := policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6}
+	// the floor itself: MinCallTokens output tokens at the output price
+	if floor := float64(policy.MinCallTokens) * cheap.Out; floor != 0.004096 {
+		t.Fatalf("floor = %v, want 1024 output tokens at 4e-6 EUR", floor)
+	}
+	store := newFakeStore()
+	for _, tsk := range []Task{
+		{ID: "t-burned", Status: "running", BudgetEUR: 2, SpentEUR: 2 - 0.004}, // 0.004 EUR left, under the 0.004096 floor
+		{ID: "t-solvent", Status: "running", BudgetEUR: 2, SpentEUR: 0.5},
+	} {
+		if err := store.CreateTask(context.Background(), tsk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: cheap}}}
+
+	why, err := r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap")
+	if err != nil || why != "" {
+		t.Fatalf("solvent: (%q, %v), want funded", why, err)
+	}
+	why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{budgetRefused, "0.004 EUR of the 2.000 EUR budget remains", "1024 output tokens", "Close this card and file a new one", "finding 210"} {
+		if !strings.Contains(why, want) {
+			t.Fatalf("refusal = %q, want it to name %q", why, want)
+		}
+	}
+	// an unpriced model is no refusal: the per-call hold still guards the money
+	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
+	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("unpriced: (%q, %v), want funded", why, err)
+	}
+	// no price source wired: every attempt is funded
+	r.cfg.Prices = nil
+	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("no prices: (%q, %v), want funded", why, err)
+	}
+}

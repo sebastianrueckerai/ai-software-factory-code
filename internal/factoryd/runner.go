@@ -79,6 +79,17 @@ type RunnerConfig struct {
 	// Alerts reads SigNoz's firing alerts for an alert card's pre-check
 	// (AlertPreCheck, roadmap 181 item 3.12); nil = the check passes.
 	Alerts AlertPreCheckSource
+	// Prices is the alias price book the attempt grant's floor reads
+	// (ruling 322): whether the task's remaining budget can fund a call at
+	// all. nil = every attempt is funded; the per-call hold still guards
+	// the money.
+	Prices Pricer
+}
+
+// Pricer is an alias's worst-case price, the figure the gateway's hold
+// math prices a call with; implemented by policy.PriceBook.
+type Pricer interface {
+	Price(ctx context.Context, alias string) (policy.Price, error)
 }
 
 // LeaseReader is the live leased servers' IPv4s by owning task, and the

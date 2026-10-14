@@ -185,6 +185,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
 		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
 		ActivityAlertPreCheck:     func(ctx context.Context, taskID string) (bool, error) { return true, nil },
+		ActivityAttemptFunded:     func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
@@ -553,6 +554,57 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	}
 	if h.usage[0] != (TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3, ExtraAttempts: 1}) {
 		t.Fatalf("usage = %+v, want the answer's grant first: an attempt, no extra time (8m left already covers the 5m slice)", h.usage)
+	}
+}
+
+// Ruling 322 (finding 215): a card whose task's remaining budget cannot
+// fund a call refuses the attempt an answer would buy. No session starts
+// (no key is minted), no failure round is added, and the waiting-human
+// card says why an answer will not run: each answer re-asks the same
+// refusal, and only a close ends the task.
+func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "which alias?"}
+	unfunded := budgetRefused + ": 0.08 EUR of the 2.00 EUR budget remains, and the cheapest call needs more; close this card and file a new one"
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(unfunded, nil)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "again", Comment: 603})
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(h.sessions) != 0 {
+		t.Fatalf("sessions = %d, want none: the attempt is refused before it starts", len(h.sessions))
+	}
+	if len(h.escalated) != 3 || h.escalated[0] != healedReason ||
+		!strings.HasPrefix(h.escalated[1], budgetRefused) || !strings.HasPrefix(h.escalated[2], budgetRefused) {
+		t.Fatalf("escalations = %q, want the healed question, then the budget refusal after each answer", h.escalated)
+	}
+	if u := h.usage[len(h.usage)-1]; u.Attempts != 0 || u.ExtraAttempts != 1 {
+		t.Fatalf("usage = %+v, want the answer's grant and no attempt run: no failure round", u)
+	}
+}
+
+// A fundable remainder grants the attempt exactly as before (ruling 322
+// guards only the unfunded one): the answer at the session cap buys the
+// next session once the floor read clears it.
+func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	floors := 0
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (string, error) { floors++; return "", nil })
+	h.onSessions(pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 || floors != 1 {
+		t.Fatalf("sessions = %+v, floor reads = %d, want the fourth attempt after one floor read", h.sessions, floors)
 	}
 }
 
