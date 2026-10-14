@@ -1,0 +1,40 @@
+2026-10-14T19:07:53.1350544Z #32 [stage-1 20/20] RUN find / -xdev -exec touch -h -d "@1792002051" {} +
+2026-10-14T19:07:53.1350674Z #32 79.60 touch: setting times of '/sys': Read-only file system
+2026-10-14T19:07:53.1350799Z #32 81.17 touch: setting times of '/etc/resolv.conf': Read-only file system
+2026-10-14T19:07:53.1350914Z #32 81.25 touch: setting times of '/etc/hosts': Read-only file system
+2026-10-14T19:07:53.1351061Z #32 ERROR: process "/bin/sh -c find / -xdev -exec touch -h -d \"@$SOURCE_DATE_EPOCH\" {} +" did not complete successfully: exit code: 1
+2026-10-14T19:07:53.1351214Z ------
+2026-10-14T19:07:53.1351340Z  > [stage-1 20/20] RUN find / -xdev -exec touch -h -d "@1792002051" {} +:
+2026-10-14T19:07:53.1351465Z 79.60 touch: setting times of '/sys': Read-only file system
+2026-10-14T19:07:53.1351579Z 81.17 touch: setting times of '/etc/resolv.conf': Read-only file system
+2026-10-14T19:07:53.1351696Z 81.25 touch: setting times of '/etc/hosts': Read-only file system
+2026-10-14T19:07:53.1351814Z ------
+2026-10-14T19:07:53.1351928Z Dockerfile.runner:104
+2026-10-14T19:07:53.1352031Z --------------------
+2026-10-14T19:07:53.1352246Z  102 |     # is restored below.
+2026-10-14T19:07:53.1352352Z  103 |     USER root
+2026-10-14T19:07:53.1352526Z  104 | >>> RUN find / -xdev -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
+2026-10-14T19:07:53.1352642Z  105 |     USER 1000:1000
+2026-10-14T19:07:53.1352755Z  106 |     ENTRYPOINT ["forgejo-runner"]
+2026-10-14T19:07:53.1353043Z --------------------
+2026-10-14T19:07:53.1353156Z error: failed to solve: process "/bin/sh -c find / -xdev -exec touch -h -d \"@$SOURCE_DATE_EPOCH\" {} +" did not complete successfully: exit code: 1
+2026-10-14T19:07:53.1353392Z FAILED: Dockerfile.runner
+2026-10-14T19:07:53.1382914Z ⚙️ [runner]: RUN exit status 1
+2026-10-14T19:07:53.1384917Z ⭐ Run Post actions/checkout@v4
+2026-10-14T19:07:53.5572444Z [command]/usr/bin/git version
+2026-10-14T19:07:53.5746595Z git version 2.39.5
+2026-10-14T19:07:53.5786549Z   ⚙  ***
+2026-10-14T19:07:53.5827569Z Temporarily overriding HOME='/home/runner/.cache/act/d433ed5084cf6660/tmp/900eb7a1-907f-49e6-971b-955e19bbc7d4' before making global git config changes
+2026-10-14T19:07:53.5828411Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-14T19:07:53.5836947Z [command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/d433ed5084cf6660/hostexecutor
+2026-10-14T19:07:53.6033188Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-14T19:07:53.6207074Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-14T19:07:53.8840907Z [command]/usr/bin/git config --local --name-only --get-regexp http\.http\:\/\/forgejo\-http\.forgejo\.svc\.cluster\.local\:3000\/\.extraheader
+2026-10-14T19:07:53.9119643Z http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader
+2026-10-14T19:07:53.9172651Z [command]/usr/bin/git config --local --unset-all http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader
+2026-10-14T19:07:53.9404591Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.http\:\/\/forgejo\-http\.forgejo\.svc\.cluster\.local\:3000\/\.extraheader' && git config --local --unset-all 'http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader' || :"
+2026-10-14T19:07:54.2218563Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-14T19:07:54.2521142Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-14T19:07:54.4824530Z   ✅  Success - Post actions/checkout@v4
+2026-10-14T19:07:54.5201916Z 🏁  Job failed
+2026-10-14T19:07:54.5638409Z Job 'image-build' failed

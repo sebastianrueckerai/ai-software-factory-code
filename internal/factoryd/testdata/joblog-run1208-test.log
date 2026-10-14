@@ -1,0 +1,40 @@
+2026-10-14T20:28:13.5834437Z 
+2026-10-14T20:28:13.5834607Z #21 [stage-1  9/19] RUN echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  /tmp/crane.tar.gz" | sha256sum -c -       && tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane       && rm /tmp/crane.tar.gz
+2026-10-14T20:28:13.7200257Z #21 0.288 /tmp/crane.tar.gz: OK
+2026-10-14T20:28:14.0364128Z #21 DONE 0.6s
+2026-10-14T20:28:14.1895267Z 
+2026-10-14T20:28:14.1895840Z #22 [stage-1 10/19] COPY --from=go-toolchain /usr/local/go /usr/local/go
+2026-10-14T20:28:16.6879917Z #22 DONE 2.6s
+2026-10-14T20:28:16.8452992Z 
+2026-10-14T20:28:16.8453605Z #23 [stage-1 11/19] RUN curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz       && echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c -       && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner       && rm /tmp/node.tar.xz       && node --version && npm --version       && rm -r /tmp/node-compile-cache
+2026-10-14T20:28:23.9862354Z #23 7.292 /tmp/node.tar.xz: OK
+2026-10-14T20:28:26.1639891Z #23 9.470 v24.21.0
+2026-10-14T20:28:26.3961735Z #23 9.551 11.19.0
+2026-10-14T20:28:26.5885400Z #23 DONE 9.9s
+2026-10-14T20:28:26.7405348Z 
+2026-10-14T20:28:26.7406057Z #24 [stage-1 12/19] ADD https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_amd64.tar.gz /tmp/gosec.tar.gz
+2026-10-14T20:28:26.7451320Z #24 DONE 0.2s
+2026-10-14T20:28:26.8979985Z 
+2026-10-14T20:28:26.8980501Z #25 [stage-1 13/19] RUN echo "6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095  /tmp/gosec.tar.gz" | sha256sum -c -       && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec       && rm /tmp/gosec.tar.gz
+2026-10-14T20:28:27.0581862Z #25 0.311 /tmp/gosec.tar.gz: OK
+2026-10-14T20:28:27.4414963Z #25 DONE 0.7s
+2026-10-14T20:28:27.6129747Z 
+2026-10-14T20:28:27.6130150Z #26 [stage-1 14/19] WORKDIR /workspace
+2026-10-14T20:28:27.6130239Z #26 DONE 0.0s
+2026-10-14T20:28:27.6130346Z 
+2026-10-14T20:28:27.6130408Z #27 [stage-1 15/19] RUN /usr/local/go/bin/go version
+2026-10-14T20:28:27.7479282Z #27 0.286 go version go1.25.9 linux/amd64
+2026-10-14T20:28:27.9451814Z #27 DONE 0.3s
+2026-10-14T20:28:27.9452207Z 
+2026-10-14T20:28:27.9452282Z #28 [stage-1 16/19] COPY --chown=1000:1000 go.mod go.sum /tmp/warm/
+2026-10-14T20:28:27.9452390Z #28 DONE 0.0s
+2026-10-14T20:28:27.9452458Z 
+2026-10-14T20:28:27.9452518Z #29 [stage-1 17/19] RUN cd /tmp/warm && go mod download
+2026-10-14T20:28:30.7291749Z #29 DONE 2.9s
+2026-10-14T20:28:30.8807114Z 
+2026-10-14T20:28:30.8807491Z #30 [stage-1 18/19] COPY --chown=1000:1000 . /tmp/warm/
+2026-10-14T20:28:30.9534910Z #30 DONE 0.2s
+2026-10-14T20:28:31.1058452Z 
+2026-10-14T20:28:31.1058864Z #31 [stage-1 19/19] RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
+2026-10-14T20:29:01.7686760Z ⚙️ [runner]: context canceled\nGet "https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc06f351dc3d35ca13b676c66dfa731799f9ec0ec9f859955eea96/archive?path=%2Fvar%2Frun%2Fact%2Fworkflow%2FSUMMARY.md": context canceled\nGet "https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc06f351dc3d35ca13b676c66dfa731799f9ec0ec9f859955eea96/archive?path=%2Fvar%2Frun%2Fact%2Fworkflow%2Fpathcmd.txt": context canceled
+2026-10-14T20:29:01.7907328Z 🏁  Job failed

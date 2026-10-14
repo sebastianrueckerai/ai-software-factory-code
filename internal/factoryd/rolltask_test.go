@@ -213,6 +213,7 @@ type rollForgejo struct {
 	statuses    map[string][]map[string]string // commit -> its statuses (status, context)
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
+	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
 }
 
 // mergeCommit is a test's multi-parent (merge) commit: it lists its
@@ -370,6 +371,11 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			f.commits = append(f.commits, in)
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"commit": map[string]string{"sha": fmt.Sprintf("roll-commit-%d", len(f.commits))}})
+		case r.Method == "POST" && p == "/user/login":
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		case r.Method == "GET" && (p == "/" || f.logs[p] != ""):
+		case r.Method == "GET" && f.logs[strings.TrimSuffix(p, "/logs")] != "":
+			io.WriteString(w, f.logs[strings.TrimSuffix(p, "/logs")])
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)

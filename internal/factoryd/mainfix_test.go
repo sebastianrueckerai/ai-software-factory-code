@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -9,14 +10,17 @@ import (
 )
 
 // A red push run of main pauses the project's merge queue once and files
-// the fix-forward card, named after the failed jobs; the next poll files
-// no second card.
+// the fix-forward card, named after the failed jobs, when any of them
+// failed a step, though another lost its runner; the next poll files no
+// second card.
 func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
+	test, image := "/"+codeRepo+"/actions/runs/0/jobs/0", "/"+codeRepo+"/actions/runs/0/jobs/1"
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(58, commitC2, "failure"), pushRun(57, commitC1, "success")},
 		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
 		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx}, gwOldIdx, workerOldIdx, runnerIdx),
-		statuses: map[string][]map[string]string{commitC2: {{"status": "failure", "context": "ci / test (push)"}, {"status": "success", "context": "ci / image (push)"}}},
+		statuses: map[string][]map[string]string{commitC2: {{"status": "failure", "context": "ci / test (push)", "target_url": test}, {"status": "failure", "context": "ci / image (push)", "target_url": image}}},
+		logs:     map[string]string{test: readTestdata(t, "joblog-run1208-test.log"), image: readTestdata(t, "joblog-run1198-image.log")},
 	}
 	roller, store, _ := newTestRoller(t, f)
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
@@ -30,7 +34,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its fix card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push)\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) {
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push), ci / image (push)\n\n") || !strings.Contains(f.issues[0], "run 0 of "+commitC2) {
 		t.Fatalf("issues %q, want the one fix-forward card", f.issues)
 	}
 	fix := store.tasks[pause.FixTask]
@@ -98,4 +102,130 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	if len(f.pulls) != 1 || len(reverted) != 1 {
 		t.Fatalf("pull requests %q, reverts %q; want one of each", f.pulls, reverted)
 	}
+}
+
+// A red push run whose every failed job lost its runner pauses the queue
+// as any red run does, but files a human card, no agent's: it names the
+// run's job, the runner's line and the re-run. Past the bound the pause
+// reverts nothing, the commit not being at fault, and the re-run that
+// turns the run green ends the pause.
+func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
+	job := "/" + codeRepo + "/actions/runs/1208/jobs/0"
+	run := func(status string) map[string]any {
+		r := pushRun(58, commitC2, status)
+		r["index_in_repo"] = 1208
+		return r
+	}
+	f := &rollForgejo{
+		runs:  []map[string]any{run("failure"), pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx,
+			"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+		statuses: map[string][]map[string]string{commitC2: {
+			{"status": "failure", "context": "ci / test (push)", "target_url": job},
+			{"status": "success", "context": "ci / image (push)", "target_url": "/" + codeRepo + "/actions/runs/1208/jobs/1"},
+		}},
+		logs: map[string]string{job: readTestdata(t, "joblog-run1208-test.log")},
+	}
+	roller, store, wf := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+	ctx := context.Background()
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
+	}
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push) (runner lost)\n\nMain CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
+		!strings.Contains(f.issues[0], "ci / test (push), "+job+":\n\n```\n\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
+		!strings.Contains(f.issues[0], "Re-run each job from its page.") {
+		t.Fatalf("issues %q, want the one re-run card", f.issues)
+	}
+	fix := store.tasks[pause.FixTask]
+	if fix.Source != SourceRerun || fix.Kind != "human" || fix.Status != "waiting-human" || fix.Lane != "" || fix.SHA != commitC2 {
+		t.Fatalf("card %+v, want a human card on the red commit", fix)
+	}
+	if len(wf.started) != 0 {
+		t.Fatalf("workflows started %q, want none", wf.started)
+	}
+
+	// the bound passes with no re-run: the pause holds, nothing reverts
+	pause.Since = time.Now().Add(-mainRedBound - time.Minute)
+	store.pauses[codeRepo] = pause
+	revertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, sha, branch string) error {
+		t.Errorf("reverted %s on %s", sha, branch)
+		return nil
+	}
+	t.Cleanup(func() { revertBranch = nil })
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := store.pauses[codeRepo]; !ok || p.RevertTask != "" || len(f.pulls) != 0 || len(f.issues) != 1 {
+		t.Fatalf("pause = %+v (%v), pull requests %q, issues %d; want the pause alone", p, ok, f.pulls, len(f.issues))
+	}
+
+	// the re-run turns run 1208 green
+	f.runs = []map[string]any{run("success"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.pauses[codeRepo]; ok {
+		t.Fatal("the pause survived the re-run's green")
+	}
+	if !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
+		t.Fatalf("signals = %q, want the waiting head woken", wf.signals)
+	}
+}
+
+// runnerLost tells a job that lost its runner from one that failed a
+// step, on the last 40 lines of main's real job logs: run 1208's test job
+// died with its runner's evicted pod, run 1199's failed go vet in an
+// image build, run 1198's image job a Dockerfile's RUN step.
+func TestRunnerLost(t *testing.T) {
+	for file, want := range map[string]bool{
+		"joblog-run1208-test.log":  true,
+		"joblog-run1199-test.log":  false,
+		"joblog-run1198-image.log": false,
+	} {
+		line, lost := runnerLost([]byte(readTestdata(t, file)))
+		if lost != want || lost != (line != "") {
+			t.Errorf("%s: runnerLost = %q, %v; want %v", file, line, lost, want)
+		}
+	}
+	line, _ := runnerLost([]byte(readTestdata(t, "joblog-run1208-test.log")))
+	if !strings.HasPrefix(line, "\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
+		!strings.HasSuffix(line, "path=%2Fvar%2Frun%2Fact%2Fworkflow%2Fpathcmd.txt\": context canceled") {
+		t.Errorf("run 1208's line = %q, want its runner's, timestamp stripped", line)
+	}
+	for log, want := range map[string]bool{
+		// runner 13's host executor (job 5 of run 1148) words the cancelled
+		// step its own way
+		"2026-10-14T17:07:21.1244570Z \u2699\ufe0f [runner]: this step has been cancelled: ctx: context canceled, exec: RUN signal: killed\n2026-10-14T17:07:22.2178401Z \U0001F3C1  Job failed\n": true,
+		// a step past its timeout-minutes failed on its own
+		"2026-10-14T17:07:21.1244570Z \u2699\ufe0f [runner]: this step has been cancelled: ctx: context deadline exceeded, exec: RUN signal: killed\n": false,
+		// a red step, then an always() step whose runner was lost
+		readTestdata(t, "joblog-run1199-test.log") + "2026-10-14T19:06:36.0000000Z \u2699\ufe0f [runner]: context canceled\n": false,
+		// the same step output, no runner line
+		"2026-10-14T20:29:01.7686760Z context canceled\n": false,
+	} {
+		if _, lost := runnerLost([]byte(log)); lost != want {
+			t.Errorf("runnerLost(%q) = %v, want %v", log, lost, want)
+		}
+	}
+}
+
+func readTestdata(t *testing.T, name string) string {
+	t.Helper()
+	b, err := os.ReadFile("testdata/" + name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }

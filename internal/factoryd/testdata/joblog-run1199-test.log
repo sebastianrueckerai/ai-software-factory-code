@@ -1,0 +1,40 @@
+2026-10-14T19:05:38.1264191Z #31 [stage-1 19/19] RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
+2026-10-14T19:06:34.4070535Z #31 56.43 # github.com/sebastianrueckerai/ai-software-factory-code/acceptance
+2026-10-14T19:06:34.4070968Z #31 56.43 # [github.com/sebastianrueckerai/ai-software-factory-code/acceptance]
+2026-10-14T19:06:34.4071090Z #31 56.43 vet: acceptance/backends_test.go:804:24: cannot use (*acceptanceStore)(nil) (value of type *acceptanceStore) as factoryd.Store value in variable declaration: *acceptanceStore does not implement factoryd.Store (missing method CountBacklog)
+2026-10-14T19:06:34.7966780Z #31 ERROR: process "/bin/sh -c cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm" did not complete successfully: exit code: 1
+2026-10-14T19:06:34.8250248Z ------
+2026-10-14T19:06:34.8250751Z  > [stage-1 19/19] RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm:
+2026-10-14T19:06:34.8250888Z 56.43 # github.com/sebastianrueckerai/ai-software-factory-code/acceptance
+2026-10-14T19:06:34.8250994Z 56.43 # [github.com/sebastianrueckerai/ai-software-factory-code/acceptance]
+2026-10-14T19:06:34.8251099Z 56.43 vet: acceptance/backends_test.go:804:24: cannot use (*acceptanceStore)(nil) (value of type *acceptanceStore) as factoryd.Store value in variable declaration: *acceptanceStore does not implement factoryd.Store (missing method CountBacklog)
+2026-10-14T19:06:34.8251215Z ------
+2026-10-14T19:06:34.8272465Z Dockerfile.runner:97
+2026-10-14T19:06:34.8272736Z --------------------
+2026-10-14T19:06:34.8272821Z   95 |     RUN cd /tmp/warm && go mod download
+2026-10-14T19:06:34.8272894Z   96 |     COPY --chown=1000:1000 . /tmp/warm/
+2026-10-14T19:06:34.8273014Z   97 | >>> RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
+2026-10-14T19:06:34.8273093Z   98 |     ENTRYPOINT ["forgejo-runner"]
+2026-10-14T19:06:34.8273186Z   99 |     
+2026-10-14T19:06:34.8273278Z --------------------
+2026-10-14T19:06:34.8273375Z ERROR: failed to build: failed to solve: process "/bin/sh -c cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm" did not complete successfully: exit code: 1
+2026-10-14T19:06:34.8571692Z ⚙️ [runner]: exitcode '1': failure
+2026-10-14T19:06:35.0234320Z ⭐ Run Post actions/checkout@v4
+2026-10-14T19:06:35.0615260Z   🐳  docker exec cmd=[node /var/run/act/actions/c5/18595027d6b416645f60a8dcbf393aadc333a1cb136cea6e23442ce3462cad/dist/index.js] user= workdir=
+2026-10-14T19:06:35.2410927Z [command]/usr/bin/git version
+2026-10-14T19:06:35.2474475Z git version 2.55.0
+2026-10-14T19:06:35.2495546Z   ⚙  ***
+2026-10-14T19:06:35.2512613Z Temporarily overriding HOME='/tmp/ae4d2a0d-0da3-4697-9933-6cfc1b8bd363' before making global git config changes
+2026-10-14T19:06:35.2512817Z Adding repository directory to the temporary git global config as a safe directory
+2026-10-14T19:06:35.2519702Z [command]/usr/bin/git config --global --add safe.directory /workspace/sf/ai-software-factory-code
+2026-10-14T19:06:35.2591571Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-10-14T19:06:35.2659384Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-10-14T19:06:35.3130737Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/git\.aisoftwarefactory\.world\/\.extraheader
+2026-10-14T19:06:35.3165979Z http.https://git.aisoftwarefactory.world/.extraheader
+2026-10-14T19:06:35.3176737Z [command]/usr/bin/git config --local --unset-all http.https://git.aisoftwarefactory.world/.extraheader
+2026-10-14T19:06:35.3245111Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/git\.aisoftwarefactory\.world\/\.extraheader' && git config --local --unset-all 'http.https://git.aisoftwarefactory.world/.extraheader' || :"
+2026-10-14T19:06:35.3730449Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-10-14T19:06:35.3787675Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-10-14T19:06:35.4366734Z   ✅  Success - Post actions/checkout@v4
+2026-10-14T19:06:35.5043470Z 🏁  Job failed
+2026-10-14T19:06:36.0359024Z Job 'test' failed
