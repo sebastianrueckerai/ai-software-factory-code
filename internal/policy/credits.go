@@ -26,7 +26,10 @@ var creditRates = map[string]CreditRate{
 // deployment, or a bare model name; false when the plan holds no rate for
 // its model, so no credits can be derived from it.
 func CreditRateOf(deployment string) (CreditRate, bool) {
-	_, model, _ := strings.Cut(deployment, "/")
+	model := deployment
+	if _, after, found := strings.Cut(deployment, "/"); found {
+		model = after
+	}
 	r, ok := creditRates[strings.ToLower(model)]
 	return r, ok
 }

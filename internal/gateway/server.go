@@ -621,8 +621,8 @@ type modelCall struct {
 	models     []string
 	pv         *policy.Version
 	key        *liveKey
-	overHold   string // the booking's flag, on every audit row after it
-	deployment string // the LiteLLM deployment that answered
+	overHold   string        // the booking's flag, on every audit row after it
+	deployment string        // the LiteLLM deployment that answered
 	up         *upstreamCall // nil until the call goes upstream
 	usage      policy.Usage  // the provider's, booked with the cost
 	// the call row's own truth (roadmap 198 item 1): when it was admitted

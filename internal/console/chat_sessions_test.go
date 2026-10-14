@@ -60,6 +60,11 @@ var trCalls = []policy.ModelCall{
 // EUR over two calls.
 const s2Cost = "cost: coding-frontier, 2 calls, prompt tokens per call median 70,000 max 111,723, 94% cached, 0.0210 EUR per call\n"
 
+// trTotals is t-r's calls line: all six calls' tokens summed (350,374
+// prompt of which 301,000 cached, no output) and their 0.0492 EUR summed
+// (roadmap 206), the same line the card face shows beside its spend.
+const trTotals = "350,374 prompt · 301,000 cached · 0 output tokens · €0.0492 modeled to date\n"
+
 // newSessionsRig is the chat rig with t-r #11's two sessions and their
 // transcripts.
 func newSessionsRig(t *testing.T) (*rig, *chatGateway) {
@@ -121,8 +126,8 @@ func TestChatSessionRead(t *testing.T) {
 		"session", `{"task_id":"t-r","n":3}`, "session", `{"task_id":"t-m"}`), []string{
 		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
 			"started 2026-10-11 10:13 UTC, took 27 min\n" +
-			"summary: added the p95\n" + s2Cost + "files changed: stats.go (1)\ndiff: 2 files, +40 -8\n4 steps",
-		s1Summary + "files changed: a.go (1)\ndiff: 1 file, +10 -2\n6 steps",
+			"summary: added the p95\n" + s2Cost + trTotals + "files changed: stats.go (1)\ndiff: 2 files, +40 -8\n4 steps",
+		s1Summary + trTotals + "files changed: a.go (1)\ndiff: 1 file, +10 -2\n6 steps",
 		"Refused: Card #11 has no session 3; it has had 2 sessions.",
 		"Refused: Card #5 has had no session yet.",
 	})
@@ -135,7 +140,7 @@ func TestChatSessionRead(t *testing.T) {
 		`{"step":"session_start","time":"2026-10-11T10:41:00Z","session":"s3","parent":"s2","model":"coding-frontier","attempt":3}` + "\n")
 	equal(t, "a running session without a transcript", reads(t, r, g, "session", `{"task_id":"t-r"}`, "session_search", `{"task_id":"t-r","query":"zzz"}`), []string{
 		"session 3 of 3 (s3), attempt 3, model coding-frontier: running\n" +
-			"started because: the previous session's push went back to the agent\nrunning since 2026-10-11 10:41 UTC\ncost: no model calls\nno transcript for session 3",
+			"started because: the previous session's push went back to the agent\nrunning since 2026-10-11 10:41 UTC\ncost: no model calls\n" + trTotals + "no transcript for session 3",
 		"no hit for \"zzz\"\nno transcript for session 3",
 	})
 	status, msg := refused(t, r, "session_steps", toolInput{TaskID: "t-r"})
@@ -303,7 +308,7 @@ func TestChatSessionTooLarge(t *testing.T) {
 	const tooLarge = "session 1's transcript is 9.0 MiB; too large to read"
 	equal(t, "the reads of a large transcript", reads(t, r, g, "session", `{"task_id":"t-r","n":1}`, "session_steps", `{"task_id":"t-r","n":1}`,
 		"session_search", `{"task_id":"t-r","query":"Needle-In"}`), []string{
-		s1Summary + tooLarge,
+		s1Summary + trTotals + tooLarge,
 		"Refused: " + tooLarge,
 		"session 1 step 1000 (command): grep needle-in-the-stack\n  before: 999 1:00 command: echo, exit 0\n  after: 1001 1:00 command: echo, exit 0",
 	})
@@ -323,7 +328,7 @@ func TestChatSessionLongPath(t *testing.T) {
 		"1 1:00 file_change: " + cut + ", 10 bytes\n2 2:00 file_change: " + cut + ", 12 bytes\nsteps 1 to 2 of 2",
 		"session 2 of 2 (s2), attempt 2, model coding-frontier: pushed, commit abc123\nstarted because: the previous session ended without a push\n" +
 			"started 2026-10-11 10:13 UTC, took 27 min\n" +
-			"summary: added the p95\n" + s2Cost + "files changed: " + cut + " (1)\ndiff: none\n2 steps",
+			"summary: added the p95\n" + s2Cost + trTotals + "files changed: " + cut + " (1)\ndiff: none\n2 steps",
 	})
 }
 

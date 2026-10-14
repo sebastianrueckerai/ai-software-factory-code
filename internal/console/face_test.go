@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // faceOf is the face of card id: the first card article in section that
@@ -117,6 +118,32 @@ func TestCardFaceSpend(t *testing.T) {
 		if !strings.Contains(css, rule) {
 			t.Errorf("console.css lacks %s", rule)
 		}
+	}
+}
+
+// The calls line beside the spend: the task's call rows summed — its
+// tokens to date, prompt, cached and output, and the modeled
+// pay-as-you-go cost of them (never money billed, roadmap 206); a card
+// without call rows shows none.
+func TestCardFaceCalls(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-calls", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "calls", BudgetEUR: 5, SpentEUR: 1.2},
+		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no calls", BudgetEUR: 5, SpentEUR: 1.2})
+	r.ledger.calls = map[string][]policy.ModelCall{
+		"t-calls": {
+			{Ref: "coding-cheap", EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000, OutputTokens: 1200}},
+			{Ref: "coding-frontier", EUR: 0.0240, Usage: policy.Usage{PromptTokens: 30000, OutputTokens: 800}},
+		},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := `<span class="spend">€1.20 / €5.00</span> <span class="calls" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">100,000 prompt · 66,000 cached · 2,000 output tokens · €0.0420 modeled</span>`
+	if face := faceOf(t, body, "t-calls"); !strings.Contains(face, want) {
+		t.Errorf("the face lacks its calls line beside the spend:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-none"); strings.Contains(face, `class="calls"`) {
+		t.Errorf("a card without call rows shows a calls line:\n%s", face)
 	}
 }
 

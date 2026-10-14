@@ -1001,6 +1001,19 @@ func (c *Console) callTotals(ctx context.Context, each func(func(*card))) {
 	each(func(k *card) { k.CallsText = callsLine(totals[k.ID]) })
 }
 
+// callsLine is a task's call rows summed on one line — its tokens to
+// date, prompt, cached and output, and the modeled pay-as-you-go cost of
+// them (roadmap 206: never money billed) — "" on a task without call
+// rows. The card face shows it beside its spend; the session and plan
+// reads carry the same line.
+func callsLine(t policy.CallTotals) string {
+	if t == (policy.CallTotals{}) {
+		return ""
+	}
+	return commas.Sprintf("%d prompt · %d cached · %d output tokens · €%.4f modeled",
+		t.Prompt, t.Cached, t.Output, t.ModeledEUR)
+}
+
 // boardOf is the board of one project, f.Project or else the first the
 // viewer writes, narrowed to f.Accent ("" every accent), as the session's
 // human sees it. The five columns are the default, the human lane folded
