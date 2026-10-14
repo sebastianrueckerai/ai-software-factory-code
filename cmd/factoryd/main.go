@@ -351,6 +351,10 @@ func main() {
 	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
 		Kube: kube, Namespace: kube.Namespace(),
+		// a signal card's filing pins the deployed build's commit as its
+		// reproduction base (roadmap 194), from the rolls this factoryd
+		// records of its own Deployments
+		Rolls:     store,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))

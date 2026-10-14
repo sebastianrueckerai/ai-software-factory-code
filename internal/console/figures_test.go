@@ -54,7 +54,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 			got[k.ID] = [2]string{k.Stage, k.StageAge}
 		}
 	}
-	want := map[string][2]string{"t-run": {"building", "23 min"}, "t-close": {"building", "0 min"}, "t-planning": {"planning", "8 min"},
+	want := map[string][2]string{"t-run": {"building", "23 min"}, "t-close": {"building", "under a minute"}, "t-planning": {"planning", "8 min"},
 		"t-rev": {"verifying", "6 min"}, "t-queue": {"", ""}, "t-deps": {"", ""}, "t-done": {"", ""}, "t-fail": {"", ""}, "t-back": {"", ""}}
 	for id, w := range want {
 		if got[id] != w {

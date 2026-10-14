@@ -619,13 +619,15 @@ func TestWorkflowHealedWaitingPosterWithAnAnswerResumes(t *testing.T) {
 
 // The second review round is given the first review and asked which of its
 // findings the new head addressed; the timeline counts the round (ruling
-// 177).
+// 177). An adjudication the first review carries (roadmap 192) reaches the
+// model nowhere: its overrule is the human's, not the model's to weigh.
 func TestModelReviewSecondRoundCarriesTheFirst(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/slug.go b/slug.go\n"}
 	r, _, objects := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"the flag is checked now","findings":[],"strict_improvement":true}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"},
+		Adjudicated: map[string]Adjudication{"main.go: check the flag": {By: "sebastian", Why: "overruled"}}}
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, []Review{first})
 	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" {
 		t.Fatalf("review = %+v", rv)
@@ -635,6 +637,9 @@ func TestModelReviewSecondRoundCarriesTheFirst(t *testing.T) {
 	user, _ := msgs[1].(map[string]any)["content"].(string)
 	if !strings.Contains(user, `"earlier_reviews": [`) || !strings.Contains(user, `"main.go: check the flag"`) {
 		t.Fatalf("review input lacks the first review: %s", user)
+	}
+	if strings.Contains(user, "adjudicated") || strings.Contains(user, "overruled") {
+		t.Fatalf("review input carries the adjudication: %s", user)
 	}
 	if !strings.Contains(system, "which of their findings the new head addressed") {
 		t.Fatalf("prompt = %s", system)

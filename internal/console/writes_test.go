@@ -270,7 +270,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	closeForm := `<form method="post" action="/tasks/t-a/close" hx-post="/tasks/t-a/close" hx-target="#board" hx-swap="outerHTML" ` +
 		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">` +
+		`<input type="hidden" name="view" value="wide">` +
 		`<button type="submit" class="deny" aria-label="Close #21">Close</button></form>`
 	if face := faceOf(t, body, "t-a"); !strings.Contains(face, closeForm) {
 		t.Errorf("the backlog card's face =\n%s\nwant it to hold\n%s", face, closeForm)
