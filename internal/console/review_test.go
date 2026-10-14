@@ -56,8 +56,11 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">20 min</span>`) {
-		t.Errorf("the face counts the stage from the admission, not the newest status row:\n%s", face)
+	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">4 h 0 min</span>`) {
+		t.Errorf("the face lacks the card's age beside its stage (C11):\n%s", face)
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {
+		t.Errorf("the drawer counts the stage from the admission, not the newest status row:\n%s", drawer)
 	}
 }
 
@@ -134,5 +137,41 @@ func TestNoInlineStyle(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `<span class="gauge"><meter min="0" max="100" value="`) {
 		t.Errorf("the strip's gauge is not a meter")
+	}
+}
+
+// The ticker keeps the last day's events, newest first, and never
+// scrolls through old days beside today's; a project quiet for a day
+// keeps its newest five, so the ticker never stands empty.
+func TestTickerKeepsTheLastDay(t *testing.T) {
+	now := time.Date(2026, 10, 14, 15, 0, 0, 0, time.UTC)
+	at := func(h float64) factoryd.Event {
+		return factoryd.Event{At: now.Add(-time.Duration(h * float64(time.Hour)))}
+	}
+	rows := []factoryd.Event{at(0.5), at(23.9), at(24.1), at(48), at(72), at(96), at(120)}
+	if got := recentTicks(rows, now); len(got) != 2 || got[0].At != rows[0].At || got[1].At != rows[1].At {
+		t.Errorf("a day with two events keeps %d, want the two of the last 24 hours", len(got))
+	}
+	if got := recentTicks(rows[2:], now); len(got) != 5 || got[0].At != rows[2].At || got[4].At != rows[6].At {
+		t.Errorf("a quiet day keeps %d, want the newest five", len(got))
+	}
+	if got := recentTicks(rows[5:], now); len(got) != 2 {
+		t.Errorf("a quiet day with two old events keeps %d, want both", len(got))
+	}
+	if got := recentTicks(nil, now); len(got) != 0 {
+		t.Errorf("no events keep %d", len(got))
+	}
+}
+
+// A span in words: under a minute, minutes, hours and minutes, days and
+// hours.
+func TestMinutesInWords(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		30 * time.Second: "under a minute", 7 * time.Minute: "7 min", 125 * time.Minute: "2 h 5 min",
+		24 * time.Hour: "1 d 0 h", 50 * time.Hour: "2 d 2 h", 100*time.Hour + 59*time.Minute: "4 d 4 h",
+	} {
+		if got := minutes(d); got != want {
+			t.Errorf("minutes(%s) = %q, want %q", d, got, want)
+		}
 	}
 }

@@ -1,10 +1,8 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
-// choice changed) or a card's expanded view in it is open, so a swap of el
-// would wipe or close it; and while the card drawer is open, the board
-// holds still beside it.
+// choice changed) or a fold or a disclosure in it is open, so a swap of el
+// would wipe or close it. The card drawer sits outside the board, so an
+// open drawer does not hold the board's swaps: the ages keep ticking.
 function busy(el) {
-  var drawer = document.getElementById("drawer");
-  if (drawer && !drawer.hidden) return true;
   if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
   if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
   if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
@@ -78,8 +76,8 @@ function offerLanes() {
 }
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
-  // the board's project and accent show at once
-  if (e.target.id === "project-filter" || e.target.id === "accent-filter") e.target.form.submit();
+  // the board's project shows at once
+  if (e.target.id === "project-filter") e.target.form.submit();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
