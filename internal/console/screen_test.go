@@ -89,8 +89,14 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
 		}
-		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>") {
-			t.Errorf("the header of %s lacks the count %s", title, counts[title])
+		// the head, then the menu on the three columns that have one (C13),
+		// then the body that alone scrolls (never sideways)
+		next := "<div class=\"cards\">"
+		if title != "Needs you" {
+			next = `<details class="col-menu">`
+		}
+		if !strings.Contains(body, ">"+title+` <span class="count">`+counts[title]+"</span></h3>\n"+next) || !strings.Contains(col(t, body, title), `<div class="cards">`) {
+			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
 			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {
@@ -102,7 +108,7 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		t.Error("the five columns show another project's card, the human lane or a lane column")
 	}
 	needs := col(t, body, "Needs you")
-	for _, want := range []string{`<section class="column" aria-labelledby="col-0" id="needs-you">`, `action="/tasks/t-esc/answer"`,
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`, `action="/tasks/t-esc/answer"`,
 		`<input type="hidden" name="back" value="/?project=ai-software-factory-code">`, `action="/approvals/4/approve"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
@@ -157,7 +163,7 @@ func TestStatusLineFigures(t *testing.T) {
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
 	gauge := func(pct int) string {
-		return fmt.Sprintf(`<span class="gauge" role="meter" aria-label="Spend of the month cap" aria-valuemin="0" aria-valuemax="100" aria-valuenow="%d"><i style="width:%d%%"></i></span><span class="pct">%d%%</span>`, pct, pct, pct)
+		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span><span class="pct">%d%%</span>`, pct, pct, pct)
 	}
 	code := `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
@@ -165,7 +171,7 @@ func TestStatusLineFigures(t *testing.T) {
 <a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
 <a href="/costs" class="cell spend" ` + title + `><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a>
 `
-	for _, query := range []string{"", "?view=wide", "?accent=teal"} {
+	for _, query := range []string{"", "?view=wide"} {
 		if got := line(query); got != code {
 			t.Errorf("board%s: status line\n%s\nwant\n%s", query, got, code)
 		}
@@ -384,7 +390,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 	}
 	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
 		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`,
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`,
 		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the wide view lacks %s", want)
@@ -395,7 +401,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 		t.Error("the wide view's poll answers the five columns")
 	}
 	if frag := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(frag,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`) {
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
 		t.Errorf("the card under the wide view's query keeps no view on its forms: %s", frag)
 	}
 	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
@@ -427,7 +433,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "Fix the cache.", IssueNumber: 11})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`<aside id="drawer" class="drawer" aria-label="The card" hidden></aside>`,
-		`<strong class="title" title="Fix the cache"><a href="#card=t-run" class="open">Fix the cache</a></strong>`,
+		`<strong class="title" title="Fix the cache."><a href="#card=t-run" class="open">Fix the cache.</a></strong>`,
 		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
 		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
@@ -440,7 +446,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	for path, wants := range map[string][]string{
 		"/static/console.js": {`if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;`, `e.key === "Escape"`,
 			`e.key === "w"`, `e.key === "?"`, `window.addEventListener("hashchange", showDrawer);`, `"/drawer"`,
-			`if (drawer && !drawer.hidden) return true;`},
+			`if (el.querySelector("details[open]:not(.pulse-fold)")) return true;`},
 		"/static/theme.js": {`localStorage.getItem("view") !== "wide"`, `location.replace("/?" + q + location.hash);`},
 	} {
 		js := r.do(httptest.NewRequest(http.MethodGet, path, nil)).Body.String()
@@ -825,7 +831,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-30"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
-	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value="">`
+	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	if strings.Count(card, filter) != 2 {
 		t.Errorf("the merge card's approve and deny forms do not both carry the filter:\n%s", card)
 	}
@@ -836,7 +842,7 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}{
 		{"/approvals/30/approve", url.Values{"project": {"linkshort"}}, "/?project=linkshort"},
 		{"/approvals/3/deny", url.Values{"project": {"ai-software-factory-code"}, "view": {"wide"}, "note": {"not now"}}, "/?project=ai-software-factory-code&view=wide"},
-		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}, "accent": {"teal"}}, "/?accent=teal&project=ai-software-factory-code"},
+		{"/approvals/4/approve", url.Values{"project": {"ai-software-factory-code"}}, "/?project=ai-software-factory-code"},
 	} {
 		tc.form.Set("csrf", s.csrf)
 		if rec := r.do(post(tc.path, tc.form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != tc.want {
@@ -869,5 +875,235 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}
+	}
+}
+
+// The four columns hold their cards by arrival, the newest on top
+// (Sebastian, 2026-10-14): Queued by filing, In progress by admission,
+// Done by finishing, whatever order the store gave them; a card without
+// the time keeps its filing time, and the store's order holds among
+// equals. The wide view keeps the store's order, where the fake, as
+// the store since #762, ranks the running cards by rank and id.
+func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	task := func(id, status string, filed time.Duration) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed)}
+	}
+	run := func(id string, filed, admitted time.Duration) factoryd.Task {
+		k := task(id, "running", filed)
+		k.AdmittedAt = ago(admitted)
+		return k
+	}
+	done := func(id, status string, filed, finished time.Duration) factoryd.Task {
+		k := task(id, status, filed)
+		if finished > 0 {
+			k.FinishedAt = ago(finished)
+		}
+		return k
+	}
+	// the store's order: Queued oldest first, In progress and Done as ranked
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: task("t-q-old", "queued", 3*time.Hour)}, {Task: task("t-q-new", "queued", time.Hour)}, {Task: task("t-q-mid", "waiting-deps", 2*time.Hour), WaitingOn: "#9"},
+		{Task: run("t-r-first", 6*time.Hour, 5*time.Hour)}, {Task: run("t-r-last", 4*time.Hour, 10*time.Minute)}, {Task: run("t-r-mid", 5*time.Hour, time.Hour)},
+		{Task: done("t-d-old", "done", 9*time.Hour, 2*time.Hour)}, {Task: done("t-d-new", "done", 8*time.Hour, 10*time.Minute)},
+		{Task: done("t-f-none", "failed", 90*time.Minute, 0)}, {Task: done("t-d-mid", "closed", 7*time.Hour, time.Hour)},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := map[string][]string{
+		"Queued":      {"t-q-new", "t-q-mid", "t-q-old"},
+		"In progress": {"t-r-last", "t-r-mid", "t-r-first"},
+		"Done":        {"t-d-new", "t-d-mid", "t-f-none", "t-d-old"},
+	}
+	for title, items := range want {
+		if got := columnItems(t, body, title); !slices.Equal(got, items) {
+			t.Errorf("%s holds %v, want %v", title, got, items)
+		}
+	}
+	// the wide view keeps the store's order, which since #762 puts the
+	// newest finished first (the rig's fake sorts as the store does)
+	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if got := columnItems(t, wide, "Running"); !slices.Equal(got, []string{"t-r-first", "t-r-last", "t-r-mid"}) {
+		t.Errorf("the wide view's Running holds %v, want the store's order", got)
+	}
+}
+
+// The find (C13) narrows every column to its terms and the head reads
+// "n of m": a word against what the face says (the ref, the title, the
+// question), is:, status: and by: against the facts, every term matching;
+// an emptied column says "none match" and the Needs you column keeps its
+// amber (lit) from its whole count. The forms, the board's query and the
+// clear link carry q, and the status panel lists the whole project.
+func TestFindNarrowsTheColumns(t *testing.T) {
+	r, ck := screenRig(t)
+	page := func(q string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?q="+url.QueryEscape(q), nil), ck).Body.String()
+	}
+	for _, c := range []struct {
+		q, title string
+		items    []string
+		count    string
+	}{
+		{"t-run", "In progress", []string{"t-run"}, "<b>1</b> of 3"},
+		{"t-run", "Queued", nil, "<b>0</b> of 4"},
+		{"t-run", "Needs you", nil, "<b>0</b> of 5"},
+		{"is:failed", "Done", []string{"t-fail"}, "<b>1</b> of 3"},
+		{"is:blocked", "Queued", []string{"t-deps"}, "<b>1</b> of 4"},
+		{"status:queued", "Queued", []string{"t-queue"}, "<b>1</b> of 4"},
+		{"by:alice", "Queued", []string{"t-other"}, "<b>1</b> of 4"},
+		{"which region", "Needs you", []string{"t-esc"}, "<b>1</b> of 5"},
+		{"rotate key", "Needs you", []string{"t-human"}, "<b>1</b> of 5"},
+		{"nothing-here", "Done", nil, "<b>0</b> of 3"},
+	} {
+		body := page(c.q)
+		if got := columnItems(t, body, c.title); !slices.Equal(got, c.items) {
+			t.Errorf("q=%q: %s holds %v, want %v", c.q, c.title, got, c.items)
+		}
+		if !strings.Contains(body, ">"+c.title+` <span class="count">`+c.count+"</span></h3>") {
+			t.Errorf("q=%q: the header of %s does not read %s", c.q, c.title, c.count)
+		}
+	}
+	body := page("t-run")
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`,
+		`data-query="?project=ai-software-factory-code&amp;q=t-run"`, `<form class="find on" id="find" role="search" method="get" action="/">`,
+		`<input id="q" name="q" type="text" value="t-run" placeholder="Find: a word, #612, plan:558"`,
+		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("under the find the board lacks %s", want)
+		}
+	}
+	if n := strings.Count(body, `<p class="none-match">none match</p>`); n != 3 {
+		t.Errorf("%d columns say none match, want 3", n)
+	}
+	panel := body[strings.Index(body, "<section><h3>Needs you</h3>"):]
+	panel = panel[:strings.Index(panel, "</section>")]
+	if n := strings.Count(panel, `class="sp-link"`); n != 5 {
+		t.Errorf("the status panel lists %d Needs you items under the find, want the whole 5", n)
+	}
+	asked := page("which region")
+	for _, want := range []string{`<input type="hidden" name="q" value="which region">`, `name="back" value="/?project=ai-software-factory-code&amp;q=which&#43;region"`} {
+		if !strings.Contains(asked, want) {
+			t.Errorf("the escalation's forms lack %s", want)
+		}
+	}
+	plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`<form class="find" id="find"`, `>Needs you <span class="count">5</span></h3>`} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("without a find the board lacks %s", want)
+		}
+	}
+	for _, none := range []string{"find-x", "none match", " of "} {
+		if strings.Contains(col(t, plain, "Done"), none) || none == "find-x" && strings.Contains(plain, none) {
+			t.Errorf("without a find the board shows %q", none)
+		}
+	}
+}
+
+// The filter's query carries the find, trimmed, beside the project and
+// the view.
+func TestFilterQueryCarriesTheFind(t *testing.T) {
+	if got := (boardFilter{Project: "p", View: "wide", Q: "a b"}).query(); got != "?project=p&q=a+b&view=wide" {
+		t.Errorf("query %q", got)
+	}
+	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?q=%20x%20", nil)); got.Q != "x" {
+		t.Errorf("urlFilter trims to %q", got.Q)
+	}
+	if got := (boardFilter{Project: "p", Queued: colFilter{"oldest", "blocked"}, Done: colFilter{Only: "failed"}}).query(); got != "?done-only=failed&project=p&queued=oldest&queued-only=blocked" {
+		t.Errorf("query with the menus %q", got)
+	}
+	if got := urlFilter(httptest.NewRequest(http.MethodGet, "/?queued=sideways&queued-only=plan:x&done-only=failed", nil)); got.Queued != (colFilter{}) || got.Done != (colFilter{Only: "failed"}) {
+		t.Errorf("urlFilter reads unknown choices as %+v %+v", got.Queued, got.Done)
+	}
+}
+
+// The column menus (C13): Queued, In progress and Done take their order
+// and their show from the query, arrival newest first and every card
+// otherwise; the head says the non-default choices under it with a way
+// back and marks its ▾; the forms keep the choices; a value a menu does
+// not offer reads as the default; the show narrows under the find's
+// whole count.
+func TestColumnMenusOrderAndShow(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
+	task := func(id, status, lane string, filed time.Duration) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: lane, Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed), BudgetEUR: 2}
+	}
+	plan := task("t-plan", "done", "plan", 10*time.Hour)
+	plan.IssueNumber, plan.FinishedAt = 7, ago(9*time.Hour)
+	qb := task("t-q-b", "queued", "ready", 3*time.Hour) // from plan #7
+	qb.Parent, qb.Source = "t-plan", factoryd.SourcePlan
+	qc := task("t-q-c", "waiting-deps", "ready", 2*time.Hour)
+	qa := task("t-q-a", "queued", "ready", 30*time.Minute)
+	// build and planning filed inside the stale window, so with no event
+	// they wear no ring; verify is stale and near its budget
+	build := task("t-build", "running", "ready", 25*time.Minute)
+	build.AdmittedAt, build.SpentEUR = ago(20*time.Minute), 0.5
+	verify := task("t-verify", "in-review", "ready", 4*time.Hour)
+	verify.AdmittedAt, verify.SpentEUR = ago(time.Hour), 1.9
+	planning := task("t-planning", "running", "plan", 28*time.Minute)
+	planning.AdmittedAt, planning.SpentEUR = ago(24*time.Minute), 1
+	done := task("t-done", "done", "ready", 8*time.Hour)
+	done.FinishedAt = ago(time.Hour)
+	fail := task("t-fail", "failed", "ready", 7*time.Hour)
+	fail.FinishedAt = ago(30 * time.Minute)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: qa}, {Task: qb}, {Task: qc, WaitingOn: "#9"}, {Task: build}, {Task: verify}, {Task: planning}, {Task: plan}, {Task: done}, {Task: fail}}
+	page := func(query string) string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
+	}
+	for _, c := range []struct {
+		query, title string
+		items        []string
+		count        string
+	}{
+		{"", "Queued", []string{"t-q-a", "t-q-c", "t-q-b"}, "3"},
+		{"?queued=oldest", "Queued", []string{"t-q-b", "t-q-c", "t-q-a"}, "3"},
+		{"?queued=next", "Queued", []string{"t-q-a", "t-q-b", "t-q-c"}, "3"},
+		{"?queued-only=blocked", "Queued", []string{"t-q-c"}, "<b>1</b> of 3"},
+		{"?queued-only=plan:7", "Queued", []string{"t-q-b"}, "<b>1</b> of 3"},
+		{"", "In progress", []string{"t-build", "t-planning", "t-verify"}, "3"},
+		{"?progress=oldest", "In progress", []string{"t-verify", "t-planning", "t-build"}, "3"},
+		{"?progress=stage", "In progress", []string{"t-planning", "t-build", "t-verify"}, "3"},
+		{"?progress=spend", "In progress", []string{"t-verify", "t-planning", "t-build"}, "3"},
+		{"?progress-only=exceptional", "In progress", []string{"t-verify"}, "<b>1</b> of 3"},
+		{"", "Done", []string{"t-fail", "t-done", "t-plan"}, "3"},
+		{"?done=oldest", "Done", []string{"t-plan", "t-done", "t-fail"}, "3"},
+		{"?done-only=failed", "Done", []string{"t-fail"}, "<b>1</b> of 3"},
+		{"?done=sideways&done-only=nothing", "Done", []string{"t-fail", "t-done", "t-plan"}, "3"},
+		{"?q=t-q&queued-only=blocked", "Queued", []string{"t-q-c"}, "<b>1</b> of 3"},
+	} {
+		body := page(c.query)
+		if got := columnItems(t, body, c.title); !slices.Equal(got, c.items) {
+			t.Errorf("%s: %s holds %v, want %v", c.query, c.title, got, c.items)
+		}
+		if !strings.Contains(body, ">"+c.title+` <span class="count">`+c.count+"</span></h3>") {
+			t.Errorf("%s: the header of %s does not read %s", c.query, c.title, c.count)
+		}
+	}
+	body := page("?queued=oldest&queued-only=blocked")
+	for _, want := range []string{
+		`<p class="col-state"><span>oldest first · blocked only</span><a class="col-x" href="/?project=ai-software-factory-code" aria-label="Back to newest first and all"`,
+		`<summary class="on" aria-label="Order and show, Queued: oldest first · blocked only"`,
+		`<input type="radio" name="queued" value="oldest" checked><span>oldest first</span>`,
+		`<input type="radio" name="queued-only" value="blocked" checked><span>blocked only</span>`,
+		`<input type="radio" name="queued-only" value="plan:7"><span>from plan #7</span>`,
+		`data-query="?project=ai-software-factory-code&amp;queued=oldest&amp;queued-only=blocked"`,
+		// the find's form keeps the menus' choices, a menu's form the rest of the filter
+		`<form class="find" id="find" role="search" method="get" action="/"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><label`,
+		`<form method="get" action="/" class="menu-pop"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><fieldset><legend>Order</legend><label><input type="radio" name="done" value="" checked>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("under the Queued choices the board lacks %s", want)
+		}
+	}
+	if n := strings.Count(body, `<p class="col-state">`); n != 1 {
+		t.Errorf("%d state lines, want 1", n)
+	}
+	plain := page("")
+	if strings.Contains(plain, "col-state") || strings.Contains(plain, `<summary class="on"`) || strings.Count(plain, `<details class="col-menu">`) != 3 || strings.Contains(col(t, plain, "Needs you"), "col-menu") {
+		t.Error("by default the board shows a state line, a marked menu, not three menus, or one on Needs you")
 	}
 }

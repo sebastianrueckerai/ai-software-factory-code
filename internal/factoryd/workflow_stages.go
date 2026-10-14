@@ -47,6 +47,13 @@ const screeningAsks = "The screening finds this issue suspect: "
 // noVerdict heads the card finding of a review that gave no verdict.
 const noVerdict = "the review gave no verdict: "
 
+// stepAdjudicated records an approval's overrule of one review finding
+// (versionAdjudicated, roadmap 192).
+const stepAdjudicated = "finding_adjudicated"
+
+// reviewHistory opens the history lines of the review stage's findings.
+const reviewHistory = policy.StageReview + ", round "
+
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
@@ -73,6 +80,7 @@ func (t *taskRun) stages(commit string) verdict {
 	reviewed := false
 	var capped []string // why findings meant for the agent go to the card
 	var card []string
+	var covered []string // the review findings this pass's card holds (versionAdjudicated)
 	for _, s := range t.cfg.Stages {
 		switch s.Name {
 		case policy.StageScreening:
@@ -83,7 +91,7 @@ func (t *taskRun) stages(commit string) verdict {
 			}
 		case policy.StageApproval:
 			if !t.queued() {
-				return t.approval(commit, g, review, reviewed, capped, card)
+				return t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
 			findings, v, stop := t.queueTurn(&commit, &g, &review)
 			if !stop && len(findings) > 0 {
@@ -91,7 +99,7 @@ func (t *taskRun) stages(commit string) verdict {
 				v, stop = t.onFindings(t.cfg.Stages[i], findings, &capped, &card)
 			}
 			if !stop {
-				v = t.approval(commit, g, review, reviewed, capped, card)
+				v = t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
 			t.leaveQueue(cmp.Or(v.reason, v.final))
 			return v
@@ -112,8 +120,34 @@ func (t *taskRun) stages(commit string) verdict {
 		if len(findings) == 0 {
 			continue
 		}
+		if s.Name == policy.StageReview && s.OnFindings == policy.FindingsAgent && t.adjudicated >= versionAdjudicated && !t.rolling {
+			// a review that repeats a finding an approval adjudicated (the
+			// approver overruled it) bounces no session for it (roadmap
+			// 192): the repeat goes on the card as evidence
+			var fresh []string
+			for _, f := range findings {
+				if t.overruled(f) {
+					card = append(card, s.Name+": "+f)
+					covered = appendNew(covered, f)
+					continue
+				}
+				fresh = append(fresh, f)
+			}
+			findings = fresh
+			if len(findings) == 0 {
+				continue
+			}
+		}
 		if v, stop := t.onFindings(s, findings, &capped, &card); stop {
 			return v
+		}
+		if s.Name == policy.StageReview && t.adjudicated >= versionAdjudicated {
+			// the card holds these findings (on_findings sent them there
+			// at the cap or for a human): an approval over them
+			// adjudicates them
+			for _, f := range findings {
+				covered = appendNew(covered, f)
+			}
 		}
 	}
 	return verdict{final: "failed", reason: "the workflow has no approval stage"}
@@ -121,16 +155,76 @@ func (t *taskRun) stages(commit string) verdict {
 
 // approval takes the head through the approval stage: the card holds the
 // findings capped for a human (with the history) and every other card
-// finding; reviewed: the last review ran in this pass.
-func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card []string) verdict {
+// finding; reviewed: the last review ran in this pass. covered: the
+// review findings the card shows, which an approval over it adjudicates
+// (versionAdjudicated).
+func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	earlier := t.reviews
 	if reviewed {
 		earlier = t.reviews[:len(t.reviews)-1]
 	}
 	if len(capped) > 0 {
 		card = append(append(capped, t.history...), card...)
+		if t.adjudicated >= versionAdjudicated {
+			for _, f := range historyReviewFindings(t.history) {
+				covered = appendNew(covered, f)
+			}
+		}
 	}
-	return t.approve(commit, g, review, slices.Clone(earlier), card)
+	return t.approve(commit, g, review, slices.Clone(earlier), card, covered)
+}
+
+// overruled: whether an approval has adjudicated the review finding f
+// (versionAdjudicated, roadmap 192).
+func (t *taskRun) overruled(f string) bool {
+	return slices.ContainsFunc(t.reviews, func(r Review) bool {
+		_, ok := r.Adjudicated[f]
+		return ok
+	})
+}
+
+// historyReviewFindings are the review stage's findings the history holds
+// (a capped card shows them), as findings, not as lines.
+func historyReviewFindings(history []string) (out []string) {
+	for _, h := range history {
+		if rest, ok := strings.CutPrefix(h, reviewHistory); ok {
+			if _, f, ok := strings.Cut(rest, ": "); ok {
+				out = append(out, f)
+			}
+		}
+	}
+	return out
+}
+
+// adjudicate records an approval's overrule on the findings its card
+// covered (versionAdjudicated, roadmap 192): who approved, why and when,
+// on the review that found them and on the timeline, so a later review
+// that repeats one bounces no session for it and a healed run rebuilds
+// the overrule. A covered line no review's finding backs (the no-verdict
+// note, a summary the review gave without findings) adjudicates nothing.
+func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
+	if len(covered) == 0 || t.adjudicated < versionAdjudicated {
+		return
+	}
+	adj := Adjudication{By: sig.Author, Why: cmp.Or(strings.TrimSpace(sig.Body), consoleApproved), When: workflow.Now(t.ctx)}
+	for _, f := range covered {
+		if !slices.ContainsFunc(t.reviews, func(r Review) bool { return slices.Contains(r.Findings, f) }) {
+			continue
+		}
+		for i := range t.reviews {
+			if !slices.Contains(t.reviews[i].Findings, f) {
+				continue
+			}
+			if t.reviews[i].Adjudicated == nil {
+				t.reviews[i].Adjudicated = map[string]Adjudication{}
+			}
+			t.reviews[i].Adjudicated[f] = adj
+		}
+		detail := map[string]any{"finding": f, "by": adj.By, "why": adj.Why}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, stepAdjudicated, detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record the adjudicated finding", "task", t.taskID, "error", err)
+		}
+	}
 }
 
 // onFindings sends stage s's findings where its on_findings says: stop
@@ -472,8 +566,10 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 // findings for a human, else the card with why, and the wait for a
 // human's approval; the merge stage follows in either. The head must be
 // green first: headGreen sends a red or pending one back to the agent
-// before any request (versionApprovalGreen).
-func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card []string) verdict {
+// before any request (versionApprovalGreen). covered: the review findings
+// the card shows, which an approval over it adjudicates
+// (versionAdjudicated).
+func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	if v, stop := t.headGreen(commit, &card); stop {
 		return v
 	}
@@ -506,7 +602,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	t.approvalRequested = workflow.Now(t.ctx)
-	return t.awaitApproval(commit)
+	return t.awaitApproval(commit, covered)
 }
 
 // screen runs the screening stage before the first session: the task's

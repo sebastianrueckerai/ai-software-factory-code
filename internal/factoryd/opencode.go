@@ -679,7 +679,11 @@ func toolsLine(tools []string) string {
 // the task's tools hold them.
 func workGuide(tools []string) string {
 	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
-		"holding the shell command that reproduced it. If you fix a fault you could not reproduce exactly, " +
+		"holding the shell command that reproduced it: the factory runs it at the reproduction base — the commit that was live when the alert fired, pinned at the card's filing — " +
+		"where it must fail, and on your change, where it must pass. " +
+		"When your change is a guard for a condition main no longer has (main already holds the fixed condition, so no tree shows the bug), open the block as " +
+		"```repro-in-test instead: a command that constructs the pre-fix state within the test itself, which the factory runs on your change alone, the base the head. " +
+		"If you fix a fault you could not reproduce exactly, " +
 		"put a line \"not_reproduced: <the fault you found and why the change fixes it>\" in your last message. "
 	if slices.Contains(tools, policy.ToolRequestInfo) {
 		g += "If you cannot reproduce it and find no fault, call request_info instead of guessing. "

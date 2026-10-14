@@ -55,6 +55,14 @@ type NamespaceLabeler interface {
 	NamespaceLabel(ctx context.Context, name, key string) (string, error)
 }
 
+// DeployedCommitReader reads the commit a Deployment of the factory's own
+// namespace runs (PGStore over RollWatcher's rolls rows): the tree that
+// was live when an alert on it fired. An intake wired with one pins a
+// signal card's reproduction base at filing (roadmap 194).
+type DeployedCommitReader interface {
+	DeployedCommit(ctx context.Context, deployment string) (string, bool, error)
+}
+
 // AlertBook is what the alert intake keeps: the task rows it files and one
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
@@ -90,6 +98,12 @@ type AlertIntake struct {
 	// error on this rule rather than dereference a nil reader.
 	Kube      DeploymentReader
 	Namespace string
+	// Rolls reads the deployed build's commit of a Deployment of the
+	// factory's own namespace (Namespace), from the rolls the same
+	// factoryd records: a signal card's filing pins it as the task's
+	// reproduction base (roadmap 194). nil = the base is main's head at
+	// the filing.
+	Rolls DeployedCommitReader
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
 	// project's own environment hosts, allowed unmangled in a posted alert.
 	LinkHosts func() []string
@@ -329,12 +343,19 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return fmt.Errorf("base sha: %w", err)
 	}
+	base, err := in.reproBase(ctx, a, ns, sha)
+	if err != nil {
+		return err
+	}
 	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
+		// the reproduction runs against the tree that was live when the
+		// alert fired, even though main has moved on (roadmap 194)
+		ReproBase: base,
 		// the card's pre-check finds its alert by fingerprint before its
 		// first model call (roadmap 181, Stage 18 item 3.12)
 		AlertFingerprint: a.Fingerprint,
@@ -352,11 +373,36 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if err != nil {
 		return err
 	}
-	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": ref.Number}); err != nil {
+	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": ref.Number, "repro_base": t.ReproBase}); err != nil {
 		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, ref.Number, err)
 	}
 	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
+}
+
+// reproBase is the reproduction base a signal card pins at its filing
+// (roadmap 194): the commit that was live when the alert fired — the
+// deployed build's, when the intake can read the roll of the Deployment
+// the alert names in the factory's own namespace — else main's head at
+// the filing. GateReproduction runs the base against this tree even
+// though main has moved on; SetTaskSHA's session-start stamping of the
+// branch base never touches it.
+func (in *AlertIntake) reproBase(ctx context.Context, a SigNozAlert, ns, mainHead string) (string, error) {
+	if in.Rolls == nil || ns != in.Namespace {
+		return mainHead, nil
+	}
+	deployment := alertService(a.Labels)
+	if deployment == "" {
+		return mainHead, nil
+	}
+	sha, ok, err := in.Rolls.DeployedCommit(ctx, deployment)
+	if err != nil {
+		return "", fmt.Errorf("deployed commit of %s: %w", deployment, err)
+	}
+	if !ok {
+		return mainHead, nil
+	}
+	return sha, nil
 }
 
 // hostsFor is Outbound's hosts argument for an alert on project p: the
@@ -408,6 +454,12 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 	return p, p.Active() && slices.Contains(p.Namespaces, ns), nil
 }
 
+// alertService is the alert's service label: the first of service,
+// service.name, k8s.deployment.name and deployment, one line.
+func alertService(labels map[string]string) string {
+	return oneLine(cmp.Or(labels["service"], labels["service.name"], labels["k8s.deployment.name"], labels["deployment"]))
+}
+
 // alertIssue is the bug issue of alert a: title "alert: <name> on
 // <service> in <ns>" (no "on" without a service) and a body with the
 // firing time, the SigNoz link, the value and annotations and the labels,
@@ -415,7 +467,7 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 // is sanitised Outbound: hosts is the links left unmangled.
 func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
 	name, on := oneLine(a.Labels["alertname"]), ""
-	if s := oneLine(cmp.Or(a.Labels["service"], a.Labels["service.name"], a.Labels["k8s.deployment.name"], a.Labels["deployment"])); s != "" {
+	if s := alertService(a.Labels); s != "" {
 		on = " on service " + s
 		title = "alert: " + name + " on " + s + " in " + ns
 	} else {

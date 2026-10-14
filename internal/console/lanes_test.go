@@ -197,7 +197,7 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<form method="post" action="/cards/t-c2/lane" hx-post="/cards/t-c2/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="ready">` +
-			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide"><input type="hidden" name="lane" value="ready">`,
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><input type="hidden" name="lane" value="ready">`,
 		`<button type="submit" aria-label="Move #2 to lane ready">→ Ready</button>`,
 		`data-lane="backlog"`, `data-lane="plan"`,
 	} {
@@ -405,7 +405,7 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		}
 	}
 	if filtered := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String(), "Approvals"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`) != 3 {
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 3 {
 		t.Errorf("the plan card's three forms do not keep the filter:\n%s", filtered)
 	}
 
@@ -737,7 +737,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	failed := col(t, body, "Done")
 	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#board" hx-swap="outerHTML" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
-		`<input type="hidden" name="accent" value=""><button type="submit" aria-label="Retry #7">Retry</button></form>`
+		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
 		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
 	}
@@ -826,12 +826,12 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-plan",
 		Project: "sf/code", Status: "pending", Spec: json.RawMessage(`{"revision":4,"sha256":"11e3f66aa"}`)})
 	equal(t, "the plan card", reads(t, r, g, "card", `{"task_id":"t-plan"}`), []string{
-		`#22 t-plan "Uptime checker" waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
+		`#22 t-plan "Uptime checker." waiting-human (waits on a human: an answer, an approval or a decision)` + "\n" +
 			"lane plan of process spec\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
 			"plan request 20 pending for revision 4\nplan: see plan\nobjective: Uptime checker."})
 
 	const pinned = `{"task_id":"t-plan","revision":4,"sha256":"11e3f66aa"}`
-	proposal := `proposal {"arguments":` + pinned + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 4 sha 11e3f66…","id":"TOKEN","tool":"accept_plan"}`
+	proposal := `proposal {"arguments":` + pinned + `,"description":"Accept a plan, #22 t-plan \"Uptime checker.\", revision 4 sha 11e3f66…","id":"TOKEN","tool":"accept_plan"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "accept_plan", `{"task_id":"t-plan"}`)
 	equal(t, "the proposal", proposed, []string{proposal, `done {}`})
 	equal(t, "Do it", done, ran("accept_plan", pinned, "Accepted revision 4 of plan #22; factoryd files its cards."))
@@ -850,7 +850,7 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	const stale = `{"task_id":"t-plan","revision":3,"sha256":"3c0ffee11"}`
 	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", stale)
 	equal(t, "a stale revision", [][]string{proposed, done}, [][]string{
-		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
+		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker.\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
 		{`tool {"arguments":` + stale + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 4; reload"}`, `done {}`}})
 
 	ck, s := r.loggedIn(t)

@@ -175,7 +175,7 @@ func TestChatCardInFull(t *testing.T) {
 	// 52,000, the lower of the middle two 40,000; 130,000 of 168,651 cached
 	// (77.1%); 0.0072 EUR over four
 	equal(t, "the card reads", reads(t, r, g, "card", `{"task_id":"t-r"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`), []string{
-		`#11 t-r "Speed up the board" running (runs an agent session), gate session (an agent works in a sandbox), €1.23 of €5.00` + "\n" +
+		`#11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox), €1.23 of €5.00` + "\n" +
 			"lane ready of process maintenance\nissue https://git.example/sf/code/issues/11\nsessions: 1 of 3\n" +
 			"cost: coding-cheap, 4 calls, prompt tokens per call median 40,000 max 52,000, 77% cached, 0.0018 EUR per call\n" + s2Cost +
 			"pull request #9 https://git.example/sf/code/pulls/9, head c0ffee1, open\n" +

@@ -837,6 +837,71 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
 }
 
+// acceptanceEvidence is card id's newest acceptance green (roadmap 208):
+// the row factoryd recorded when one of its sessions ran one of its
+// plan's acceptance commands and it exited 0, as AcceptanceEvidence says
+// it, and whether there is one. Only green runs are recorded, so a green
+// row is evidence; the newest by id wins, whatever order the store reads
+// its rows back in.
+func (c *Console) acceptanceEvidence(ctx context.Context, id string) (string, bool) {
+	rows, err := c.cfg.Events.TaskEvents(ctx, id, 200)
+	if err != nil {
+		log.Printf("console: task %s's events: %v", id, err)
+		return "", false
+	}
+	var best *factoryd.Event
+	for i := range rows {
+		e := &rows[i]
+		if e.Kind != factoryd.EventAcceptancePassed {
+			continue
+		}
+		if exit, _ := e.Detail["exit"].(float64); exit != 0 {
+			continue
+		}
+		if best == nil || e.ID > best.ID {
+			best = e
+		}
+	}
+	if best == nil {
+		return "", false
+	}
+	command, _ := best.Detail["command"].(string)
+	session, _ := best.Detail["session"].(string)
+	if command == "" {
+		return "", false
+	}
+	return factoryd.AcceptanceEvidence(command, session), true
+}
+
+// doCloseAcceptance closes card id done on its acceptance evidence
+// (roadmap 208): a card waiting on a human whose event trail shows one of
+// its plan's acceptance commands run green in a session needs no answer,
+// no further session and no merge — its work is its own evidence. The
+// route's access rule admits only the project's approvers, as Fund's does.
+func (c *Console) doCloseAcceptance(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if t.Status != "waiting-human" {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "closed on its acceptance evidence")
+	}
+	evidence, ok := c.acceptanceEvidence(ctx, t.ID)
+	if !ok {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d shows no acceptance green: no session of it ran one of its plan's acceptance commands with exit 0.", t.IssueNumber))
+	}
+	if c.cfg.CloseCardDone == nil {
+		return "", refuse(http.StatusConflict, "The acceptance close is not wired; see the factoryd log.")
+	}
+	if err := c.cfg.CloseCardDone(ctx, t.ID, a.s.user, evidence); err != nil {
+		log.Printf("console: %s closes %s on its acceptance: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusConflict, "The card could not be closed; see the factoryd log.")
+	}
+	log.Printf("console: %s closed %s done on %s via %s", a.s.user, t.ID, evidence, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"evidence": evidence})
+	return fmt.Sprintf("Closed #%d done: %s.", t.IssueNumber, evidence), nil
+}
+
 // doSplit has a planner split card id's large pull request into 2 or 3
 // cards, which factoryd files and starts once its check passes: the
 // member's split is their acceptance (ruling 277).

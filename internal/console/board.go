@@ -22,6 +22,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 var funcs = template.FuncMap{
@@ -137,6 +138,283 @@ func waitingSince(bt factoryd.BoardTask) time.Time {
 	return bt.CreatedAt
 }
 
+// arrivedAt is when k arrived in its column (Sebastian, 2026-10-14, the
+// default order, newest first): its admission in progress, its finishing
+// when final, else its filing. Needs you stays oldest waiting first.
+func arrivedAt(k card) time.Time {
+	switch {
+	case slices.Contains([]string{"running", "closing", "in-review"}, k.Status) && k.AdmittedAt != nil:
+		return *k.AdmittedAt
+	case factoryd.Final(k.Status) && k.FinishedAt != nil:
+		return *k.FinishedAt
+	}
+	return k.CreatedAt
+}
+
+// arrange applies the column menus (C13) to the four columns after the
+// find: each of Queued, In progress and Done takes its order, then its
+// show, and gets its menu; the show narrows below the whole count the
+// find left, so the head reads "n of m".
+func arrange(d *boardData, f boardFilter) {
+	for _, m := range colMenus {
+		col, cf := &d.Columns[m.Col], f.col(m.Name)
+		col.Cards = ordered(col.Cards, cf.Order)
+		if cf.Only != "" {
+			col.Cards = slices.DeleteFunc(col.Cards, func(k card) bool { return !shows(k, cf.Only) })
+		}
+		col.Menu = menuOf(m, cf, f, d.cols()[m.Col].Cards)
+	}
+}
+
+// ordered is cards in the menu's order, a clone: arrival newest first by
+// default, oldest first, next up (the store's rank), by stage (planning,
+// building, verifying) or by spend, the last two newest first among
+// equals.
+func ordered(cards []card, order string) []card {
+	out := slices.Clone(cards)
+	newest := func(a, b card) int { return arrivedAt(b).Compare(arrivedAt(a)) }
+	switch order {
+	case "next":
+	case "oldest":
+		slices.SortStableFunc(out, func(a, b card) int { return arrivedAt(a).Compare(arrivedAt(b)) })
+	case "stage":
+		slices.SortStableFunc(out, newest)
+		slices.SortStableFunc(out, func(a, b card) int { return cmp.Compare(stageRank(a.Stage), stageRank(b.Stage)) })
+	case "spend":
+		slices.SortStableFunc(out, newest)
+		slices.SortStableFunc(out, func(a, b card) int { return cmp.Compare(b.SpentEUR, a.SpentEUR) })
+	default:
+		slices.SortStableFunc(out, newest)
+	}
+	return out
+}
+
+func stageRank(stage string) int {
+	switch stage {
+	case "planning":
+		return 0
+	case "building":
+		return 1
+	case "verifying":
+		return 2
+	}
+	return 3
+}
+
+// shows is whether k stays under the menu's show only.
+func shows(k card, only string) bool {
+	switch only {
+	case "blocked":
+		return k.Blocked > 0 || k.WaitingOn != ""
+	case "exceptional":
+		return k.Stale || k.Provider || k.NearBudget || k.Retrying || k.Held
+	case "failed":
+		return k.Status == "failed"
+	}
+	if n, ok := strings.CutPrefix(only, "plan:"); ok {
+		return strconv.FormatInt(k.PlanIssue, 10) == n
+	}
+	return true
+}
+
+// menuOf is the column's menu for the head: Queued's shows gain one per
+// plan among whole, the column's cards before the show.
+func menuOf(m menuSpec, cf colFilter, f boardFilter, whole []card) *colMenu {
+	onlys := slices.Clone(m.Onlys)
+	if m.Name == "queued" {
+		var plans []int64
+		for _, k := range whole {
+			if k.PlanIssue > 0 && !slices.Contains(plans, k.PlanIssue) {
+				plans = append(plans, k.PlanIssue)
+			}
+		}
+		slices.Sort(plans)
+		for _, p := range plans {
+			onlys = append(onlys, option{fmt.Sprintf("plan:%d", p), fmt.Sprintf("from plan #%d", p)})
+		}
+	}
+	var state []string
+	if cf.Order != "" {
+		state = append(state, label(m.Orders, cf.Order))
+	}
+	if cf.Only != "" {
+		state = append(state, label(onlys, cf.Only))
+	}
+	clear := f
+	clear.setCol(m.Name, colFilter{})
+	return &colMenu{Name: m.Name, OnlyName: m.Name + "-only", Order: cf.Order, Only: cf.Only, Orders: m.Orders, Onlys: onlys,
+		State: strings.Join(state, " · "), ClearQuery: clear.query()}
+}
+
+// label is the choice's label, "from plan #n" for a plan the column no
+// longer holds.
+func label(options []option, value string) string {
+	for _, o := range options {
+		if o.Value == value {
+			return o.Label
+		}
+	}
+	return "from plan #" + strings.TrimPrefix(value, "plan:")
+}
+
+// find narrows the columns to the terms of q (C13): a word matches what
+// the face says (the ref, the title, the state and stage words, the
+// activity line, the chips, an item's headline), a key:value term a fact
+// behind the face (plan:558, stage:verifying, status:failed, is:failed
+// and the other exceptional states, by:sebastian, model:coding-cheap,
+// pr:612), and every term must match. Each column keeps its whole count;
+// the columns given stay as they were, for the status panel.
+func find(cols []column, q string) []column {
+	terms := strings.Fields(strings.ToLower(q))
+	out := make([]column, len(cols))
+	for i, col := range cols {
+		col.Total = col.Count()
+		if len(terms) > 0 {
+			var cards []card
+			for _, k := range col.Cards {
+				if found(k, nil, terms) {
+					cards = append(cards, k)
+				}
+			}
+			var needs []need
+			for _, n := range col.Needs {
+				if found(n.Card, n.Approval, terms) {
+					needs = append(needs, n)
+				}
+			}
+			col.Cards, col.Needs = cards, needs
+		}
+		out[i] = col
+	}
+	return out
+}
+
+// found is whether card k, or the approval item a, matches every term.
+func found(k card, a *approvalCard, terms []string) bool {
+	text := strings.ToLower(faceWords(k, a))
+	for _, t := range terms {
+		if key, val, ok := strings.Cut(t, ":"); ok && key != "" {
+			if match, known := fact(k, a, key, val); known {
+				if !match {
+					return false
+				}
+				continue
+			}
+		}
+		if !strings.Contains(text, t) {
+			return false
+		}
+	}
+	return true
+}
+
+// faceWords is what the face says, for a word of the find to match.
+func faceWords(k card, a *approvalCard) string {
+	if a != nil {
+		switch a.Kind {
+		case factoryd.ApprovalMerge:
+			w := []string{fmt.Sprintf("merge pr #%d", a.PRNumber), a.Merge.RiskClass + " risk", a.TaskID}
+			if a.Merge.Migration {
+				w = append(w, "migration")
+			}
+			return strings.Join(w, " ")
+		case factoryd.ApprovalPlan:
+			return fmt.Sprintf("plan #%d %s %s", a.Issue, a.PlanSummary, a.TaskID)
+		}
+		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
+	}
+	w := []string{k.ID, k.Title, k.Status, k.Stage, k.Activity, k.StaleText, k.Reason, k.Children}
+	if k.IssueNumber > 0 {
+		w = append(w, fmt.Sprintf("#%d", k.IssueNumber))
+	}
+	if k.PRNumber > 0 {
+		w = append(w, fmt.Sprintf("pr #%d", k.PRNumber))
+	}
+	if k.PlanIssue > 0 {
+		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
+	}
+	if k.Blocked > 0 {
+		w = append(w, fmt.Sprintf("blocked by %d %s", k.Blocked, k.BlockedOn))
+	}
+	if k.WaitingOn != "" {
+		w = append(w, "waiting on "+k.WaitingOn)
+	}
+	if k.Checks != "" {
+		w = append(w, k.Checks+" checks")
+	}
+	if k.NearBudget {
+		w = append(w, "near its budget")
+	}
+	if k.Retrying {
+		w = append(w, "retrying")
+	}
+	if k.Held {
+		w = append(w, heldWords)
+	}
+	if k.Provider {
+		w = append(w, providerWords)
+	}
+	if k.Stale {
+		w = append(w, "stale")
+	}
+	if k.Status == "waiting-poster" {
+		w = append(w, "waiting on the author")
+	}
+	if k.Kind == "human" {
+		w = append(w, "human task")
+	}
+	return strings.Join(w, " ")
+}
+
+// fact is whether k, or the approval item a, has the fact key:val; known
+// is false for a key the find does not have, which then reads as a word.
+func fact(k card, a *approvalCard, key, val string) (match, known bool) {
+	val = strings.TrimPrefix(val, "#")
+	eq := func(s string) (bool, bool) { return strings.EqualFold(s, val), true }
+	switch key {
+	case "is":
+		return isState(k, val), true
+	case "plan":
+		return eq(strconv.FormatInt(k.PlanIssue, 10))
+	case "stage":
+		return eq(k.Stage)
+	case "status":
+		return eq(k.Status)
+	case "by":
+		return eq(k.Author)
+	case "model":
+		return eq(k.ModelAlias)
+	case "pr":
+		n := k.PRNumber
+		if a != nil {
+			n = a.PRNumber
+		}
+		return eq(strconv.FormatInt(n, 10))
+	}
+	return false, false
+}
+
+// isState is whether k is in the exceptional state v of is:v.
+func isState(k card, v string) bool {
+	switch v {
+	case "failed":
+		return k.Status == "failed"
+	case "blocked":
+		return k.Blocked > 0 || k.WaitingOn != ""
+	case "stale":
+		return k.Stale
+	case "provider":
+		return k.Provider
+	case "near":
+		return k.NearBudget
+	case "retrying":
+		return k.Retrying
+	case "held":
+		return k.Held
+	}
+	return false
+}
+
 // stateColumns are the wide view's columns after the lanes, in board
 // order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
@@ -155,6 +433,13 @@ type card struct {
 	// remaining budget cannot fund a call (ruling 322's floor), which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// AcceptanceClose is the approver's Close on a waiting card whose
+	// event trail shows one of its plan's acceptance commands run green
+	// in a session (roadmap 208): the work is its own evidence, so the
+	// close ends it done where an answer would buy the next session.
+	// nil hides the button; Evidence is the newest green run, the button's
+	// title.
+	AcceptanceClose *acceptanceCloseForm
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -175,7 +460,7 @@ type card struct {
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
 	// one, the plan key of a planned card, else the objective's first
-	// clause.
+	// paragraph, the title as the issue was filed.
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
@@ -192,6 +477,10 @@ type card struct {
 	// ring, and these words on its activity line.
 	Stale     bool
 	StaleText string
+	// stepAt is the card's newest timeline step's time: the work its own
+	// session last reported, an input to the stale ring beside the newest
+	// event.
+	stepAt time.Time
 	// Children roll up an accepted plan: n running, n done, n waiting.
 	Children string
 	// Blocked is how many cards this one depends on that are not done;
@@ -249,23 +538,41 @@ func fineStates(k card, wide bool) []fine {
 	return out
 }
 
-// titleClause is the face's title from the objective, on one line: up to
-// the first full stop that ends a sentence — one followed by whitespace,
-// or one at the very end — and at most 80 characters. A dot inside a file
-// name or a version ("internal/console/board.go", "v1.2") ends no
-// sentence, so the clause keeps it.
+// titleCap bounds the face's title in runes; titleEllipsis ends a title
+// cut to it.
+const (
+	titleCap      = 80
+	titleEllipsis = "…"
+)
+
+// titleClause is the face's title from the objective, on one line: the
+// objective's first paragraph, the title as the issue was filed, in full —
+// a blank line ends the paragraph, a full stop never does. Only a title
+// longer than titleCap runes is shortened, at a word boundary with an
+// ellipsis, never mid-word. The objective is sanitised as a brief carries
+// it, so a hidden comment in it shows on no face.
 func titleClause(objective string) string {
-	words := strings.Fields(objective)
-	for i, w := range words {
-		if strings.HasSuffix(w, ".") {
-			words[i] = strings.TrimSuffix(w, ".")
-			words = words[:i+1]
-			break
+	var words []string
+	for _, line := range strings.Split(sanitize.Inbound(objective), "\n") {
+		if strings.TrimSpace(line) == "" {
+			if len(words) > 0 {
+				break
+			}
+			continue
 		}
+		words = append(words, strings.Fields(line)...)
 	}
-	s := strings.TrimSpace(strings.Join(words, " "))
-	if r := []rune(s); len(r) > 80 {
-		s = strings.TrimRight(string(r[:80]), " ,;:")
+	s := strings.Join(words, " ")
+	if r := []rune(s); len(r) > titleCap {
+		cut := r[:titleCap-len([]rune(titleEllipsis))]
+		end := len(cut)
+		for end > 0 && cut[end-1] != ' ' {
+			end--
+		}
+		if end == 0 {
+			end = len(cut) // one word longer than the cap: cut it
+		}
+		s = strings.TrimRight(string(cut[:end]), " ,;:") + titleEllipsis
 	}
 	return s
 }
@@ -291,10 +598,6 @@ func nearBudget(spent, budget float64) bool {
 	cents := func(eur float64) int64 { return int64(math.Round(eur * 100)) }
 	return cents(spent)*5 >= cents(budget)*4
 }
-
-// staleAfter bounds how long a card may hold no event before its face
-// wears the amber ring.
-const staleAfter = 30 * time.Minute
 
 // newestChecksCount is the task's newest checks step: passed over total of
 // its jobs; "" when the steps hold none or it named no counts.
@@ -374,15 +677,31 @@ func onProvider(steps []map[string]any) bool {
 	return false
 }
 
+// newestStepOf is steps' newest step's time, the card's own work as the
+// stale ring reads it; a step without a time is skipped, and none
+// leaves the zero time.
+func newestStepOf(steps []map[string]any) time.Time {
+	for i := len(steps) - 1; i >= 0; i-- {
+		at, err := time.Parse(time.RFC3339, fmt.Sprint(steps[i]["time"]))
+		if err != nil {
+			continue
+		}
+		return at
+	}
+	return time.Time{}
+}
+
 // checksTTL is how long what a card's face reads from its timeline is
 // kept: the renders, polls and card swaps within it read it once.
 const checksTTL = 30 * time.Second
 
 // checks is a card's remembered checks count, retry, hold and wait on
-// the provider, and when they were read.
+// the provider, the newest timeline step's time, and when they were
+// read.
 type checks struct {
 	count                    string
 	retrying, held, provider bool
+	stepAt                   time.Time
 	at                       time.Time
 }
 
@@ -402,6 +721,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 			k.Checks = got.count
 		}
 		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
+		k.stepAt = got.stepAt
 	})
 }
 
@@ -419,6 +739,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
 		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
 	for other, old := range c.checks {
@@ -477,6 +798,11 @@ type move struct{ Lane, Title, CSRF string }
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
 
+// acceptanceCloseForm is an approver's Close beside a waiting card's
+// answer box: the close ends the card done on its acceptance green
+// (roadmap 208), which the button's Evidence names.
+type acceptanceCloseForm struct{ CSRF, Evidence string }
+
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
 
@@ -491,6 +817,12 @@ type planCards struct {
 type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
+	// Total is the column's count before the find narrowed it (C13); the
+	// head reads "n of m" when they differ.
+	Total int
+	// Menu is the column's menu (C13) in the four columns: Queued, In
+	// progress and Done have one, Needs you none.
+	Menu  *colMenu
 	Cards []card
 	// Needs is the five columns' Needs you: what the wide view's human
 	// lane holds and every card that needs the viewer, oldest first.
@@ -503,6 +835,18 @@ func (c column) Count() int {
 		return len(c.Needs)
 	}
 	return len(c.Cards)
+}
+
+// colMenu is a column's menu as its head renders it: its query names,
+// the choices with the current one, the non-default choices' labels as
+// the state line's words, and the board without this column's choices
+// as the state line's clear link.
+type colMenu struct {
+	Name, OnlyName string
+	Order, Only    string
+	Orders, Onlys  []option
+	State          string
+	ClearQuery     string
 }
 
 // need is an item of the human lane, or of the Needs you column: an
@@ -542,22 +886,121 @@ func (n need) Waiting() string {
 // task states, as the board was before the five columns.
 const viewWide = "wide"
 
-// boardFilter is what the board was asked to show: the project, the
-// accent and the view; every form on it carries it back, so an action
-// keeps the view.
+// boardFilter is what the board was asked to show: the project and the
+// view; every form on it carries it back, so an action keeps the view.
 type boardFilter struct {
-	Project, Accent, View string
+	Project, View string
+	// Q is the find (C13): words and key:value terms that narrow every
+	// column, kept by every form, the poll, the fragments and the stream.
+	Q string
+	// Queued, Progress and Done are the column menus' choices (C13),
+	// read from queued, queued-only, progress, progress-only, done and
+	// done-only in the query.
+	Queued, Progress, Done colFilter
+}
+
+// colFilter is a column's order and show from its menu (C13): "" is the
+// default, arrival newest first and every card.
+type colFilter struct{ Order, Only string }
+
+// option is a menu's choice: its query value and its label.
+type option struct{ Value, Label string }
+
+// menuSpec is a column menu: its query name, its column and its choices;
+// the first of each is the default. Queued's shows gain "from plan #n"
+// per plan with queued cards.
+type menuSpec struct {
+	Name   string
+	Col    int
+	Orders []option
+	Onlys  []option
+}
+
+// colMenus are the three column menus; Needs you is always oldest
+// waiting first and has none.
+var colMenus = []menuSpec{
+	{"queued", colQueued, []option{{"", "newest first"}, {"oldest", "oldest first"}, {"next", "next up"}}, []option{{"", "all"}, {"blocked", "blocked only"}}},
+	{"progress", colProgress, []option{{"", "newest first"}, {"oldest", "oldest first"}, {"stage", "by stage"}, {"spend", "by spend"}}, []option{{"", "all"}, {"exceptional", "exceptional only"}}},
+	{"done", colDone, []option{{"", "newest first"}, {"oldest", "oldest first"}}, []option{{"", "all"}, {"failed", "failed only"}}},
+}
+
+// col is the menu's choices for the column named name.
+func (f boardFilter) col(name string) colFilter {
+	switch name {
+	case "queued":
+		return f.Queued
+	case "progress":
+		return f.Progress
+	case "done":
+		return f.Done
+	}
+	return colFilter{}
+}
+
+func (f *boardFilter) setCol(name string, c colFilter) {
+	switch name {
+	case "queued":
+		f.Queued = c
+	case "progress":
+		f.Progress = c
+	case "done":
+		f.Done = c
+	}
+}
+
+// readCols reads the menus' choices with get, a value the menu does not
+// offer reading as the default.
+func readCols(f *boardFilter, get func(string) string) {
+	for _, m := range colMenus {
+		c := colFilter{Order: get(m.Name), Only: get(m.Name + "-only")}
+		if !slices.ContainsFunc(m.Orders, func(o option) bool { return o.Value == c.Order }) {
+			c.Order = ""
+		}
+		if n, ok := strings.CutPrefix(c.Only, "plan:"); ok {
+			if _, err := strconv.ParseInt(n, 10, 64); err != nil {
+				c.Only = ""
+			}
+		} else if !slices.ContainsFunc(m.Onlys, func(o option) bool { return o.Value == c.Only }) {
+			c.Only = ""
+		}
+		f.setCol(m.Name, c)
+	}
+}
+
+// hidden is one field a form carries to keep the board's filter.
+type hidden struct{ Name, Value string }
+
+// Hidden are the filter's fields with a value, as a form's hidden
+// inputs, but those named in except: the find's form leaves out q, a
+// menu's form its own column's two.
+func (f boardFilter) Hidden(except ...string) []hidden {
+	fields := []hidden{{"project", f.Project}, {"view", f.View}, {"q", f.Q}}
+	for _, m := range colMenus {
+		c := f.col(m.Name)
+		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
+	}
+	var out []hidden
+	for _, h := range fields {
+		if h.Value != "" && !slices.Contains(except, h.Name) {
+			out = append(out, h)
+		}
+	}
+	return out
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent"), View: r.PostFormValue("view")}
+	f := boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view"), Q: strings.TrimSpace(r.PostFormValue("q"))}
+	readCols(&f, r.PostFormValue)
+	return f
 }
 
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	return boardFilter{Project: q.Get("project"), Accent: q.Get("accent"), View: q.Get("view")}
+	f := boardFilter{Project: q.Get("project"), View: q.Get("view"), Q: strings.TrimSpace(q.Get("q"))}
+	readCols(&f, q.Get)
+	return f
 }
 
 func (f boardFilter) wide() bool { return f.View == viewWide }
@@ -568,11 +1011,19 @@ func (f boardFilter) query() string {
 	if f.Project != "" {
 		q.Set("project", f.Project)
 	}
-	if f.Accent != "" {
-		q.Set("accent", f.Accent)
-	}
 	if f.View != "" {
 		q.Set("view", f.View)
+	}
+	if f.Q != "" {
+		q.Set("q", f.Q)
+	}
+	for _, m := range colMenus {
+		if c := f.col(m.Name); c.Order != "" {
+			q.Set(m.Name, c.Order)
+		}
+		if c := f.col(m.Name); c.Only != "" {
+			q.Set(m.Name+"-only", c.Only)
+		}
 	}
 	if q.Encode() == "" {
 		return ""
@@ -611,13 +1062,15 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
-	// Project, Accent and View are the board's filter, which every form
+	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
 	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
 	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
 	ToggleQuery string   // the filter with the other view
+	ClearQuery  string   // the filter without the find, the ×'s link (C13)
+	whole       []column // the columns before the find narrowed them, the status panel's
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
 	Pulse       *factoryd.Pulse // the shown project's newest pulse
@@ -635,7 +1088,6 @@ type boardData struct {
 	PolicyVersion int64
 	PolicyCommit  string
 	PolicyTreeURL string
-	Ticker        []tick // the project's newest events along the foot
 }
 
 func pct(spent, cap float64) int {
@@ -645,11 +1097,20 @@ func pct(spent, cap float64) int {
 	return int(math.Round(spent / cap * 100))
 }
 
+// cols are the columns as read, before the find narrowed them: the
+// status panel lists the project's cards, not the find's.
+func (d boardData) cols() []column {
+	if d.whole != nil {
+		return d.whole
+	}
+	return d.Columns
+}
+
 // InProgress are the cards in progress for the status panel, with their
 // stage, in the columns' order.
 func (d boardData) InProgress() []card {
 	var out []card
-	for _, col := range d.Columns {
+	for _, col := range d.cols() {
 		for _, k := range col.Cards {
 			if k.Stage != "" {
 				out = append(out, k)
@@ -671,7 +1132,7 @@ func (d boardData) NeedLinks() []needLink {
 	if len(d.Columns) == 0 {
 		return nil
 	}
-	needs := d.Columns[0].Needs
+	needs := d.cols()[0].Needs
 	if needs == nil {
 		for i := range d.Approvals {
 			needs = append(needs, need{Since: d.Approvals[i].CreatedAt, Approval: &d.Approvals[i]})
@@ -696,56 +1157,6 @@ func (d boardData) NeedLinks() []needLink {
 		default:
 			out = append(out, needLink{n.Card.Title, n.anchor()})
 		}
-	}
-	return out
-}
-
-// tick is one item of the ticker along the foot: a project event with the
-// card's words.
-type tick struct {
-	At, Glyph, Ref, Words, Class string
-}
-
-// tickerLimit bounds the events the ticker shows.
-const tickerLimit = 24
-
-// tickerOf is the project's newest events as ticks, newest first: a
-// status row by its status word and glyph, any other row by its kind, the
-// card's title when it is on the board.
-func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project) []tick {
-	rows, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, 0, tickerLimit)
-	if err != nil {
-		log.Printf("console: the ticker of %s: %v", p.Repository, err)
-		return nil
-	}
-	var out []tick
-	for _, e := range rows {
-		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
-		if e.IssueNumber > 0 {
-			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
-		}
-		if t, ok := v.byID[e.TaskID]; ok {
-			k.Words = c.card(t).Title
-		}
-		if e.Kind == factoryd.EventTaskStatus {
-			status, _ := e.Detail["status"].(string)
-			switch status {
-			case "done":
-				k.Glyph, k.Class = "✓", "done"
-			case "failed":
-				k.Glyph, k.Class = "✕", "failed"
-			case "closed":
-				k.Glyph, k.Class = "⊘", "closed"
-			}
-			if k.Words == "" {
-				k.Words = status
-			} else if k.Class == "event" {
-				k.Words += " · " + status
-			}
-		} else if k.Words == "" {
-			k.Words = e.Kind + " by " + e.Actor
-		}
-		out = append(out, k)
 	}
 	return out
 }
@@ -781,15 +1192,19 @@ func (c *Console) configTree(commit string) string {
 
 // counts are the board's column counts in the page's order, the wide
 // view's human lane first.
-func (d boardData) counts() []int {
-	var out []int
+func (c *Console) counts(d boardData) ([]string, error) {
+	var out []string
 	if d.wide() {
-		out = append(out, len(d.Approvals), len(d.Escalations), len(d.HumanTasks))
+		out = append(out, strconv.Itoa(len(d.Approvals)), strconv.Itoa(len(d.Escalations)), strconv.Itoa(len(d.HumanTasks)))
 	}
 	for _, col := range d.Columns {
-		out = append(out, col.Count())
+		var b strings.Builder
+		if err := c.tmpl.ExecuteTemplate(&b, "count", col); err != nil {
+			return nil, err
+		}
+		out = append(out, b.String())
 	}
-	return out
+	return out, nil
 }
 
 // faces is what of the board's cards changes with time alone, for the
@@ -888,13 +1303,19 @@ func stage(t factoryd.Task, now time.Time) (string, string) {
 	return word, minutes(now.Sub(since))
 }
 
-// minutes is a duration in whole minutes, or hours and minutes.
+// minutes is a duration in whole minutes, hours and minutes from an
+// hour, days and hours from a day; under a minute it says so.
 func minutes(d time.Duration) string {
 	m := int(d.Minutes())
-	if m < 60 {
+	switch {
+	case m < 1:
+		return "under a minute"
+	case m < 60:
 		return fmt.Sprintf("%d min", m)
+	case m < 24*60:
+		return fmt.Sprintf("%d h %d min", m/60, m%60)
 	}
-	return fmt.Sprintf("%d h %d min", m/60, m%60)
+	return fmt.Sprintf("%d d %d h", m/(24*60), m%(24*60)/60)
 }
 
 // span is a gate's duration to the second under an hour.
@@ -917,10 +1338,6 @@ var errNoProject = errors.New("no such project")
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	f := urlFilter(r)
-	if f.Accent != "" && !factoryd.IsAccent(f.Accent) {
-		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
-		return
-	}
 	if f.View != "" && !f.wide() {
 		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
 		return
@@ -1149,6 +1566,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		if v.approves(t.Repository) && c.unfundedAnswer(ctx, t) != "" {
 			k.Fund = &fundForm{CSRF: v.csrf}
 		}
+		// the acceptance close is offered where the card's own trail
+		// proves the work (roadmap 208): the same card, to its approvers
+		if v.approves(t.Repository) {
+			if evidence, ok := c.acceptanceEvidence(ctx, t.ID); ok {
+				k.AcceptanceClose = &acceptanceCloseForm{CSRF: v.csrf, Evidence: evidence}
+			}
+		}
 	}
 	return k
 }
@@ -1184,12 +1608,20 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// question it waits on an answer to; a card with neither claims
 	// nothing. On a waiting card that reason is what the human owes it:
 	// it stands in place of the newest event. The stale ring — one whose
-	// newest event is older than half an hour wears it, one that never had
-	// an event its own age — comes only on a card that is running its
-	// work: never a final one, never one in the backlog, the plan lane or
-	// the queue; a card parked for a slot owes no work while it waits.
+	// newest activity is older than the stale window wears it, the
+	// newest of its newest event and its newest timeline step (its own
+	// session's last report), one that never had either its own age —
+	// comes only on a card that is running its work: never a final one,
+	// never one in the backlog, the plan lane or the queue; a card parked
+	// for a slot owes no work while it waits.
 	setActivity := func(k *card) {
-		ring := func(d time.Duration) bool { return d >= staleAfter }
+		lastAt := func(at time.Time) time.Time {
+			if k.stepAt.After(at) {
+				return k.stepAt
+			}
+			return at
+		}
+		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
 		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan" && k.Status != "queued"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
@@ -1201,9 +1633,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			if k.Stage != "" && e.Kind == factoryd.EventTaskStatus && fmt.Sprint(e.Detail["status"]) == k.Status && !e.At.IsZero() {
 				k.StageAge = minutes(time.Since(e.At))
 			}
-			k.Stale = live && ring(time.Since(e.At))
+			k.Stale = live && ring(time.Since(lastAt(e.At)))
 			if k.Stale {
-				k.StaleText = "nothing for over " + minutes(time.Since(e.At))
+				k.StaleText = "nothing for over " + minutes(time.Since(lastAt(e.At)))
 			}
 			if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
 				k.Activity = reason()
@@ -1211,17 +1643,17 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			}
 			return
 		}
-		k.Stale = live && ring(time.Since(k.CreatedAt))
+		k.Stale = live && ring(time.Since(lastAt(k.CreatedAt)))
 		if k.Stale {
-			k.StaleText = "no event yet, " + minutes(time.Since(k.CreatedAt)) + " on the card"
+			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
 		}
 		if k.Reason != "" {
 			k.Activity = reason()
 		}
 	}
+	c.faceTimelines(ctx, each)
 	each(setActivity)
 	c.callTotals(ctx, each)
-	c.faceTimelines(ctx, each)
 	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
 		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
@@ -1265,7 +1697,7 @@ func callsLine(t policy.CallTotals) string {
 }
 
 // boardOf is the board of one project, f.Project or else the first the
-// viewer writes, narrowed to f.Accent ("" every accent), as the session's
+// viewer writes, the project's cards, as the session's
 // human sees it. The five columns are the default, the human lane folded
 // into Needs you; the wide view puts the lanes of the project's process
 // first in the fixed order backlog, plan, ready, then the state columns,
@@ -1326,6 +1758,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		other.View = ""
 	}
 	d.ToggleQuery = other.query()
+	clear := f
+	clear.Q = ""
+	d.ClearQuery = clear.query()
 	byLane, byStatus := map[string]int{}, map[string]int{}
 	if wide {
 		lanes := map[string]bool{}
@@ -1386,12 +1821,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		if t.Status == "waiting-human" && v.planned[t.ID] {
 			escalations[t.ID] = bt
-		}
-		// the accent filter narrows the board to one accent; a card with
-		// none is in no accent's board, and an accent never changes how a
-		// state renders.
-		if f.Accent != "" && t.Accent != f.Accent {
-			continue
 		}
 		k := c.boardCard(ctx, v, bt)
 		switch {
@@ -1475,10 +1904,14 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			fn(&d.Escalations[i].Card)
 		}
 	})
+	d.whole = d.Columns
+	d.Columns = find(d.Columns, f.Q)
+	if !wide {
+		arrange(&d, f)
+	}
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)
-		d.Ticker = c.tickerOf(ctx, v, shown)
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
@@ -1854,7 +2287,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?accent, ?view); an unknown card is
+// under the URL's filter (?project, ?view); an unknown card is
 // 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
 func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
@@ -1888,7 +2321,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 
 // cardFragment answers GET /cards/{id} to a writer of the card's project,
 // 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?accent, ?view) of the board it is
+// carrying the filter (?project, ?view) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	if _, k, _, ok := c.writableCard(w, r); ok {
@@ -1941,6 +2374,11 @@ func (d drawerData) Age() string {
 	var parts []string
 	if d.Card.StageAge != "" {
 		parts = append(parts, d.Card.StageAge)
+	}
+	// the card's place in the merge queue, the one gate worth a word here;
+	// the Time section holds the rest
+	if strings.HasPrefix(d.Card.GateText, "merge queue") {
+		parts = append(parts, strings.TrimSuffix(d.Card.GateText, ","))
 	}
 	if d.Card.Total != "" {
 		parts = append(parts, d.Card.Total+" in all")

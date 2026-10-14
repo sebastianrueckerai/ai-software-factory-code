@@ -23,10 +23,11 @@ const mustHave = {
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
     "How far back does the feed page by default?", "One day", "One week",
     "#598", "#616", "#617", "waiting on #603, #611", "#533",
-    "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "merge queue", "PR #605",
+    "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
-    "every accent", "Wide view", "?"],
+    "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
+    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only", "Apply"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
@@ -54,6 +55,7 @@ async function open(browser, viewport) {
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
+  await page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((d) => { d.open = true; }));
   return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
     .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
 }
@@ -100,6 +102,17 @@ async function text(page) {
           if (await d.isVisible()) fails.push("drawer: Escape does not close it");
         }
       }
+      // the columns never scroll themselves (item 0a of roadmap 236): a column's body
+      // scrolls down, only when its cards overflow, and never sideways
+      const scroll = await p.page.evaluate(() => Array.from(document.querySelectorAll("#board .column")).map((c) => {
+        const b = c.querySelector(":scope > .cards"), cs = b && getComputedStyle(b);
+        return { col: c.scrollHeight > c.clientHeight + 2 || c.scrollWidth > c.clientWidth + 2, body: !b || b.scrollWidth > b.clientWidth, y: cs && cs.overflowY, x: cs && cs.overflowX };
+      }));
+      scroll.forEach((s, i) => {
+        if (s.col) fails.push("busy: column " + i + " scrolls itself");
+        if (s.body) fails.push("busy: column " + i + " has no body or its body scrolls sideways");
+        if (s.y !== "auto" || s.x !== "hidden") fails.push("busy: column " + i + "'s body overflow is " + s.y + "/" + s.x + ", want auto/hidden");
+      });
       const doit = p.page.locator("#chat").getByRole("button", { name: "Do it", exact: true });
       if (!(await doit.count())) fails.push("chat: no Do it");
       else {
@@ -108,6 +121,25 @@ async function text(page) {
         const t2 = await p.page.locator("#chat").innerText();
         if (!/applied/i.test(t2) || !/undo/i.test(t2)) fails.push("chat: Do it does not become an applied line with Undo");
       }
+    }
+    if (sc === "busy") {
+      // the find (C13): ?q= narrows every column, the counts read "n of m", the × clears
+      await p.page.goto(base + "/?q=is%3Afailed", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const counts = await p.page.locator("#board .count").allInnerTexts();
+      if (!counts.some((c) => /\d+ of \d+/.test(c))) fails.push("find: no count reads n of m under ?q=is:failed (" + counts.join(" | ") + ")");
+      const faces = await p.page.locator("#board [data-card]").count(), failed = await p.page.locator("#board [data-card]").filter({ hasText: "failed" }).count();
+      if (!faces || faces !== failed) fails.push("find: ?q=is:failed shows " + faces + " cards, " + failed + " of them failed");
+      if (!(await p.page.locator("#find.on .find-x").count())) fails.push("find: no × while a find is on");
+      if ((await p.page.locator("#board").getAttribute("data-query") || "").indexOf("q=is%3Afailed") < 0) fails.push("find: the board's query does not carry q");
+      // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
+      await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const state = await p.page.locator("#board .col-state").allInnerTexts();
+      if (!state.some((s) => s.includes("failed only"))) fails.push("menus: no state line reads failed only under ?done-only=failed (" + state.join(" | ") + ")");
+      if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
+      if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
+      if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();

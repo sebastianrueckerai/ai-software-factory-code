@@ -56,29 +56,11 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">20 min</span>`) {
-		t.Errorf("the face counts the stage from the admission, not the newest status row:\n%s", face)
+	if face := faceOf(t, body, "t-run"); !strings.Contains(face, `<span class="pill st-running">building</span> <span class="elapsed">4 h 0 min</span>`) {
+		t.Errorf("the face lacks the card's age beside its stage (C11):\n%s", face)
 	}
-}
-
-// The ticker lists the project's events newest first, as the store
-// answers them.
-func TestTickerNewestFirst(t *testing.T) {
-	r, ev := newRigWithEvents(t)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "ticks", IssueNumber: 5})
-	day := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
-	for _, at := range []time.Time{day, day.Add(time.Hour)} {
-		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton, At: at}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	_, track, _ := strings.Cut(body, `id="ticker-track"`)
-	track, _, _ = strings.Cut(track, "</footer>")
-	late, early := strings.Index(track, "<time>11:00</time>"), strings.Index(track, "<time>10:00</time>")
-	if late < 0 || early < 0 || late > early {
-		t.Errorf("the ticker is not newest first (11:00 at %d, 10:00 at %d):\n%s", late, early, track)
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>building, 20 min, 4 h 0 min in all</dd>") {
+		t.Errorf("the drawer counts the stage from the admission, not the newest status row:\n%s", drawer)
 	}
 }
 
@@ -115,5 +97,37 @@ func TestAQueuedCardDoesNotSpeak(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-q"); strings.Contains(face, `class="activity"`) {
 		t.Errorf("a queued card speaks:\n%s", face)
+	}
+}
+
+// The page's policy allows no inline style (style-src 'self'), so a
+// template must set nothing by a style attribute: a width set that way is
+// dropped, and the gauge it drew stayed empty.
+func TestNoInlineStyle(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "spends", BudgetEUR: 10, SpentEUR: 5.1})
+	ck, _ := r.loggedIn(t)
+	for _, page := range []string{"/", "/?view=wide", "/cards/t-run/drawer?tab=overview", "/costs", "/tasks/t-run/timeline"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		if strings.Contains(body, ` style="`) {
+			t.Errorf("%s sets a style attribute, which the policy drops", page)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="gauge"><meter min="0" max="100" value="`) {
+		t.Errorf("the strip's gauge is not a meter")
+	}
+}
+
+// A span in words: under a minute, minutes, hours and minutes, days and
+// hours.
+func TestMinutesInWords(t *testing.T) {
+	for d, want := range map[time.Duration]string{
+		30 * time.Second: "under a minute", 7 * time.Minute: "7 min", 125 * time.Minute: "2 h 5 min",
+		24 * time.Hour: "1 d 0 h", 50 * time.Hour: "2 d 2 h", 100*time.Hour + 59*time.Minute: "4 d 4 h",
+	} {
+		if got := minutes(d); got != want {
+			t.Errorf("minutes(%s) = %q, want %q", d, got, want)
+		}
 	}
 }

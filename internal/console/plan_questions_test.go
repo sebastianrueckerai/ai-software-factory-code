@@ -156,7 +156,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	args := `{"task_id":"t-p","revision":1,"question":1,"text":"60 seconds"}`
 	g.replies = [][]string{{call(1, "answer", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"probe every minute"}})
-	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener\", text 60 seconds, revision 1, ` +
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener.\", text 60 seconds, revision 1, ` +
 		`question 1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)","id":"TOKEN","tool":"answer"}`, `done {}`})
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer","result":"Answered question 1 of plan #20."}`,
@@ -254,7 +254,7 @@ func TestChatAnswersAllPlanQuestionsAtOnce(t *testing.T) {
 	args := `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"30 days"}]}`
 	g.replies = [][]string{{call(1, "answer", args)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"probe every minute, keep them for a month"}})
-	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener\", revision 1, ` +
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener.\", revision 1, ` +
 		`question 1: 60 seconds, question 2: 30 days","id":"TOKEN","tool":"answer"}`, `done {}`})
 	before := r.events.count()
 	note, err := r.answerAs(t, s, toolInput{TaskID: "t-p", Revision: 1, Answers: []PlanAnswerInput{{Question: 1, Text: "60 seconds"}, {Question: 2, Text: "30 days"}}})

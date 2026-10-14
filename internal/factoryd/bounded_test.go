@@ -30,7 +30,7 @@ func (w *recordingWorkflows) Signal(ctx context.Context, taskID, name string, si
 // bound) and the work-bounded workflows over it.
 func boundedFixture(t *testing.T, bound int, tasks ...Task) (*fakeStore, *recordingWorkflows, BoundedWorkflows) {
 	t.Helper()
-	store := &fakeStore{tasks: map[string]Task{}}
+	store := newFakeStore()
 	for _, task := range tasks {
 		store.tasks[task.ID] = task
 	}
@@ -181,5 +181,90 @@ func TestTaskEndedHandsTheFreedSlotToTheOldestQueuedCard(t *testing.T) {
 	taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, bounded, store.tasks["t-done"], "done")
 	if !slices.Equal(rec.starts, []string{"t-q"}) {
 		t.Fatalf("starts = %v, want the freed slot to start the queued card", rec.starts)
+	}
+}
+
+// A card parked on a person holds no work slot (roadmap 233): moved to
+// waiting-human it stops counting, so the slot it held frees at once.
+func TestCountAdmittedDropsAWaitingHumanCard(t *testing.T) {
+	ctx := context.Background()
+	store, _, _ := boundedFixture(t, 2,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running"},
+		Task{ID: "t-wh", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running"})
+	before, err := store.CountAdmitted(ctx, "demo/app")
+	if err != nil || before != 2 {
+		t.Fatalf("admitted before = (%d, %v), want 2", before, err)
+	}
+	if err := store.TransitionTask(ctx, "t-wh", []string{"running"}, "waiting-human"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := store.CountAdmitted(ctx, "demo/app"); n != before-1 {
+		t.Fatalf("admitted with a card waiting on a human = %d, want %d (the parked card frees its slot)", n, before-1)
+	}
+}
+
+// waiting-poster parks on a person too: a fund after a cap. It stops
+// counting the same way.
+func TestCountAdmittedDropsAWaitingPosterCard(t *testing.T) {
+	ctx := context.Background()
+	store, _, _ := boundedFixture(t, 2,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running"},
+		Task{ID: "t-wp", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running"})
+	before, err := store.CountAdmitted(ctx, "demo/app")
+	if err != nil || before != 2 {
+		t.Fatalf("admitted before = (%d, %v), want 2", before, err)
+	}
+	if err := store.TransitionTask(ctx, "t-wp", []string{"running"}, "waiting-poster"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := store.CountAdmitted(ctx, "demo/app"); n != before-1 {
+		t.Fatalf("admitted with a card waiting on its poster = %d, want %d (the parked card frees its slot)", n, before-1)
+	}
+}
+
+// The freed slot admits the next queued card: a queued card starts while
+// another card of the project sits in waiting-human.
+func TestPullQueuedAdmitsWhileAWaitingHumanCardParks(t *testing.T) {
+	ctx := context.Background()
+	base := time.Now()
+	store, rec, bounded := boundedFixture(t, 2,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running", CreatedAt: base},
+		Task{ID: "t-wh", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "waiting-human", CreatedAt: base},
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "queued", CreatedAt: base.Add(time.Minute)})
+	pullQueued(ctx, store, bounded, "demo/app")
+	if !slices.Equal(rec.starts, []string{"t-q"}) {
+		t.Fatalf("starts = %v, want the queued card in the slot the parked card freed", rec.starts)
+	}
+	if q, _, _ := store.Task(ctx, "t-q"); q.AdmittedAt == nil {
+		t.Fatal("the queued card carries no admission stamp")
+	}
+}
+
+// The answer resumes the parked card as running even at a full bound
+// (roadmap 233): the bound admits work, it does not guarantee a
+// never-exceeded invariant; the overshoot lasts one gate pass and touches
+// only the card the person just unblocked.
+func TestWaitingHumanCardAnsweredAtAFullBoundResumesRunning(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-wh", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "waiting-human"},
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "running"})
+	if n, _ := store.CountAdmitted(ctx, "demo/app"); n != 1 {
+		t.Fatalf("admitted = %d, want the bound full at 1", n)
+	}
+	// the person answers: the signal passes the bound (the card is past
+	// its start, not queued), and the session MarkStarted resumes takes
+	// the slot back as running, over the bound for this gate pass
+	if err := bounded.Signal(ctx, "t-wh", "answer", TaskSignal{}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rec.signals, []string{"t-wh"}) {
+		t.Fatalf("signals = %v, want the answered card's workflow", rec.signals)
+	}
+	if err := store.MarkStarted(ctx, "t-wh"); err != nil {
+		t.Fatalf("MarkStarted at a full bound: %v", err)
+	}
+	if t1, _, _ := store.Task(ctx, "t-wh"); t1.Status != "running" {
+		t.Fatalf("status = %q, want running: the answer resumes, never re-queues", t1.Status)
 	}
 }

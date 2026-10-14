@@ -1,12 +1,12 @@
 {
   "alert": "CI queue p95 above 5 minutes",
   "alertType": "METRIC_BASED_ALERT",
-  "description": "The 95th percentile of a CI job's wait from first seen waiting to picked up by a runner (factoryd's factory.ci.job.queue) was above 5 minutes at least once in the last 15 minutes.",
+  "description": "The 95th percentile of a CI job's wait from first seen waiting to picked up by a runner (factoryd's factory.ci.job.queue) held above 5 minutes through the whole last 10 minutes; a burst that drains never fires.",
   "ruleType": "threshold_rule",
   "schemaVersion": "v2alpha1",
   "version": "v5",
   "disabled": false,
-  "labels": {"severity": "warning", "service": "factoryd", "capacity": "true"},
+  "labels": {"severity": "warning", "service": "ci", "capacity": "true"},
   "annotations": {"summary": "p95 of the CI jobs' queue time, in seconds"},
   "condition": {
     "compositeQuery": {
@@ -20,11 +20,11 @@
     },
     "selectedQueryName": "A",
     "requireMinPoints": true,
-    "requiredNumPoints": 15,
+    "requiredNumPoints": 10,
     "thresholds": {"kind": "basic", "spec": [
       {"name": "warning", "target": 300, "targetUnit": "", "recoveryTarget": null, "matchType": "2", "op": "1", "channels": []}
     ]}
   },
-  "evaluation": {"kind": "rolling", "spec": {"evalWindow": "15m", "frequency": "1m"}},
+  "evaluation": {"kind": "rolling", "spec": {"evalWindow": "10m", "frequency": "1m"}},
   "notificationSettings": {"usePolicy": false}
 }

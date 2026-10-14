@@ -1,10 +1,8 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
-// choice changed) or a card's expanded view in it is open, so a swap of el
-// would wipe or close it; and while the card drawer is open, the board
-// holds still beside it.
+// choice changed) or a fold or a disclosure in it is open, so a swap of el
+// would wipe or close it. The card drawer sits outside the board, so an
+// open drawer does not hold the board's swaps: the ages keep ticking.
 function busy(el) {
-  var drawer = document.getElementById("drawer");
-  if (drawer && !drawer.hidden) return true;
   if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
   if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
   if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
@@ -78,8 +76,8 @@ function offerLanes() {
 }
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
-  // the board's project and accent show at once
-  if (e.target.id === "project-filter" || e.target.id === "accent-filter") e.target.form.submit();
+  // the board's project shows at once
+  if (e.target.id === "project-filter") e.target.form.submit();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
@@ -170,7 +168,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       line.innerHTML = d.status;
       document.dispatchEvent(new Event("statusswapped"));
     }
-    if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].textContent = String(n); });
+    if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
   // chat loads the drawer's Chat again while it shows card id's session,
   // any card's for "", the steer being typed kept
@@ -230,7 +228,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       else if (e.kind === "session_said") said(e);
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
-        tickEvent(e);
         if (e.kind === "card_steered") said(e);
         // a new status may end the session, and its steer box with it
         if (e.kind === "task_status") chat(e.task_id);
@@ -295,60 +292,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     }
     showStatus();
   }
-  // The ticker along the foot: the project's newest events, the live ones
-  // put first; the set is repeated to fill the width and scrolls at about
-  // 28 px a second, paused on hover (CSS) and still under reduced motion.
-  function tick() {
-    var track = document.getElementById("ticker-track");
-    if (!track || !track.firstElementChild) return;
-    var one = track.firstElementChild, width = track.parentElement.clientWidth || 1;
-    track.style.animation = "none";
-    while (track.children.length > 1) track.removeChild(track.lastElementChild);
-    if (!track.dataset.n) track.dataset.n = one.children.length;
-    var items = Array.prototype.slice.call(one.children, 0, +track.dataset.n).map(function (x) { return x.outerHTML; }).join("");
-    one.innerHTML = items;
-    var sw = one.scrollWidth || 1, k = Math.max(1, Math.ceil(width / sw));
-    if (k > 1) {
-      var fill = document.createElement("span");
-      fill.setAttribute("aria-hidden", "true");
-      fill.innerHTML = items.repeat(k - 1);
-      one.appendChild(fill);
-    }
-    var twin = one.cloneNode(true);
-    twin.setAttribute("aria-hidden", "true");
-    track.appendChild(twin);
-    track.style.setProperty("--dur", Math.round(sw * k / 28) + "s");
-    void track.offsetWidth;
-    track.style.animation = "";
-  }
-  function tickEvent(e) {
-    var track = document.getElementById("ticker-track");
-    if (!track || !track.firstElementChild || !e.task_id) return;
-    var status = e.kind === "task_status" && e.detail ? e.detail.status : "", cls = {done: "done", failed: "failed", closed: "closed"}[status] || "event";
-    var glyph = {done: "✓", failed: "✕", closed: "⊘"}[status] || "·";
-    var card = document.querySelector && document.querySelector("[data-card=\"" + CSS.escape(e.task_id) + "\"] .title");
-    var words = card ? card.textContent.trim() : (status || e.kind + " by " + e.actor);
-    if (card && status && cls === "event") words += " · " + status;
-    var item = document.createElement("span");
-    item.className = "tk t-" + cls;
-    var when = item.appendChild(document.createElement("time"));
-    when.textContent = new Date(e.at).toISOString().slice(11, 16);
-    var g = item.appendChild(document.createElement("span"));
-    g.className = "g";
-    g.setAttribute("aria-hidden", "true");
-    g.textContent = glyph;
-    item.appendChild(document.createElement("b")).textContent = e.issue_number ? "#" + e.issue_number : e.task_id;
-    item.appendChild(document.createElement("span")).textContent = words;
-    var one = track.firstElementChild, n = +track.dataset.n || one.children.length;
-    // the set's own items, without the copies that filled the width
-    one.innerHTML = Array.prototype.slice.call(one.children, 0, n).map(function (x) { return x.outerHTML; }).join("");
-    one.insertBefore(item, one.firstChild);
-    while (one.children.length > 24) one.removeChild(one.lastElementChild);
-    track.dataset.n = one.children.length;
-    tick();
-  }
-  document.addEventListener("DOMContentLoaded", tick);
-  window.addEventListener("resize", function () { tick(); });
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
     if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);
@@ -473,6 +416,11 @@ document.addEventListener("htmx:afterSwap", function (e) {
   }
   document.addEventListener("keydown", function (e) {
     if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;
+    // Escape in the find box clears it when it holds a find, else leaves it
+    if (e.key === "Escape" && e.target.id === "q") {
+      if (e.target.value) { e.target.value = ""; e.target.form.submit(); } else e.target.blur();
+      return;
+    }
     if (e.key === "Escape") {
       if (keys() && !keys().hidden) showKeys(false);
       else closeDrawer();
@@ -486,6 +434,12 @@ document.addEventListener("htmx:afterSwap", function (e) {
     } else if (e.key === "?") {
       e.preventDefault();
       showKeys(true);
+    } else if (e.key === "f") {
+      var q = document.getElementById("q");
+      if (!q) return;
+      e.preventDefault();
+      q.focus();
+      q.select();
     }
   });
   document.addEventListener("click", function (e) {
@@ -498,3 +452,23 @@ document.addEventListener("htmx:afterSwap", function (e) {
     else localStorage.removeItem("view");
   });
 })();
+
+// The column menus (C13): a choice submits the menu's form, so the board
+// reloads with the column's order and show in its query; Escape or a
+// click outside closes an open menu. An open menu holds the board's
+// swaps, as any open disclosure does.
+document.addEventListener("change", function (e) {
+  var f = e.target.closest && e.target.closest("details.col-menu form");
+  if (f && e.target.type === "radio") f.requestSubmit();
+});
+document.addEventListener("click", function (e) {
+  document.querySelectorAll("details.col-menu[open]").forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
+});
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") return;
+  var d = e.target.closest && e.target.closest("details.col-menu[open]");
+  if (!d) return;
+  d.open = false;
+  d.querySelector("summary").focus();
+  e.stopPropagation();
+}, true);

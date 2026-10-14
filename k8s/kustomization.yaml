@@ -15,7 +15,7 @@ resources:
 configMapGenerator:
 - name: signoz-rules
   namespace: factory
-  files: [alerts/5xx-rate.json, alerts/restarts-factoryd.json, alerts/restarts-gateway.json, alerts/ci-queue-p95.json, alerts/roll-not-live-factoryd.json, alerts/roll-not-live-gateway.json]
+  files: [alerts/5xx-rate.json, alerts/restarts-factoryd.json, alerts/restarts-gateway.json, platform/signoz/project-rules/ci-queue-p95.json, alerts/roll-not-live-factoryd.json, alerts/roll-not-live-gateway.json]
   options:
     disableNameSuffixHash: true
     labels: {factory/signoz-rules: "true"}

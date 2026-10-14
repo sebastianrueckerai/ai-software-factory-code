@@ -81,7 +81,7 @@ func TestChatClose(t *testing.T) {
 	args := `{"task_id":"t-m","note":"Superseded by #7."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "close", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache\", note Superseded by #7.","id":"TOKEN","tool":"close"}`,
+		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\", note Superseded by #7.","id":"TOKEN","tool":"close"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("close", args, "Closed #5; factoryd ends the card."))
 	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"})
@@ -113,7 +113,7 @@ func TestChatEdit(t *testing.T) {
 	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "edit", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache\", title Fix the cache eviction","id":"TOKEN","tool":"edit"}`,
+		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("edit", args, "Edited #5; the card's next session reads the edit."))
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
@@ -153,7 +153,7 @@ func TestChatGrantSession(t *testing.T) {
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs\", text Trim to 1 MB first.","id":"TOKEN","tool":"grant_session"}`,
+		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","id":"TOKEN","tool":"grant_session"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("grant_session", args, "Your answer is on #14; it grants the card one session."))
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
@@ -178,7 +178,7 @@ func TestChatSetDependency(t *testing.T) {
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", depends on #21 t-a \"Add the API.\"","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
 	set := "#22 depends on #21 now."
 	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
@@ -213,7 +213,7 @@ func TestChatSetDependency(t *testing.T) {
 	args = `{"task_id":"t-b","depends_on":"t-a","remove":true}`
 	proposed, done, undo := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "removal's proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI\", no longer depends on #21 t-a \"Add the API\"","id":"TOKEN","tool":"set_dependency"}`,
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", no longer depends on #21 t-a \"Add the API.\"","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
 	gone := "#22 no longer depends on #21."
 	equal(t, "removal's Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + gone + `"}`,
@@ -270,7 +270,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	closeForm := `<form method="post" action="/tasks/t-a/close" hx-post="/tasks/t-a/close" hx-target="#board" hx-swap="outerHTML" ` +
 		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
-		`<input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">` +
+		`<input type="hidden" name="view" value="wide">` +
 		`<button type="submit" class="deny" aria-label="Close #21">Close</button></form>`
 	if face := faceOf(t, body, "t-a"); !strings.Contains(face, closeForm) {
 		t.Errorf("the backlog card's face =\n%s\nwant it to hold\n%s", face, closeForm)
