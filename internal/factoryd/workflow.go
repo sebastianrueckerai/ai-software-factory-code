@@ -1639,6 +1639,13 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 			if v, decided := t.awaitSessionGap(); decided {
 				return v
 			}
+			// a roll_folded that landed during the gap wait: the wait's
+			// race takes no roll_folded, so the loop's own drain ran
+			// before it was sent; the merge goes only to the head the
+			// fold's round stages
+			if t.rolling && t.drainFolds() {
+				return verdict{reason: "newer images folded in"}
+			}
 		}
 		var res MergeResult
 		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver)...)
