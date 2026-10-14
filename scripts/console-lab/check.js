@@ -26,7 +26,7 @@ const mustHave = {
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "merge queue", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "New conversation", "What is #606 stuck on", "Do it", "Skip", "Send", "own conversation",
-    "every accent", "Wide view", "?"],
+    "Wide view", "?"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",

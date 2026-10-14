@@ -197,7 +197,7 @@ func TestMoveButtonsByMovedBy(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<form method="post" action="/cards/t-c2/lane" hx-post="/cards/t-c2/lane" hx-target="#board" hx-swap="outerHTML" class="inline move" data-move="ready">` +
-			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide"><input type="hidden" name="lane" value="ready">`,
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide"><input type="hidden" name="lane" value="ready">`,
 		`<button type="submit" aria-label="Move #2 to lane ready">→ Ready</button>`,
 		`data-lane="backlog"`, `data-lane="plan"`,
 	} {
@@ -405,7 +405,7 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		}
 	}
 	if filtered := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String(), "Approvals"); strings.Count(filtered,
-		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="accent" value=""><input type="hidden" name="view" value="wide">`) != 3 {
+		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) != 3 {
 		t.Errorf("the plan card's three forms do not keep the filter:\n%s", filtered)
 	}
 
@@ -737,7 +737,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	failed := col(t, body, "Done")
 	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#board" hx-swap="outerHTML" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
-		`<input type="hidden" name="accent" value=""><button type="submit" aria-label="Retry #7">Retry</button></form>`
+		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
 		t.Errorf("the failed card, or the one whose retry stopped, lacks Retry:\n%s", failed)
 	}

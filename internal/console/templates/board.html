@@ -1,8 +1,5 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
-<div class="board-head"><h2 id="board-title">Board</h2><form method="get" action="/" class="filter"><label for="accent-filter" class="visually-hidden">Accent</label><select id="accent-filter" name="accent">
-<option value=""{{if not .Accent}} selected{{end}}>every accent</option>
-{{range accents}}<option value="{{.}}"{{if eq . $.Accent}} selected{{end}}>{{.}}</option>
-{{end}}</select><input type="hidden" name="project" value="{{.Project}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
+<div class="board-head"><h2 id="board-title">Board</h2>
 <a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>
 {{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
@@ -57,7 +54,7 @@
 {{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}
 <div id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</div>{{end}}{{end}}
 
-{{define "filter"}}<input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="accent" value="{{.Accent}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{end}}
+{{define "filter"}}<input type="hidden" name="project" value="{{.Project}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{end}}
 
 {{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
 {{template "card" .Card}}

@@ -572,22 +572,21 @@ func (n need) Waiting() string {
 // task states, as the board was before the five columns.
 const viewWide = "wide"
 
-// boardFilter is what the board was asked to show: the project, the
-// accent and the view; every form on it carries it back, so an action
-// keeps the view.
+// boardFilter is what the board was asked to show: the project and the
+// view; every form on it carries it back, so an action keeps the view.
 type boardFilter struct {
-	Project, Accent, View string
+	Project, View string
 }
 
 // formFilter is the board's filter a form carried back.
 func formFilter(r *http.Request) boardFilter {
-	return boardFilter{Project: r.PostFormValue("project"), Accent: r.PostFormValue("accent"), View: r.PostFormValue("view")}
+	return boardFilter{Project: r.PostFormValue("project"), View: r.PostFormValue("view")}
 }
 
 // urlFilter is the board's filter in the URL's query.
 func urlFilter(r *http.Request) boardFilter {
 	q := r.URL.Query()
-	return boardFilter{Project: q.Get("project"), Accent: q.Get("accent"), View: q.Get("view")}
+	return boardFilter{Project: q.Get("project"), View: q.Get("view")}
 }
 
 func (f boardFilter) wide() bool { return f.View == viewWide }
@@ -597,9 +596,6 @@ func (f boardFilter) query() string {
 	q := url.Values{}
 	if f.Project != "" {
 		q.Set("project", f.Project)
-	}
-	if f.Accent != "" {
-		q.Set("accent", f.Accent)
 	}
 	if f.View != "" {
 		q.Set("view", f.View)
@@ -641,7 +637,7 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
-	// Project, Accent and View are the board's filter, which every form
+	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
 	Query       string   // the filter as a URL query for the poll's hx-get
@@ -736,8 +732,30 @@ type tick struct {
 	At, Glyph, Ref, Words, Class string
 }
 
-// tickerLimit bounds the events the ticker shows.
-const tickerLimit = 24
+// tickerLimit bounds the events the ticker shows; tickerWindow is how far
+// back they reach, and tickerQuiet how many the ticker keeps regardless
+// of age when the window holds none.
+const (
+	tickerLimit  = 24
+	tickerWindow = 24 * time.Hour
+	tickerQuiet  = 5
+)
+
+// recentTicks keeps the rows of the last tickerWindow, newest first; a
+// quiet project keeps its newest tickerQuiet rows, so the ticker never
+// scrolls through old days beside today's events, and never stands empty.
+func recentTicks(rows []factoryd.Event, now time.Time) []factoryd.Event {
+	var recent []factoryd.Event
+	for _, e := range rows {
+		if now.Sub(e.At) <= tickerWindow {
+			recent = append(recent, e)
+		}
+	}
+	if len(recent) > 0 {
+		return recent
+	}
+	return rows[:min(len(rows), tickerQuiet)]
+}
 
 // tickerOf is the project's newest events as ticks, newest first: a
 // status row by its status word and glyph, any other row by its kind, the
@@ -749,7 +767,7 @@ func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project
 		return nil
 	}
 	var out []tick
-	for _, e := range rows {
+	for _, e := range recentTicks(rows, time.Now()) {
 		k := tick{At: e.At.UTC().Format("15:04"), Glyph: "·", Ref: e.TaskID, Class: "event"}
 		if e.IssueNumber > 0 {
 			k.Ref = fmt.Sprintf("#%d", e.IssueNumber)
@@ -947,10 +965,6 @@ var errNoProject = errors.New("no such project")
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	f := urlFilter(r)
-	if f.Accent != "" && !factoryd.IsAccent(f.Accent) {
-		http.Error(w, "accent must be one of "+strings.Join(factoryd.Accents, ", "), http.StatusBadRequest)
-		return
-	}
 	if f.View != "" && !f.wide() {
 		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
 		return
@@ -1310,7 +1324,7 @@ func callsLine(t policy.CallTotals) string {
 }
 
 // boardOf is the board of one project, f.Project or else the first the
-// viewer writes, narrowed to f.Accent ("" every accent), as the session's
+// viewer writes, the project's cards, as the session's
 // human sees it. The five columns are the default, the human lane folded
 // into Needs you; the wide view puts the lanes of the project's process
 // first in the fixed order backlog, plan, ready, then the state columns,
@@ -1431,12 +1445,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		if t.Status == "waiting-human" && v.planned[t.ID] {
 			escalations[t.ID] = bt
-		}
-		// the accent filter narrows the board to one accent; a card with
-		// none is in no accent's board, and an accent never changes how a
-		// state renders.
-		if f.Accent != "" && t.Accent != f.Accent {
-			continue
 		}
 		k := c.boardCard(ctx, v, bt)
 		switch {
@@ -1899,7 +1907,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 }
 
 // writableCard is the card the path names, built as the board shows it
-// under the URL's filter (?project, ?accent, ?view); an unknown card is
+// under the URL's filter (?project, ?view); an unknown card is
 // 404. The route's access-table rule has judged the writer. false: the
 // answer is written.
 func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd.BoardTask, card, *boardView, bool) {
@@ -1933,7 +1941,7 @@ func (c *Console) writableCard(w http.ResponseWriter, r *http.Request) (factoryd
 
 // cardFragment answers GET /cards/{id} to a writer of the card's project,
 // 404 to anyone else: the one card as the board renders it, its forms
-// carrying the filter (?project, ?accent, ?view) of the board it is
+// carrying the filter (?project, ?view) of the board it is
 // swapped into.
 func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 	if _, k, _, ok := c.writableCard(w, r); ok {

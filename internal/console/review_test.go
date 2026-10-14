@@ -136,3 +136,26 @@ func TestNoInlineStyle(t *testing.T) {
 		t.Errorf("the strip's gauge is not a meter")
 	}
 }
+
+// The ticker keeps the last day's events, newest first, and never
+// scrolls through old days beside today's; a project quiet for a day
+// keeps its newest five, so the ticker never stands empty.
+func TestTickerKeepsTheLastDay(t *testing.T) {
+	now := time.Date(2026, 10, 14, 15, 0, 0, 0, time.UTC)
+	at := func(h float64) factoryd.Event {
+		return factoryd.Event{At: now.Add(-time.Duration(h * float64(time.Hour)))}
+	}
+	rows := []factoryd.Event{at(0.5), at(23.9), at(24.1), at(48), at(72), at(96), at(120)}
+	if got := recentTicks(rows, now); len(got) != 2 || got[0].At != rows[0].At || got[1].At != rows[1].At {
+		t.Errorf("a day with two events keeps %d, want the two of the last 24 hours", len(got))
+	}
+	if got := recentTicks(rows[2:], now); len(got) != 5 || got[0].At != rows[2].At || got[4].At != rows[6].At {
+		t.Errorf("a quiet day keeps %d, want the newest five", len(got))
+	}
+	if got := recentTicks(rows[5:], now); len(got) != 2 {
+		t.Errorf("a quiet day with two old events keeps %d, want both", len(got))
+	}
+	if got := recentTicks(nil, now); len(got) != 0 {
+		t.Errorf("no events keep %d", len(got))
+	}
+}
