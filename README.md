@@ -517,12 +517,16 @@ commit (`RerunChecks`); red checks that pass there, on the same tree, are
 flaky (`checks_flaky {commit, head, checks}`) and never a finding. A
 green head goes to the approval again (dismissed stale approvals make it
 a new card or the rule `auto`). A queue entry gets at most three such
-re-runs; still red after the third, the head leaves the queue, so the
-cards behind it merge, and waits outside it for a human: the escalation
-names the red checks with their log tails. A reply puts it back at the
-queue's end as a new entry with three re-runs afresh; a change request
-sends the task to the agent, whose fix enters the queue anew. No model
-call is made on the way. From change id `checked-head` on, the approval
+turns; after them a head still red, or green there though its merge read
+red again, leaves the queue, so the cards behind it merge, and waits
+outside it for a human: the escalation names the red checks with their
+log tails, or the merge's refusal. A reply puts it back at the queue's
+end as a new entry with three turns afresh; a change request sends the
+task to the agent, whose fix enters the queue anew. No model call is
+made on the way. Every escalation comment lists, after its fenced
+reason, the reason's links the sanitiser keeps (the public Forgejo host,
+the policy's `link_hosts`, the project's environments), since a fence
+renders none as a link. From change id `checked-head` on, the approval
 stage's green read after a cheap turn reads the head whose checks hold,
 not the synced head whose checks just started, and no checked head
 outlives its pass.

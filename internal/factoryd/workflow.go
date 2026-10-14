@@ -876,7 +876,6 @@ type taskRun struct {
 	answerBurst       workflow.Version // an answer's wait resumes after its burst (versionAnswerBurst)
 	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
 	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
-	restages          int              // the re-stage under way, from 1; 0 outside restage
 	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)

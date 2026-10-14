@@ -69,6 +69,20 @@ func TestOutbound(t *testing.T) {
 	}
 }
 
+// Links lists the links Outbound keeps clickable, once each, in order:
+// on an allowed host or under one, a protocol-relative one without its
+// lead; a foreign or defanged one is no link.
+func TestLinks(t *testing.T) {
+	in := "check \"pr / test\": failure (https://git.example/sf/r/actions/runs/96/jobs/0)\n" +
+		"see https://evil.test/x, hxxps://evil[.]test/y and (//docs.example.org/a)\n" +
+		"again https://git.example/sf/r/actions/runs/96/jobs/0"
+	got := Links(in, []string{"git.example", "example.org"})
+	want := []string{"https://git.example/sf/r/actions/runs/96/jobs/0", "//docs.example.org/a"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("Links = %q, want %q", got, want)
+	}
+}
+
 // What factoryd posts hides nothing from the human reading it: HTML and
 // Markdown comments, which Forgejo renders as nothing, are removed as on
 // the way in (PR #251's body kept both).

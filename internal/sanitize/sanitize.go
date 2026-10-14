@@ -6,6 +6,7 @@ package sanitize
 import (
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -46,6 +47,20 @@ func Outbound(s string, hosts []string) string {
 		}
 		return lead + defang(m)
 	})
+}
+
+// Links are the links of s that Outbound keeps clickable, their host one
+// of hosts or under one, each once, in order: s's own text in a code
+// fence renders none of them as a link.
+func Links(s string, hosts []string) []string {
+	var out []string
+	for _, m := range link.FindAllString(s, -1) {
+		m = strings.TrimLeft(m, " \t\n(<[\"'")
+		if allowed(m, hosts) && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 // unhide removes the HTML and Markdown comments Forgejo renders as nothing.

@@ -609,9 +609,15 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 }
 
 // untrusted is agent-, model- or issue-written text as factoryd posts it on
-// t's repository: sanitize.Outbound, links allowed to the policy's
-// link_hosts, the Forgejo host and the project's environment hosts.
+// t's repository: sanitize.Outbound, links allowed to linkHosts.
 func (r *Runner) untrusted(t Task, s string) string {
+	return sanitize.Outbound(s, r.linkHosts(t))
+}
+
+// linkHosts are the hosts a link in text factoryd posts on t's repository
+// may point at: the policy's link_hosts, the Forgejo host and the
+// project's environment hosts.
+func (r *Runner) linkHosts(t Task) []string {
 	v := r.cfg.Policy()
 	hosts := slices.Clone(v.Document.LinkHosts)
 	if u, err := url.Parse(r.forgejo.PublicURL); err == nil && u.Hostname() != "" {
@@ -624,7 +630,7 @@ func (r *Runner) untrusted(t Task, s string) string {
 			}
 		}
 	}
-	return sanitize.Outbound(s, hosts)
+	return hosts
 }
 
 func longestBackticks(s string) int {

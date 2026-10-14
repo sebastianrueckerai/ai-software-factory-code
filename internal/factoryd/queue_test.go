@@ -690,16 +690,54 @@ func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
 	})
 }
 
-// The escalation of a head that left the queue says what a reply does.
-func TestQueueLeftEscalationSaysWhatAReplyDoes(t *testing.T) {
+// A head whose checks read green on every turn while its merge reads red
+// takes the same path as a red one: within the bound each turn merges
+// again, and after it the head leaves the queue on the escalation, which
+// names the merge's refusal; it does not hold the turn.
+func TestQueueRedMergeOnGreenChecksLeavesTheQueue(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green, autoGates)
+	q.merge = []MergeResult{redAtMerge}
+	q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+	q.onSessions(pushed("s1", "c1"))
+	q.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "failed" {
+		t.Fatalf("final = %q (%v)", final, q.finals)
+	}
+	if want := slices.Repeat([]string{"9 c1 " + AutoApprover}, 4); !slices.Equal(q.merges, want) || len(q.reruns) != 0 {
+		t.Fatalf("merges %v, reruns %v; want the first merge and one per turn, no re-run of green checks", q.merges, q.reruns)
+	}
+	want := "the checks are still red after the merge queue's re-runs, so the pull request left the queue until a human answers\n\n" +
+		"the checks are red on c1: the merge waits for a green head"
+	if !slices.Equal(q.escalated, []string{want}) || !slices.Equal(q.leaves, []string{leftQueue, "pull request closed without merge"}) {
+		t.Fatalf("escalated %q, leaves %q; want the refusal asked outside the queue", q.escalated, q.leaves)
+	}
+	if len(q.approvals) != 0 || len(q.sessions) != 1 {
+		t.Fatalf("approvals %+v, %d sessions; want no card holding the turn, no session", q.approvals, len(q.sessions))
+	}
+}
+
+// The escalation of a head that left the queue says what a reply does,
+// and the red check's job, which the fence renders as text, follows it as
+// a link on the public Forgejo host; a foreign link in the log's tail
+// stays defanged and unlisted.
+func TestQueueLeftEscalationLinksTheJob(t *testing.T) {
 	task := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9}
 	runner, hub, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	if _, err := execActivity(t, runner, ActivityEscalate, "t1", leftQueue+"\n\n"+redTest("c1").Findings[0], []string(nil)); err != nil {
+	runner.forgejo.PublicURL = "https://git.example"
+	red := checksResult(CombinedStatus{State: "failure", Statuses: []CommitStatus{
+		{Context: "pr / test", State: "failure", Description: "1 test failed", TargetURL: "/sf/r/actions/runs/96/jobs/0"}}},
+		runner.forgejo.PublicURL, func(string) ([]byte, error) { return []byte("--- FAIL: TestRace, see https://evil.test/x\n"), nil })
+	if _, err := execActivity(t, runner, ActivityEscalate, "t1", leftQueue+"\n\n"+red.Findings[0], []string(nil)); err != nil {
 		t.Fatal(err)
 	}
-	want := "```\n\nReply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
-	if len(hub.comments) != 1 || !strings.HasSuffix(hub.comments[0], want) {
+	if len(hub.comments) != 1 {
 		t.Fatalf("comments %q", hub.comments)
+	}
+	_, after, ok := strings.Cut(hub.comments[0], "hxxps://evil[.]test/x\n```")
+	want := "\n\nLinks:\n- https://git.example/sf/r/actions/runs/96/jobs/0\n\n" +
+		"Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
+	if !ok || after != want {
+		t.Fatalf("comment %q, want the fence followed by %q", hub.comments[0], want)
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -745,7 +746,13 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if strings.HasPrefix(reason, leftQueue) {
 		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
 	}
-	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(r.untrusted(t, reason)) + "\n\n" + next
+	safe := r.untrusted(t, reason)
+	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(safe)
+	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
+		// the fence renders no link: the ones the sanitiser keeps follow it
+		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
+	}
+	body += "\n\n" + next
 	if strings.HasPrefix(reason, screeningAsks) {
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine

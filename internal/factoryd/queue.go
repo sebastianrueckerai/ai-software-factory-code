@@ -341,8 +341,9 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	return t.runStage(policy.StageChecks, head, g, review)
 }
 
-// maxRestages bounds the re-runs of a queue head red at its merge, per
-// queue entry (versionRedHeadRestage).
+// maxRestages bounds the turns a queue head red at its merge takes per
+// queue entry, each with at most one re-run of its checks
+// (versionRedHeadRestage).
 const maxRestages = 3
 
 // leftQueue opens the escalation of a queue head still red after its
@@ -354,10 +355,9 @@ const leftQueue = "the checks are still red after the merge queue's re-runs, so 
 const approvalWithdrawn = "withdrawn: the checks were red at the merge; the merge queue runs them again, and a green head gets a new request"
 
 // restageable: a queue head red at its merge goes back through its turn
-// (versionRedHeadRestage), after its last re-run once more, to leave the
-// queue on its red checks.
+// (versionRedHeadRestage), whatever its re-runs: restage bounds them.
 func (t *taskRun) restageable() bool {
-	return t.redRestage >= versionRedHeadRestage && t.queued() && t.restages <= maxRestages
+	return t.redRestage >= versionRedHeadRestage && t.queued()
 }
 
 // restage takes a queue head whose checks were red at its merge back
@@ -366,18 +366,18 @@ func (t *taskRun) restageable() bool {
 // so the turn comes back once a fix made main green, and a head that
 // moved runs its checks. With nothing new from main the head's own checks
 // are waited on and the red ones run again on an empty commit
-// (RerunChecks), at most maxRestages times; red checks that pass there,
-// on the same tree, are flaky (checks_flaky), never findings. A green
-// head goes to the approval again. A head still red after the last
-// re-run leaves the queue, so the cards behind it merge, and waits
-// outside it for a human, the escalation naming its red checks: an
-// answer puts it back at the queue's end, a new entry with its re-runs
-// afresh, and a change request sends it to the agent, whose fix enters
-// the queue anew. The re-staged head's own checks decide its merge (no
-// checkedHead).
+// (RerunChecks); red checks that pass there, on the same tree, are flaky
+// (checks_flaky), never findings. A green head goes to the approval again.
+// After maxRestages turns a head still red, or green there though its
+// merge read red again, leaves the queue, so the cards behind it merge,
+// and waits outside it for a human, the escalation naming its red checks
+// or the merge's refusal: an answer puts it back at the queue's end, a
+// new entry with its turns afresh, and a change request sends it to the
+// agent, whose fix enters the queue anew. The re-staged head's own checks
+// decide its merge (no checkedHead).
 func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
-	defer func() { t.restages = 0 }()
-	for t.restages = 1; ; t.restages++ {
+	refusal := "" // the red merge that began this turn, "" after red checks
+	for n := 1; ; n++ {
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawApproval, t.taskID).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "withdraw the approval request: " + errMessage(err)}
 		}
@@ -396,14 +396,18 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 				return v
 			}
 		}
-		if !moved && len(red) > 0 && t.restages > maxRestages {
+		if !moved && n > maxRestages && (len(red) > 0 || refusal != "") {
+			if len(red) == 0 {
+				red = []string{refusal}
+			}
 			t.leaveQueue(leftQueue)
 			if v, stop := t.gateEscalated(leftQueue + "\n\n" + strings.Join(red, "\n\n")); stop {
 				return v
 			}
-			t.restages = 0
+			n, refusal = 0, ""
 			continue
 		}
+		refusal = ""
 		if moved || len(red) > 0 {
 			if moved {
 				commit, t.syncedHead = sync.To, sync.To
@@ -431,6 +435,7 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 		if v = t.approval(commit, g, review, reviewed, capped, card, covered); !v.restage {
 			return v
 		}
+		refusal = v.reason
 	}
 }
 
