@@ -115,6 +115,12 @@ async function main() {
           await shot("drawer-running-1440.png", desk, (id) => "/#card=" + id, null, false);
           await shot("drawer-overview-1440.png", desk, (id) => "/#card=" + id, tab("Overview"), false);
           await shot("drawer-files-1440.png", desk, (id) => "/#card=" + id, tab("Files"), false);
+          // the Overview's Time section open (C10)
+          await shot("drawer-time-1440.png", desk, (id) => "/#card=" + id, async (p) => {
+            await tab("Overview")(p);
+            await p.page.locator('#drawer [data-sec="time"] > summary').click();
+            await p.page.waitForTimeout(200);
+          }, false);
         }
         // the phone is one column: the chat first, the board below it
         await shot("phone-390.png", phone, "/", doIt);

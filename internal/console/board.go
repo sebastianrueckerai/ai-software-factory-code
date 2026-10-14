@@ -41,6 +41,8 @@ var funcs = template.FuncMap{
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct": pct,
+	// initial is a member's avatar letter
+	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
 	// switch is whether the top bar shows the project select: the board
 	// page's data has the projects, the other pages' has none
 	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },
@@ -86,18 +88,18 @@ type verdictForm struct {
 	CSRF, Back string
 }
 
-// The project screen's five columns (ruling 255), a view over the task
-// states and never a state of their own; the lane and the fine state are
-// chips on the card.
+// The project screen's four columns (ruling 255 as C8 amends it), a view
+// over the task states and never a state of their own: In progress holds
+// running, closing and in review, the stage word on the card; the lane
+// and the fine state are chips on the card.
 const (
 	colNeedsYou = iota
 	colQueued
-	colWorking
-	colVerifying
+	colProgress
 	colDone
 )
 
-var fiveTitles = []string{"Needs you", "Queued", "Working", "Verifying", "Done"}
+var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 
 // fiveColumn is t's column for viewer, -1 for a status none holds: a card
 // waiting on its author needs the viewer when they are the author, else
@@ -113,10 +115,8 @@ func fiveColumn(t factoryd.Task, viewer string) int {
 		return colQueued
 	case "backlog", "queued", "waiting-deps":
 		return colQueued
-	case "running", "closing":
-		return colWorking
-	case "in-review":
-		return colVerifying
+	case "running", "closing", "in-review":
+		return colProgress
 	case "done", "failed", "closed":
 		return colDone
 	}
@@ -516,6 +516,16 @@ type need struct {
 	CSRF      string
 	Approver  bool
 	Back      string
+	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
+}
+
+// Waiting is how long the item has waited for a member, in minutes or
+// hours and minutes; empty when the item's start is unknown.
+func (n need) Waiting() string {
+	if n.Since.IsZero() {
+		return ""
+	}
+	return minutes(time.Since(n.Since))
 }
 
 // viewWide is the board's wide view: the lanes as columns first, then the
@@ -630,7 +640,7 @@ func pct(spent, cap float64) int {
 func (d boardData) InProgress() []card {
 	var out []card
 	for _, col := range d.Columns {
-		if col.Title == "Working" || col.Title == "Verifying" || col.Title == "In progress" {
+		if col.Title == "In progress" {
 			out = append(out, col.Cards...)
 		}
 	}
@@ -713,6 +723,29 @@ func (c *Console) tickerOf(ctx context.Context, v *boardView, p factoryd.Project
 		out = append(out, k)
 	}
 	return out
+}
+
+// Final is a done, failed or closed card: a two-line row on the board.
+func (k card) Final() bool { return factoryd.Final(k.Status) }
+
+// Glyph is the final state's mark beside its word.
+func (k card) Glyph() string {
+	switch k.Status {
+	case "done":
+		return "✓"
+	case "failed":
+		return "✕"
+	case "closed":
+		return "⊘"
+	}
+	return "·"
+}
+
+// Speaks is whether the face shows the activity line: a card in progress,
+// one that waits, one stalled on the provider or stale; a queued card
+// keeps its face bare.
+func (k card) Speaks() bool {
+	return k.Stage != "" || strings.HasPrefix(k.Status, "waiting") || k.Stale || k.Provider || k.Retrying || k.Held
 }
 
 // configTree is commit's tree of the configuration directory in Forgejo,
@@ -1054,11 +1087,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			k.Badge = t.Lane
 		}
 	}
-	// the five columns are no lanes: a card wears its lane, unless its
-	// status says the same word
+	// the four columns are no lanes: a card wears its lane when it is
+	// not the default, ready, and its status does not say the same word
 	if !v.filter.wide() {
 		k.Badge = t.Lane
-		if t.Lane == t.Status {
+		if t.Lane == t.Status || t.Lane == policy.LaneReady {
 			k.Badge = ""
 		}
 	}
@@ -1276,7 +1309,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		byStatus["closing"] = byStatus["running"]
 	} else {
-		for _, title := range fiveTitles {
+		for _, title := range columnTitles {
 			d.Columns = append(d.Columns, column{Title: title})
 		}
 	}
@@ -1309,9 +1342,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			if !factoryd.Final(t.Status) {
 				d.Status.NeedYou++
 			}
-		case col == colWorking && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
+		case col == colProgress && t.Status == "running" && c.timelineFace(ctx, t.ID).provider:
 			d.Status.Waiting++
-		case col == colWorking:
+		case col == colProgress && t.Status != "in-review":
 			d.Status.Working++
 		case col == colNeedsYou && !v.planned[t.ID]:
 			d.Status.NeedYou++
@@ -1836,7 +1869,7 @@ type drawerTab struct{ Name, Title string }
 
 // drawerTabs are the card drawer's tabs: Chat the default of a running
 // card, Overview of any other.
-var drawerTabs = []drawerTab{{"overview", "Overview"}, {"activity", "Activity"}, {"files", "Files"}, {"chat", "Chat"}}
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Chat"}, {"activity", "Activity"}, {"files", "Files"}}
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
@@ -1863,6 +1896,32 @@ type drawerData struct {
 	Steers                     bool   // the session runs and takes the member's messages
 	Note                       string // what the member's action did
 	Problem                    string // what the tab could not read
+	// Runs are the card's life for the Time section (C10) and Life its
+	// at-a-glance line; Need is the open question with its actions when
+	// the card waits on a person.
+	Runs []run
+	Life string
+	Need *need
+}
+
+// Age is the card's time in its stage, or in all once it ended.
+func (d drawerData) Age() string {
+	var parts []string
+	if d.Card.StageAge != "" {
+		parts = append(parts, d.Card.StageAge)
+	}
+	if d.Card.Total != "" {
+		parts = append(parts, d.Card.Total+" in all")
+	}
+	return strings.Join(parts, ", ")
+}
+
+// Word is the card's stage word, or its status.
+func (d drawerData) Word() string {
+	if d.Card.Stage != "" {
+		return d.Card.Stage
+	}
+	return d.Card.Status
 }
 
 // said is a message of a session in the drawer's Chat: the agent's text
@@ -1917,6 +1976,11 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 	}
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
+	// the drawer's head carries the title as filed, whole: the objective's
+	// first line, unless a writer's summary or a plan key names the card
+	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" && bt.PlanKey == "" {
+		d.Card.Title = headline
+	}
 	problem := func(what string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
 		d.Problem = "The " + what + " could not be read; see the factoryd log."
@@ -1933,9 +1997,15 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
 				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approves(a.Project))
+				m.Filter, m.IDSuffix = k.Filter, "-d"
 				d.Merge = &m
 			}
 		}
+		if v.escalated(bt.Task) {
+			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Approver: c.approver(r), Back: "/" + k.Filter.query(), Suffix: "-d"}
+		}
+		d.Runs = c.lifeOf(ctx, bt.Task)
+		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		var err error
 		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
 			problem("related cards", err)

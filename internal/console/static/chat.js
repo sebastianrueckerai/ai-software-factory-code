@@ -49,11 +49,18 @@ var chatView = (function () {
     var d = new Date(at);
     return isNaN(d) ? "" : d.toISOString().slice(5, 16).replace("T", " ") + "Z";
   }
+  // a turn: a 22 px avatar at the left (the agent a cyan ring with a dot,
+  // the member a filled circle with their initial), the name and the time
+  // on one line above the text, the text at the full width
+  function whoHTML(name, at) {
+    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
+  }
   function userHTML(login, text, at) {
-    return "<div class=\"msg you\"><p class=\"who\">" + esc(login) + " · " + stamp(at) + "</p><p class=\"said\">" + esc(text) + "</p></div>";
+    return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
+      "<p class=\"said\">" + esc(text) + "</p></div>";
   }
   function agentHTML(at, parts) {
-    return "<div class=\"msg agent\"><p class=\"who\">project agent · " + stamp(at) + "</p>" + parts + "</div>";
+    return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
   }
   function saidHTML(text) {
     return "<div class=\"said\">" + md(text) + "</div>";
@@ -280,8 +287,6 @@ var chatView = (function () {
     waiting.add(text);
   }
   function turn(text) {
-    var start = log.querySelector(".chat-start");
-    if (start) start.remove();
     add(log, chatView.userHTML(login, text, new Date()));
     add(log, chatView.agentHTML(new Date(), ""));
     scrollEnd(true);

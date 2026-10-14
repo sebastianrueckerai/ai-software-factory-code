@@ -193,9 +193,15 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     var msg = log.appendChild(document.createElement("div"));
     msg.className = "msg " + (agent ? "agent" : "you");
     msg.dataset.key = key;
-    var who = msg.appendChild(document.createElement("p")), text = msg.appendChild(document.createElement("p"));
+    var av = msg.appendChild(document.createElement("span")), who = msg.appendChild(document.createElement("p")), text = msg.appendChild(document.createElement("p"));
+    av.className = "av";
+    av.setAttribute("aria-hidden", "true");
+    av.textContent = agent ? "" : String(e.actor || "").charAt(0).toUpperCase();
     who.className = "who";
-    who.textContent = (agent ? "agent" : e.actor) + " · " + new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
+    var name = who.appendChild(document.createElement("span")), when = who.appendChild(document.createElement("time"));
+    name.className = "name";
+    name.textContent = agent ? "agent" : e.actor;
+    when.textContent = new Date(e.at).toISOString().slice(5, 16).replace("T", " ") + "Z";
     text.className = "said";
     text.textContent = d.text || "";
     if (end) box.scrollTop = box.scrollHeight;
@@ -343,14 +349,63 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
+// The whole card opens the drawer (item 226): a click anywhere on the
+// face that is not a link, a button or a field; the title's link is the
+// same door for the keyboard. A selection is left alone.
+document.addEventListener("click", function (e) {
+  if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
+  var card = e.target.closest("#board [data-card]");
+  if (!card || String(getSelection && getSelection())) return;
+  location.hash = "#card=" + card.dataset.card;
+});
+// On the phone the columns are sections: Done starts folded, a tap on a
+// column's title folds or unfolds it.
+(function () {
+  function narrow() { return window.innerWidth < 900; }
+  function fold() {
+    document.querySelectorAll("#board .column.fold").forEach(function (c) {
+      if (!c.dataset.folded) {
+        c.dataset.folded = narrow() ? "yes" : "no";
+        c.classList.toggle("folded", c.dataset.folded === "yes");
+      }
+      var h = c.querySelector(":scope > h3");
+      if (h) h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+    });
+  }
+  document.addEventListener("DOMContentLoaded", fold);
+  document.addEventListener("htmx:afterSettle", fold);
+  document.addEventListener("click", function (e) {
+    var h = e.target.closest && e.target.closest("#board .column > h3");
+    if (!h || !narrow()) return;
+    var c = h.parentElement;
+    c.classList.toggle("folded");
+    c.dataset.folded = c.classList.contains("folded") ? "yes" : "no";
+    h.setAttribute("aria-expanded", String(!c.classList.contains("folded")));
+  });
+})();
+
+// A disclosure: a button with aria-controls reveals or hides the element it
+// names (the deny form, the own-answer box) and says so in aria-expanded.
+document.addEventListener("click", function (e) {
+  var b = e.target.closest("button[aria-controls][aria-expanded]");
+  if (!b || b.type === "submit") return;
+  var box = document.getElementById(b.getAttribute("aria-controls"));
+  if (!box) return;
+  var open = b.getAttribute("aria-expanded") !== "true";
+  b.setAttribute("aria-expanded", String(open));
+  box.hidden = !open;
+  if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
+});
+
 // The card drawer docked at the right edge over the board: #card=<id> in
-// the URL opens it, on load too, and a card links there; Escape or its ✕
+// the URL opens it, on load too, and a card links there; #card=<id>:<section>
+// opens it with that section of the overview open. Escape or its ✕
 // closes it.
 // Its tabs and related cards load into it by hx-get, and the URL follows
 // the card it shows.
 function drawer() { return document.getElementById("drawer"); }
 function showDrawer() {
-  var d = drawer(), m = /^#card=(.+)$/.exec(location.hash);
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
   document.body.classList.toggle("drawer-open", !!m);
   d.hidden = !m;
@@ -359,7 +414,9 @@ function showDrawer() {
     document.dispatchEvent(new Event("drawerclosed"));
     return;
   }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer", {target: "#drawer", swap: "innerHTML"}).then(function () {
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(decodeURIComponent(m[1])) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+    var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
+    if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
   });

@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -17,10 +18,10 @@ import (
 )
 
 // faceOf is the face of card id: the first card article in section that
-// links its timeline.
+// carries its id.
 func faceOf(t *testing.T, section, id string) string {
 	t.Helper()
-	i := strings.Index(section, `href="/tasks/`+id+`/timeline"`)
+	i := strings.Index(section, `data-card="`+id+`"`)
 	if i < 0 {
 		t.Fatalf("card %s missing:\n%s", id, section)
 	}
@@ -83,7 +84,12 @@ func TestCardFacePillPerStatus(t *testing.T) {
 	} {
 		r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: "work"})
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-		if want := `<span class="pill ` + class + `">` + status + `</span>`; !strings.Contains(faceOf(t, body, "t-1"), want) {
+		word := cmp.Or(map[string]string{"running": "building", "closing": "building", "in-review": "verifying"}[status], status)
+		want := `<span class="pill ` + class + `">` + word + `</span>`
+		if glyph, final := map[string]string{"done": "✓", "failed": "✕", "closed": "⊘"}[status]; final {
+			want = `<span class="st"><span class="g" aria-hidden="true">` + glyph + `</span>` + status + `</span>`
+		}
+		if !strings.Contains(faceOf(t, body, "t-1"), want) {
 			t.Errorf("%s: the face lacks %s:\n%s", status, want, faceOf(t, body, "t-1"))
 		}
 	}
@@ -102,7 +108,6 @@ func TestCardFaceSpend(t *testing.T) {
 		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no budget"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for id, want := range map[string]string{
-		"t-low":   `<span class="spend">€7.99 / €10.00</span>`,
 		"t-at":    `<span class="spend near">€8.00 / €10.00 ⚠ near its budget</span>`,
 		"t-cents": `<span class="spend near">€2.40 / €3.00 ⚠ near its budget</span>`,
 	} {
@@ -110,8 +115,13 @@ func TestCardFaceSpend(t *testing.T) {
 			t.Errorf("%s lacks %s:\n%s", id, want, face)
 		}
 	}
-	if face := faceOf(t, body, "t-none"); strings.Contains(face, `class="spend`) {
-		t.Errorf("a card without a budget shows spend:\n%s", face)
+	for _, id := range []string{"t-low", "t-none"} {
+		if face := faceOf(t, body, id); strings.Contains(face, `class="spend`) {
+			t.Errorf("%s shows spend on its face:\n%s", id, face)
+		}
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-low/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "€7.99 of €10.00") {
+		t.Errorf("the drawer lacks the spend under 80 percent:\n%s", drawer)
 	}
 	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
 	for _, rule := range []string{".spend { color: var(--text-muted); }", ".spend.near { color: var(--need-text); }"} {
@@ -138,12 +148,15 @@ func TestCardFaceCalls(t *testing.T) {
 		},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	want := `<span class="spend">€1.20 / €5.00</span> <span class="calls" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">100,000 prompt · 66,000 cached · 2,000 output tokens · €0.0420 modeled</span>`
-	if face := faceOf(t, body, "t-calls"); !strings.Contains(face, want) {
-		t.Errorf("the face lacks its calls line beside the spend:\n%s", face)
+	if face := faceOf(t, body, "t-calls"); strings.Contains(face, "modeled") {
+		t.Errorf("the face shows the calls:\n%s", face)
 	}
-	if face := faceOf(t, body, "t-none"); strings.Contains(face, `class="calls"`) {
-		t.Errorf("a card without call rows shows a calls line:\n%s", face)
+	want := `<span class="mono">€1.20 of €5.00, 24 percent</span> <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· 100,000 prompt · 66,000 cached · 2,000 output tokens · €0.0420 modeled</span>`
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-calls/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, want) {
+		t.Errorf("the drawer lacks its calls beside the budget:\n%s", drawer)
+	}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-none/drawer?tab=overview", nil), ck).Body.String(); strings.Contains(drawer, "modeled") {
+		t.Errorf("a card without call rows shows calls:\n%s", drawer)
 	}
 }
 
@@ -164,11 +177,11 @@ func TestCardFaceChips(t *testing.T) {
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	full := faceOf(t, body, "t-full")
-	for _, want := range []string{`<span class="badge">ready</span>`, `<span class="chip model">coding-cheap</span>`,
-		`<span class="chip blocked" title="#3, #5">blocked by 2</span>`} {
-		if !strings.Contains(full, want) {
-			t.Errorf("t-full lacks %s:\n%s", want, full)
-		}
+	if want := `<span class="chip blocked" title="#3, #5">blocked by 2</span>`; !strings.Contains(full, want) {
+		t.Errorf("t-full lacks %s:\n%s", want, full)
+	}
+	if strings.Contains(full, "coding-cheap") || strings.Contains(full, `class="badge"`) {
+		t.Errorf("the face names the model or the default lane:\n%s", full)
 	}
 	if bare := faceOf(t, body, "t-bare"); strings.Contains(bare, `class="chips"`) || strings.Contains(bare, `class="transitions"`) {
 		t.Errorf("a card with nothing to show has a chips or transitions line:\n%s", bare)
@@ -305,13 +318,13 @@ func TestEscalatedCardRepeatsNoID(t *testing.T) {
 			t.Errorf("id %q appears %d times", id, n)
 		}
 	}
-	face := faceOf(t, body, "t-e")
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer", nil), ck).Body.String()
 	for _, want := range []string{
-		`<label><span class="visually-hidden">Summary (up to 255 characters; empty restores the generated title)</span><input type="text" name="summary" maxlength="255" value="" placeholder="asks"></label>`,
-		`<label><span class="visually-hidden">Accent colour (never a state's colour, never in an agent's brief)</span><select name="value">`,
+		`<input type="text" id="summary-t-e-d" name="summary" maxlength="255" value="" placeholder="asks">`,
+		`<select id="accent-t-e-d" name="value">`,
 	} {
-		if !strings.Contains(face, want) {
-			t.Errorf("the face lacks %s:\n%s", want, face)
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %s:\n%s", want, drawer)
 		}
 	}
 }
@@ -347,7 +360,7 @@ func TestCardFaceAccent(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	teal := faceOf(t, body, "t-teal")
 	if !strings.HasPrefix(teal, `<article class="card face edge-teal" data-card="t-teal" `) || !strings.Contains(teal, `<span class="chip accent-teal">teal</span>`) ||
-		!strings.Contains(teal, `<span class="pill st-running">running</span>`) {
+		!strings.Contains(teal, `<span class="pill st-running">building</span>`) {
 		t.Errorf("the teal card lacks its edge, its chip or its plain running pill:\n%s", teal)
 	}
 	if none := faceOf(t, body, "t-none"); !strings.HasPrefix(none, `<article class="card face" data-card="t-none" `) || strings.Contains(none, "chip accent-") {
@@ -515,16 +528,18 @@ func TestAccentPost(t *testing.T) {
 	if code := accent("purple"); code != http.StatusBadRequest || stored() != "pink" {
 		t.Fatalf("accent purple = %d, stored %q; want 400 and pink kept", code, stored())
 	}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-1"); !strings.Contains(face, `<option value="">none</option>`) || !strings.Contains(face, `<option value="pink" selected>pink</option>`) {
-		t.Fatalf("the accent select lacks none or the chosen pink:\n%s", face)
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-1/drawer?tab=overview", nil), ck).Body.String()
+	}
+	if d := drawer(); !strings.Contains(d, `<option value="">none</option>`) || !strings.Contains(d, `<option value="pink" selected>pink</option>`) {
+		t.Fatalf("the accent select lacks none or the chosen pink:\n%s", d)
 	}
 	if code := accent(""); code != http.StatusSeeOther || stored() != "" {
 		t.Fatalf("accent none = %d, stored %q; want 303 and cleared", code, stored())
 	}
-	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-1"); strings.Contains(face, "chip accent-") || strings.Contains(face, "edge-") ||
-		!strings.Contains(face, `<option value="" selected>none</option>`) {
+		!strings.Contains(drawer(), `<option value="" selected>none</option>`) {
 		t.Fatalf("a cleared accent still shows:\n%s", face)
 	}
 	r.repoWriters["sf/code"] = nil
@@ -587,12 +602,19 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		htmx("/tasks/t-spec2/plan/accept") + ">\n" + filter,
 		htmx("/tasks/t-spec2/plan/changes") + ">\n" + filter,
 		htmx("/tasks/t-spec2/plan/reject") + ">\n" + filter,
-		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
-		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit">` + filter,
 		`<form method="post" action="/tasks/t-ask/answer">` + "\n" + filter,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the filtered board lacks %s", want)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2/drawer?project=linkshort&accent=teal", nil), ck).Body.String()
+	for _, want := range []string{
+		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
+		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit">` + filter,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the filtered drawer lacks %s", want)
 		}
 	}
 	if plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(plain, `name="accent" value="teal"`) {
@@ -661,8 +683,9 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		esc := escalationOf(t, body, "t-ch")
 		want := `<p class="reason">The agent asks: a replica or a shard?` + "\n" + `Why: the reads outgrow one node</p>` + "\n" +
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
-			choice("a replica") + choice("a shard") + choice("both") + "</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
+			choice("a replica") + choice("a shard") + choice("both") +
+			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
+			`<form method="post" action="/tasks/t-ch/answer" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" required></textarea>`
 		if !strings.Contains(esc, want) {

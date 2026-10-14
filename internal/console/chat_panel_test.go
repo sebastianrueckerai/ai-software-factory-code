@@ -36,15 +36,15 @@ func TestChatPanel(t *testing.T) {
 <section id="chat" class="chat" aria-labelledby="chat-title"`,
 		`<section id="chat" class="chat" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new">New conversation</button> <select id="chat-conversations" hidden aria-label="Old conversations"></select></div>
+<p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
-<p class="meta chat-start">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 </div>
-<p class="meta chat-own">This is your own conversation with the project agent; other members have theirs.</p>
-<form id="chat-form" class="chat-form" method="post" action="/projects/ai-software-factory-code/chat">
+<form id="chat-form" class="chat-form composer" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
-<label for="chat-input" class="visually-hidden">Your message to the project agent</label>
-<textarea id="chat-input" name="message" rows="2" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
-<button type="submit">Send</button>
+<div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
+<textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line)" aria-keyshortcuts="/"></textarea>
+<button type="submit">Send</button></div>
+<p class="chat-own">This is your own conversation with the project agent; other members have theirs.</p>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 <script src="/static/chat.js" defer></script>
@@ -71,8 +71,8 @@ func TestChatPanel(t *testing.T) {
 	body = page(ak, code)
 	if want := `<section id="chat" class="chat" aria-labelledby="chat-title">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span></div>
+<p class="chat-start" title="You read this project: its writers chat with its agent.">You read this project: its writers chat with its agent.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
-<p class="meta chat-start">You read this project: its writers chat with its agent.</p>
 </div>
 <script src="/static/chat.js" defer></script>
 </section>`; !strings.Contains(body, want) {
@@ -154,8 +154,8 @@ console.log(JSON.stringify({
 		t.Fatalf("node said %s: %v", out, err)
 	}
 	const (
-		you      = `<div class="msg you"><p class="who">sebastian · 10-11 09:30Z</p><p class="said">file a card</p></div>`
-		agent    = `<div class="msg agent"><p class="who">project agent · 10-11 09:30Z</p>`
+		you      = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">file a card</p></div>`
+		agent    = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p>`
 		args     = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;lane&quot;:&quot;ready&quot;}`
 		result   = `Proposed to sebastian: File a card, title Cache metrics, lane ready. Nothing runs until they press Do it.`
 		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, lane ready</li></ul>` +

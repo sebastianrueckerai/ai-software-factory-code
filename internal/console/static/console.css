@@ -112,7 +112,10 @@ fieldset legend { float: left; margin-right: 6px; color: var(--text-faint); }
 fieldset label { display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 0 0; }
 input[type=radio] { accent-color: var(--st-failed); margin: 0; }
 table { border-collapse: collapse; width: 100%; margin-top: 12px; font: 12px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
-th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: break-word; }
+/* an id, a time or a state keeps to one line; a detail (a JSON line) breaks anywhere */
+td a[href^="/tasks/"], td time { white-space: nowrap; }
+td code { overflow-wrap: anywhere; }
 th { border-bottom-color: var(--line-strong); color: var(--text-muted); font: 600 12.5px var(--font-ui); white-space: nowrap; }
 tr.line td:first-child { padding-left: 1.5rem; color: var(--text-muted); }
 caption { text-align: left; color: var(--text-muted); font: 600 12.5px var(--font-ui); padding: 4px 0; }
@@ -176,6 +179,7 @@ footer#live:empty { display: none; }
 .face { display: grid; gap: 2px; }
 .face > * { min-width: 0; }
 .face > p { margin: 0; }
+.face > div { margin: 0; }
 .line1 { font-size: 13px; line-height: 1.38; }
 .lane.five .face .line1 { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .ref { color: var(--text-muted); font-size: 12px; font-weight: 400; white-space: nowrap; }
@@ -214,6 +218,8 @@ footer#live:empty { display: none; }
 .github { margin: 2px 0 0; color: var(--text-muted); font: 11px/1.6 var(--font-mono); }
 /* chips: mono 11 px in a hairline box; blocked in red, a fine state in amber */
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.chips > * { max-width: 100%; }
+.chip.waiting { height: auto; min-height: 18px; padding: 1px 6px; white-space: normal; }
 .chip, .badge, .pill.fine { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--text-muted); font: 11px/1 var(--font-mono); white-space: nowrap; background: none; }
 .pill.fine::before { content: none; }
 .pill.fine, .badge.plan, .chip.waiting { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
@@ -243,23 +249,86 @@ footer#live:empty { display: none; }
 .face[class*="edge-"] { border-left: 3px solid var(--acc); }
 /* the quiet row of a card's actions */
 .transitions { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
+.transitions button { height: 22px; padding: 0 7px; font-size: 11px; }
+.line2 > .pr { color: var(--text-muted); }
+.card:has(> .line1 > .title > .open) { cursor: pointer; }
+.card:has(> .line1 > .title > .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.card .open:focus-visible { outline: none; }
+/* a done, failed or closed card: a two-line row */
+.face.final { padding: 6px 2px 7px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
+.face.final:last-child { border-bottom: 0; }
+.face.final .line1 { font-size: 12.5px; color: var(--text-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.face.final .line1 .ref, .face.final .line1 .open { color: var(--text-faint); }
+.face.final .line1 .open:hover { color: var(--text); }
+.face.final:hover .line1 { color: var(--text-muted); }
+.dmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; margin: 1px 0 0; color: var(--text-faint); font: 11px/1.5 var(--font-mono); letter-spacing: -.02em; }
+.dmeta > * { white-space: nowrap; }
+.dmeta > *:not(:last-child)::after { content: "·"; margin-left: 5px; }
+.dmeta .g { margin-right: 4px; }
+.dmeta .chip { height: auto; padding: 0; border: 0; color: inherit; }
+.face.final.d-failed .dmeta .st { color: var(--st-failed); }
+.dmeta form.inline button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; letter-spacing: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; cursor: pointer; }
+.dmeta form.inline button:hover { color: var(--accent); background: none; text-decoration-color: currentColor; }
+/* on the phone the Done column folds */
+.column.folded > *:not(h3) { display: none; }
+.column.fold > h3 { cursor: pointer; }
 form.inline { display: inline; }
 form.inline button { margin: 0; }
 form.move button { padding: 0 6px; }
 .card[draggable=true] { cursor: grab; }
-/* the face's fold: the objective and the writer's forms, closed by default */
-.card details { margin-top: 6px; border-top: 1px solid var(--line); padding-top: 4px; font-size: 12px; }
-.card details summary { cursor: pointer; color: var(--text-faint); font: 11px var(--font-mono); }
-.card details h4.objective { display: -webkit-box; -webkit-line-clamp: 4; line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; font-weight: 400; color: var(--text-muted); margin: 4px 0; }
 .children { margin: 4px 0; padding-left: 16px; font-size: 12px; }
 .edit-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .edit-form label { display: contents; }
 .edit-form input[type=text] { flex: 1; min-width: 12rem; max-width: 28rem; }
-.edit-icon { color: var(--text-muted); text-decoration: none; }
 .agent-summary { color: var(--text-muted); font-size: 12.5px; }
 
-/* Needs you items: a decision with its primary action first */
+/* Needs you items: a decision with its primary action first. The headline
+   row holds the chips and the waiting time; the actions sit on one row
+   from 272 px of column, Approve on its own row under that. */
+.need-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.need-top h4 { margin: 0; font-size: 14px; line-height: 1.3; }
+.need-top .since, .need-foot .since { margin-left: auto; color: var(--text-faint); font: 11px/1.6 var(--font-mono); white-space: nowrap; }
+.chip.risk { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); background: color-mix(in srgb, var(--need) 12%, transparent); }
+.chip.migration { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
+.need-line { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+.need-line b { color: var(--text); font-weight: 600; }
+.need-line.beyond, .need-line.beyond b { color: var(--need-text); }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.acts form { display: contents; }
+.acts button { height: 30px; }
+.column .acts form[action$="/approve"] button { flex: 1 1 100%; }
+@container column (min-width: 272px) { .acts form[action$="/approve"] button { flex: 0 1 auto; } }
+.column { container-type: inline-size; container-name: column; }
+.need-foot { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.need-foot a { color: var(--text-muted); }
+.deny-box, .own { margin-top: 8px; }
+.escalation .q { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; white-space: pre-line; }
 .escalation .choices { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.choices .own-toggle { border-style: dashed; color: var(--text-muted); }
+/* the nested face is the item's headline and state row: its parts become
+   the item's own children so the question and the choices come between
+   the title and the state row */
+.escalation > .face { display: contents; }
+.escalation > .face > .line1 { order: 0; font-size: 14px; }
+.escalation > .q, .escalation > .reason { order: 1; }
+.escalation > .choices, .escalation > .own, .escalation > form, .escalation > .deny-box { order: 2; }
+.escalation > .face > .line2, .escalation > .face > .chips, .escalation > .need-foot, .escalation > .face > .transitions { order: 3; }
+/* the question stands once, as the item's own line; the face's activity line would repeat it */
+.card.escalation > .face > .activity { display: none; }
+.escalation > .need-foot { margin: 4px 0 0; font: 11px/1.6 var(--font-mono); }
+.escalation > .meta, .escalation > form.inline[action^="/alerts/"] { order: 4; }
+/* the item's blocks take full rows; the state row, the issue link and Close share one */
+.escalation { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 10px; }
+.escalation > *, .escalation > .face > * { flex: 1 1 100%; }
+.escalation > .face > .line2, .escalation > .face > .transitions, .escalation > .need-foot { flex: 0 1 auto; }
+.escalation > .face > .transitions { order: 4; margin-top: 4px; }
+.escalation > form, .escalation > .choices { min-width: 0; }
+.escalation textarea, .escalation input[type=text] { width: 100%; box-sizing: border-box; }
+.escalation form:not(.inline) button[type=submit] { height: auto; min-height: 30px; white-space: normal; }
+.escalation > .face > .transitions button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: 11px/1.6 var(--font-mono); text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; }
+.escalation > .face > .transitions button:hover { color: var(--accent); background: none; }
+.escalation > .meta { margin: 8px 0 0; font-size: 12px; color: var(--text-muted); }
+.escalation > form.inline[action^="/alerts/"] button { height: 22px; padding: 0 8px; font-size: 11.5px; }
 .choices form { display: contents; }
 .choices button { height: 30px; border-color: color-mix(in srgb, var(--need) 70%, transparent); background: color-mix(in srgb, var(--need) 5%, transparent); color: var(--text); text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .choices button:hover { background: color-mix(in srgb, var(--need) 16%, transparent); border-color: var(--need); }
@@ -308,33 +377,84 @@ fieldset.question legend { float: none; color: var(--text); font-weight: 600; fo
    shadow to its left (its dock is with the main area below) */
 @keyframes drin { from { opacity: 0; transform: translateX(16px); } }
 .drawer-head { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
-.drawer h2 { margin: 0 32px 0 0; font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -.008em; }
-.drawer h2 a { color: var(--accent); font: 600 14px/22px var(--font-mono); text-decoration: none; }
-.drawer h2 a:hover { text-decoration: underline; text-underline-offset: 3px; }
+.dr-title { display: flex; align-items: flex-start; gap: 10px; padding-right: 36px; }
+.dr-ref { color: var(--accent); font: 600 14px/22px var(--font-mono); text-decoration: none; white-space: nowrap; }
+a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
+.drawer h2 { flex: 1; min-width: 0; margin: 0; font-size: 16px; font-weight: 600; line-height: 22px; letter-spacing: -.008em; }
 .drawer h2:focus { outline: none; }
 .drawer-close { position: absolute; top: 12px; right: 14px; width: 28px; padding: 0; border-color: var(--btn-line); }
 .drawer-facts { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; margin: 8px 0 0; color: var(--text-muted); font-size: 12px; }
+.drawer-facts > .sep::before { content: "·"; color: var(--text-faint); }
 .tabs { display: flex; gap: 0; margin: 0 -18px; padding: 0 12px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; height: 38px; padding: 0 12px; border: 0; border-radius: 0; background: none; color: var(--text-muted); font-size: 12.5px; font-weight: 400; }
 .tabs button:hover { color: var(--text); background: none; }
 .tabs button[aria-selected=true] { color: var(--text); }
 .tabs button[aria-selected=true]::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px; background: var(--accent); }
 .drawer-body { padding-top: 16px; font-size: 13px; line-height: 1.55; }
-.drawer-body section { margin-top: 16px; }
-.drawer-body h4 { margin: 0 0 6px; color: var(--text-faint); font-size: 12.5px; }
-.drawer-body .headline { font-size: 14px; margin: 4px 0 2px; font-variant-caps: normal; letter-spacing: 0; }
-.provenance { color: var(--text-muted); font-size: 12px; margin: 2px 0 8px; }
-.objective-body { white-space: pre-wrap; border-left: 2px solid var(--line); padding-left: 10px; font-size: 13px; color: var(--text-muted); }
+.drawer-body .meta { color: var(--text-faint); font: 12.5px var(--font-mono); margin: 0 0 12px; }
+/* the top block: four lines in a quiet panel */
+.top-block { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 6px 14px; margin: 0 0 16px; padding: 12px 14px; background: var(--bg-panel); border: 1px solid var(--line); }
+.top-block dt { color: var(--text-muted); font: 600 12.5px/20px var(--font-ui); font-variant-caps: all-small-caps; letter-spacing: .07em; }
+.top-block dd { margin: 0; font-size: 13px; line-height: 20px; }
+.top-block dd.muted { color: var(--text-muted); }
+.top-block dd.warn { color: var(--need-text); }
+.top-block dd .mono { font-size: 12.5px; }
+/* the open need: the one thing that needs the member, with its actions */
+.open-need { margin: 0 0 16px; }
+.open-need > h3 { margin: 0 0 8px; color: var(--need-text); font-size: 13.5px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.need { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px 14px 11px 16px; background: color-mix(in srgb, var(--need) 4%, var(--bg-card)); border: 1px solid color-mix(in srgb, var(--need) 38%, var(--line)); box-shadow: inset 3px 0 0 var(--need), var(--need-glow); }
+[data-theme=light] .need { background: var(--bg-card); border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
+.need .q { margin: 0; color: var(--text); }
+.open-need .card.approval { margin: 0; box-shadow: inset 3px 0 0 var(--need), var(--need-glow); border-color: color-mix(in srgb, var(--need) 38%, var(--line)); padding-left: 14px; }
+.open-need .card.approval h4 { font-size: 16px; }
+.open-bad { margin: 0; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--st-failed) 45%, var(--line)); border-left: 3px solid var(--st-failed); color: var(--text); font-size: 13px; }
+.open-bad .acts { margin-top: 8px; }
+/* the collapsed sections */
+.sec { border-top: 1px solid var(--line); }
+.sec:last-child { border-bottom: 1px solid var(--line); }
+.sec > summary { display: flex; align-items: center; gap: 10px; min-height: 38px; cursor: pointer; list-style: none; font-size: 13px; font-weight: 600; }
+.sec > summary::-webkit-details-marker { display: none; }
+.sec > summary::before { content: ""; width: 0; height: 0; border-left: 5px solid var(--text-muted); border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .12s; flex: none; }
+.sec[open] > summary::before { transform: rotate(90deg); }
+.sec > summary:hover { color: var(--accent); }
+.sec > summary .hint { margin-left: auto; color: var(--text-faint); font: 400 11.5px var(--font-mono); text-align: right; }
+.sec.empty > summary { color: var(--text-faint); cursor: default; font-weight: 400; }
+.sec.empty > summary::before { border-left-color: var(--line-strong); }
+.sec.empty > summary:hover { color: var(--text-faint); }
+.sec-body { padding: 0 0 16px 15px; font-size: 13px; line-height: 1.55; }
+.sec-body p { margin: 0 0 8px; }
+.sec-body h4 { margin: 0 0 8px; font-variant-caps: normal; letter-spacing: 0; color: var(--text); font-size: 13px; }
+/* the Time section (C10): the at-a-glance line as the hint, one row per run */
+.sec[data-sec="time"] > summary { flex-wrap: wrap; height: auto; }
+.sec[data-sec="time"] > summary .hint { color: var(--text-muted); }
+.life { display: grid; grid-template-columns: auto auto auto auto 1fr; column-gap: 12px; row-gap: 3px; margin-top: 4px; font-size: 12.5px; line-height: 1.45; align-items: baseline; }
+.life .mono { font: 12px var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.life .num { text-align: right; }
+.life .k { font-weight: 600; white-space: nowrap; }
+.life .k::before { content: none; }
+.life .tnote { color: var(--text-muted); }
+@media (max-width: 720px) {
+  .life { grid-template-columns: auto auto auto auto; row-gap: 1px; }
+  .life .tnote { grid-column: 1 / -1; margin: 0 0 8px; }
+  .life .tnote:empty { margin: 0; }
+}
+.provenance { color: var(--text-muted); font: 12px var(--font-mono); margin: 2px 0 8px; }
+.objective-body { white-space: pre-wrap; margin: 0 0 8px; }
 .related { list-style: none; padding: 0; margin: 0; }
 .related li { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
 .related li:last-child { border-bottom: 0; }
 .related .why { min-width: 84px; color: var(--text-muted); font: 12px var(--font-mono); }
+.sec-body .edit-form { margin: 0 0 8px; }
+.sec-body .edit-form label { display: block; margin: 0; }
+.sec-body .links { display: flex; flex-wrap: wrap; gap: 6px 10px; }
 .files td code { word-break: break-all; }
 .files td:nth-child(3) { color: var(--st-done); }
 .files td:nth-child(4) { color: var(--st-failed); }
 .session-log { margin: 6px 0; }
+.session-log .msg { font-size: 13.5px; margin-bottom: 12px; }
+.session-log .av { width: 20px; height: 20px; }
 .session-log .said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-.drawer .chat-form { padding: 10px 0 0; border: 0; }
+.drawer .chat-form { padding: 10px 0 0; border: 0; background: none; }
 
 /* the keys list */
 .overlay { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); }
@@ -456,12 +576,24 @@ body:has(#screen) #flash { flex: none; }
 .chat-head h2 { margin: 0; font-size: 14px; font-variant-caps: normal; letter-spacing: 0; }
 .chat-who { min-width: 0; flex: 1; overflow: hidden; color: var(--text-muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .chat-log { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 16px 16px; font-size: 14px; line-height: 1.55; }
-.chat-start { color: var(--text-faint); font-size: 12px; margin: 0 0 12px; }
-.chat-own { margin: 0; padding: 8px 14px 0; color: var(--text-faint); font-size: 12px; }
-.msg { margin: 0 0 16px; font-size: 14.5px; line-height: 1.55; max-width: calc(72ch + 100px); }
-.msg .who { margin: 0 0 3px; color: var(--text-faint); font-size: 11.5px; }
-.msg.you .who, .msg.me .who { color: var(--accent); }
+/* the start line: one line under the header's hairline, cut with an
+   ellipsis, the whole text in its tooltip */
+.chat-start { flex: none; margin: 0; padding: 0 14px; overflow: hidden; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 12px; line-height: 28px; white-space: nowrap; text-overflow: ellipsis; }
+.chat-own { margin: 8px 0 0; color: var(--text-faint); font-size: 12px; }
+/* a turn: the avatar at the left, the name and the time above the text,
+   the text at the full width */
+.msg { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 0 10px; margin: 0 0 16px; font-size: 14.5px; line-height: 1.55; max-width: calc(72ch + 100px); }
+.msg > :not(.av) { grid-column: 2; }
+.av { grid-row: 1 / span 2; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; margin-top: 1px; border-radius: 50%; border: 1px solid var(--accent); color: var(--accent); font: 600 11px/1 var(--font-mono); }
+.av::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+.msg.you .av { background: var(--accent); color: var(--accent-ink); }
+.msg.you .av::before { content: none; }
+.msg .who { display: flex; gap: 8px; align-items: baseline; margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.4 var(--font-mono); }
+.msg .who .name { color: var(--text-muted); }
+.msg.you .who .name { color: var(--accent); }
+.msg .who time { font: inherit; }
 .msg.you .said { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg .said { margin: 0; }
 .said p, .said ul, .said ol { margin: 4px 0; }
 .said ul, .said ol { padding-left: 18px; }
 .said, .applied, .refused { overflow-wrap: anywhere; }
@@ -492,9 +624,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-error { margin: 8px 0; color: var(--need-text); font: 12px var(--font-mono); }
 .cursor { display: inline-block; width: .55em; height: 1.05em; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }
 @keyframes blink { 50% { opacity: 0; } }
-.chat-form { display: flex; align-items: flex-end; gap: 10px; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
-.chat-form textarea { flex: 1; max-width: none; resize: none; font-size: 14px; line-height: 22px; }
-.chat-form button { margin: 0; }
+/* the composer: a prompt line with the cyan mark, Send at its right */
+.chat-form { flex: none; display: block; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
+.prompt { display: flex; align-items: flex-end; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--line-strong); background: var(--bg); transition: border-color .12s, box-shadow .12s; }
+[data-theme=light] .prompt { background: var(--bg-card); }
+.prompt:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.prompt .ps { align-self: flex-start; color: var(--accent); font: 600 14px/22px var(--font-mono); }
+.prompt textarea { flex: 1; min-width: 0; max-width: none; padding: 0; border: 0; outline: none; background: none; resize: none; font-size: 14px; line-height: 22px; }
+.prompt textarea:focus-visible { box-shadow: none; }
+.prompt button { margin: 0; }
 .chat-queue { list-style: none; margin: 0; padding: 0 14px 10px; display: flex; flex-direction: column; gap: 4px; }
 .chat-queue li { display: flex; gap: 6px; align-items: center; }
 .chat-queue .queued-text { flex: 1; height: auto; min-height: 26px; padding: 2px 8px; justify-content: flex-start; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); border: 1px dashed var(--btn-line); font-size: 13px; font-weight: 400; }
