@@ -129,11 +129,11 @@ const (
 	maxRecommendation = 2000
 )
 
-// maxChoices bounds the answers an agent may offer, maxChoice the
+// MaxChoices bounds the answers an agent may offer, MaxChoice the
 // characters of one.
 const (
-	maxChoices = 5
-	maxChoice  = 60
+	MaxChoices = 5
+	MaxChoice  = 60
 )
 
 // offeredChoices are the agent's choices as a card offers them, each
@@ -147,9 +147,9 @@ func offeredChoices(taskID string, choices []string) []string {
 	for i, c := range choices {
 		out[i] = strings.TrimSpace(c)
 	}
-	if len(out) < 2 || len(out) > maxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > maxChoice }) {
+	if len(out) < 2 || len(out) > MaxChoices || slices.ContainsFunc(out, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > MaxChoice }) {
 		log.Printf("task %s: the agent's %d choices are dropped, the card offers 2 to %d of 1 to %d characters: %s",
-			taskID, len(choices), maxChoices, maxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
+			taskID, len(choices), MaxChoices, MaxChoice, textutil.Truncate(fmt.Sprintf("%q", choices), 400))
 		return nil
 	}
 	return out

@@ -277,8 +277,8 @@ func questionFindings(qs []PlanQuestion) []string {
 		case n > maxQuestionText:
 			add("text over %d characters", maxQuestionText)
 		}
-		if n := len(q.Choices); n < 2 || n > maxChoices {
-			add("%d choices; want 2 to %d", n, maxChoices)
+		if n := len(q.Choices); n < 2 || n > MaxChoices {
+			add("%d choices; want 2 to %d", n, MaxChoices)
 		}
 		seen := map[string]int{}
 		for j, c := range q.Choices {
@@ -286,8 +286,8 @@ func questionFindings(qs []PlanQuestion) []string {
 			switch n := utf8.RuneCountInString(c); {
 			case n == 0:
 				add("choice %d is empty", j+1)
-			case n > maxChoice:
-				add("choice %d is over %d characters", j+1, maxChoice)
+			case n > MaxChoice:
+				add("choice %d is over %d characters", j+1, MaxChoice)
 			case seen[c] == 2:
 				add("choice %q is offered twice", c)
 			}

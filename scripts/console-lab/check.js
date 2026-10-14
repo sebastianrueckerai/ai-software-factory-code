@@ -18,6 +18,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 unread", "New"],
+  escalation: ["Answer:", "or in your words below", "needs you", "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?"],
   poke: ["Inbox", "Why is the session store card waiting?", "1 unread", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
@@ -187,6 +188,19 @@ async function text(page) {
         await restore.first().click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
+      }
+    }
+    if (sc === "escalation") {
+      // the answer row (C14): the pending escalation's choices once, between the log and the box;
+      // a choice answers its card with no model turn and the row goes
+      const row = p.page.locator("#chat-answer");
+      if (!(await row.isVisible())) fails.push("escalation: no answer row under the inbox's escalation");
+      else {
+        await row.getByRole("button", { name: "Postgres" }).click();
+        await p.page.waitForTimeout(800);
+        if (await row.isVisible()) fails.push("escalation: the answer row stays after a choice");
+        const log = await p.page.locator("#chat-log").innerText();
+        if (!log.includes("Answered #603")) fails.push("escalation: the factory's row on the answer is missing");
       }
     }
     if (sc === "poke") {

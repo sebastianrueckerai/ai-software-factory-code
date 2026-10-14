@@ -9,7 +9,8 @@
 {{else}}<p class="chat-start" title="You read this project: its writers chat with its agent.">You read this project: its writers chat with its agent.</p>
 {{end}}<div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
-{{if .Writes}}<form id="chat-form" class="chat-form composer" method="post" action="/projects/{{.Project}}/chat">
+{{if .Writes}}<div id="chat-answer" class="answer" role="group" aria-label="Answer" hidden></div>
+<form id="chat-form" class="chat-form composer" method="post" action="/projects/{{.Project}}/chat">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">{{.Commands}}</script>

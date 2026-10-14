@@ -240,6 +240,17 @@ var chatView = (function () {
       (t.inbox || t.state === "archived" || !t.messages ? "" : "<span class=\"tacts\"><button type=\"button\" data-archive>Archive</button>" +
         "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
   }
+  // pendingOf is the escalation the thread's answer row offers: its newest
+  // row, when that is an escalation with choices (C14)
+  function pendingOf(msgs) {
+    var m = (msgs || [])[(msgs || []).length - 1];
+    return m && m.kind === "escalation" && m.choices && m.choices.length ? m : null;
+  }
+  function answerHTML(m) {
+    return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
+      return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
+    }).join("") + "<span class=\"answer-or\">or in your words below</span>";
+  }
   // deleteHTML is the hard delete's warning for thread t (C14)
   function deleteHTML(t) {
     var n = t.messages || 0;
@@ -302,7 +313,7 @@ var chatView = (function () {
     }).join("");
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
 })();
 
@@ -312,6 +323,7 @@ var chatView = (function () {
   var log = document.getElementById("chat-log");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
+  var answerRow = document.getElementById("chat-answer"), pending = null;
   var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
   var commands = commandsEl ? JSON.parse(commandsEl.textContent || "null") || [] : [];
   var sum = panel.querySelector(".sw-sum");
@@ -452,6 +464,10 @@ var chatView = (function () {
   }
   function turn(n, text) {
     var shown = n === open, command = text === "/compact";
+    if (shown) {
+      pending = null;
+      drawAnswer();
+    }
     var into = document.createElement("div");
     if (shown) {
       if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date()));
@@ -637,6 +653,8 @@ var chatView = (function () {
       log.innerHTML = data.messages.length ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
       if (readOnly) add(log, "<p class=\"meta chat-old\">archived, read-only: restore it to write</p>");
       if (busy(open)) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
+      pending = readOnly ? null : chatView.pendingOf(data.messages);
+      drawAnswer();
       drawHead();
       scrollEnd(true);
       queueOf(open).flush();
@@ -645,6 +663,14 @@ var chatView = (function () {
     }).catch(function () {
       add(log, "<p class=\"chat-error\">The conversation could not be read; reload the page.</p>");
     });
+  }
+  // the answer row: the pending escalation's choices, once, between the
+  // log and the box; a choice answers its card with no model turn, a
+  // message below goes to the agent
+  function drawAnswer() {
+    if (!answerRow) return;
+    answerRow.hidden = !pending;
+    answerRow.innerHTML = pending ? chatView.answerHTML(pending) : "";
   }
   function drawHead() {
     if (!head) return;
@@ -745,6 +771,14 @@ var chatView = (function () {
         if (!readOnly) input.focus({preventScroll: true});
       });
     }
+  });
+  if (answerRow) answerRow.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-answer]");
+    if (!b || !pending) return;
+    var n = open, m = pending;
+    pending = null;
+    drawAnswer();
+    postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer}).then(function () { return load(n); }).catch(failed);
   });
   head.addEventListener("click", function (e) {
     if (e.target.closest("[data-archive]")) {

@@ -124,6 +124,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/seen":           rProject,
 	"POST /projects/{name}/chat/archive":        rProject,
 	"POST /projects/{name}/chat/delete":         rProject,
+	"POST /projects/{name}/chat/answer":         rProject,
 	"POST /projects/{name}/chat/proposals/{id}": rProject,
 	"POST /projects/{name}/chat/undo/{token}":   rProject,
 	"POST /projects/{name}/autonomy":            {need: approver, scope: scProject, what: "change the autonomy level"},
@@ -170,6 +171,7 @@ var accessTable = map[string]accessRule{
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
 	"write_doc":        {need: writer, scope: scChat},
 	"notes_write":      {need: writer, scope: scChat},
+	"escalate":         {need: writer, scope: scChat},
 }
 
 // admit refuses a unless they hold rule's roles over repository, whose

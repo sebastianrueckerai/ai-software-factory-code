@@ -45,6 +45,7 @@ func TestChatPanel(t *testing.T) {
 <p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
+<div id="chat-answer" class="answer" role="group" aria-label="Answer" hidden></div>
 <form id="chat-form" class="chat-form composer" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
@@ -146,6 +147,10 @@ console.log(JSON.stringify({
   inboxHead: chatView.headHTML(threads[0], now),
   head: chatView.headHTML(threads[1], now),
   headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, now),
+  pendingRow: JSON.stringify([chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes", "No"]}]) && 1,
+    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]),
+    chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([])]),
+  answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
   poke: chatView.factoryHTML({id: 7, role: "assistant", kind: "poke", content: "Started the login card.", at: "2026-10-11T09:12:00Z",
@@ -218,6 +223,9 @@ console.log(JSON.stringify({
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint">09:30</span>` +
 			`<span class="tacts"><button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
+		{"pendingRow", `[1,null,null,null]`},
+		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
+			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
 		{"deleteOne", `<div id="thread-dialog" class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="overlay-box">` +
 			`<h2 id="dlg-title">Delete “a &lt;b&gt;”?</h2><p>Its 1 message goes for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
 			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +

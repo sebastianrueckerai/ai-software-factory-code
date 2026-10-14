@@ -455,8 +455,16 @@ func main() {
 		AttemptFunded:  runner.AttemptFunded,
 		Chat:           store,
 		Notes:          store,
-		Operator:       operator,
-		Pulses:         store,
+		Escalate: func(ctx context.Context, repository, question string, choices []string, by string) (int64, error) {
+			repo, err := factoryd.SplitRepo(repository)
+			if err != nil {
+				return 0, err
+			}
+			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, question, choices, by)
+			return t.IssueNumber, err
+		},
+		Operator: operator,
+		Pulses:   store,
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo

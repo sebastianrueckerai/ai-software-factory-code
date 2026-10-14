@@ -133,10 +133,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		switch str("kind") {
 		case ApprovalMerge:
 			m.Content = fmt.Sprintf("Merge PR #%d of %s waits for you: risk class %s.", num("pr"), ref, str("class"))
-			m.Choices = []string{"Approve", "Deny"}
+			m.Choices = []string{"Approve"}
 		case ApprovalPlan:
 			m.Content = fmt.Sprintf("Plan %s %q waits for your acceptance: revision %d, %d cards.", ref, CardTitle(t), num("revision"), num("cards"))
-			m.Choices = []string{"Accept", "Request changes"}
+			m.Choices = []string{"Accept"}
 		default:
 			return m, false
 		}

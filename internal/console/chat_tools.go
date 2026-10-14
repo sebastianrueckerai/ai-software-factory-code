@@ -62,10 +62,13 @@ type toolInput struct {
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it.
-	Old        string `json:"old,omitempty"`
-	New        string `json:"new,omitempty"`
-	BaseSHA256 string `json:"base_sha256,omitempty"`
-	Find       string `json:"find,omitempty"`
+	// Ask and Choices are an escalation's question and answers.
+	Ask        string   `json:"ask,omitempty"`
+	Choices    []string `json:"choices,omitempty"`
+	Old        string   `json:"old,omitempty"`
+	New        string   `json:"new,omitempty"`
+	BaseSHA256 string   `json:"base_sha256,omitempty"`
+	Find       string   `json:"find,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -952,6 +955,17 @@ var tools = []chatTool{
 		fits:  "the project's chat",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.writeNotes(in.Text, in.Old, in.New)
+			return s, nil, err
+		}},
+	{name: "escalate", title: "Escalate to the members", write: true,
+		params: map[string]any{"ask": str("the question, its state and each option's consequence, at most 2000 characters"),
+			"choices": map[string]any{"type": "array", "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+				"description": "at most 5 short answers the members may press, each at most 60 characters"}},
+		required: []string{"ask"},
+		about:    "Reach the project's members when a decision is theirs and they are not in this conversation: a card in Needs you with the question, and the inbox's escalation with its choices as buttons. A choice or a reply there answers it.",
+		fits:     "the project's chat",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.escalate(in.Ask, in.Choices)
 			return s, nil, err
 		}},
 	{name: "active_threads", title: "Read the member's threads",

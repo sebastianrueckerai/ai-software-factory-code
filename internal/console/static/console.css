@@ -841,6 +841,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
 .thread-link { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
+.answer { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--need) 5%, var(--bg-raised)); }
+.answer[hidden] { display: none; }
+.answer button { height: auto; min-height: 28px; margin: 0; white-space: normal; }
+.answer-l { color: var(--need-text); font: 600 12px var(--font-ui); font-variant-caps: all-small-caps; letter-spacing: .06em; }
+.answer-or { color: var(--text-faint); font: 11.5px var(--font-mono); }
 .thead .tacts { display: inline-flex; gap: 2px; margin-left: auto; }
 .thead .tacts button { height: 22px; margin: 0; padding: 0 7px; font-size: 11.5px; }
 .thead .tacts .danger, .overlay-box .danger { color: var(--st-failed); }
@@ -859,6 +864,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .msg .choices button { width: 100%; height: 44px; }
   .cmd { min-height: 44px; }
   .thead .tacts button { height: 44px; }
+  .answer button { width: 100%; height: 44px; }
   .cmds { gap: 8px; }
   .palette button { height: 44px; }
 }

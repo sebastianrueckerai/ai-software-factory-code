@@ -171,7 +171,7 @@ type labScene struct {
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
-	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene}
+	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -196,7 +196,7 @@ func threadsScene(now time.Time) labScene {
 }
 
 // pokeScene is the threads scene with the inbox: the question on #603
-// and the merge of #612 read, and the factory's poke on #616's end
+// and the merge of #612 read, and the factory's poke on #600's end
 // arriving while the session store thread is open, so the inbox row and
 // the tab title carry its badge; yesterday's export thread is archived
 // (roadmap 239, C14).
@@ -205,15 +205,35 @@ func pokeScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	s.inbox, s.open = 5, 4
 	s.chat = append(s.chat,
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: "t-603", At: ago(45 * time.Minute),
-			Content: "#603 needs you: Which store should the session table use? The plan named Postgres; the brief allows SQLite for a single replica.",
-			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: "t-606", At: ago(12 * time.Minute),
-			Content: "Merge PR #612 of #606 waits for you: risk class high.", Choices: []string{"Approve", "Deny"}},
-		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-616", At: ago(time.Minute),
-			Content: "#616 is done: Chat form: center the Send button. €0.01 in all."})
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
+			Content: "#603 needs you: Which store keeps the nightly board snapshots?", Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "Postgres", At: ago(20 * time.Minute)},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(603), At: ago(20 * time.Minute),
+			Content: "Answered #603 with “Postgres”; the card goes on."},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(606), At: ago(12 * time.Minute),
+			Content: "Merge PR #612 of #606 waits for you: risk class high.", Choices: []string{"Approve"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(600), At: ago(time.Minute),
+			Content: "#600 is done: Costs: the day cap line under the table. €0.18 in all."})
 	s.seen[5] = int64(len(s.chat) - 1)
 	s.archived = []int64{1}
+	return s
+}
+
+// escalationScene is the busy board at autonomy autonomous with the
+// inbox open: the agent's own start with its decider line, then the
+// question on #603 as the inbox's escalation, its choices once in the
+// answer row between the log and the box (roadmap 239, C14).
+func escalationScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 5
+	s.chat = append(s.chat,
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(617), At: ago(40 * time.Minute),
+			Content: `Started #617 "Chat form: center the Send button next to the two-row textarea".`, Decider: "autonomous level · started by the agent"},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
+			Content: "#603 needs you: Which store keeps the nightly board snapshots? Postgres shares the factory's backups; SQLite keeps them beside the export and off the cluster.",
+			Choices: []string{"Postgres", "SQLite", "Ask the author"}})
+	s.seen[5] = int64(len(s.chat))
 	return s
 }
 
@@ -285,7 +305,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted or poke", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke or escalation", name)
 	}
 	now := time.Now()
 	s := scene(now)
