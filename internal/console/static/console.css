@@ -812,6 +812,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat.sw-collapsed .ttable .thr span, .chat.sw-collapsed .trow .ttitle, .chat.sw-collapsed .trow .tat, .chat.sw-collapsed .tarch { display: none; }
 .chat.sw-collapsed .trow { position: relative; grid-template-columns: 1fr; justify-items: center; padding: 0; }
 .chat.sw-collapsed .trow .tmark { width: 22px; justify-content: center; }
+.chat.sw-collapsed .trow:has(.badge) .tmark { margin-right: 12px; }
 .chat.sw-collapsed .trow .tmark:empty::before { content: "·"; color: var(--text-faint); }
 .chat.sw-collapsed .trow .badge { position: absolute; top: 3px; right: 2px; min-width: 15px; padding: 0 3px; font-size: 9.5px; line-height: 15px; }
 .thead { display: flex; align-items: center; gap: 10px; min-height: 34px; padding: 4px 14px 0; flex: none; }
