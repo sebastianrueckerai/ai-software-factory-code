@@ -57,9 +57,12 @@ jobs:
           EPOCH=$(git log -1 --pretty=%ct)
           B=image-gateway
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # buildx takes no TLS endpoint from the environment, only a context
+          docker context rm -f "$B-tls" >/dev/null 2>&1 || true
+          docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
           # a cancelled run leaves its buildkitd behind: clear it first
-          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
-          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
           docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
@@ -78,9 +81,12 @@ jobs:
           EPOCH=$(git log -1 --pretty=%ct)
           B=image-sandbox
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # buildx takes no TLS endpoint from the environment, only a context
+          docker context rm -f "$B-tls" >/dev/null 2>&1 || true
+          docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
           # a cancelled run leaves its buildkitd behind: clear it first
-          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
-          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
           docker buildx build --builder "$B" -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
@@ -103,9 +109,12 @@ jobs:
           EPOCH=$(git log -1 --pretty=%ct)
           B=image-runner
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # buildx takes no TLS endpoint from the environment, only a context
+          docker context rm -f "$B-tls" >/dev/null 2>&1 || true
+          docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
           # a cancelled run leaves its buildkitd behind: clear it first
-          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
-          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
           docker buildx build --builder "$B" -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true \
