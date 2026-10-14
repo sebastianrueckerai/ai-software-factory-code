@@ -145,7 +145,7 @@ jobs:
     #   Dockerfile          COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/
     #   Dockerfile.sandbox  COPY go.mod go.sum ./ ; COPY cmd/ cmd/ ; COPY internal/ internal/ ;
     #                       COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
-    #   Dockerfile.runner   copies nothing from the build context
+    #   Dockerfile.runner   COPY go.mod go.sum ./ ; its warm step bind-mounts the whole context
     runs-on: pr-untrusted
     outputs:
       images: ${{ steps.select.outputs.images }}
