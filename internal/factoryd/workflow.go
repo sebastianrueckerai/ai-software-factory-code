@@ -414,6 +414,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.factoryPRCard = workflow.GetVersion(ctx, "factory-pr-card", workflow.DefaultVersion, versionFactoryPRCard)
 	run.alertPreCheck = workflow.GetVersion(ctx, "alert-precheck", workflow.DefaultVersion, versionAlertPreCheck)
 	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
+	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -727,6 +728,12 @@ const (
 	// through the checks stage's findings, so a merge approval request
 	// exists only for a head whose checks were green at its creation.
 	versionApprovalGreen workflow.Version = 1
+	// versionAdjudicated (change id "adjudicated", roadmap 192): an
+	// approval over review findings records the overrule on the finding
+	// itself — who, why, when — and a review that repeats an adjudicated
+	// finding puts it on the card as evidence and bounces no session for
+	// it; the approval decision keeps seeing the finding.
+	versionAdjudicated workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -795,6 +802,7 @@ type taskRun struct {
 	factoryPRCard     workflow.Version
 	alertPreCheck     workflow.Version
 	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
+	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1552,7 +1560,7 @@ func (t *taskRun) gate(commit string) verdict {
 	if t.v11 >= versionGateStarted {
 		t.approvalRequested = workflow.Now(t.ctx)
 	}
-	return t.awaitApproval(commit)
+	return t.awaitApproval(commit, nil)
 }
 
 // autoMerge merges on the project's merge rule auto (versionAutoMerge):
@@ -1586,10 +1594,11 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 // awaitApproval blocks, at no cost, until a terminal signal decides the
 // task, a reviewer requests changes, a member's split files its cards
 // (versionSplit), or an approval merges the pull request as
-// factory-merge. A merge Forgejo refuses keeps the wait; one
+// factory-merge. An approval over findings the card showed adjudicates
+// them (versionAdjudicated). A merge Forgejo refuses keeps the wait; one
 // that fails otherwise keeps the approval and is tried again after
 // mergeRetryAfter (versionGatesPinned).
-func (t *taskRun) awaitApproval(commit string) verdict {
+func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
 	var cancelRetry workflow.CancelFunc
@@ -1643,6 +1652,7 @@ func (t *taskRun) awaitApproval(commit string) verdict {
 		}
 		if signalled {
 			failures = 0
+			t.adjudicate(covered, sig)
 		}
 		cancelRetry = nil
 		retry = nil

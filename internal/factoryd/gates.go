@@ -85,16 +85,29 @@ type GateResults struct {
 	Audit *AuditResult `json:",omitempty"`
 }
 
+// Adjudication is a human's overrule of a review finding (roadmap 192):
+// an approval over findings covers the finding — who approved, why and
+// when — and a review that repeats it bounces no session for it; the
+// approval decision keeps seeing the finding as evidence.
+type Adjudication struct {
+	By   string    `json:"by"`
+	Why  string    `json:"why"`
+	When time.Time `json:"when"`
+}
+
 // Review is the model review's verdict; Note says why there is none (no
 // headroom, a failed call, an invalid answer). StrictImprovement answers,
 // for a fault fixed without exact reproduction, whether the change is a
-// strict improvement with no drawback (ruling 149).
+// strict improvement with no drawback (ruling 149). Adjudicated holds, by
+// the finding's text, the overrules an approval recorded on the review's
+// findings (roadmap 192); the review model neither sees nor answers it.
 type Review struct {
-	Verdict           string   `json:"verdict"`
-	Summary           string   `json:"summary"`
-	Findings          []string `json:"findings"`
-	StrictImprovement *bool    `json:"strict_improvement,omitempty"`
-	Note              string   `json:"note,omitempty"`
+	Verdict           string                  `json:"verdict"`
+	Summary           string                  `json:"summary"`
+	Findings          []string                `json:"findings"`
+	StrictImprovement *bool                   `json:"strict_improvement,omitempty"`
+	Note              string                  `json:"note,omitempty"`
+	Adjudicated       map[string]Adjudication `json:"adjudicated,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto (rulings 149, 167, 169): the
@@ -664,6 +677,9 @@ func parseReview(content string) Review {
 	if rv.Note != "" {
 		return invalid("note is not an answer field")
 	}
+	if rv.Adjudicated != nil {
+		return invalid("adjudicated is not an answer field")
+	}
 	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
 	}
@@ -732,6 +748,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return Review{}, err
+	}
+	// the review model reads no adjudication (roadmap 192): a finding an
+	// approval covered reads as any finding of an earlier round
+	for i := range earlier {
+		earlier[i].Adjudicated = nil
 	}
 	if t.Source == SourceRoll {
 		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"}
@@ -1066,6 +1087,11 @@ func (r *Runner) comment(ctx context.Context, t Task, repo Repo, pr int64, body 
 	}
 }
 
+// consoleApproved is the note an approval the console (its board, its
+// chat) decided carries — and the why of the overrule it records on the
+// findings it covered (roadmap 192).
+const consoleApproved = "approved in the console"
+
 // ApproveMerge is the console's approve, after it submitted the human's
 // APPROVED review on the pull request through the human's own token: it
 // decides the request as approver's and signals the task's workflow,
@@ -1082,7 +1108,7 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	if i < 0 {
 		return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
 	}
-	return decideAndSignal(ctx, store, wf, pending[i], "approved", approver, "approved in the console", SignalApproved, TaskSignal{Author: approver, PR: pr})
+	return decideAndSignal(ctx, store, wf, pending[i], "approved", approver, consoleApproved, SignalApproved, TaskSignal{Author: approver, PR: pr})
 }
 
 // decideAndSignal records by's decision on request q, then signals its
