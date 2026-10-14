@@ -270,8 +270,8 @@ func (s *PGStore) ArchiveConversation(ctx context.Context, repository, login str
 // changeThread updates thread n SET set WHERE where, its args after the
 // thread's three; false when no row matched.
 func (s *PGStore) changeThread(ctx context.Context, set, where, repository, login string, n int64, args ...any) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `UPDATE chat_conversations SET `+set+`
-		WHERE repository = $1 AND login = $2 AND conversation = $3 AND `+where, append([]any{repository, login, n}, args...)...)
+	q := `UPDATE chat_conversations SET ` + set + ` WHERE repository = $1 AND login = $2 AND conversation = $3 AND ` + where // #nosec G202 -- set and where are the callers' literals
+	res, err := s.db.ExecContext(ctx, q, append([]any{repository, login, n}, args...)...)
 	if err != nil {
 		return false, err
 	}
