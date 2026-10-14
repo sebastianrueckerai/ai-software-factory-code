@@ -156,9 +156,9 @@
 <p class="spec">{{.SpecLines}}</p>
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
-<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
-<thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
-<tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
+<table class="plan-cards" role="table"><caption>The plan's cards, in filing order</caption>
+<thead role="rowgroup"><tr role="row"><th scope="col" role="columnheader">key</th><th scope="col" role="columnheader">role</th><th scope="col" role="columnheader">title</th><th scope="col" role="columnheader">size</th><th scope="col" role="columnheader">depends on</th></tr></thead>
+<tbody role="rowgroup">{{range .PlanRows}}<tr role="row"><td role="cell">{{.Key}}</td><td role="cell">{{.Role}}</td><td role="cell">{{.Title}}</td><td role="cell">{{.Size}}</td><td role="cell">{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
 </table>
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>

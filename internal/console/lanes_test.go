@@ -363,9 +363,9 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		`Plan <a href="https://git.example/linkshort/linkshort/issues/1">#1</a>, revision 2`,
 		"Link shortener\n\nBuild a link shortener.\nAccounts: sign up.\nLinks: shorten.\n…",
 		"Foundation first, then the API, then the acceptance tests.",
-		"<tr><td>foundation</td><td>foundation</td><td>Foundation</td><td>medium</td><td></td></tr>",
-		"<tr><td>links-api</td><td>feature</td><td>Links API</td><td>medium</td><td>foundation</td></tr>",
-		"<tr><td>integration</td><td>integration</td><td>Acceptance tests</td><td>small</td><td>foundation, links-api</td></tr>",
+		`<tr role="row"><td role="cell">foundation</td><td role="cell">foundation</td><td role="cell">Foundation</td><td role="cell">medium</td><td role="cell"></td></tr>`,
+		`<tr role="row"><td role="cell">links-api</td><td role="cell">feature</td><td role="cell">Links API</td><td role="cell">medium</td><td role="cell">foundation</td></tr>`,
+		`<tr role="row"><td role="cell">integration</td><td role="cell">integration</td><td role="cell">Acceptance tests</td><td role="cell">small</td><td role="cell">foundation, links-api</td></tr>`,
 		`action="/tasks/t-plan/plan/accept"`, `<input type="hidden" name="revision" value="2">`, `<input type="hidden" name="sha256" value="sha-2">`,
 		`action="/tasks/t-plan/plan/changes"`, `action="/tasks/t-plan/plan/reject"`,
 	} {

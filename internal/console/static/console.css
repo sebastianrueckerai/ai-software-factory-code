@@ -360,6 +360,17 @@ form.move button { padding: 0 6px; }
 .spec { white-space: pre-wrap; border-left: 2px solid var(--line-strong); padding-left: 8px; font-size: 12.5px; color: var(--text-muted); }
 .plan-cards { font-size: 11.5px; }
 .plan-cards td { overflow-wrap: break-word; }
+/* in a lane a row stacks: key, role and size, then the title, then what it depends on */
+.lane.five .plan-cards, .lane.five .plan-cards caption, .lane.five .plan-cards tbody { display: block; }
+.lane.five .plan-cards thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.lane.five .plan-cards tr { display: grid; grid-template-columns: auto auto 1fr; column-gap: 10px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+.lane.five .plan-cards td { padding: 0; border: 0; overflow-wrap: break-word; }
+.lane.five .plan-cards td:nth-child(1) { grid-area: 1 / 1; color: var(--text); font-weight: 600; }
+.lane.five .plan-cards td:nth-child(2) { grid-area: 1 / 2; }
+.lane.five .plan-cards td:nth-child(4) { grid-area: 1 / 3; justify-self: end; }
+.lane.five .plan-cards td:nth-child(3) { grid-area: 2 / 1 / 3 / -1; font-family: var(--font-ui); color: var(--text); }
+.lane.five .plan-cards td:nth-child(5) { grid-area: 3 / 1 / 4 / -1; color: var(--text-muted); }
+.lane.five .plan-cards td:nth-child(5):not(:empty)::before { content: "depends on "; }
 .answered { color: var(--text-muted); font-size: 12.5px; }
 fieldset.question { border: 1px solid var(--line); padding: 8px 10px; margin: 8px 0; }
 fieldset.question legend { float: none; color: var(--text); font-weight: 600; font-size: 13px; }
