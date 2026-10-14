@@ -132,6 +132,7 @@ func run(log func(string, ...any)) int {
 		Tools:          env.tools,
 		Spec:           env.spec,
 		CardRole:       env.cardRole,
+		LeftOut:        env.leftOut,
 	}
 	if brief.Map, err = cardMap(repoDir, env.directories); err != nil {
 		log("repository map: %v", err)
@@ -388,6 +389,9 @@ type workerEnv struct {
 	// migrationGlobs are the policy's migration directory globs
 	// (MIGRATION_GLOBS) the push guard judges migration names against
 	migrationGlobs []string
+	// leftOut are factoryd's notes on what the env could not carry
+	// (LEFT_OUT), for the brief
+	leftOut []string
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
@@ -448,9 +452,9 @@ func loadEnv() (workerEnv, error) {
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
 	}
-	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES and MIGRATION_GLOBS arrive as JSON arrays; absent means none.
+	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES, MIGRATION_GLOBS and LEFT_OUT arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
-		"DIRECTORIES": &e.directories, "MIGRATION_GLOBS": &e.migrationGlobs} {
+		"DIRECTORIES": &e.directories, "MIGRATION_GLOBS": &e.migrationGlobs, "LEFT_OUT": &e.leftOut} {
 		if raw := str(name); raw != "" {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)

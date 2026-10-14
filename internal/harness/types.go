@@ -42,6 +42,10 @@ type TaskBrief struct {
 	// Map is the card's repository map (factoryd.RepoMap), which the
 	// worker reads from its clone; "" when the card names no directories.
 	Map string `json:"map,omitempty"`
+	// LeftOut are factoryd's notes on what the session's environment could
+	// not carry (128 KiB a variable): the brief says them in factoryd's own
+	// words, outside every quoted block.
+	LeftOut []string `json:"left_out,omitempty"`
 }
 
 // Author standings (ruling 152).

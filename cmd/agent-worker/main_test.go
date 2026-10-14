@@ -43,6 +43,17 @@ func TestLoadEnvRejectsMalformedFindings(t *testing.T) {
 	}
 }
 
+// Roadmap 237: LEFT_OUT, factoryd's notes on what the env could not
+// carry, reaches the worker as a list for the brief.
+func TestLoadEnvReadsWhatWasLeftOut(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("LEFT_OUT", `["1 of the 33 findings, the oldest"]`)
+	e, err := loadEnv()
+	if err != nil || !slices.Equal(e.leftOut, []string{"1 of the 33 findings, the oldest"}) {
+		t.Fatalf("leftOut = %q, %v; want the note", e.leftOut, err)
+	}
+}
+
 // The subagents' cheap model reaches opencode from factoryd's CHEAP_MODEL
 // (roadmap 222, item 6). Without it the worker runs opencode with no cheap
 // alias and every subagent falls back to the session's own model.

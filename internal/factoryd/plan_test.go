@@ -997,6 +997,37 @@ func TestPlanLoopCommentInPartsGoesBackOnce(t *testing.T) {
 	}
 }
 
+// Roadmap 237: a change request in parts that a planner session's end
+// with findings takes waits out its burst too: two parts during the
+// invalid session (it ends at 5m), the third at 5m20s, and the second
+// session starts at 5m50s with the findings and all three.
+func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
+	invalid := []string{"plan: no fenced json block in the last message"}
+	part := func(i int) string { return fmt.Sprintf("writer alice asked for changes to the plan: part %d of 3", i) }
+	h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	start := h.env.Now()
+	var began []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			began = append(began, h.env.Now().Sub(start))
+		}
+	})
+	for i, at := range []time.Duration{4*time.Minute + 40*time.Second, 4*time.Minute + 50*time.Second, 5*time.Minute + 20*time.Second} {
+		h.signalAfter(at, SignalHumanComment, TaskSignal{Author: "alice", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(701 + i)})
+	}
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want := [][]string{nil, {invalid[0], part(1), part(2), part(3)}}
+	if !slices.EqualFunc(h.plans, want, slices.Equal) {
+		t.Fatalf("RunPlan findings %q, want %q", h.plans, want)
+	}
+	if wantBegan := []time.Duration{0, 5*time.Minute + 50*time.Second}; !slices.Equal(began, wantBegan) {
+		t.Fatalf("planner sessions began %v after the start, want %v", began, wantBegan)
+	}
+}
+
 // A planner that stops to ask a human (its own escalate_to_human, or the
 // gate supervisor's escalation) puts the question on the card; the
 // answer goes to the next session. A Reject sent while a session runs

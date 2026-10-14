@@ -664,6 +664,20 @@ func TestBriefPutsTheHumansAnswersFirst(t *testing.T) {
 	}
 }
 
+// Roadmap 237: what the session's environment could not carry is
+// factoryd's note, in its own words ahead of the brief's sections, never
+// inside the author's quoted text.
+func TestBriefSaysWhatTheEnvLeftOut(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "The slug breaks", AuthorStanding: harness.StandingOutside, Author: "visitor",
+		PosterInfo: []string{"visitor: Firefox 131"}, LeftOut: []string{"1 of the 33 answers of the issue's author, the oldest"}}, "T")
+	want := "factoryd left out of this brief what one environment variable (128 KiB) cannot carry; the issue and the card keep it:\n" +
+		"- 1 of the 33 answers of the issue's author, the oldest\n\n" +
+		"Issue author: visitor, an outside account without write access."
+	if !strings.HasPrefix(got, want) || !strings.Contains(got, "<<<POSTER-T\nvisitor: Firefox 131\nPOSTER-T>>>") || strings.Count(got, "the oldest") != 1 {
+		t.Fatalf("brief =\n%s\nwant it to open with\n%s\nand the poster block to hold the answer only", got, want)
+	}
+}
+
 // A card's repository map is its own section after the findings; a
 // brief without one has none.
 func TestBriefCarriesTheRepositoryMap(t *testing.T) {

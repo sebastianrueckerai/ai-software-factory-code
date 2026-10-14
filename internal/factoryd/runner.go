@@ -26,6 +26,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // RunnerConfig carries the per-cluster sandbox facts and the task policy the
@@ -1159,38 +1160,51 @@ func (r *Runner) supervisionTick() time.Duration {
 // a longer one, and the session's container never starts.
 const maxEnvString = 128 << 10
 
-// envList is answers' JSON as env var name's value, within maxEnvString:
-// the oldest whole answers go first (the front of a list oldest first,
-// the back of one newest first), and an entry where they were says how
-// many went.
-func envList(name string, answers []string, oldestFirst bool) string {
-	for dropped := 0; ; dropped++ {
-		list := answers[:len(answers)-dropped]
-		if oldestFirst {
-			list = answers[dropped:]
+// envRoom is how many bytes env var name's value may take.
+func envRoom(name string) int { return maxEnvString - len(name) - len("=") - len("\x00") }
+
+// envFit fits the worker env's values that grow with their input within
+// envRoom, and keeps factoryd's note on each it shortened: the worker gets
+// them as LEFT_OUT and the brief says them in factoryd's own words,
+// outside every quoted block.
+type envFit struct{ notes []string }
+
+// list is items' JSON for env var name, its whole items left out from the
+// front (dropFront) or the back until it fits; which names the end they
+// leave from in the note, what the items.
+func (f *envFit) list(name string, items []string, dropFront bool, which, what string) string {
+	for n := 0; ; n++ {
+		keep := items[:len(items)-n]
+		if dropFront {
+			keep = items[n:]
 		}
-		if dropped > 0 {
-			note := []string{fmt.Sprintf("(%d of the oldest answers left out: the list passed the 128 KiB one environment variable carries; the issue has them all)", dropped)}
-			if oldestFirst {
-				list = slices.Concat(note, list)
-			} else {
-				list = slices.Concat(list, note)
+		b, _ := json.Marshal(keep)
+		if len(b) <= envRoom(name) || n == len(items) {
+			if n > 0 {
+				f.notes = append(f.notes, fmt.Sprintf("%d of the %d %s, the %s", n, len(items), what, which))
 			}
-		}
-		b, _ := json.Marshal(list)
-		if len(name)+len("=")+len(b)+len("\x00") <= maxEnvString || dropped == len(answers) {
 			return string(b)
 		}
 	}
 }
 
+// text is s for env var name, cut to fit; what names it in the note.
+func (f *envFit) text(name, s, what string) string {
+	if len(s) <= envRoom(name) {
+		return s
+	}
+	cut := textutil.Truncate(s, envRoom(name)-len("…"))
+	f.notes = append(f.notes, fmt.Sprintf("%s past its first %d of %d bytes", what, len(cut)-len("…"), len(s)))
+	return cut
+}
+
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	findingsJSON, _ := json.Marshal(s.findings)
 	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities))
+	var fit envFit
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
-		{"name": "OBJECTIVE", "value": t.Objective},
+		{"name": "OBJECTIVE", "value": fit.text("OBJECTIVE", t.Objective, "the issue's text")},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": taskBranch(t)},
@@ -1203,9 +1217,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
-		{"name": "FINDINGS", "value": string(findingsJSON)},
-		{"name": "ANSWERS", "value": envList("ANSWERS", s.answers, false)},
-		{"name": "POSTER_INFO", "value": envList("POSTER_INFO", s.posterInfo, true)},
+		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, true, "oldest", "findings")},
+		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, false, "oldest", "answers to the escalations")},
+		{"name": "POSTER_INFO", "value": fit.list("POSTER_INFO", s.posterInfo, true, "oldest", "answers of the issue's author")},
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
@@ -1225,7 +1239,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "TASK_PR", "value": strconv.FormatInt(t.PRNumber, 10)})
 	}
 	if s.report != "" {
-		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": s.report})
+		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
 	} else {
 		fork := r.repoURL(r.forgejo.Fork(s.repo))
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": fork})
@@ -1235,11 +1249,10 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
 	}
 	if s.spec != "" {
-		env = append(env, map[string]any{"name": "SPEC", "value": s.spec}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
+		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
 	}
 	if len(s.directories) > 0 {
-		dirs, _ := json.Marshal(s.directories)
-		env = append(env, map[string]any{"name": "DIRECTORIES", "value": string(dirs)})
+		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, false, "last", "directories")})
 	}
 	// the worker's migration-name guard reads these (roadmap 186), where
 	// the guide's naming sentence used to be
@@ -1249,6 +1262,10 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
+	}
+	if len(fit.notes) > 0 {
+		notes, _ := json.Marshal(fit.notes)
+		env = append(env, map[string]any{"name": "LEFT_OUT", "value": string(notes)})
 	}
 	pod := r.sandboxPodSpec(t, s.cache, env, true)
 	// the clone init container alone holds the read token: the agent's

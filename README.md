@@ -576,9 +576,13 @@ order they were written), as `SessionInput.Answers` (worker env
 `ANSWERS`), each as `<author>, to "<the escalation's first line>":
 <answer>` (the answer cut to 4000 bytes; the issue keeps it whole, and
 the console refuses a longer answer, naming the bound and its length).
-`ANSWERS` and `POSTER_INFO` stay within the 128 KiB Linux allows one
-environment string: the oldest whole answers are left out first, and a
-note in their place says how many. Escalate records its
+Every worker env value that grows with its input (`OBJECTIVE`,
+`FINDINGS`, `ANSWERS`, `POSTER_INFO`, `DIRECTORIES`, `SPEC`,
+`REPORT_GUIDE`) stays within the 128 KiB Linux allows one environment
+string: a list leaves out its oldest whole entries first, a text is cut,
+and `LEFT_OUT` carries factoryd's note on each, which the brief says in
+factoryd's own words ahead of its sections, outside every quoted block.
+Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an
 escalation's comment, tagged with its question; ruling 120), so a run the

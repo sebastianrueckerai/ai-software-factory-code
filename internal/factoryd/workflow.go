@@ -768,9 +768,10 @@ const (
 	// the change resumes on the first comment.
 	versionAnswerBurst workflow.Version = 1
 	// versionPlanBurst (change id "plan-burst", roadmap 237): the plan's
-	// wait takes a writer's comment as the first of a burst (awaitBurst),
-	// so the planner goes back once with every part of a change request in
-	// parts. A run from before the change goes back on the first comment.
+	// wait, and a planner session's end with findings, take a writer's
+	// comment as the first of a burst (awaitBurst), so the planner goes
+	// back once with every part of a change request in parts. A run from
+	// before the change goes back on the first comment.
 	versionPlanBurst workflow.Version = 1
 )
 

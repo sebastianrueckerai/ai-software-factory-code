@@ -2345,46 +2345,68 @@ func TestWorkerPodSpecCarriesMigrationGlobs(t *testing.T) {
 	}
 }
 
-// Roadmap 237: ANSWERS and POSTER_INFO stay within the 128 KiB Linux
-// allows one "NAME=value" string with its NUL (MAX_ARG_STRLEN), so a
-// session's container always starts. 32 answers of 4000 bytes and an
-// oldest one of m make m + 128100 bytes of JSON (the bodies, 3 bytes per
-// entry for its quotes and comma, 1 for the brackets less one comma):
-// ANSWERS, 9 bytes with its "=" and NUL, holds m = 2963 whole and leaves
-// its oldest, the last, out at 2964; POSTER_INFO, 4 bytes longer, holds
-// 2959 and leaves its oldest, the first, out at 2960. A note says so where
-// the answer was.
-func TestWorkerPodSpecBoundsTheAnswers(t *testing.T) {
-	env := func(s sessionSpec) map[string]string {
-		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, s)
+// Roadmap 237: every worker env value that grows with its input stays
+// within the 128 KiB Linux allows one "NAME=value" string with its NUL
+// (MAX_ARG_STRLEN), so a session's container always starts, and LEFT_OUT
+// carries factoryd's note on each it shortened, none inside a list. A
+// list of 32 items of 4000 bytes and one of m is m + 128100 bytes of JSON
+// (the bodies, 3 bytes per item for its quotes and comma, 1 for the
+// brackets less one comma). With its "=" and NUL, FINDINGS (8 bytes) holds
+// m = 2962, ANSWERS (7) 2963, POSTER_INFO and DIRECTORIES (11) 2959; one
+// byte more leaves out the item at the list's oldest end (the last
+// directory). A text over its room is cut on a character with "…" (3
+// bytes) to fill the room: OBJECTIVE's is 131061 bytes, so "a" and 65531
+// two-byte "ä" (131063) keep 131057; REPORT_GUIDE's 131058, SPEC's 131066.
+func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
+	env := func(task Task, s sessionSpec) map[string]string {
+		pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(task, s)
 		vars := map[string]string{}
 		for _, e := range pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
 			vars[e["name"].(string)] = e["value"].(string)
 		}
 		return vars
 	}
-	newer := slices.Repeat([]string{strings.Repeat("a", 4000)}, 32)
-	note := "(1 of the oldest answers left out: the list passed the 128 KiB one environment variable carries; the issue has them all)"
+	z := func(n int) []string { return []string{strings.Repeat("z", n)} }
+	full := slices.Repeat([]string{strings.Repeat("a", 4000)}, 32)
+	a := strings.Repeat
 	for _, tc := range []struct {
-		m           int
-		answers     []string // newest first
-		posterInfo  []string // oldest first
-		wantAnswers []string
-		wantPoster  []string
+		name    string
+		task    Task
+		s       sessionSpec
+		v, want string
+		leftOut []string
 	}{
-		{2959, nil, slices.Concat([]string{strings.Repeat("z", 2959)}, newer), nil, slices.Concat([]string{strings.Repeat("z", 2959)}, newer)},
-		{2960, nil, slices.Concat([]string{strings.Repeat("z", 2960)}, newer), nil, slices.Concat([]string{note}, newer)},
-		{2963, slices.Concat(newer, []string{strings.Repeat("z", 2963)}), nil, slices.Concat(newer, []string{strings.Repeat("z", 2963)}), nil},
-		{2964, slices.Concat(newer, []string{strings.Repeat("z", 2964)}), nil, slices.Concat(newer, []string{note}), nil},
+		{"FINDINGS whole", Task{}, sessionSpec{findings: slices.Concat(z(2962), full)}, "FINDINGS", jsonOf(slices.Concat(z(2962), full)), nil},
+		{"FINDINGS one byte over", Task{}, sessionSpec{findings: slices.Concat(z(2963), full)}, "FINDINGS", jsonOf(full), []string{"1 of the 33 findings, the oldest"}},
+		{"ANSWERS whole", Task{}, sessionSpec{answers: slices.Concat(full, z(2963))}, "ANSWERS", jsonOf(slices.Concat(full, z(2963))), nil},
+		{"ANSWERS one byte over", Task{}, sessionSpec{answers: slices.Concat(full, z(2964))}, "ANSWERS", jsonOf(full),
+			[]string{"1 of the 33 answers to the escalations, the oldest"}},
+		{"POSTER_INFO whole", Task{}, sessionSpec{posterInfo: slices.Concat(z(2959), full)}, "POSTER_INFO", jsonOf(slices.Concat(z(2959), full)), nil},
+		{"POSTER_INFO one byte over", Task{}, sessionSpec{posterInfo: slices.Concat(z(2960), full)}, "POSTER_INFO", jsonOf(full),
+			[]string{"1 of the 33 answers of the issue's author, the oldest"}},
+		{"DIRECTORIES whole", Task{}, sessionSpec{directories: slices.Concat(full, z(2959))}, "DIRECTORIES", jsonOf(slices.Concat(full, z(2959))), nil},
+		{"DIRECTORIES one byte over", Task{}, sessionSpec{directories: slices.Concat(full, z(2960))}, "DIRECTORIES", jsonOf(full),
+			[]string{"1 of the 33 directories, the last"}},
+		{"OBJECTIVE whole", Task{Objective: a("a", 131061)}, sessionSpec{}, "OBJECTIVE", a("a", 131061), nil},
+		{"OBJECTIVE cut on a character", Task{Objective: "a" + a("ä", 65531)}, sessionSpec{}, "OBJECTIVE", "a" + a("ä", 65528) + "…",
+			[]string{"the issue's text past its first 131057 of 131063 bytes"}},
+		{"REPORT_GUIDE cut", Task{}, sessionSpec{report: a("a", 131059)}, "REPORT_GUIDE", a("a", 131055) + "…",
+			[]string{"the report's guide past its first 131055 of 131059 bytes"}},
+		{"SPEC cut", Task{}, sessionSpec{spec: a("a", 131067), cardRole: "web"}, "SPEC", a("a", 131063) + "…",
+			[]string{"the spec and the plan past its first 131063 of 131067 bytes"}},
 	} {
-		vars := env(sessionSpec{id: "s-1", answers: tc.answers, posterInfo: tc.posterInfo})
-		for name, want := range map[string][]string{"ANSWERS": tc.wantAnswers, "POSTER_INFO": tc.wantPoster} {
-			if got := vars[name]; got != jsonOf(want) {
-				t.Errorf("m %d: %s = %d bytes, want %d", tc.m, name, len(got), len(jsonOf(want)))
+		tc.task.ID, tc.s.id = "t1", "s-1"
+		vars := env(tc.task, tc.s)
+		if got := vars[tc.v]; got != tc.want {
+			t.Errorf("%s: %s = %d bytes, want %d", tc.name, tc.v, len(got), len(tc.want))
+		}
+		for name, v := range vars {
+			if n := len(name) + len("=") + len(v) + len("\x00"); n > 128<<10 {
+				t.Errorf("%s: %s's string is %d bytes, over 128 KiB", tc.name, name, n)
 			}
-			if n := len(name) + len("=") + len(vars[name]) + len("\x00"); n > 128<<10 {
-				t.Errorf("m %d: %s's string is %d bytes, over 128 KiB", tc.m, name, n)
-			}
+		}
+		if got, ok := vars["LEFT_OUT"]; ok != (tc.leftOut != nil) || ok && got != jsonOf(tc.leftOut) {
+			t.Errorf("%s: LEFT_OUT = %q (set %v), want %q", tc.name, got, ok, tc.leftOut)
 		}
 	}
 }

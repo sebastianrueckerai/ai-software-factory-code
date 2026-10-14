@@ -605,6 +605,13 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(brief.LeftOut) > 0 {
+		b.WriteString("factoryd left out of this brief what one environment variable (128 KiB) cannot carry; the issue and the card keep it:\n")
+		for _, n := range brief.LeftOut {
+			fmt.Fprintf(&b, "- %s\n", n)
+		}
+		b.WriteString("\n")
+	}
 	if brief.Repository != "" {
 		fmt.Fprintf(&b, "Repository: %s", brief.Repository)
 		if brief.SHA != "" {

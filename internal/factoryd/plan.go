@@ -1103,14 +1103,20 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "planner session: "+errMessage(err))
 		case err != nil:
 			reason = "planner session failed: " + errMessage(err)
-			comments, _ := t.planComments(floor)
+			final, why, comments := t.planCommentsWhole(floor)
+			if final != "" {
+				return t.finish(final, why)
+			}
 			findings = append([]string{"the last planner session failed: " + errMessage(err)}, comments...)
 			continue
 		case res.Escalate != "":
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			comments, _ := t.planComments(floor)
+			final, why, comments := t.planCommentsWhole(floor)
+			if final != "" {
+				return t.finish(final, why)
+			}
 			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
@@ -1158,6 +1164,37 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	return out, heard
 }
 
+// planCommentsWhole is planComments with the rest of the burst a comment
+// opens (versionPlanBurst): a writer's change request in parts reaches the
+// next planner session whole. final is the task's end meanwhile.
+func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
+	out, heard := t.planComments(floor)
+	if len(heard) == 0 || t.planBurst < versionPlanBurst {
+		return "", "", out
+	}
+	t.awaitBurst([]string{SignalIssueClosed, SignalHumanComment, SignalPlanRejected}, func() ([]int64, bool) {
+		var ended bool
+		if final, why, ended = t.planEnded(); ended {
+			return nil, true
+		}
+		more, heard := t.planComments(floor)
+		out = append(out, more...)
+		return heard, false
+	}, heard)
+	return final, why, out
+}
+
+// planEnded takes a close of the issue or a Reject signalled so far: the
+// task's end before a plan was accepted.
+func (t *taskRun) planEnded() (final, why string, ok bool) {
+	var sig TaskSignal
+	if workflow.GetSignalChannel(t.ctx, SignalIssueClosed).ReceiveAsync(&sig) {
+		t.counted(SignalIssueClosed, sig)
+		return "closed", ReasonIssueClosed + " before the plan was accepted", true
+	}
+	return t.planRejected()
+}
+
 // awaitPlan waits, at no cost, for the approvers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
 // findings the next planner session starts with. An accepted revision
@@ -1172,15 +1209,10 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 	}
 	answered := false
 	pass := func() (heard []int64, stop bool) {
+		if final, why, stop = t.planEnded(); stop {
+			return nil, true
+		}
 		var sig TaskSignal
-		if workflow.GetSignalChannel(t.ctx, SignalIssueClosed).ReceiveAsync(&sig) {
-			t.counted(SignalIssueClosed, sig)
-			final, why = "closed", ReasonIssueClosed+" before the plan was accepted"
-			return nil, true
-		}
-		if final, why, stop = t.planRejected(); stop {
-			return nil, true
-		}
 		for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
 			if ref.Revision == 0 {
 				t.recordPlanSignal(SignalPlanAccepted, sig, "no plan waits for acceptance")
