@@ -357,7 +357,7 @@ func TestCardFaceAccent(t *testing.T) {
 
 // The amber ring and its words: a live card whose newest event is half an
 // hour old or more, or that has had none in its half hour on the board;
-// never a final card, never one in the backlog.
+// never a final card, never one in the backlog or parked in the queue.
 func TestCardFaceStaleRing(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
@@ -378,14 +378,14 @@ func TestCardFaceStaleRing(t *testing.T) {
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	quiet := `card_moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
-	for id, words := range map[string]string{"t-quiet": quiet, "t-new": `<p class="activity">no event yet, 45 min on the card</p>`,
+	for id, words := range map[string]string{"t-quiet": quiet,
 		"t-ask": `<p class="activity">which region? — no event yet, 45 min on the card</p>`} {
 		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
 			t.Errorf("%s lacks the ring or %s:\n%s", id, words, face)
 		}
 	}
-	for _, id := range []string{"t-busy", "t-done", "t-idea"} {
-		if face := faceOf(t, body, id); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") {
+	for _, id := range []string{"t-busy", "t-done", "t-idea", "t-new"} {
+		if face := faceOf(t, body, id); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") || strings.Contains(face, "no event yet") {
 			t.Errorf("%s wears the ring:\n%s", id, face)
 		}
 	}

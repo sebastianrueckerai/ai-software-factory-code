@@ -973,10 +973,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// it stands in place of the newest event. The stale ring — one whose
 	// newest event is older than half an hour wears it, one that never had
 	// an event its own age — comes only on a card that is running its
-	// work: never a final one, never one in the backlog or the plan lane.
+	// work: never a final one, never one in the backlog, the plan lane or
+	// the queue; a card parked for a slot owes no work while it waits.
 	setActivity := func(k *card) {
 		ring := func(d time.Duration) bool { return d >= staleAfter }
-		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan"
+		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan" && k.Status != "queued"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
