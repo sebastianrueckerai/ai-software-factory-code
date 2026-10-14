@@ -533,7 +533,11 @@ func (r *Runner) providerRefusal(ctx context.Context, taskID string, since time.
 }
 
 // startRef is where a session starts: the branch's head, else the given
-// ref, else main's current head, which becomes the task's base.
+// ref, else the task's stamped base — main's head when the row carries no
+// stamp yet, written once. A retry, or any later session start, reads the
+// existing stamp, the fork point the first stamp recorded, instead of
+// re-reading main's head: a main that moved during the session must not
+// re-stamp a base the branch was not cut from.
 func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string) (string, error) {
 	fork := r.forgejo.Fork(repo)
 	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(*t))
@@ -544,17 +548,17 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 		return "", fmt.Errorf("branch head: %w", err)
 	case given != "":
 		return given, nil
+	case t.SHA != "":
+		return t.SHA, nil
 	}
 	main, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
 		return "", fmt.Errorf("main head: %w", err)
 	}
-	if main != t.SHA {
-		if err := r.store.SetTaskSHA(ctx, t.ID, main); err != nil {
-			return "", err
-		}
-		t.SHA = main
+	if err := r.store.SetTaskSHA(ctx, t.ID, main); err != nil {
+		return "", err
 	}
+	t.SHA = main
 	return main, nil
 }
 
