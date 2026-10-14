@@ -797,7 +797,8 @@ func newRig(t *testing.T) *rig {
 	led := &acceptLedger{}
 	tasks := &acceptTasks{tasks: []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
-			Repository: "sf/code", IssueNumber: 5, Objective: "Fix the cache.", BudgetEUR: 3}},
+			Repository: "sf/code", IssueNumber: 5, Objective: "Fix the cache.\n\nAcceptance:\n- go test ./internal/cache/", BudgetEUR: 3,
+			Size: "small"}},
 		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
 			Process: "maintenance", Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."}},
 	}}

@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -202,7 +203,8 @@ func TestTellCardAtRunningSession(t *testing.T) {
 	equal(t, "the tell_card call's stored result", appliedResult(t, r),
 		"Told #11 (its session reads the message): The session of #11 has your message. It cannot be undone.")
 	checkEvents(t, r, factoryd.Event{Repository: repository, TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
-		Detail: map[string]any{"text": "Rebase on main first."}})
+		Detail: map[string]any{"text": "Rebase on main first.", "autonomy": "manual", "decider": "member", "merge_rule": "human",
+			"chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now())}})
 }
 
 // TestTellCardAtApprovalGate is the live check of the routing's second
@@ -258,7 +260,8 @@ func TestTellCardAtApprovalGate(t *testing.T) {
 	equal(t, "the tell_card call's stored result", appliedResult(t, r),
 		"Told #15 (the text denies its merge request, changes requested): Denied pull request #12 (request changes). It cannot be undone.")
 	checkEvents(t, r, factoryd.Event{Repository: repository, TaskID: "t-g", IssueNumber: 15, Kind: factoryd.EventMergeDenied,
-		Detail: map[string]any{"pr": int64(12), "action": "request_changes"}})
+		Detail: map[string]any{"pr": int64(12), "action": "request_changes", "autonomy": "manual", "decider": "member", "merge_rule": "human",
+			"chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now())}})
 }
 
 // tellRunDescription is the line the member reads on the running card's
