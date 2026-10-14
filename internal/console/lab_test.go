@@ -39,6 +39,7 @@ func TestLab(t *testing.T) {
 	scenario := cmp.Or(os.Getenv("CONSOLE_LAB_SCENARIO"), "busy")
 
 	r := newRig(t)
+	r.c.cfg.Timelines = lockedObjects{r.objects}
 	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		files, ok := labPRFiles[req.URL.Path]
 		if !ok {
@@ -118,6 +119,25 @@ func TestLab(t *testing.T) {
 
 // labScene is one moment of the code project, everything the fakes answer.
 // drawer is the running card the drawer shots open, "" for none.
+// labObjects serialises a seed's writes to the rig's objects against the
+// reads of a stream, which re-renders the board while a scenario loads.
+var labObjects sync.RWMutex
+
+// lockedObjects is the rig's objects under labObjects.
+type lockedObjects struct{ m fakeObjects }
+
+func (o lockedObjects) Get(ctx context.Context, k string) ([]byte, error) {
+	labObjects.RLock()
+	defer labObjects.RUnlock()
+	return o.m.Get(ctx, k)
+}
+
+func (o lockedObjects) Put(ctx context.Context, k string, b []byte) error {
+	labObjects.Lock()
+	defer labObjects.Unlock()
+	return o.m.Put(ctx, k, b)
+}
+
 type labScene struct {
 	tasks            []factoryd.BoardTask
 	deps             map[string][]string
@@ -163,10 +183,12 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.approvals.mu.Lock()
 	r.approvals.rows = s.approvals
 	r.approvals.mu.Unlock()
+	labObjects.Lock()
 	clear(r.objects)
 	for k, v := range s.objects {
 		r.objects[k] = []byte(v)
 	}
+	labObjects.Unlock()
 	// the fake answers a card's newest event by its place in the rows
 	slices.SortStableFunc(s.events, func(a, b factoryd.Event) int { return a.At.Compare(b.At) })
 	r.events.mu.Lock()
@@ -192,7 +214,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {
 		r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport] = factoryd.Mirror{Project: "ai-software-factory-code",
-			Direction: factoryd.MirrorExport, Remote: "https://github.com/sebastianrueckerai/ai-software-factory-code", State: s.github,
+			Direction: factoryd.MirrorExport, Remote: "sebastianrueckerai/ai-software-factory-code", State: s.github,
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
 	r.mirrors.mu.Unlock()

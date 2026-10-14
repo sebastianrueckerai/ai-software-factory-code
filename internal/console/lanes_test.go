@@ -108,12 +108,22 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 		"Plan":         {"Another spec"},
 		"Ready":        {`title="k4"`, `<span class="chip waiting">waiting on #3, #5</span>`},
 		"Done":         {"Link shortener", `title="k5"`},
+		"!Done":        {`class="badge"`},
 		"code Backlog": {"an improvement"},
 		"code Running": {"fix the cache", `<span class="badge">ready</span>`},
 	} {
 		board := body
 		if name, ok := strings.CutPrefix(title, "code "); ok {
 			title, board = name, code
+		}
+		// a done row carries no lane badge, in the wide view too
+		if name, ok := strings.CutPrefix(title, "!"); ok {
+			for _, w := range want {
+				if c := col(t, board, name); strings.Contains(c, w) {
+					t.Errorf("column %s shows %q:\n%s", name, w, c)
+				}
+			}
+			continue
 		}
 		c := col(t, board, title)
 		for _, w := range want {

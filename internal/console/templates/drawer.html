@@ -15,31 +15,31 @@
 <dt>Agent</dt><dd class="muted"><span class="mono">{{with .Card.ModelAlias}}{{.}}{{else}}—{{end}}</span></dd>
 </dl>
 {{if or .Need .Merge (and (eq .Card.Status "failed") .Card.Activity) .Card.Stale .Card.Provider}}<div class="open-need"><h3>Open</h3>
-{{with .Need}}<article class="need" id="need-{{.Card.ID}}{{.Suffix}}">{{with .Card.Activity}}<p class="q">{{.}}</p>{{end}}{{template "escalation-actions" .}}</article>
+{{with .Need}}<article class="need" id="need-{{.Card.ID}}{{.Suffix}}">{{template "escalation-actions" .}}</article>
 {{else}}{{with .Merge}}{{template "approval" .}}
 {{else}}{{if eq .Card.Status "failed"}}<div class="open-bad">{{.Card.Activity}}{{with .Card.Retry}}<div class="acts"><form method="post" action="/tasks/{{$.Card.ID}}/retry" hx-post="/tasks/{{$.Card.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<button type="submit" aria-label="Retry #{{$.Card.IssueNumber}}">Retry</button></form></div>{{end}}</div>
 {{else}}<p class="open-bad">{{.Card.Activity}}{{with .Card.StaleText}} · {{.}}{{end}}</p>
 {{end}}{{end}}{{end}}</div>
 {{end}}<details class="sec" data-sec="time"><summary>Time<span class="hint">{{.Life}}</span></summary><div class="sec-body"><div class="life">{{range .Runs}}<span class="mono">{{.At}}</span><span class="k {{.Class}}">{{.Kind}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div></div></details>
 {{if or .Body .Provenance}}<details class="sec" data-sec="objective"><summary>Objective</summary><div class="sec-body">{{with .Body}}<p class="objective-body">{{.}}</p>{{end}}{{with .Provenance}}<p class="provenance">{{.}}</p>{{end}}</div></details>
-{{else}}<div class="sec empty"><summary aria-disabled="true">Objective<span class="hint">one line, above</span></summary></div>
+{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Objective<span class="hint">one line, above</span></p></div>
 {{end}}
 {{with .Card.AgentSummary}}<details class="sec" data-sec="summary"><summary>The agent's summary</summary><div class="sec-body"><p class="agent-summary">{{.}}</p></div></details>
-{{else}}<div class="sec empty"><summary aria-disabled="true">The agent's summary<span class="hint">—</span></summary></div>
+{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The agent's summary<span class="hint">—</span></p></div>
 {{end}}{{if or .PlanRows (and .Card.Plan .Card.Plan.Cards)}}<details class="sec" data-sec="plan"><summary>The plan<span class="hint">{{if .PlanRows}}{{len .PlanRows}} cards{{else}}{{len .Card.Plan.Cards}} cards{{end}}</span></summary><div class="sec-body">{{with .PlanSummary}}<p>{{.}}</p>{{end}}
 {{if .PlanRows}}<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
 <thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
 </table>{{end}}{{with .Card.Plan}}{{if .Cards}}<ul class="children" aria-label="The plan's cards">{{range .Cards}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>{{end}}{{end}}</div></details>
 {{else if .Card.PlanIssue}}<details class="sec" data-sec="plan"><summary>The plan</summary><div class="sec-body"><p>part of plan <span class="ref-plain">#{{.Card.PlanIssue}}</span></p></div></details>
-{{else}}<div class="sec empty"><summary aria-disabled="true">The plan<span class="hint">—</span></summary></div>
+{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The plan<span class="hint">—</span></p></div>
 {{end}}{{with .Merge}}<details class="sec" data-sec="reviews"><summary>Reviews and audit<span class="hint">PR #{{.PRNumber}}</span></summary><div class="sec-body"><h4>Reviews and audit of <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
 {{template "merge-facts" .}}{{template "split" .}}</div></details>
-{{else}}<div class="sec empty"><summary aria-disabled="true">Reviews and audit<span class="hint">—</span></summary></div>
+{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Reviews and audit<span class="hint">—</span></p></div>
 {{end}}{{if .Related}}<details class="sec" data-sec="related"><summary>Related cards<span class="hint">{{len .Related}}</span></summary><div class="sec-body">
 <ul class="related">{{range .Related}}<li><span class="why">{{.Why}}</span> <span class="pill {{.Card.StatusClass}}">{{.Card.Status}}</span> <a href="#card={{.Card.ID}}" hx-get="/cards/{{.Card.ID}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{if .Card.IssueNumber}}#{{.Card.IssueNumber}} {{end}}{{.Card.Title}}</a></li>
 {{end}}</ul></div></details>
-{{else}}<div class="sec empty"><summary aria-disabled="true">Related cards<span class="hint">—</span></summary></div>
+{{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Related cards<span class="hint">—</span></p></div>
 {{end}}{{if .Card.MayWriteSummary}}<details class="sec" data-sec="edit"><summary>Edit</summary><div class="sec-body">
 <form method="post" action="/tasks/{{.Card.ID}}/summary" hx-post="/tasks/{{.Card.ID}}/summary" hx-target="#board" hx-swap="outerHTML" class="edit-form summary-edit"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="summary-{{.Card.ID}}-d">Summary</label><input type="text" id="summary-{{.Card.ID}}-d" name="summary" maxlength="255" value="{{.Card.HumanSummary}}" placeholder="{{.Card.Title}}"><button type="submit">Save summary</button></form>
 <form method="post" action="/tasks/{{.Card.ID}}/accent" hx-post="/tasks/{{.Card.ID}}/accent" hx-target="#board" hx-swap="outerHTML" class="edit-form accent-edit"><input type="hidden" name="csrf" value="{{.Card.CSRF}}">{{template "filter" .Card.Filter}}<label for="accent-{{.Card.ID}}-d">Accent</label><select id="accent-{{.Card.ID}}-d" name="value"><option value=""{{if not .Card.Accent}} selected{{end}}>none</option>{{range $a := accents}}<option value="{{$a}}"{{if eq $a $.Card.Accent}} selected{{end}}>{{$a}}</option>{{end}}</select><button type="submit">Set accent</button></form>
