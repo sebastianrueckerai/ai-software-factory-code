@@ -18,23 +18,24 @@ import (
 // approval and merge call in order.
 type gateHarness struct {
 	*workflowHarness
-	steps     []string
-	approvals []ApprovalInput
-	merges    []string // "pr commit approver"
-	gate      PolicyGate
-	repro     []ReproResult // in order, the last repeating
-	review    Review
-	reviews   []Review      // in order, the last repeating; empty: review
-	earlier   [][]Review    // the earlier reviews each ModelReview call was given
-	audits    []AuditResult // in order, the last repeating; empty: clear
-	auditErr  error
-	auditPins []int64
-	screened  int           // Screen calls
-	judged    []string      // JudgeScreening verdicts
-	merge     []MergeResult // in order, the last repeating
-	mergeErrs []error       // Merge's error per call, in order; nil or short = none
-	reported  []string      // ReportMergeFailure reasons
-	exhausted int           // ReportMergeRetriesExhausted calls
+	steps        []string
+	approvals    []ApprovalInput
+	merges       []string // "pr commit approver"
+	checkedHeads []string // Merge's checkedHead per call
+	gate         PolicyGate
+	repro        []ReproResult // in order, the last repeating
+	review       Review
+	reviews      []Review      // in order, the last repeating; empty: review
+	earlier      [][]Review    // the earlier reviews each ModelReview call was given
+	audits       []AuditResult // in order, the last repeating; empty: clear
+	auditErr     error
+	auditPins    []int64
+	screened     int           // Screen calls
+	judged       []string      // JudgeScreening verdicts
+	merge        []MergeResult // in order, the last repeating
+	mergeErrs    []error       // Merge's error per call, in order; nil or short = none
+	reported     []string      // ReportMergeFailure reasons
+	exhausted    int           // ReportMergeRetriesExhausted calls
 	// policyDelay is how long GatePolicy takes; reviewErr fails ModelReview
 	policyDelay   time.Duration
 	reviewErr     error
@@ -119,8 +120,9 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return nil
 		})
 	m := 0
-	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
-		func(ctx context.Context, taskID string, pr int64, commit, approver string) (MergeResult, error) {
+	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
+			g.checkedHeads = append(g.checkedHeads, checkedHead)
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))

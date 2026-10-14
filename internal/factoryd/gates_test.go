@@ -618,7 +618,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	from := time.Now()
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged {
 		t.Fatalf("result = %+v", res)
 	}
@@ -655,7 +655,7 @@ func TestMergeTokenPerProject(t *testing.T) {
 			if tc.project != nil {
 				store.projects = []Project{*tc.project}
 			}
-			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 			if tc.auth == "" {
 				if res := getInto[MergeResult](t, val, err); res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "factoryd holds no merge token for sf/repo") {
 					t.Fatalf("merge %+v, merges %d; want refused before any merge", res, len(fj.merges))
@@ -677,7 +677,7 @@ func TestMergeRefusal(t *testing.T) {
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	from := time.Now()
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
 	if res.Merged || !strings.Contains(res.Refusal, "405") {
 		t.Fatalf("result = %+v", res)
@@ -698,7 +698,7 @@ func TestMergeRefusal(t *testing.T) {
 		t.Fatalf("after a refusal the task is in %q since %v, want approval since the refusal", got.Gate, got.GateSince)
 	}
 	fj.merged = true
-	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	val, err = execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.comments) != 1 {
 		t.Fatalf("result on a merged PR = %+v, comments %d", res, len(fj.comments))
 	}
@@ -713,7 +713,7 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusMethodNotAllowed}, conflict: true}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
 	if res.Merged || !res.Conflict || !strings.Contains(res.Refusal, "405") {
 		t.Fatalf("result = %+v, want a conflict", res)
@@ -732,6 +732,18 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 // no status reported is refused with its own kind, never a conflict, before
 // any merge call; the card and the pull request say why, the approval
 // stays and the task waits in the approval gate.
+// The cheap turn's merge reads the checks' green on the head they ran on,
+// not on the synced head it merges (roadmap 222, item 4).
+func TestMergeReadsTheCheckedHead(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}, status: "success"}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "m1", "sebastian", "c1")
+	res := getInto[MergeResult](t, val, err)
+	if !res.Merged || !slices.Equal(fj.statusReads, []string{"c1"}) || len(fj.merges) != 1 || fj.merges[0]["head_commit_id"] != "m1" {
+		t.Fatalf("result %+v, status reads %v, merges %v; want m1 merged on c1's green", res, fj.statusReads, fj.merges)
+	}
+}
+
 func TestMergeRefusesRedHead(t *testing.T) {
 	for _, status := range []string{"failure", "pending", "none"} {
 		t.Run(status, func(t *testing.T) {
@@ -739,7 +751,7 @@ func TestMergeRefusesRedHead(t *testing.T) {
 			r, store, objects := newGateRunner(t, gateTask, fj)
 			store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 			from := time.Now()
-			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 			res := getInto[MergeResult](t, val, err)
 			const line = "the checks are red on c1: the merge waits for a green head"
 			if res != (MergeResult{Refusal: line, RedHead: true}) || len(fj.merges) != 0 || !slices.Equal(fj.statusReads, []string{"c1"}) {
@@ -768,7 +780,7 @@ func TestMergeRefusesRedHead(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}, status: status}
 			r, _, _ := newGateRunner(t, gateTask, fj)
-			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 			if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.merges) != 1 || !slices.Equal(fj.statusReads, []string{"c1"}) {
 				t.Fatalf("result %+v, merges %d, status reads %v; want the green head merged", res, len(fj.merges), fj.statusReads)
 			}
@@ -1040,7 +1052,7 @@ func TestGatesRefuseAMovedHead(t *testing.T) {
 func TestMergeOnlyIntoMain(t *testing.T) {
 	fj := &gateForgejo{base: "release", mergeStatus: []int{http.StatusOK}}
 	r, _, _ := newGateRunner(t, gateTask, fj)
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian")
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	if res := getInto[MergeResult](t, val, err); res.Merged || !strings.Contains(res.Refusal, `"release", not main`) || len(fj.merges) != 0 {
 		t.Fatalf("result = %+v, merges %d", res, len(fj.merges))
 	}
@@ -1053,7 +1065,7 @@ func TestMergeCreditsAHumanMerge(t *testing.T) {
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	from := time.Now()
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "alice")
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "alice", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || res.By != "sebastian" || len(fj.merges) != 0 {
 		t.Fatalf("result = %+v", res)
 	}
@@ -1072,10 +1084,10 @@ func TestMergeFailureOnTheLastAttempt(t *testing.T) {
 	task := gateTask
 	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	task.Gate, task.GateSince = GateMerge, &since
-	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", false); err == nil {
+	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", false); err == nil {
 		t.Fatal("a transient failure before the last attempt was not an error")
 	}
-	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", true)
+	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", true)
 	if err != nil || res.Merged || !strings.Contains(res.Failed, "502") {
 		t.Fatalf("last attempt = %+v, %v", res, err)
 	}

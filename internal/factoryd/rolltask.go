@@ -230,6 +230,13 @@ type RollerStore interface {
 	SettleRollRequests(ctx context.Context) error
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
+	// the backstop of the cheap merge turn (mainfix.go)
+	SetTaskPR(ctx context.Context, id string, number int64) error
+	WaitingQueueHeads(ctx context.Context) ([]string, error)
+	PauseQueue(ctx context.Context, p QueuePause) error
+	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
+	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
+	ClearQueuePause(ctx context.Context, project string) error
 }
 
 // Roller opens the roll of the code repository (ruling 178): for the
@@ -283,6 +290,9 @@ func (r *Roller) poll(ctx context.Context) error {
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
+		return err
+	}
+	if err := r.mainState(ctx, runs); err != nil {
 		return err
 	}
 	var green []ActionRun

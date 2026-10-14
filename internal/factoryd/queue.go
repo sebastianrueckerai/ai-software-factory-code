@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
@@ -122,6 +123,18 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 	if spot.New {
 		r.record(ctx, t.ID, "queue_entered", map[string]any{"project": t.Repository, "ahead": spot.Ahead})
 	}
+	// a paused queue (main is red, mainfix.go) counts as one entry ahead
+	// of every task but the pause's own cards
+	if p, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil {
+		return 0, err
+	} else if paused && (t.ID == p.FixTask || t.ID == p.RevertTask) {
+		spot.Ahead = 0
+	} else if paused {
+		if t.Gate != GateMergeQueue {
+			r.record(ctx, t.ID, "queue_paused", map[string]any{"project": t.Repository, "run": p.RunID, "sha": p.SHA, "fix": p.FixTask})
+		}
+		spot.Ahead++
+	}
 	if spot.Ahead > 0 {
 		return spot.Ahead, r.store.SetGate(ctx, t.ID, GateMergeQueue, spot.EnteredAt)
 	}
@@ -135,9 +148,14 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 // SyncResult is SyncWithMain's answer: the head From the task passed its
 // stages on, the head To after main (at Main) was merged in, equal when
 // nothing moved; Conflict is Forgejo's refusal of a main that conflicts.
+// Overlap lists the pull request's files that main's new commits (from
+// Base, the merge base before the sync) changed too: none, and the
+// checks of From hold for To (the cheap turn, roadmap 222, item 4).
 type SyncResult struct {
 	From, To, Main string
 	Conflict       string
+	Base           string
+	Overlap        []string
 }
 
 // SyncWithMain merges main into the head branch of the task's pull
@@ -157,7 +175,7 @@ func (r *Runner) SyncWithMain(ctx context.Context, taskID string, pr int64, from
 	if err != nil {
 		return SyncResult{}, err
 	}
-	res := SyncResult{From: from, To: st.HeadSHA, Main: main}
+	res := SyncResult{From: from, To: st.HeadSHA, Main: main, Base: st.MergeBase}
 	// Forgejo recomputes the merge base in the background: a stale one
 	// costs an update that moves nothing
 	if st.MergeBase != main {
@@ -175,9 +193,38 @@ func (r *Runner) SyncWithMain(ctx context.Context, taskID string, pr int64, from
 		res.To = st.HeadSHA
 	}
 	if res.To != from {
-		r.record(ctx, t.ID, "queue_synced", map[string]any{"from": from, "to": res.To, "main": main})
+		if res.Overlap, err = r.syncOverlap(ctx, repo, pr, res.Base, main); err != nil {
+			return SyncResult{}, err
+		}
+		r.record(ctx, t.ID, "queue_synced", map[string]any{"from": from, "to": res.To, "main": main, "overlap": res.Overlap})
 	}
 	return res, nil
+}
+
+// syncOverlap lists the pull request's files (a rename's old name too)
+// that main changed between base and main.
+func (r *Runner) syncOverlap(ctx context.Context, repo Repo, pr int64, base, main string) ([]string, error) {
+	files, err := r.forgejo.PullRequestFiles(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return nil, err
+	}
+	c, err := r.forgejo.Compare(ctx, repo.Owner, repo.Name, base, main)
+	if err != nil {
+		return nil, err
+	}
+	changed := map[string]bool{}
+	for _, f := range c.Files {
+		changed[f] = true
+	}
+	overlap := []string{}
+	for _, f := range files {
+		for _, name := range []string{f.Filename, f.PreviousFilename} {
+			if name != "" && changed[name] && !slices.Contains(overlap, name) {
+				overlap = append(overlap, name)
+			}
+		}
+	}
+	return overlap, nil
 }
 
 // LeaveQueue is the activity that takes the task out of its project's
@@ -206,7 +253,9 @@ func (r *Runner) leaveQueue(ctx context.Context, taskID, why string) error {
 // signalQueueHeads wakes every queue head still waiting for its turn (a
 // lost queue_turn); a head at its turn is not signalled, so its history
 // takes no signal a minute through a long approval wait.
-func signalQueueHeads(ctx context.Context, store Store, wf Workflows) {
+func signalQueueHeads(ctx context.Context, store interface {
+	WaitingQueueHeads(ctx context.Context) ([]string, error)
+}, wf Workflows) {
 	heads, err := store.WaitingQueueHeads(ctx)
 	if err != nil {
 		log.Printf("heal pass: queue heads: %v", err)
@@ -268,6 +317,13 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 		return nil, conflictVerdict(sync.Conflict), true
 	}
 	if sync.To == *head {
+		return nil, verdict{}, false
+	}
+	if t.cheapTurn >= versionCheapTurn && len(sync.Overlap) == 0 {
+		// the cheap turn: main's new commits touch no file of the pull
+		// request, so the checks that passed on the old head hold, and
+		// the merge reads their green there (checkedHead)
+		t.checkedHead, *head, t.syncedHead = *head, sync.To, sync.To
 		return nil, verdict{}, false
 	}
 	*head, t.rerunHead, t.syncedHead = sync.To, sync.To, sync.To

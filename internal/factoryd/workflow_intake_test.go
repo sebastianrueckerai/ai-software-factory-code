@@ -536,7 +536,7 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 			t.Fatalf("note lacks %q: %s", want, note)
 		}
 	}
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover)
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover, "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || !strings.Contains(fj.merges[0]["MergeMessageField"].(string), "on the project's merge rule auto") {
 		t.Fatalf("merge %+v %v", res, fj.merges)
 	}

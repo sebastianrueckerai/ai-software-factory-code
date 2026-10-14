@@ -777,7 +777,7 @@ const (
 // factoryPRSources are the sources of a pull request factoryd opened
 // itself: like a roll they have no lane and run ready's process and class.
 func factoryPRSources(source string) bool {
-	return source == SourceGitHubSync || source == SourceSchemaCopy || source == SourceTemplateUpdate
+	return source == SourceGitHubSync || source == SourceSchemaCopy || source == SourceTemplateUpdate || source == SourceRevert
 }
 
 // FileTask files task t the way the API, the alert intake, the roller

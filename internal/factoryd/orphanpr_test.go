@@ -252,7 +252,7 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 		t.Fatalf("Review = %+v, want the model review's approval", rv)
 	}
 	fj.setMerged()
-	resVal, resErr := execActivity(t, r, ActivityMerge, "t1", int64(9), "h9", "sebastian")
+	resVal, resErr := execActivity(t, r, ActivityMerge, "t1", int64(9), "h9", "sebastian", "")
 	res := activityInto[MergeResult](t, resVal, resErr)
 	if !res.Merged {
 		t.Fatalf("MergeResult = %+v, want the approved merge of the card's pull request", res)

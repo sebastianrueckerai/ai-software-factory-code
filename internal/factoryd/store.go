@@ -284,6 +284,13 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// PauseQueue pauses a project's merge queue while main is red
+	// (mainfix.go); QueuePause reads it, SetQueuePauseRevert names the
+	// revert card, ClearQueuePause ends it.
+	PauseQueue(ctx context.Context, p QueuePause) error
+	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
+	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
+	ClearQueuePause(ctx context.Context, project string) error
 	// PutLiveSession records a running session's sandbox; a retried
 	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
 	// keeps how much of the pod's log the loop consumed, and the session's
