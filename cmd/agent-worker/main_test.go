@@ -43,6 +43,22 @@ func TestLoadEnvRejectsMalformedFindings(t *testing.T) {
 	}
 }
 
+// The subagents' cheap model reaches opencode from factoryd's CHEAP_MODEL
+// (roadmap 222, item 6). Without it the worker runs opencode with no cheap
+// alias and every subagent falls back to the session's own model.
+func TestLoadEnvReadsTheCheapModel(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("STRONGER_MODEL", "factory/coding-frontier")
+	t.Setenv("CHEAP_MODEL", "factory/coding-cheap")
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if e.strongerModel != "factory/coding-frontier" || e.cheapModel != "factory/coding-cheap" {
+		t.Fatalf("stronger = %q, cheap = %q; want the env values", e.strongerModel, e.cheapModel)
+	}
+}
+
 // The step cap reaches opencode's config from factoryd's STEPS; a session
 // without one must not run uncapped.
 func TestLoadEnvStepCap(t *testing.T) {

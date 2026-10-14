@@ -147,6 +147,7 @@ func run(log func(string, ...any)) int {
 		TokenFile:  env.tokenFile,
 		Model:      env.model,
 		Stronger:   env.strongerModel,
+		Cheap:      env.cheapModel,
 		Budget:     factoryd.TokenBudget{AnswerTokens: env.answerTokens, HeadroomTokens: env.headroomTokens},
 		Steps:      env.steps,
 	}
@@ -409,6 +410,7 @@ func loadEnv() (workerEnv, error) {
 	e.tokenFile = str("TOKEN_FILE")
 	e.model = str("MODEL")
 	e.strongerModel = str("STRONGER_MODEL")
+	e.cheapModel = str("CHEAP_MODEL")
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")

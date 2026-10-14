@@ -77,6 +77,8 @@ type workflowHarness struct {
 	// branchHead answers BranchHead; branchReads counts its calls
 	branchHead  string
 	branchReads int
+	// headChecks are the heads HeadChecks (the approval stage's read) ran on
+	headChecks []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -116,11 +118,14 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
 	h.env.RegisterWorkflowWithOptions(w.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
-		ActivityEnsureIssue:       func(ctx context.Context, taskID string) error { return nil },
-		ActivitySetState:          func(ctx context.Context, taskID, state string) error { return nil },
-		ActivityRunSession:        func(ctx context.Context, in SessionInput) (SessionResult, error) { return SessionResult{}, nil },
-		ActivityOpenPullRequest:   func(ctx context.Context, taskID, sha string) (PullRequest, error) { return PullRequest{}, nil },
-		ActivityWaitChecks:        func(ctx context.Context, taskID, sha string) (ChecksResult, error) { return ChecksResult{}, nil },
+		ActivityEnsureIssue:     func(ctx context.Context, taskID string) error { return nil },
+		ActivitySetState:        func(ctx context.Context, taskID, state string) error { return nil },
+		ActivityRunSession:      func(ctx context.Context, in SessionInput) (SessionResult, error) { return SessionResult{}, nil },
+		ActivityOpenPullRequest: func(ctx context.Context, taskID, sha string) (PullRequest, error) { return PullRequest{}, nil },
+		ActivityWaitChecks:      func(ctx context.Context, taskID, sha string) (ChecksResult, error) { return ChecksResult{}, nil },
+		ActivityHeadChecks: func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			return ChecksResult{State: ChecksSuccess}, nil
+		},
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
@@ -271,6 +276,19 @@ func (h *workflowHarness) onChecks(results ...ChecksResult) {
 	n := 0
 	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			n++
+			return results[min(n, len(results))-1], nil
+		})
+}
+
+// onHeadChecks answers HeadChecks, the approval stage's read of the staged
+// head, in order with results, the last repeating, and records the heads
+// it read.
+func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
+	n := 0
+	h.env.OnActivity(ActivityHeadChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			h.headChecks = append(h.headChecks, sha)
 			n++
 			return results[min(n, len(results))-1], nil
 		})

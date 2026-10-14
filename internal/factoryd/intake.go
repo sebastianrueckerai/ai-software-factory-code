@@ -340,18 +340,26 @@ func ReproCommand(body string) string {
 	return ""
 }
 
+// sandboxCheckoutRule is the sandbox rule every reproduction refusal
+// names: the sandbox has one checkout, the command runs in place.
+const sandboxCheckoutRule = "the sandbox has one checkout, the command runs in place"
+
 // ValidateReproCommand is the static check on a reproduction command at
 // filing: it returns the refusal reason, or "" when the command may run.
 // GateReproduction runs the command in place in the checked-out worktree:
 // one that chains cd across a mount point, or creates a git worktree under
 // /tmp, exits 128 ("not a git repository") in the agent sandbox, so a
-// session would only discover what this check names here. The reason is
-// the sentence between "command <reason>;"; intakeIssue wraps it into the
-// filing refusal.
+// session would only discover what this check names here. Each cd is
+// counted, each cd - undoes one, and a command that does not end where it
+// started (pending 0) is refused: a cd the command undoes itself
+// (cd x && cmd && cd -) passes.
+// The reason is the sentence between "command <reason>;"; intakeIssue
+// wraps it into the filing refusal.
 func ValidateReproCommand(cmd string) string {
 	if cmd == "" {
 		return ""
 	}
+	pending := 0
 	for _, seg := range splitReproSegments(cmd) {
 		var words []string
 		for _, f := range strings.Fields(seg) {
@@ -365,15 +373,25 @@ func ValidateReproCommand(cmd string) string {
 			continue
 		}
 		if strings.EqualFold(words[0], "cd") {
-			return "a cd-chain leaves the checked-out worktree and finds no repository where it lands"
+			if len(words) > 1 && words[1] == "-" {
+				// cd - undoes one cd even when none is open: a
+				// leading or doubled one moves the shell, too
+				pending--
+				continue
+			}
+			pending++
+			continue
 		}
 		if strings.EqualFold(words[0], "git") {
 			for _, w := range words[1:] {
 				if strings.EqualFold(w, "worktree") {
-					return "a git worktree under the sandbox has no repository to link"
+					return "creates a git worktree: " + sandboxCheckoutRule
 				}
 			}
 		}
+	}
+	if pending != 0 {
+		return "chains cd out of the checked-out worktree: " + sandboxCheckoutRule
 	}
 	return ""
 }
@@ -383,9 +401,10 @@ func ValidateReproCommand(cmd string) string {
 var reproChainOperators = []string{"&&", "||", ";"}
 
 // reproRefusal is the filing refusal of a reproduction command with
-// reason: it names the sandbox rule and lands the card in the backlog.
+// reason: the reason names the sandbox rule, the card lands in the
+// backlog.
 func reproRefusal(reason string) string {
-	return fmt.Sprintf("factoryd: the reproduction command %s; a reproduction runs in place in the checked-out worktree. The card stays in backlog.", reason)
+	return fmt.Sprintf("factoryd: the reproduction command %s. The card stays in backlog.", reason)
 }
 
 // splitReproSegments cuts a reproduction command at its chain operators

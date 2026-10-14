@@ -1368,7 +1368,7 @@ func TestReproCommand(t *testing.T) {
 
 // ValidateReproCommand is the static check on a reproduction command at
 // filing: one that chains cd or creates a git worktree returns the refusal
-// reason; a plain command returns empty.
+// reason, which names the sandbox rule; a plain command returns empty.
 func TestValidateReproCommand(t *testing.T) {
 	for _, tc := range []struct {
 		cmd    string
@@ -1384,6 +1384,15 @@ func TestValidateReproCommand(t *testing.T) {
 		{"make a; cd b; make c", true},
 		{"cd /tmp/x || make repro", true},
 		{"make repro\ncd dir\nmake b", true},
+		{"cd x && cmd && cd -", false},
+		{"cd /tmp/x && make repro && cd -", false},
+		{"cd a && cmd && cd - && cd b && make c && cd -", false},
+		{"cd x && cmd && cd - && cd y", true},
+		{"cd a && cmd && cd - && cd b && make c", true},
+		{"cd x && cmd && cd ..", true},
+		{"cd - && cd x && cmd && cd -", true},
+		{"cd x && cmd && cd - && cd -", true},
+		{"cd - && make repro", true},
 		{"git worktree add /tmp/w HEAD", true},
 		{"make repro && GIT=1 git worktree list", true},
 		{"CDIR=/tmp/x cd-helper", false},
@@ -1392,6 +1401,9 @@ func TestValidateReproCommand(t *testing.T) {
 		if (reason != "") != tc.refuse {
 			t.Errorf("ValidateReproCommand(%q) = %q, refusal wanted %v", tc.cmd, reason, tc.refuse)
 		}
+		if reason != "" && !strings.Contains(reason, sandboxCheckoutRule) {
+			t.Errorf("ValidateReproCommand(%q) = %q, refusal does not name the sandbox rule %q", tc.cmd, reason, sandboxCheckoutRule)
+		}
 	}
 }
 
@@ -1399,9 +1411,12 @@ func TestValidateReproCommand(t *testing.T) {
 // rule and the backlog.
 func TestReproRefusalText(t *testing.T) {
 	got := reproRefusal(ValidateReproCommand("cd /tmp/x && make repro"))
-	want := "factoryd: the reproduction command a cd-chain leaves the checked-out worktree and finds no repository where it lands; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	want := "factoryd: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
 	if got != want {
 		t.Errorf("reproRefusal = %q, want %q", got, want)
+	}
+	if got := reproRefusal(ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(got, "creates a git worktree: "+sandboxCheckoutRule) {
+		t.Errorf("worktree reproRefusal = %q, want the sandbox rule named", got)
 	}
 }
 
@@ -1425,7 +1440,7 @@ func TestIntakeRefusesCdChainRepro(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 21); !slices.Contains(labels, "agent") {
 		t.Fatalf("labels = %v, want the agent label kept", labels)
 	}
-	want := "factoryd: the reproduction command a cd-chain leaves the checked-out worktree and finds no repository where it lands; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	want := "factoryd: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
 	cs := comments(*requests)
 	if len(cs) != 1 || cs[0] != want {
 		t.Fatalf("comments = %q, want only %q", cs, want)
@@ -1449,7 +1464,7 @@ func TestIntakeRefusesGitWorktreeRepro(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 22); !slices.Contains(labels, "agent") {
 		t.Fatalf("labels = %v, want the agent label kept", labels)
 	}
-	want := "factoryd: the reproduction command a git worktree under the sandbox has no repository to link; a reproduction runs in place in the checked-out worktree. The card stays in backlog."
+	want := "factoryd: the reproduction command creates a git worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
 	cs := comments(*requests)
 	if len(cs) != 1 || cs[0] != want {
 		t.Fatalf("comments = %q, want only %q", cs, want)

@@ -347,6 +347,17 @@ func (r *Runner) GateMigration(ctx context.Context, taskID string, pr int64, mig
 // reproOutputTail bounds the reproduction output kept (findings, comment).
 const reproOutputTail = 4 << 10
 
+// notARepository is the sandbox's not-a-repository signature: git exits
+// 128 with "not a git repository" where the command landed after it left
+// the checked-out worktree (a cd it does not undo, or a git worktree).
+func notARepository(res ReproResult) bool {
+	return res.Ran && res.Exit == 128 && strings.Contains(res.Output, "not a git repository")
+}
+
+// notARepositoryRule is the sandbox rule a not-a-repository failure names,
+// so no session spends itself discovering it.
+const notARepositoryRule = "exit 128 with \"not a git repository\" is the sandbox's not-a-repository signature: the sandbox has one checkout and the reproduction runs in place in the checked-out worktree; a cd the command does not undo, or a git worktree, finds no repository where it lands."
+
 // GateReproduction runs the task's reproduction command against the pull
 // request head in a fresh sandbox with no agent: the worker image in its
 // repro mode fetches the head with a read token on the task's repository
@@ -424,13 +435,22 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if byAgent {
 		verdict += "; the command is the agent's own reproduction, the issue carried none"
 	}
-	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n%s\n\nOutput tail at the head:\n\n%s\n\nOutput tail at the base:\n\n%s",
-		verdict, res.Exit, commit, fenced(res.Command), fenced(res.Output), fenced(textutil.Tail(at.Output, reproOutputTail)))
+	// the rule beside the failing command when the failure is the
+	// sandbox's not-a-repository signature, not the bug
+	rule := ""
+	if notARepository(res) {
+		rule = "\n\nfactoryd: " + notARepositoryRule
+	}
+	msg := fmt.Sprintf("factoryd reproduction gate %s (exit %d) on %s:\n\n%s%s\n\nOutput tail at the head:\n\n%s\n\nOutput tail at the base:\n\n%s",
+		verdict, res.Exit, commit, fenced(res.Command), rule, fenced(res.Output), fenced(textutil.Tail(at.Output, reproOutputTail)))
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, r.untrusted(t, msg)); err != nil {
 		log.Printf("task %s: comment the reproduction: %v", t.ID, err)
 	}
 	detail := map[string]any{"pr": pr, "commit": commit, "command": res.Command, "exit": res.Exit, "output": res.Output,
 		"base": t.SHA, "base_exit": at.Exit, "by_agent": byAgent, "not_reproduced": note}
+	if notARepository(res) {
+		detail["not_a_repository"] = true
+	}
 	if !res.Reproduced() && res.Passed() {
 		detail["not_reproduced_at_base"] = true
 	}
