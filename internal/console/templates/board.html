@@ -59,9 +59,11 @@
 
 {{define "filter"}}<input type="hidden" name="project" value="{{.Project}}"><input type="hidden" name="accent" value="{{.Accent}}">{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}{{end}}
 
-{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}">
+{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
 {{template "card" .Card}}
-{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
+{{template "escalation-actions" .}}</article>{{end}}
+
+{{define "escalation-actions"}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
@@ -70,25 +72,25 @@
 {{end}}</div>
 {{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
-<label for="answer-{{.Card.ID}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
-<textarea id="answer-{{.Card.ID}}" name="answer" rows="3" required></textarea>
+<label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
+<textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" required></textarea>
 <button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
 </form>{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
-<label for="fund-{{$.Card.ID}}">Fund this card, EUR</label>
-<input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}" name="eur" required>
-<label for="fund-reason-{{$.Card.ID}}">why</label>
-<input type="text" id="fund-reason-{{$.Card.ID}}" name="reason" maxlength="2000" required>
+<label for="fund-{{$.Card.ID}}{{$.Suffix}}">Fund this card, EUR</label>
+<input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}{{$.Suffix}}" name="eur" required>
+<label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">why</label>
+<input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="2000" required>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
 </form>{{end}}{{end}}
 {{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
-</article>{{end}}
+{{end}}
 
-{{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}">
-{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
+{{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
+{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">Merge <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4>
 {{if eq .Filter.View "wide"}}{{template "merge-facts" .}}{{else}}{{template "merge-brief" .}}{{end}}
-{{else}}<h4 id="approval-{{.ID}}">Resource request</h4>
+{{else}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">Resource request</h4>
 <dl class="facts">
 <dt>Type</dt><dd>{{.Resource.ServerType}}{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}}</dd>
 <dt>Purpose</dt><dd>{{.Resource.Purpose}}</dd>
@@ -107,8 +109,8 @@
 {{template "split" .}}
 <form method="post" action="/approvals/{{.ID}}/deny">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="note-{{.ID}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
-<textarea id="note-{{.ID}}" name="note" rows="2" required></textarea>
+<label for="note-{{.ID}}{{.IDSuffix}}">Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}</label>
+<textarea id="note-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
 {{if eq .Kind "merge"}}<fieldset><legend>Deny by</legend>
 <label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
 <label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
@@ -148,7 +150,7 @@
 {{end}}</dl>
 </details>{{end}}
 
-{{define "plan"}}<h4 id="approval-{{.ID}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
+{{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">Plan {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 <p class="spec">{{.SpecLines}}</p>
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
@@ -168,8 +170,8 @@
 {{end}}</div>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}">
-<label for="answer-{{$.ID}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
-<input type="text" id="answer-{{$.ID}}-{{$q.Index}}" name="answer" maxlength="1000" required>
+<label for="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Or your own answer, posted on the issue as you</label>
+<input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required>
 <button type="submit">Answer</button>
 </form></fieldset>
 {{end}}{{end}}{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
@@ -182,14 +184,14 @@
 </form>{{else}}<p class="meta">Only the project's approvers may accept a plan.</p>{{end}}
 <form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="changes-{{.ID}}">Changes you ask for, posted on the issue as you</label>
-<textarea id="changes-{{.ID}}" name="text" rows="3" required></textarea>
+<label for="changes-{{.ID}}{{.IDSuffix}}">Changes you ask for, posted on the issue as you</label>
+<textarea id="changes-{{.ID}}{{.IDSuffix}}" name="text" rows="3" required></textarea>
 <button type="submit" aria-label="Request changes to plan #{{.Issue}}">Request changes</button>
 </form>
 <form method="post" action="/tasks/{{.TaskID}}/plan/reject" hx-post="/tasks/{{.TaskID}}/plan/reject" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="reject-{{.ID}}">Reason to reject the plan</label>
-<textarea id="reject-{{.ID}}" name="note" rows="2" required></textarea>
+<label for="reject-{{.ID}}{{.IDSuffix}}">Reason to reject the plan</label>
+<textarea id="reject-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
 <button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>
 </form>{{end}}
 

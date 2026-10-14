@@ -17,6 +17,7 @@ import (
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
 	factoryd.ApprovalRequest
+	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
 	PRURL    string

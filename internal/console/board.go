@@ -516,6 +516,7 @@ type need struct {
 	CSRF      string
 	Approver  bool
 	Back      string
+	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
 // viewWide is the board's wide view: the lanes as columns first, then the
@@ -1836,7 +1837,7 @@ type drawerTab struct{ Name, Title string }
 
 // drawerTabs are the card drawer's tabs: Chat the default of a running
 // card, Overview of any other.
-var drawerTabs = []drawerTab{{"overview", "Overview"}, {"activity", "Activity"}, {"files", "Files"}, {"chat", "Chat"}}
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Chat"}, {"activity", "Activity"}, {"files", "Files"}}
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
@@ -1863,6 +1864,31 @@ type drawerData struct {
 	Steers                     bool   // the session runs and takes the member's messages
 	Note                       string // what the member's action did
 	Problem                    string // what the tab could not read
+	// Runs are the card's life for the Time section (C10) and Life its
+	// at-a-glance line; Need is the open question with its actions when
+	// the card waits on a person.
+	Runs []run
+	Life string
+	Need *need
+}
+
+// Age is the card's time in its stage, or in all once it ended.
+func (d drawerData) Age() string {
+	if d.Card.StageAge != "" {
+		return d.Card.StageAge
+	}
+	if d.Card.Total != "" {
+		return d.Card.Total + " in all"
+	}
+	return ""
+}
+
+// Word is the card's stage word, or its status.
+func (d drawerData) Word() string {
+	if d.Card.Stage != "" {
+		return d.Card.Stage
+	}
+	return d.Card.Status
 }
 
 // said is a message of a session in the drawer's Chat: the agent's text
@@ -1917,6 +1943,11 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 	}
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
+	// the drawer's head carries the title as filed, whole: the objective's
+	// first line, unless a writer's summary or a plan key names the card
+	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" && bt.PlanKey == "" {
+		d.Card.Title = headline
+	}
 	problem := func(what string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
 		d.Problem = "The " + what + " could not be read; see the factoryd log."
@@ -1933,9 +1964,15 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
 				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approves(a.Project))
+				m.Filter, m.IDSuffix = k.Filter, "-d"
 				d.Merge = &m
 			}
 		}
+		if v.escalated(bt.Task) {
+			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Approver: c.approver(r), Back: "/" + k.Filter.query(), Suffix: "-d"}
+		}
+		d.Runs = c.lifeOf(ctx, bt.Task)
+		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		var err error
 		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
 			problem("related cards", err)

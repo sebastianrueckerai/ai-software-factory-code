@@ -510,10 +510,10 @@ func TestDrawerOverview(t *testing.T) {
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<h2 tabindex="-1"><a href="https://git.example/linkshort/linkshort/issues/4">#4</a> k4</h2>`,
+		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
-			tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + tab("t-c4", "chat", "Chat", false) + `</nav>`,
-		`<h3 class="headline">Links API</h3>`,
+			tab("t-c4", "chat", "Chat", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
+		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
 		`<li><span class="why">blocked by</span> <span class="pill st-backlog">backlog</span> ` + open("t-c3", "#3 k3"),
@@ -529,7 +529,7 @@ func TestDrawerOverview(t *testing.T) {
 	}
 
 	plan := drawer(t, r, ck, "t-plan", "overview")
-	for _, want := range []string{`<h3 class="headline">Link shortener</h3>`,
+	for _, want := range []string{`<dt>Task</dt><dd>Link shortener</dd>`,
 		"<p>Foundation first, then the API, then the acceptance tests.</p>",
 		"<tr><td>foundation</td><td>foundation</td><td>Foundation</td><td>medium</td><td></td></tr>",
 		"<tr><td>links-api</td><td>feature</td><td>Links API</td><td>medium</td><td>foundation</td></tr>",
@@ -556,7 +556,7 @@ func TestDrawerOverview(t *testing.T) {
 			t.Errorf("t-m's overview lacks %s", want)
 		}
 	}
-	if strings.Contains(drawer(t, r, ck, "t-pr", ""), "Reviews and audit") {
+	if strings.Contains(drawer(t, r, ck, "t-pr", ""), `data-sec="reviews"`) {
 		t.Error("a card without a pending merge shows reviews")
 	}
 }
@@ -665,8 +665,8 @@ func TestDrawerChat(t *testing.T) {
 	}
 	running := drawer(t, r, ck, "t-run", "")
 	for _, want := range []string{
-		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "activity", "Activity", false) +
-			drawerTabMarkup("t-run", "files", "Files", false) + drawerTabMarkup("t-run", "chat", "Chat", true) + `</nav>`,
+		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Chat", true) +
+			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="meta">Session 2 · coding-frontier · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
