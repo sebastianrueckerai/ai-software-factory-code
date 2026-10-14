@@ -32,15 +32,19 @@ import (
 // TestCIQueueAlertRequiresSustainedHighQueue (roadmap 181, Stage 18 item
 // 3.12): the "CI queue p95 above 5 minutes" rule fires only when the queue
 // time stayed high over its whole evaluation window — matchType 2 ("all
-// the times") with requireMinPoints and a full window's 15 points — so one
+// the times") with requireMinPoints and a full window's 10 points — so one
 // spike at 555 s files no card.
 func TestCIQueueAlertRequiresSustainedHighQueue(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "k8s", "alerts", "ci-queue-p95.json"))
+	data, err := os.ReadFile(filepath.Join("..", "k8s", "platform", "signoz", "project-rules", "ci-queue-p95.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var rule struct {
-		Alert     string `json:"alert"`
+		Alert  string `json:"alert"`
+		Labels struct {
+			Service  string `json:"service"`
+			Capacity string `json:"capacity"`
+		} `json:"labels"`
 		Condition struct {
 			RequireMinPoints  bool `json:"requireMinPoints"`
 			RequiredNumPoints int  `json:"requiredNumPoints"`
@@ -64,6 +68,9 @@ func TestCIQueueAlertRequiresSustainedHighQueue(t *testing.T) {
 	if rule.Alert != "CI queue p95 above 5 minutes" {
 		t.Fatalf("alert %q", rule.Alert)
 	}
+	if rule.Labels.Service != "ci" || rule.Labels.Capacity == "" {
+		t.Errorf("labels service %q capacity %q, want service ci and a capacity label", rule.Labels.Service, rule.Labels.Capacity)
+	}
 	if len(rule.Condition.Thresholds.Spec) != 1 {
 		t.Fatalf("%d thresholds, want the warning one alone", len(rule.Condition.Thresholds.Spec))
 	}
@@ -74,14 +81,14 @@ func TestCIQueueAlertRequiresSustainedHighQueue(t *testing.T) {
 	if !rule.Condition.RequireMinPoints {
 		t.Errorf("requireMinPoints false, want true")
 	}
-	if rule.Condition.RequiredNumPoints != 15 {
-		t.Errorf("requiredNumPoints %d, want 15", rule.Condition.RequiredNumPoints)
+	if rule.Condition.RequiredNumPoints != 10 {
+		t.Errorf("requiredNumPoints %d, want 10", rule.Condition.RequiredNumPoints)
 	}
 	if th.Name != "warning" || th.Target != 300 {
 		t.Errorf("threshold %q target %d, want warning at 300", th.Name, th.Target)
 	}
-	if w, err := time.ParseDuration(rule.Evaluation.Spec.EvalWindow); err != nil || w != 15*time.Minute {
-		t.Errorf("evalWindow %q, want 15m (%v)", rule.Evaluation.Spec.EvalWindow, err)
+	if w, err := time.ParseDuration(rule.Evaluation.Spec.EvalWindow); err != nil || w != 10*time.Minute {
+		t.Errorf("evalWindow %q, want 10m (%v)", rule.Evaluation.Spec.EvalWindow, err)
 	}
 }
 
