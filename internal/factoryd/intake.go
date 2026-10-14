@@ -345,13 +345,15 @@ func ReproCommand(body string) string {
 // GateReproduction runs the command in place in the checked-out worktree:
 // one that chains cd across a mount point, or creates a git worktree under
 // /tmp, exits 128 ("not a git repository") in the agent sandbox, so a
-// session would only discover what this check names here. The reason is
-// the sentence between "command <reason>;"; intakeIssue wraps it into the
-// filing refusal.
+// session would only discover what this check names here. A cd the command
+// undoes itself (cd x && cmd && cd -) ends where it started and passes.
+// The reason is the sentence between "command <reason>;"; intakeIssue
+// wraps it into the filing refusal.
 func ValidateReproCommand(cmd string) string {
 	if cmd == "" {
 		return ""
 	}
+	pending := 0
 	for _, seg := range splitReproSegments(cmd) {
 		var words []string
 		for _, f := range strings.Fields(seg) {
@@ -365,7 +367,14 @@ func ValidateReproCommand(cmd string) string {
 			continue
 		}
 		if strings.EqualFold(words[0], "cd") {
-			return "a cd-chain leaves the checked-out worktree and finds no repository where it lands"
+			if len(words) > 1 && words[1] == "-" {
+				if pending > 0 {
+					pending--
+				}
+				continue
+			}
+			pending++
+			continue
 		}
 		if strings.EqualFold(words[0], "git") {
 			for _, w := range words[1:] {
@@ -374,6 +383,9 @@ func ValidateReproCommand(cmd string) string {
 				}
 			}
 		}
+	}
+	if pending > 0 {
+		return "a cd-chain leaves the checked-out worktree and finds no repository where it lands"
 	}
 	return ""
 }
