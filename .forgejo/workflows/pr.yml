@@ -69,10 +69,13 @@ jobs:
               ' | sort -u
           ) || pkgs=""
           [ -n "$pkgs" ] || { echo "the walk named no package: full suite"; full; }
+          pkgs=$(printf '%s\n' "$pkgs" | paste -sd' ')
           echo "packages to test: $pkgs"
-          # the delimiter form: $pkgs holds one package a line, and a plain
-          # key=value write leaves every line after the first invalid, which
-          # fails the job after the tests ran green (PR 644, runs 952/954/964)
+          # one line, space-separated: the test step inlines the value into
+          # its script, where a second line would run as its own command
+          # (PR 689, run 1977: cmd/agent-worker executed as a file name,
+          # exit 127 after the first package passed). A plain key=value
+          # write failed the same job differently (PR 644, runs 952/954/964).
           {
             echo "pkgs<<EOF"
             echo "$pkgs"
