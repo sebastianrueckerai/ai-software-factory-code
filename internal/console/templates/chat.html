@@ -18,8 +18,7 @@
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
 <button type="submit">Send</button></div>
-<div class="own"><div class="own-l"><span class="cmds">{{range .Commands}}{{if not .Message}}<button type="button" class="cmd" data-cmd="{{.Name}}" title="{{.Words}}">/{{.Name}}</button>{{end}}{{end}}</span>
-<p class="chat-own">This is your own thread with the project agent; other members have theirs.</p></div>{{if .Autonomy}}
+<div class="own"><div class="own-l"><span class="cmds">{{range .Commands}}{{if not .Message}}<button type="button" class="cmd" data-cmd="{{.Name}}" title="{{.Words}}">/{{.Name}}</button>{{end}}{{end}}</span></div>{{if .Autonomy}}
 <span class="lvlctl"><button type="button" id="level-btn" data-level="{{.Autonomy}}" aria-haspopup="menu" aria-expanded="false" aria-label="The project's autonomy level: {{.Autonomy}}"{{if not .Approver}} disabled title="An approver of the project changes its level"{{end}}><i aria-hidden="true"></i><span class="lvl-name">{{.Autonomy}}</span></button><div class="lvlpop" id="level-pop" role="menu" aria-label="Autonomy" hidden></div></span>
 <script type="application/json" id="chat-levels">{{.Levels}}</script>{{end}}</div>
 </form>

@@ -54,8 +54,7 @@ func TestChatPanel(t *testing.T) {
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
 <button type="submit">Send</button></div>
-<div class="own"><div class="own-l"><span class="cmds"><button type="button" class="cmd" data-cmd="compact" title="the older turns of this thread become a summary">/compact</button><button type="button" class="cmd" data-cmd="new" title="a new thread">/new</button></span>
-<p class="chat-own">This is your own thread with the project agent; other members have theirs.</p></div></div>
+<div class="own"><div class="own-l"><span class="cmds"><button type="button" class="cmd" data-cmd="compact" title="the older turns of this thread become a summary">/compact</button><button type="button" class="cmd" data-cmd="new" title="a new thread">/new</button></span></div></div>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 </div><script src="/static/chat.js" defer></script>
