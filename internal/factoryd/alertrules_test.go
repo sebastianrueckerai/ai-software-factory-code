@@ -14,9 +14,16 @@ import (
 // "factory-gateway roll not live for 10 minutes" three minutes after the
 // roll was live (#215).
 func TestAllTheTimesRulesRequireAFullWindow(t *testing.T) {
-	files, err := filepath.Glob("../../k8s/alerts/*.json")
-	if err != nil || len(files) == 0 {
-		t.Fatalf("rules: %v %v", files, err)
+	var files []string
+	for _, dir := range []string{"../../k8s/alerts", "../../k8s/platform/signoz/project-rules"} {
+		more, err := filepath.Glob(dir + "/*.json")
+		if err != nil {
+			t.Fatalf("rules in %s: %v", dir, err)
+		}
+		files = append(files, more...)
+	}
+	if len(files) == 0 {
+		t.Fatalf("no rules found")
 	}
 	seen := 0
 	for _, f := range files {

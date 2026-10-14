@@ -421,6 +421,138 @@ func TestStagesReviewMaxReturns(t *testing.T) {
 	}
 }
 
+// Roadmap 192: a review that repeats a finding an approval adjudicated
+// (the approver overruled it) bounces no session for it: the repeat goes
+// on the card as evidence, the approval decides over it, and the approval
+// it wins adjudicates the repeat for the rounds to come.
+func TestStagesAdjudicatedRepeatGoesToTheCardNotTheAgent(t *testing.T) {
+	mirror := "mirror.go: the mirror writes while the source moves"
+	overruled := Review{Verdict: "concerns", Summary: "the mirror moves", Findings: []string{mirror},
+		Adjudicated: map[string]Adjudication{mirror: {By: "controller", Why: "the mirror is the point of the change"}}}
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviews = []Review{{Verdict: "concerns", Summary: "the mirror still moves", Findings: []string{mirror}}}
+	})
+	// the healed run: the controller approved round 1's finding over the
+	// review's concerns (the overrule, recorded on the finding), the pull
+	// request then conflicted with main and its finding goes to the next
+	// session
+	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{Attempts: 1},
+		Findings: []string{"the pull request no longer merges into main: merge main into the branch"},
+		Returns:  map[string]int{"review": 1}, History: []string{"review, round 1: " + mirror}, Reviews: []Review{overruled}, Round: 1}
+	g.onSessions(pushed("s2", "c3"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 1 {
+		t.Fatalf("sessions = %d: a repeat of an adjudicated finding bounced a session", len(g.sessions))
+	}
+	in := g.approvals[0]
+	if len(g.approvals) != 1 || !slices.Contains(in.WhyHuman, "review: "+mirror) || !slices.Equal(in.Review.Findings, []string{mirror}) {
+		t.Fatalf("card = %+v: the approval sees the repeat as evidence", in)
+	}
+	if len(in.EarlierReviews) != 1 || in.EarlierReviews[0].Adjudicated[mirror].By != "controller" {
+		t.Fatalf("earlier reviews = %+v: the overrule is gone", in.EarlierReviews)
+	}
+	// the console's approve carries no body: its note is the why
+	var adjudicated []map[string]any
+	for _, r := range g.recorded {
+		if r.step == stepAdjudicated {
+			adjudicated = append(adjudicated, r.detail)
+		}
+	}
+	if len(adjudicated) != 1 || adjudicated[0]["finding"] != mirror || adjudicated[0]["by"] != "sebastian" || adjudicated[0]["why"] != consoleApproved {
+		t.Fatalf("adjudicated = %+v", adjudicated)
+	}
+}
+
+// A review with a finding no approval adjudicated bounces as before
+// (roadmap 192): the session takes it up.
+func TestStagesFreshFindingBouncesAsBefore(t *testing.T) {
+	mirror := "mirror.go: the mirror writes while the source moves"
+	fresh := "cli.go: the flag is unchecked"
+	overruled := Review{Verdict: "concerns", Summary: "the mirror moves", Findings: []string{mirror},
+		Adjudicated: map[string]Adjudication{mirror: {By: "controller", Why: "the mirror is the point of the change"}}}
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviews = []Review{{Verdict: "concerns", Summary: "a new finding", Findings: []string{fresh}}}
+	})
+	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{Attempts: 1},
+		Findings: []string{"the pull request no longer merges into main: merge main into the branch"},
+		Returns:  map[string]int{"review": 1}, History: []string{"review, round 1: " + mirror}, Reviews: []Review{overruled}, Round: 1}
+	g.onSessions(pushed("s2", "c3"), pushed("s3", "c4"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{fresh}) {
+		t.Fatalf("sessions = %+v: a fresh finding must bounce", g.sessions)
+	}
+}
+
+// An approval over findings adjudicates exactly those findings (roadmap
+// 192): who, why, when, on the timeline — the finding of the round the
+// card capped and every earlier one its history shows; a Forgejo
+// approval's review body is the why.
+func TestStagesApprovalOverFindingsAdjudicatesThem(t *testing.T) {
+	flag := "main.go: check the flag"
+	exit := "cli.go: check the exit code"
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{flag}}
+	second := Review{Verdict: "concerns", Summary: "and the exit code", Findings: []string{exit}}
+	one := 1
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
+		setStage(w, "review", func(s *policy.Stage) { s.MaxReturns = &one })
+	}), func(g *gateHarness) { g.reviews = []Review{first, second} })
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9, Body: "both findings are overruled: ship it"})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	var adjudicated []string
+	whys := map[string]string{}
+	for _, r := range g.recorded {
+		if r.step == stepAdjudicated {
+			adjudicated = append(adjudicated, r.detail["finding"].(string))
+			whys[r.detail["finding"].(string)] = r.detail["why"].(string)
+		}
+	}
+	want := "both findings are overruled: ship it"
+	if len(adjudicated) != 2 || !slices.Contains(adjudicated, flag) || !slices.Contains(adjudicated, exit) ||
+		whys[flag] != want || whys[exit] != want {
+		t.Fatalf("adjudicated = %v, whys = %v", adjudicated, whys)
+	}
+}
+
+// A denial adjudicates nothing (roadmap 192): no approval covered the
+// findings, so none is overruled.
+func TestStagesDeniedApprovalAdjudicatesNothing(t *testing.T) {
+	flag := "main.go: check the flag"
+	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{flag}}
+	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{flag}}
+	one := 1
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
+		setStage(w, "review", func(s *policy.Stage) { s.MaxReturns = &one })
+	}), func(g *gateHarness) { g.reviews = []Review{first, second} })
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"), pushed("s3", "c3"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "no"})
+	g.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q", final)
+	}
+	for _, r := range g.recorded {
+		if r.step == stepAdjudicated {
+			t.Fatalf("a denial adjudicated %v", r.detail)
+		}
+	}
+}
+
 // Screening: a clear verdict lets the coder start; the Screen activity
 // runs before the first session.
 func TestStagesScreeningClear(t *testing.T) {

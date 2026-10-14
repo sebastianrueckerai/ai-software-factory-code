@@ -905,10 +905,11 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 
 // refuseWorkflowDirChange returns a terminal error when any workflow
 // directory's tree entry in commit (on the fork, where the branch was
-// pushed) differs from both the task base's and main's current head's
-// (on the task's repository): a branch that merges main forward carries
-// main's own workflow edits, and only an entry main does not hold is the
-// task's own change.
+// pushed) differs from the task base's, main's current head's and their
+// merge-base's (on the task's repository): a branch that merges main
+// forward carries main's own workflow edits — the head's when it merged
+// the newest main, the merge-base's when main has moved past the main it
+// merged — and only an entry no main ever held is the task's own change.
 func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo, commit string) error {
 	base := t.SHA
 	mainHead, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
@@ -933,12 +934,91 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 	if err != nil {
 		return err
 	}
+	var merged map[string]string
+	mergeBase := base
 	for _, dir := range WorkflowDirs {
-		if now[dir] != was[dir] && (main == nil || now[dir] != main[dir]) {
-			return terminalError("branch %s changes %s/ (commit %s against base %s and main %s); factoryd opens no pull request that edits a workflow directory", taskBranch(t), dir, commit, base, mainHead)
+		if now[dir] == was[dir] || main != nil && now[dir] == main[dir] {
+			continue
 		}
+		if merged == nil {
+			if mergeBase, err = r.mergeBase(ctx, repo, fork, commit, base, mainHead); err != nil {
+				return err
+			}
+			if merged, err = r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, mergeBase, WorkflowDirs...); err != nil {
+				return err
+			}
+		}
+		if now[dir] == merged[dir] {
+			continue
+		}
+		return terminalError("branch %s changes %s/ (commit %s against base %s, main %s and their merge-base %s); factoryd opens no pull request that edits a workflow directory",
+			taskBranch(t), dir, commit, base, mainHead, mergeBase)
 	}
 	return nil
+}
+
+// mainChainDepth caps the walk down main's first-parent chain looking for
+// the task base; mergeBaseSteps caps the walk over the pushed commit's own
+// history, the branch's sessions' commits above the merge. Both walks find
+// their target long before the cap in any real repository; past it the
+// merge-base reads as the base and the gate compares as it did before the
+// merge-base was added.
+const (
+	mainChainDepth = 512
+	mergeBaseSteps = 128
+)
+
+// mergeBase is the merge-base of the pushed commit and main's head,
+// whichever main the branch merged: the newest commit of main's
+// first-parent chain, walked from the head towards the task base on the
+// task's repository, that the pushed commit's history reaches on the
+// fork. A branch that merged nothing reaches no chain commit above the
+// base, so the base is its merge-base. The chain walk stops at the base —
+// a main older than the task is not the branch's merge — and the fork
+// walk stops at any chain commit it reaches, whose history is main's own.
+func (r *Runner) mergeBase(ctx context.Context, repo, fork Repo, commit, base, mainHead string) (string, error) {
+	if mainHead == base {
+		return base, nil
+	}
+	chain := []string{mainHead}
+	for chain[len(chain)-1] != base && len(chain) < mainChainDepth {
+		parents, err := r.forgejo.CommitParents(ctx, repo.Owner, repo.Name, chain[len(chain)-1])
+		if err != nil {
+			return "", err
+		}
+		if len(parents) == 0 {
+			break
+		}
+		chain = append(chain, parents[0])
+	}
+	at := make(map[string]int, len(chain))
+	for i, sha := range chain {
+		at[sha] = i
+	}
+	queue, seen, best := []string{commit}, map[string]bool{}, -1
+	for len(queue) > 0 && len(seen) < mergeBaseSteps {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == "" || seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		if i, ok := at[cur]; ok {
+			if best < 0 || i < best {
+				best = i
+			}
+			continue
+		}
+		parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, cur)
+		if err != nil {
+			return "", err
+		}
+		queue = append(queue, parents...)
+	}
+	if best < 0 {
+		return base, nil
+	}
+	return chain[best], nil
 }
 
 // TaskConfig reads the task's row and its process in the pinned version:
@@ -1090,8 +1170,10 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 
 // stageMemory rebuilds what the stages remembered from the task's
 // timeline: the stage_findings steps (returns to the agent, the history),
-// a dependencies_started step (the card started despite a dependency)
-// and the model_review steps (the reviews), the last round.
+// a dependencies_started step (the card started despite a dependency),
+// the model_review steps (the reviews), the last round, and the
+// finding_adjudicated steps (the overrules an approval recorded on the
+// reviews' findings, versionAdjudicated).
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
@@ -1100,8 +1182,10 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 	for line := range strings.SplitSeq(string(b), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note, Reason string
+			By, Finding, Why                                string
 			Round, Attempt                                  int
 			Findings                                        []string
+			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
 			continue
@@ -1124,6 +1208,16 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 		case "model_review":
 			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
 			st.Round = max(st.Round, step.Round)
+		case stepAdjudicated:
+			for i := range st.Reviews {
+				if !slices.Contains(st.Reviews[i].Findings, step.Finding) {
+					continue
+				}
+				if st.Reviews[i].Adjudicated == nil {
+					st.Reviews[i].Adjudicated = map[string]Adjudication{}
+				}
+				st.Reviews[i].Adjudicated[step.Finding] = Adjudication{By: step.By, Why: step.Why, When: step.Time}
+			}
 		}
 	}
 	return nil
@@ -1386,14 +1480,19 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 	return ChecksResult{}
 }
 
-// mainFailureSuffix names a head finding whose same check fails on main too:
-// the defect is pre-existing there, not this card's (Stage 19, finding 195).
-const mainFailureSuffix = " (also failing on main)"
+// mainFailureSuffix opens the note a head finding carries when the same
+// check fails on main too, closed with main's failing context and a
+// parenthesis: the defect is pre-existing there, not this card's (Stage
+// 19, finding 195).
+const mainFailureSuffix = " (also failing on main: "
 
 // annotateMainFailures reads main's state when a head run failed and marks
-// each finding whose check context also fails on main, so the agent's
-// session and the supervisor's guidance point at the real defect instead of
-// the card. Any error (no main branch, an unreadable status) logs and
+// each finding whose check also fails on main — the check, not the context
+// name, for main does not run the pull request's workflow: a head reports
+// pr / test (pull_request) where main reports ci / test (push) — so the
+// agent's session and the supervisor's guidance point at the real defect
+// instead of the card. A main run that has not reported the check counts
+// as passing. Any error (no main branch, an unreadable status) logs and
 // leaves the findings as they are: a pre-existing red must never sink the
 // gate's verdict.
 func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *ChecksResult) {
@@ -1402,7 +1501,7 @@ func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *Check
 		log.Printf("checks gate: main head of %s/%s: %v", repo.Owner, repo.Name, err)
 		return
 	}
-	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.HasSuffix(f, mainFailureSuffix) }) {
+	if mainSHA == "" || slices.ContainsFunc(res.Findings, func(f string) bool { return strings.Contains(f, mainFailureSuffix) }) {
 		// the status of sha itself answers when no sha is given; an empty
 		// head would repeat it and mark the head's own failure as main's
 		return
@@ -1412,27 +1511,45 @@ func (r *Runner) annotateMainFailures(ctx context.Context, repo Repo, res *Check
 		log.Printf("checks gate: combined status of %s/%s at %s: %v", repo.Owner, repo.Name, mainSHA, err)
 		return
 	}
-	failing := failingContexts(cs)
+	failing := failingChecks(cs)
 	if len(failing) == 0 {
 		return
 	}
 	for i, finding := range res.Findings {
-		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok && failing[ctxName] {
-			res.Findings[i] += mainFailureSuffix
+		if ctxName, _, ok := strings.Cut(strings.TrimPrefix(finding, `check "`), `"`); ok {
+			if mainCtx, onMain := failing[checkOf(ctxName)]; onMain {
+				res.Findings[i] += mainFailureSuffix + mainCtx + ")"
+			}
 		}
 	}
 }
 
-// failingContexts is the set of contexts a combined status reports as
-// failure or error.
-func failingContexts(cs CombinedStatus) map[string]bool {
-	set := map[string]bool{}
+// failingChecks maps the check of each context a combined status reports
+// as failure or error to that context: main's failing context, which
+// closes the note a head finding carries, for main's context names the
+// push run, not the pull request's.
+func failingChecks(cs CombinedStatus) map[string]string {
+	by := map[string]string{}
 	for _, s := range cs.Statuses {
 		if s.State == "failure" || s.State == "error" {
-			set[s.Context] = true
+			by[checkOf(s.Context)] = s.Context
 		}
 	}
-	return set
+	return by
+}
+
+// checkOf names the check a context runs, without the workflow before
+// the separator or the event after it: pr / test (pull_request) and
+// ci / test (push) both run test, which plain test already names.
+func checkOf(context string) string {
+	check := context
+	if _, after, ok := strings.Cut(check, " / "); ok {
+		check = after
+	}
+	if before, _, ok := strings.Cut(check, " ("); ok {
+		check = before
+	}
+	return check
 }
 
 // jobLogMaxLines and jobLogMaxBytes bound the log tail a finding carries
