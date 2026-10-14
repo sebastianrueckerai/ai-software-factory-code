@@ -144,6 +144,11 @@ type Config struct {
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error
+	// CloseCardDone ends card taskID done for by on evidence (factoryd's
+	// Runner.CloseCardDone): a card whose sessions ran one of its plan's
+	// acceptance commands green (roadmap 208) closes on the fact, no
+	// answer owed.
+	CloseCardDone func(ctx context.Context, taskID, by, evidence string) error
 	// SplitCard signals card taskID's workflow to split its large pull
 	// request for by (factoryd.SignalSplit).
 	SplitCard func(ctx context.Context, taskID, by string) error
@@ -318,6 +323,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
+		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},

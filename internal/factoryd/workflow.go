@@ -253,6 +253,10 @@ type SessionResult struct {
 	Trip string
 	// Status is the provider's HTTP status of a provider_refused session.
 	Status int `json:",omitempty"`
+	// Acceptance is the plan acceptance command the session ran with exit
+	// 0 (roadmap 208), when it ran one; a card it proves closes done on
+	// the fact, no model verdict and no human's answer owed.
+	Acceptance *AcceptanceHit
 }
 
 type PullRequest struct {
@@ -1138,6 +1142,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			model = res.Model
 		}
 		reason = res.Summary
+		if res.Acceptance != nil && res.Outcome != OutcomePushed {
+			// the session ran one of the plan's acceptance commands and it
+			// exited 0 (roadmap 208): the fact closes the card, no model
+			// verdict, no further session and no answer owed. A pushed
+			// session keeps its verification, where the same commands run
+			// again on the branch it pushed.
+			return t.finish("done", acceptanceReason(res.Acceptance))
+		}
 		switch res.Outcome {
 		case OutcomeWallClock:
 			if t.keepWork < versionKeepWork {
