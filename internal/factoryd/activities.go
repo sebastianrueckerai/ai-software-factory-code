@@ -34,6 +34,14 @@ const prBase = "main"
 // (ruling 100). The worker refuses the push, OpenPullRequest re-checks.
 var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
 
+// WorkflowDir is the workflow directory name names in any case, and
+// whether it names one: .FORGEJO is .forgejo to every guard, so a case
+// variant beside the directory, or a rename into one, is a change to it.
+func WorkflowDir(name string) (string, bool) {
+	dir := strings.ToLower(name)
+	return dir, slices.Contains(WorkflowDirs, dir)
+}
+
 // HeartbeatEvery is how often a long activity reports progress and the
 // longest the worker holds a heartbeat back (MaxHeartbeatThrottleInterval):
 // a workflow's cancel reaches a running activity in the answer to its next
@@ -967,18 +975,18 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 	if base == "" {
 		base = mainHead
 	}
-	was, err := r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, base, WorkflowDirs...)
+	was, err := r.forgejo.WorkflowTreeEntries(ctx, repo.Owner, repo.Name, base)
 	if err != nil {
 		return err
 	}
 	var main map[string]string
 	if mainHead != base {
-		if main, err = r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, mainHead, WorkflowDirs...); err != nil {
+		if main, err = r.forgejo.WorkflowTreeEntries(ctx, repo.Owner, repo.Name, mainHead); err != nil {
 			return err
 		}
 	}
 	fork := r.forgejo.Fork(repo)
-	now, err := r.forgejo.TreeEntries(ctx, fork.Owner, fork.Name, commit, WorkflowDirs...)
+	now, err := r.forgejo.WorkflowTreeEntries(ctx, fork.Owner, fork.Name, commit)
 	if err != nil {
 		return err
 	}
@@ -992,7 +1000,7 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 			if mergeBase, err = r.mergeBase(ctx, repo, fork, commit, base, mainHead); err != nil {
 				return err
 			}
-			if merged, err = r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, mergeBase, WorkflowDirs...); err != nil {
+			if merged, err = r.forgejo.WorkflowTreeEntries(ctx, repo.Owner, repo.Name, mergeBase); err != nil {
 				return err
 			}
 		}

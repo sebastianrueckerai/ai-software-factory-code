@@ -959,6 +959,20 @@ func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
 			write(dir, ".gitea", "workflows", "x.yml")
 			commitAll(dir)
 		}},
+		{name: "case-variant-beside-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			write(dir, ".FORGEJO", "workflows", "x.yml")
+			commitAll(dir)
+		}},
+		{name: "symlink-replaces-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			run("-C", dir, "mv", ".forgejo", "ci")
+			os.Symlink("ci", filepath.Join(dir, ".forgejo"))
+			commitAll(dir)
+		}},
+		{name: "write-through-a-symlink-into-forgejo", wantRefuse: ".forgejo", agent: func(dir string) {
+			os.Symlink(".forgejo", filepath.Join(dir, "ci"))
+			write(dir, "ci", "workflows", "pr.yml")
+			commitAll(dir)
+		}},
 		{name: "lookalike-path-is-not-forgejo", agent: func(dir string) {
 			write(dir, ".forgejo-lookalike", "x")
 			commitAll(dir)

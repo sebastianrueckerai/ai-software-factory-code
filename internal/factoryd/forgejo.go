@@ -1279,13 +1279,15 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 	return body, nil
 }
 
-// TreeEntries maps each of names to its object id as a top-level entry
-// of commit's tree; an absent entry has no key. Two commits whose entry
-// for a workflow directory differs changed something under it (rulings
-// 90, 100), renames and deletions included, however large the diff. The
-// listing is paged by total_count; Forgejo's truncated flag only says the
-// tree exceeds one page, whichever page it is on.
-func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, names ...string) (map[string]string, error) {
+// WorkflowTreeEntries maps each workflow directory among commit's
+// top-level tree entries, in any case, to the path and object id of every
+// entry naming it; an absent directory has no key. Two commits whose
+// value for a workflow directory differs changed something under it
+// (rulings 90, 100), renames, deletions and case variants included,
+// however large the diff. The listing is paged by total_count; Forgejo's
+// truncated flag only says the tree exceeds one page, whichever page it
+// is on.
+func (f *Forgejo) WorkflowTreeEntries(ctx context.Context, owner, repo, commit string) (map[string]string, error) {
 	entries := map[string]string{}
 	seen := 0
 	for page := 1; ; page++ {
@@ -1305,8 +1307,8 @@ func (f *Forgejo) TreeEntries(ctx context.Context, owner, repo, commit string, n
 			return nil, fmt.Errorf("forgejo tree %s/%s %s: %w", owner, repo, commit, err)
 		}
 		for _, e := range res.Tree {
-			if slices.Contains(names, e.Path) {
-				entries[e.Path] = e.SHA
+			if dir, ok := WorkflowDir(e.Path); ok {
+				entries[dir] += e.Path + " " + e.SHA + "\n"
 			}
 		}
 		seen += len(res.Tree)

@@ -670,13 +670,13 @@ func TestForgejoFindPullRequestByHead(t *testing.T) {
 
 // Forgejo flags a tree listing truncated whenever the whole tree exceeds
 // one page, whatever the page: the flag says nothing, the pages do.
-func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
+func TestForgejoWorkflowTreeEntriesPagesATruncatedListing(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path + "?" + r.URL.RawQuery {
 		case "/api/v1/repos/sf/r/git/trees/c1?page=1":
-			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[{"path":".github","sha":"g"},{"path":"README.md","sha":"r"}]}`)
+			io.WriteString(w, `{"truncated":true,"total_count":4,"tree":[{"path":".Forgejo","sha":"v"},{"path":".github","sha":"g"},{"path":"README.md","sha":"r"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c1?page=2":
-			io.WriteString(w, `{"truncated":true,"total_count":3,"tree":[{"path":".forgejo","sha":"f1"}]}`)
+			io.WriteString(w, `{"truncated":true,"total_count":4,"tree":[{"path":".forgejo","sha":"f1"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c2?page=1":
 			io.WriteString(w, `{"truncated":false,"total_count":1,"tree":[{"path":"README.md","sha":"r"}]}`)
 		case "/api/v1/repos/sf/r/git/trees/c3?page=1":
@@ -693,18 +693,18 @@ func TestForgejoTreeEntriesPagesATruncatedListing(t *testing.T) {
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	ctx := context.Background()
-	got, err := f.TreeEntries(ctx, "sf", "r", "c1", WorkflowDirs...)
-	if err != nil || !maps.Equal(got, map[string]string{".github": "g", ".forgejo": "f1"}) {
-		t.Fatalf("c1 = (%v, %v), want .github from page 1 and .forgejo from page 2", got, err)
+	got, err := f.WorkflowTreeEntries(ctx, "sf", "r", "c1")
+	if err != nil || !maps.Equal(got, map[string]string{".github": ".github g\n", ".forgejo": ".Forgejo v\n.forgejo f1\n"}) {
+		t.Fatalf("c1 = (%q, %v), want .github from page 1 and .forgejo from both pages, its case variant included", got, err)
 	}
-	if got, err := f.TreeEntries(ctx, "sf", "r", "c2", WorkflowDirs...); err != nil || len(got) != 0 {
+	if got, err := f.WorkflowTreeEntries(ctx, "sf", "r", "c2"); err != nil || len(got) != 0 {
 		t.Fatalf("c2 = (%v, %v), want none", got, err)
 	}
-	if _, err := f.TreeEntries(ctx, "sf", "r", "c3", WorkflowDirs...); !errors.Is(err, ErrNotFound) {
+	if _, err := f.WorkflowTreeEntries(ctx, "sf", "r", "c3"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("c3 = %v, want ErrNotFound: a commit Forgejo does not have", err)
 	}
 	// a listing that ends short of its total names no entry for sure
-	if got, err := f.TreeEntries(ctx, "sf", "r", "c4", WorkflowDirs...); err == nil {
+	if got, err := f.WorkflowTreeEntries(ctx, "sf", "r", "c4"); err == nil {
 		t.Fatalf("c4 = %v, want an error: the pages ended short of total_count", got)
 	}
 }

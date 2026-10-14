@@ -776,18 +776,21 @@ func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
 	return nil
 }
 
-// workflowTreeEntries maps each workflow directory to its ls-tree line
-// (mode, type, object id) in commit; an absent entry has no key. A commit
-// that does not exist fails, it never reads as "no workflow directories".
+// workflowTreeEntries maps each workflow directory to the ls-tree lines
+// (mode, type, object id, name) of every top-level entry in commit naming
+// it in any case (factoryd.WorkflowDir); an absent directory has no key.
+// A commit that does not exist fails, it never reads as "no workflow
+// directories".
 func workflowTreeEntries(e workerEnv, own, commit string) (map[string]string, error) {
-	out, err := e.git(own, append([]string{"ls-tree", commit, "--"}, factoryd.WorkflowDirs...)...)
+	out, err := e.git(own, "ls-tree", commit)
 	if err != nil {
 		return nil, err
 	}
 	entries := map[string]string{}
 	for _, line := range strings.Split(out, "\n") {
-		if _, name, ok := strings.Cut(line, "\t"); ok {
-			entries[name] = line
+		_, name, _ := strings.Cut(line, "\t")
+		if dir, ok := factoryd.WorkflowDir(name); ok {
+			entries[dir] += line + "\n"
 		}
 	}
 	return entries, nil

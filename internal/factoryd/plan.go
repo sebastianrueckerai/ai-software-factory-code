@@ -363,10 +363,11 @@ func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 	for _, d := range c.Directories {
 		clean := path.Clean(d)
 		first, _, _ := strings.Cut(clean, "/")
+		_, workflow := WorkflowDir(first)
 		switch {
 		case d == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../"):
 			add("directory %q: a relative path inside the repository", d)
-		case slices.Contains(WorkflowDirs, first):
+		case workflow:
 			add("directory %q: closed to agents, the template owns it", d)
 		}
 	}

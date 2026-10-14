@@ -46,6 +46,7 @@ type prForgejo struct {
 	mu            sync.Mutex
 	forgejo       map[string]string   // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
 	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
+	upper         map[string]string   // commit → its top-level .FORGEJO tree id; unlisted commits have none
 	parents       map[string][]string // commit → its parents, first first; unlisted commits answer base
 	closed        []int64             // PATCH /pulls/{n} closes
 	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
@@ -93,6 +94,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			if sha, ok := f.github[strings.TrimPrefix(p, "/git/trees/")]; ok {
 				tree = append(tree, map[string]string{"path": ".github", "sha": sha})
+			}
+			if sha, ok := f.upper[strings.TrimPrefix(p, "/git/trees/")]; ok {
+				tree = append(tree, map[string]string{"path": ".FORGEJO", "sha": sha})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
 		case r.Method == "GET" && strings.HasPrefix(p, "/git/commits/"):
@@ -454,17 +458,21 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 }
 
 func TestOpenPullRequestRefusesWorkflowDirChanges(t *testing.T) {
-	// edited, deleted (renamed away), and added: each makes the entry differ from the base's
+	// edited, deleted (renamed away), added, and a case variant: each makes the entry differ from the base's
 	for name, tc := range map[string]struct {
-		forgejo, github map[string]string
-		want            string
+		forgejo, github, upper map[string]string
+		want                   string
 	}{
 		"edited":       {forgejo: map[string]string{"base": "f0", "c1": "f1"}, want: ".forgejo/"},
 		"deleted":      {forgejo: map[string]string{"base": "f0", "c1": ""}, want: ".forgejo/"},
 		"added":        {forgejo: map[string]string{"base": "", "c1": "f1"}, want: ".forgejo/"},
 		"github-added": {github: map[string]string{"c1": "g1"}, want: ".github/"},
+		// .FORGEJO beside an untouched .forgejo
+		"case-variant-added": {upper: map[string]string{"c1": "v1"}, want: ".forgejo/"},
+		// .forgejo renamed to .FORGEJO, its tree id kept
+		"renamed-to-a-case-variant": {forgejo: map[string]string{"c1": ""}, upper: map[string]string{"c1": "f0"}, want: ".forgejo/"},
 	} {
-		fj := &prForgejo{forgejo: tc.forgejo, github: tc.github}
+		fj := &prForgejo{forgejo: tc.forgejo, github: tc.github, upper: tc.upper}
 		r, _, _ := newActivityRunner(t, prTask, fj)
 		_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
 		if err == nil || !strings.Contains(err.Error(), "changes "+tc.want) || !isTerminal(err) {
