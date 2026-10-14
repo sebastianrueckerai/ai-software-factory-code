@@ -59,6 +59,29 @@ func TestFundRaisesACappedCardsBudget(t *testing.T) {
 	}
 }
 
+// A card whose model cannot be priced is refused by the floor too, but no
+// raise lets it start: the board offers no Fund, and a raise is refused
+// with the floor's reason, the budget unchanged (roadmap 249).
+func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	const unpriced = "the attempt's floor on factory/coding-cheap cannot be read: no price for coding-cheap"
+	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
+		t.Error("the board offers Fund for a card no budget lets start, or lost its answer box")
+	}
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"eur": {"0.5"}, "reason": {"try more"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "no budget lets it start") || !strings.Contains(rec.Body.String(), unpriced) {
+		t.Fatalf("fund = %d: %s, want 409 naming the floor's reason", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
+		t.Fatalf("budget_eur = %v, want 2 unchanged", task.BudgetEUR)
+	}
+}
+
 // A plain member, a writer of the project, gets the action refused and
 // raises nothing.
 func TestFundIsAnApproversAction(t *testing.T) {

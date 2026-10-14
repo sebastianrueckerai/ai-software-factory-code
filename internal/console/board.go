@@ -1537,8 +1537,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the answer path's floor refuses
-		// the answer (ruling 322): the same card, to its project's approvers
-		if v.approves(t.Repository) && c.unfundedAnswer(ctx, t) != "" {
+		// the answer for want of budget (ruling 322): the same card, to its
+		// project's approvers; a refusal no raise answers offers none
+		if v.approves(t.Repository) && factoryd.BudgetRefusal(c.unfundedAnswer(ctx, t)) {
 			k.Fund = &fundForm{CSRF: v.csrf}
 		}
 		// the acceptance close is offered where the card's own trail

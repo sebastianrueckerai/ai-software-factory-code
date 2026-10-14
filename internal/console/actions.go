@@ -892,8 +892,11 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, r
 	if t.Kind != "agent" || t.Status != "waiting-human" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
 	}
-	if c.unfundedAnswer(ctx, t) == "" {
+	switch why := c.unfundedAnswer(ctx, t); {
+	case why == "":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a call: it needs no raise; answer it (answer).", t.IssueNumber))
+	case !factoryd.BudgetRefusal(why):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
 	}
 	from, to, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur)
 	switch {

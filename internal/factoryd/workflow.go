@@ -750,6 +750,11 @@ const (
 // call the gateway must refuse, so none is granted.
 const budgetRefused = "the remaining budget cannot fund a call"
 
+// BudgetRefusal reports whether why, a refusal of AttemptFunded, is one a
+// raise of the budget answers: a model that cannot be priced refuses too,
+// and no raise helps there.
+func BudgetRefusal(why string) bool { return strings.HasPrefix(why, budgetRefused) }
+
 // providerRefusals is how many sessions in a row the provider may refuse
 // before a human hears of it, with providerRefused opening the reason.
 const (
