@@ -212,6 +212,7 @@ type rollForgejo struct {
 	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
 	statuses    map[string][]map[string]string // commit -> its statuses (status, context)
 	pulls       []string                       // "head title" of every pull request opened
+	deps        []string                       // "issue on dependency" of every issue dependency added
 }
 
 // mergeCommit is a test's multi-parent (merge) commit: it lists its
@@ -261,6 +262,11 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				}
 			}
 			reply(map[string]any{"state": state, "statuses": f.statuses[sha]})
+		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			var in map[string]any
+			json.NewDecoder(r.Body).Decode(&in)
+			f.deps = append(f.deps, strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies")+" on "+fmt.Sprint(in["index"]))
+			w.WriteHeader(http.StatusCreated)
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)

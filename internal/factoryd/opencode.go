@@ -60,11 +60,12 @@ type Opencode struct {
 	TokenFile  string // projected ServiceAccount JWT, re-read per request
 	Model      string // default "factory/factory-main"
 	// Stronger is the ladder's stronger model, declared beside Model so a
-	// running session can switch to it (SetModel, roadmap 222, item 5)
-	Stronger string
-	Budget   TokenBudget
-	Steps    int // the agent's step cap, policy limits.steps
-	HTTP     *http.Client
+	// running session can switch to it (SetModel, roadmap 222, item 5);
+	// Cheap is the ladder's start, the subagents' model (item 6)
+	Stronger, Cheap string
+	Budget          TokenBudget
+	Steps           int // the agent's step cap, policy limits.steps
+	HTTP            *http.Client
 
 	mu        sync.Mutex
 	base      string    // the running server's URL
@@ -154,10 +155,16 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 
 	provider, modelID := o.model()
 	var more []string
-	if p, id := splitModel(o.Stronger); o.Stronger != "" && p == provider && id != modelID {
-		more = append(more, id)
+	subagent := ""
+	for _, m := range []string{o.Stronger, o.Cheap} {
+		if p, id := splitModel(m); m != "" && p == provider && id != modelID && !slices.Contains(more, id) {
+			more = append(more, id)
+		}
 	}
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, more...)
+	if p, id := splitModel(o.Cheap); o.Cheap != "" && p == provider {
+		subagent = p + "/" + id
+	}
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, subagent, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -438,7 +445,15 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 				End int64 `json:"end"`
 			} `json:"time"`
 		}
-		if json.Unmarshal(pr.Part, &part) != nil || part.SessionID != m.session {
+		if json.Unmarshal(pr.Part, &part) != nil {
+			return served{}
+		}
+		if part.SessionID != m.session {
+			// a subagent's tool calls count as the session's work: its
+			// writes keep the supervisor's write clock (roadmap 222, item 6)
+			if m.sessions[part.SessionID] && part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error") {
+				return runLine("tool_use", "part", pr.Part)
+			}
 			return served{}
 		}
 		switch {
@@ -679,10 +694,18 @@ func workGuide(tools []string) string {
 	}
 	g += [...]string{"Nobody answers a question in a message. ", "This tool is your only way to ask: nobody answers a question in a message. ",
 		"These two tools are your only way to ask: nobody answers a question in a message. "}[asks]
+	if slices.Contains(tools, policy.ToolDelegate) {
+		g += downARung
+	}
 	g += "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. "
 	return g + guideEnd
 }
+
+// downARung is the one rule for the two cheaper forms (roadmap 222, item
+// 6): the task tool's subagents in this session, delegate after it.
+const downARung = "Routine, well-specified work goes down a rung: in this session, the task tool's general or explore agent runs on the cheaper model and its result returns to you; " +
+	"for work after this card, delegate files a small card on the cheap rung that starts when this one has landed. "
 
 // guideEnd closes every coding guide: the push, the sandbox, the last
 // message.
@@ -731,12 +754,19 @@ const mcpTimeoutMS = 150000
 // request_info and escalate_to_human; doom_loop is allowed, since a denied
 // one fails the stream and ends the session unseen by the model; a rejected
 // tool call continues the loop as an error the model sees.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, more ...string) ([]byte, error) {
+// subagent, when set, is the model (provider/id) the general and explore
+// agents run on: the cheap rung under a frontier session (roadmap 222,
+// item 6); more lists further model ids to declare.
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, subagent string, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
 	baseURL := proxyURL + "/v1"
 	capped := map[string]any{"steps": steps}
+	sub := map[string]any{"steps": steps}
+	if subagent != "" {
+		sub["model"] = subagent
+	}
 	models := map[string]any{}
 	for _, id := range append([]string{modelID}, more...) {
 		if id == "" {
@@ -755,7 +785,7 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 		}
 	}
 	cfg := map[string]any{
-		"agent":        map[string]any{"build": capped, "general": capped, "explore": capped},
+		"agent":        map[string]any{"build": capped, "general": sub, "explore": sub},
 		"permission":   map[string]any{"question": "deny", "doom_loop": "allow"},
 		"experimental": map[string]any{"continue_loop_on_deny": true},
 		"mcp": map[string]any{
