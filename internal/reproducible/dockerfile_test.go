@@ -134,7 +134,7 @@ func TestDockerfilesPinSourceDateEpochInEveryBuildStage(t *testing.T) {
 					t.Errorf("%s stage %s: no ARG SOURCE_DATE_EPOCH", w.file, s.name)
 				}
 				env, ok := s.envs["SOURCE_DATE_EPOCH"]
-				if !ok || !strings.Contains(env, "SOURCE_DATE_EPOCH") {
+				if !ok || env != "$SOURCE_DATE_EPOCH" {
 					t.Errorf(`%s stage %s: SOURCE_DATE_EPOCH not exported to the build environment, want ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH, got %q`, w.file, s.name, env)
 				}
 				for _, run := range s.runs {
