@@ -2204,8 +2204,11 @@ func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("", []factoryd.Task{
 		{ID: "t-checks", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c1c1c1c: factoryd, gateway", Repository: "sf/code", PRNumber: 7},
+		// the rig's pending merge approval (ID 4) cards t-m: its merge
+		// decision is the one remaining action
 		{ID: "t-m", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c2c2c2c: worker", Repository: "sf/code", PRNumber: 9},
 		{ID: "t-branch", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c3c3c3c: console", Repository: "sf/code"},
+		{ID: "t-wait", Kind: "agent", Source: factoryd.SourceRoll, Status: "waiting-human", Objective: "roll c4c4c4c: intake", Repository: "sf/code"},
 	}...)
 	column := func(body, id string) string {
 		start := strings.Index(body, `id="`+id+`"`)
@@ -2223,14 +2226,23 @@ func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
 	if !strings.Contains(needs, "roll c2c2c2c") || strings.Contains(verifying, "roll c2c2c2c") {
 		t.Errorf("the roll at its pending merge approval is not in needs you only:\nneeds you %s\nverifying %s", needs, verifying)
 	}
+	if !strings.Contains(needs, `id="approval-4"`) {
+		t.Errorf("the pending merge approval of roll c2c2c2c is not in needs you:\nneeds you %s", needs)
+	}
+	if !strings.Contains(needs, "roll c4c4c4c") {
+		t.Errorf("the roll waiting on a human is not in needs you:\nneeds you %s", needs)
+	}
 	// the wide view's human lane and state columns
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	human, working, review := column(body, "col-human"), column(body, "col-2"), column(body, "col-5")
+	human, waiting, working, review := column(body, "col-human"), column(body, "col-3"), column(body, "col-2"), column(body, "col-5")
 	if strings.Contains(human, "roll c1c1c1c") || !strings.Contains(review, "roll c1c1c1c") {
 		t.Errorf("the roll with its checks in flight is not in the review column only:\nhuman %s\nreview %s", human, review)
 	}
 	if !strings.Contains(human, "roll c2c2c2c") || strings.Contains(review, "roll c2c2c2c") {
 		t.Errorf("the roll at its pending merge approval is not in the human lane only:\nhuman %s\nreview %s", human, review)
+	}
+	if !strings.Contains(human, "roll c4c4c4c") || strings.Contains(waiting, "roll c4c4c4c") {
+		t.Errorf("the roll waiting on a human is not in the human lane only:\nhuman %s\nwaiting %s", human, waiting)
 	}
 	if !strings.Contains(working, "roll c3c3c3c") && strings.Contains(human+review, "roll c3c3c3c") {
 		t.Errorf("the roll writing its branch is not in the working column only:\nhuman %s\nworking %s\nreview %s", human, working, review)

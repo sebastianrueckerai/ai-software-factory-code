@@ -771,7 +771,8 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	unchecked       bool // a may-move check failed, logged once per render
+	merging         map[string]bool // a pending merge approval cards the task's merge decision
+	unchecked       bool            // a may-move check failed, logged once per render
 	problems        []string
 }
 
@@ -780,7 +781,7 @@ type boardView struct {
 func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
-		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}}
+		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, merging: map[string]bool{}}
 	v.policy, _ = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -796,6 +797,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
+		v.merging[a.TaskID] = v.merging[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -806,7 +808,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 // its checks or review run the status mapping places it like any task.
 func (v *boardView) humanLane(t factoryd.Task) bool {
 	return t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) &&
-		(t.Status == "waiting-human" || v.carded[t.ID])
+		(t.Status == "waiting-human" || v.merging[t.ID])
 }
 
 // escalated: t waits on an escalation of its own; a waiting plan's card is
