@@ -146,6 +146,9 @@ type liveSession struct {
 	ch     chan AgentAsk
 	done   chan struct{}
 	worker sessionWorker
+	// basics records that the session was given the factory basics on its
+	// first human-sourced message.
+	basics bool
 }
 
 // sessionWorker is a running session's pod and the bearer of its worker's

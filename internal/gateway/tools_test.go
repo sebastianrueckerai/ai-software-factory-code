@@ -244,7 +244,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "escalate_to_human,fal_run,file_plan,replicate_predict,request_info,web_scrape,web_search"
+	want := "escalate_to_human,fal_run,file_plan,manual,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1033,5 +1033,25 @@ func TestWebToolsRefuseLocalTargets(t *testing.T) {
 	}
 	if len(e.providers.calls) != 0 || len(e.toolLedger()) != 0 {
 		t.Fatalf("provider called: %v", e.providers.calls)
+	}
+}
+
+// manual reads the factory manual into the session: the loop, the card
+// states, the gates. Free, for the classes that list it; a class without
+// it is refused like any hidden tool.
+func TestManualTool(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
+	e := newToolEnv(t, running("coder"), v)
+	text, isErr := e.call(t, "manual", nil)
+	if isErr || !strings.Contains(text, "Signals and members file cards") ||
+		!strings.Contains(text, "backlog: waits in the backlog") ||
+		!strings.Contains(text, "approval: a human approves the merge") {
+		t.Fatalf("manual = %q", text)
+	}
+	delete(v.Document.Classes["coder"].Tools, "manual")
+	off := newToolEnv(t, running("coder"), v)
+	if text, isErr := off.call(t, "manual", nil); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted manual = %q", text)
 	}
 }

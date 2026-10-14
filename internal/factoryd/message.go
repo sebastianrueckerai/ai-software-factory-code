@@ -15,6 +15,7 @@ import (
 	"strconv"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -129,12 +130,23 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) error {
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
+	basics := ok && !ls.basics
+	if basics {
+		ls.basics = true
+	}
 	r.liveMu.Unlock()
 	if !ok {
 		return ErrNoLiveSession
 	}
 	w := ls.worker
-	err := r.messageWorker(ctx, w.ns, w.pod, w.token, "A message from "+user+", a writer of this project: "+text)
+	msg := "A message from " + user + ", a writer of this project: " + text
+	if basics {
+		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
+			". When you end, the factory commits your working tree, pushes it and opens the pull request. " +
+			"A writer of this project talks to you through the card's chat; the gates judge what you push. " +
+			"The manual tool reads the rest.\n\n" + msg
+	}
+	err := r.messageWorker(ctx, w.ns, w.pod, w.token, msg)
 	detail := map[string]any{"session": w.session, "from": user}
 	if err != nil {
 		detail["error"] = err.Error()

@@ -24,6 +24,8 @@ classes:
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
       escalate_to_human: {}
+      # the factory manual: what the factory is, the card states, the gates. Free.
+      manual: {}
   analyzer:
     session: report
     models: [coding-cheap, coding-frontier]
@@ -31,6 +33,7 @@ classes:
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
       escalate_to_human: {}
+      manual: {}
   planner:
     session: plan
     models: [coding-cheap, coding-frontier]
@@ -39,6 +42,7 @@ classes:
       web_scrape: {max_requests: 30, max_eur: 0.20}
       web_search: {max_requests: 30, max_eur: 0.20}
       escalate_to_human: {}
+      manual: {}
       file_plan: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}

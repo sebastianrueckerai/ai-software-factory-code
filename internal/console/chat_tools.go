@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -956,7 +957,7 @@ func (t *turn) systemText() (string, error) {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
 	}
 	var b strings.Builder
-	b.WriteString("Signals and members file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; a member steers through the chat, and every tool here is one of the console's actions.\n\n")
+	b.WriteString(manual.Loop + "; a member steers through the chat, and every tool here is one of the console's actions.\n\n")
 	b.WriteString("Card states:\n")
 	for _, s := range factoryd.Statuses {
 		fmt.Fprintf(&b, "  %s: %s\n", s, factoryd.StatusMeaning(s))

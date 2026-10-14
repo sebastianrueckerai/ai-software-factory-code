@@ -138,10 +138,6 @@ func (t Task) Standing() string {
 // maxAgentSummary bounds the agent's last word kept on the task row.
 const maxAgentSummary = 2000
 
-// FinalStatuses end a task: merged or given up, and closed, an issue
-// closed as not reproducible (ruling 150).
-var FinalStatuses = []string{"done", "failed", "closed"}
-
 // Final reports whether status ends a task.
 func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 

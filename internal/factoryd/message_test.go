@@ -685,7 +685,8 @@ func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 	worker.mu.Lock()
 	texts, auth := worker.texts, worker.auth
 	worker.mu.Unlock()
-	if !slices.Equal(texts, []string{"POST /message A message from anna, a writer of this project: rebase on main first"}) ||
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message You are the agent session of card t2") ||
+		!strings.HasSuffix(texts[0], "A message from anna, a writer of this project: rebase on main first") ||
 		!slices.Equal(auth, []string{"Bearer bearer-1"}) {
 		t.Fatalf("worker got %q with %q", texts, auth)
 	}
@@ -702,5 +703,47 @@ func TestMessageSessionReachesTheRunningSession(t *testing.T) {
 	}
 	if err := runner.MessageSession(t.Context(), "t3", "anna", "hello"); !errors.Is(err, ErrNoLiveSession) {
 		t.Fatalf("MessageSession to a task without a session = %v, want ErrNoLiveSession", err)
+	}
+}
+
+// The first message a writer sends through the card's chat carries the
+// factory basics, once: the session reads them before the writer's text.
+// Later messages go in bare, and so does every supervisor message.
+func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	kube.pods["agent-t2/worker-t2"] = &fakePod{ns: "agent-t2", name: "worker-t2"}
+	_, unregister := runner.liveSession("t2", sessionWorker{session: "s1", ns: "agent-t2", pod: "worker-t2", token: "bearer-1"})
+	defer unregister()
+	if err := runner.MessageSession(t.Context(), "t2", "anna", "rebase on main first"); err != nil {
+		t.Fatalf("MessageSession = %v", err)
+	}
+	if err := runner.MessageSession(t.Context(), "t2", "anna", "and push"); err != nil {
+		t.Fatalf("second MessageSession = %v", err)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 2 {
+		t.Fatalf("worker got %d messages, want 2", len(texts))
+	}
+	if !strings.HasPrefix(texts[0], "POST /message You are the agent session of card t2") ||
+		!strings.Contains(texts[0], "Signals and members file cards") ||
+		!strings.HasSuffix(texts[0], "A message from anna, a writer of this project: rebase on main first") {
+		t.Fatalf("first message = %q", texts[0])
+	}
+	if texts[1] != "POST /message A message from anna, a writer of this project: and push" {
+		t.Fatalf("second message = %q", texts[1])
+	}
+	if err := runner.message(t.Context(), supervisedTask("t2"), sessionSpec{id: "s1", messageToken: "bearer-1"}, "agent-t2", "worker-t2", "periodic check-in"); err != nil {
+		t.Fatalf("supervisor message = %v", err)
+	}
+	worker.mu.Lock()
+	texts = slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 3 || texts[2] != "POST /message periodic check-in" {
+		t.Fatalf("supervisor messages = %q, want the check-in bare", texts[2:])
 	}
 }
