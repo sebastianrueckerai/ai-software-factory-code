@@ -5,10 +5,16 @@ on:
 env:
   # Each image's layer cache for the pull-request builds (infra
   # k8s/platform/build-cache, ruling 111): main writes it, PR jobs only read
-  # it. The dind's containerd image store lets its default builder export
   # it; plain HTTP inside the cluster. A cache outage never fails main: the
   # import only warns, the export ignores errors.
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
+  # main's image builder (roadmap 242), the buildkitd release the pull
+  # request build VM runs. The dind's builtin builder takes the exporter's
+  # rewrite-timestamp and still writes the wall clock into the layers; a
+  # buildkitd rewrites every layer time to the commit's. Each image job
+  # makes its own on the pod's network, as the job runs, to reach the build
+  # cache.
+  BUILDKIT: moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
 jobs:
   test:
     # The warm Go caches of a main job live in docker named volumes on this
@@ -49,10 +55,16 @@ jobs:
         run: |
           SHA=${GITHUB_SHA::7}
           EPOCH=$(git log -1 --pretty=%ct)
-          docker build --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/factory-gateway:$SHA \
+          B=image-gateway
+          printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # a cancelled run leaves its buildkitd behind: clear it first
+          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          trap 'docker buildx rm "$B"' EXIT
+          docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
-            --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true .
-          docker push git.aisoftwarefactory.world/sf/factory-gateway:$SHA
+            --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true \
+            --output type=image,name=git.aisoftwarefactory.world/sf/factory-gateway:$SHA,push=true,rewrite-timestamp=true .
   image-sandbox:
     needs: test
     runs-on: ubuntu-latest
@@ -64,13 +76,18 @@ jobs:
         run: |
           SHA=${GITHUB_SHA::7}
           EPOCH=$(git log -1 --pretty=%ct)
-          docker build -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
+          B=image-sandbox
+          printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # a cancelled run leaves its buildkitd behind: clear it first
+          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          trap 'docker buildx rm "$B"' EXIT
+          docker buildx build --builder "$B" -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
-            --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true .
-          docker push git.aisoftwarefactory.world/sf/opencode-worker:$SHA
-          # the smoke run pulls what was pushed, not the local tag: the shared
-          # daemon dropped that between build and run once (run 967), and the
-          # published digest is the artifact everyone deploys anyway
+            --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true \
+            --output type=image,name=git.aisoftwarefactory.world/sf/opencode-worker:$SHA,push=true,rewrite-timestamp=true .
+          # the smoke run pulls what was pushed, the artifact everyone deploys:
+          # the builder keeps no image in the daemon
           docker run --rm --entrypoint sh git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             -c "gcc --version && make --version && python3 --version"
   image-runner:
@@ -84,7 +101,13 @@ jobs:
         run: |
           SHA=${GITHUB_SHA::7}
           EPOCH=$(git log -1 --pretty=%ct)
-          docker build -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH -t git.aisoftwarefactory.world/sf/ci-runner:$SHA \
+          B=image-runner
+          printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # a cancelled run leaves its buildkitd behind: clear it first
+          docker buildx create --name "$B" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml
+          trap 'docker buildx rm "$B"' EXIT
+          docker buildx build --builder "$B" -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true \
-            --cache-to type=registry,ref=$CACHE/ci-runner:main,mode=max,registry.insecure=true,ignore-error=true .
-          docker push git.aisoftwarefactory.world/sf/ci-runner:$SHA
+            --cache-to type=registry,ref=$CACHE/ci-runner:main,mode=max,registry.insecure=true,ignore-error=true \
+            --output type=image,name=git.aisoftwarefactory.world/sf/ci-runner:$SHA,push=true,rewrite-timestamp=true .

@@ -23,6 +23,10 @@ ARG SOURCE_DATE_EPOCH
 # PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
 # apt takes its packages only signed by the key of this fingerprint, and the
 # install creates no cluster.
+# The install's clocks go with it: ssl-cert (postgresql-common depends on
+# it; scripts/pg-test.sh runs its server without TLS) generates a random
+# snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
+# alternatives logs carry the build's time.
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
@@ -33,7 +37,9 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && apt-get install -y --no-install-recommends \
            git openssh-client bash curl tar xz-utils ca-certificates gcc libc6-dev postgresql-17 \
       && rm -rf /var/lib/apt/lists/* \
-      && useradd -m -u 1000 -s /bin/bash runner
+      && useradd -m -u 1000 -s /bin/bash runner \
+      && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \
+           /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 
 # forgejo-runner: single static binary, no extraction.
 ADD https://code.forgejo.org/forgejo/runner/releases/download/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
@@ -84,15 +90,26 @@ ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
     SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 USER 1000:1000
 WORKDIR /workspace
-RUN /usr/local/go/bin/go version
+# Go telemetry off before the first go call: its counter files carry the
+# build's date, and `go telemetry off` would date its mode file too; an
+# undated "off" is the same mode.
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && /usr/local/go/bin/go version
 
 # The module cache and a warm build cache for the pull-request jobs
 # (roadmap 222, item 3), in Go's default places for the runner user: a
 # job compiles only what its pull request changed. main CI rebuilds this
 # image on every push and the roll pins it, so the cache trails main by
-# one roll at most. The source leaves the image; the caches stay.
-COPY --chown=1000:1000 go.mod go.sum /tmp/warm/
-RUN cd /tmp/warm && go mod download
-COPY --chown=1000:1000 . /tmp/warm/
-RUN cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... && rm -r /tmp/warm
+# one roll at most. The source is bind-mounted, so no layer holds it; the
+# caches stay.
+# Each action entry (*-a) ends in the time it was written, in a 20-wide
+# field, and trim.txt holds the last trim's time: both take the commit's
+# clock. Go reads an entry's time only to expire cached test results after
+# `go clean -testcache`, and -count=1 caches none.
+RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
+      cd /tmp/warm && go mod download
+RUN --mount=type=bind,target=/tmp/warm \
+      cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
+      && cache=$(go env GOCACHE) \
+      && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \
+      && printf %s "$SOURCE_DATE_EPOCH" > "$cache/trim.txt"
 ENTRYPOINT ["forgejo-runner"]

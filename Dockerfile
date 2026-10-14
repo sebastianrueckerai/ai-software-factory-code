@@ -6,7 +6,10 @@ ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# Go telemetry off before the first go call: its counter files carry the
+# build's date, and `go telemetry off` would date its mode file too; an
+# undated "off" is the same mode.
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \

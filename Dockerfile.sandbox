@@ -8,7 +8,10 @@ ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+# Go telemetry off before the first go call: its counter files carry the
+# build's date, and `go telemetry off` would date its mode file too; an
+# undated "off" is the same mode.
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/agent-worker ./cmd/agent-worker
@@ -35,9 +38,16 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 ARG OPENCODE_VERSION
 ARG GO_VERSION=1.25.9
 ARG NODE_VERSION=24.21.0
+# useradd dates the worker's /etc/shadow entry by SOURCE_DATE_EPOCH, else
+# by the build's day.
+ARG SOURCE_DATE_EPOCH
 # PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
 # apt takes its packages only signed by the key of this fingerprint, and the
 # install creates no cluster.
+# The install's clocks go with it: ssl-cert (postgresql-common depends on
+# it; scripts/pg-test.sh runs its server without TLS) generates a random
+# snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
+# alternatives logs carry the build's time.
 ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
@@ -48,7 +58,9 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client xz-utils \
            gcc libc6-dev make python3 postgresql-17 \
       && rm -rf /var/lib/apt/lists/* \
-      && useradd -m -u 1000 -s /bin/bash worker
+      && useradd -m -u 1000 -s /bin/bash worker \
+      && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \
+           /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 # release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
 ADD https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /tmp/opencode.tar.gz
 RUN echo "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b  /tmp/opencode.tar.gz" | sha256sum -c - \
@@ -89,5 +101,6 @@ ENV HOME=/home/worker \
     GOPROXY=https://proxy.golang.org \
     GOSUMDB=sum.golang.org
 WORKDIR /workspace
-RUN /usr/local/go/bin/go version
+# Go telemetry off before the first go call, as in the build stage.
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && /usr/local/go/bin/go version
 ENTRYPOINT ["/usr/local/bin/opencode"]
