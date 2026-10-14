@@ -891,10 +891,11 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 
 // refuseWorkflowDirChange returns a terminal error when any workflow
 // directory's tree entry in commit (on the fork, where the branch was
-// pushed) differs from both the task base's and main's current head's
-// (on the task's repository): a branch that merges main forward carries
-// main's own workflow edits, and only an entry main does not hold is the
-// task's own change.
+// pushed) differs from the task base's, main's current head's and their
+// merge-base's (on the task's repository): a branch that merges main
+// forward carries main's own workflow edits — the head's when it merged
+// the newest main, the merge-base's when main has moved past the main it
+// merged — and only an entry no main ever held is the task's own change.
 func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo, commit string) error {
 	base := t.SHA
 	mainHead, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
@@ -919,12 +920,91 @@ func (r *Runner) refuseWorkflowDirChange(ctx context.Context, t Task, repo Repo,
 	if err != nil {
 		return err
 	}
+	var merged map[string]string
+	mergeBase := base
 	for _, dir := range WorkflowDirs {
-		if now[dir] != was[dir] && (main == nil || now[dir] != main[dir]) {
-			return terminalError("branch %s changes %s/ (commit %s against base %s and main %s); factoryd opens no pull request that edits a workflow directory", taskBranch(t), dir, commit, base, mainHead)
+		if now[dir] == was[dir] || main != nil && now[dir] == main[dir] {
+			continue
 		}
+		if merged == nil {
+			if mergeBase, err = r.mergeBase(ctx, repo, fork, commit, base, mainHead); err != nil {
+				return err
+			}
+			if merged, err = r.forgejo.TreeEntries(ctx, repo.Owner, repo.Name, mergeBase, WorkflowDirs...); err != nil {
+				return err
+			}
+		}
+		if now[dir] == merged[dir] {
+			continue
+		}
+		return terminalError("branch %s changes %s/ (commit %s against base %s, main %s and their merge-base %s); factoryd opens no pull request that edits a workflow directory",
+			taskBranch(t), dir, commit, base, mainHead, mergeBase)
 	}
 	return nil
+}
+
+// mainChainDepth caps the walk down main's first-parent chain looking for
+// the task base; mergeBaseSteps caps the walk over the pushed commit's own
+// history, the branch's sessions' commits above the merge. Both walks find
+// their target long before the cap in any real repository; past it the
+// merge-base reads as the base and the gate compares as it did before the
+// merge-base was added.
+const (
+	mainChainDepth = 512
+	mergeBaseSteps = 128
+)
+
+// mergeBase is the merge-base of the pushed commit and main's head,
+// whichever main the branch merged: the newest commit of main's
+// first-parent chain, walked from the head towards the task base on the
+// task's repository, that the pushed commit's history reaches on the
+// fork. A branch that merged nothing reaches no chain commit above the
+// base, so the base is its merge-base. The chain walk stops at the base —
+// a main older than the task is not the branch's merge — and the fork
+// walk stops at any chain commit it reaches, whose history is main's own.
+func (r *Runner) mergeBase(ctx context.Context, repo, fork Repo, commit, base, mainHead string) (string, error) {
+	if mainHead == base {
+		return base, nil
+	}
+	chain := []string{mainHead}
+	for chain[len(chain)-1] != base && len(chain) < mainChainDepth {
+		parents, err := r.forgejo.CommitParents(ctx, repo.Owner, repo.Name, chain[len(chain)-1])
+		if err != nil {
+			return "", err
+		}
+		if len(parents) == 0 {
+			break
+		}
+		chain = append(chain, parents[0])
+	}
+	at := make(map[string]int, len(chain))
+	for i, sha := range chain {
+		at[sha] = i
+	}
+	queue, seen, best := []string{commit}, map[string]bool{}, -1
+	for len(queue) > 0 && len(seen) < mergeBaseSteps {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == "" || seen[cur] {
+			continue
+		}
+		seen[cur] = true
+		if i, ok := at[cur]; ok {
+			if best < 0 || i < best {
+				best = i
+			}
+			continue
+		}
+		parents, err := r.forgejo.CommitParents(ctx, fork.Owner, fork.Name, cur)
+		if err != nil {
+			return "", err
+		}
+		queue = append(queue, parents...)
+	}
+	if best < 0 {
+		return base, nil
+	}
+	return chain[best], nil
 }
 
 // TaskConfig reads the task's row and its process in the pinned version:

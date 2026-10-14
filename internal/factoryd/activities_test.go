@@ -44,6 +44,7 @@ type prForgejo struct {
 	mu            sync.Mutex
 	forgejo       map[string]string   // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
 	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
+	parents       map[string][]string // commit → its parents, first first; unlisted commits answer base
 	closed        []int64             // PATCH /pulls/{n} closes
 	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
 	branchGone    bool                // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
@@ -92,6 +93,19 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				tree = append(tree, map[string]string{"path": ".github", "sha": sha})
 			}
 			json.NewEncoder(w).Encode(map[string]any{"truncated": false, "total_count": len(tree), "tree": tree})
+		case r.Method == "GET" && strings.HasPrefix(p, "/git/commits/"):
+			sha := strings.TrimPrefix(p, "/git/commits/")
+			var parents []string
+			if listed, ok := f.parents[sha]; ok {
+				parents = listed
+			} else if sha != "base" {
+				parents = []string{"base"}
+			}
+			list := []map[string]string{}
+			for _, parent := range parents {
+				list = append(list, map[string]string{"sha": parent})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"parents": list})
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/main/"):
 			head := strings.TrimPrefix(p, "/pulls/main/")
 			if body, ok := f.byHead[head]; ok {
@@ -473,6 +487,57 @@ func TestOpenPullRequestAllowsMainsWorkflowEditsThroughAMerge(t *testing.T) {
 	}
 	if len(fj.created) != 1 {
 		t.Fatalf("pull requests created = %d, want 1", len(fj.created))
+	}
+}
+
+// Card #654's fourth attempt: the branch merged a main the head has since
+// passed, so its .forgejo/ entry is that main's own — neither the task
+// base's nor the head's. The entry at the merge-base is the branch's
+// content came-from-main proof: the pull request opens.
+func TestOpenPullRequestAllowsAMergedOlderMainsWorkflowEdits(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "f1", "m1": "f1", "mhead": "f2"}, mainHead: "mhead",
+		parents: map[string][]string{"c1": {"base", "m1"}, "mhead": {"m1"}, "m1": {"base"}}}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+
+	if _, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1"); err != nil {
+		t.Fatalf("OpenPullRequest: %v, want no refusal: the workflow entry came from the older main through the merge", err)
+	}
+	if len(fj.created) != 1 {
+		t.Fatalf("pull requests created = %d, want 1", len(fj.created))
+	}
+}
+
+// An entry the merge-base holds no more than the base and the head is the
+// branch's own edit: the branch dies whatever main it merged, and the
+// refusal names the merge-base alongside base and head.
+func TestOpenPullRequestRefusesTheBranchsOwnWorkflowEditPastAMerge(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "f9", "m1": "f1", "mhead": "f2"}, mainHead: "mhead",
+		parents: map[string][]string{"c1": {"base", "m1"}, "mhead": {"m1"}, "m1": {"base"}}}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+
+	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
+	if err == nil || !isTerminal(err) || !strings.Contains(err.Error(), "changes .forgejo/") || !strings.Contains(err.Error(), "merge-base m1") {
+		t.Fatalf("err = %v, want a terminal refusal naming the merge-base m1", err)
+	}
+	if len(fj.created) != 0 {
+		t.Fatalf("a pull request was opened for a workflow directory change")
+	}
+}
+
+// A branch that merged nothing has the task base for its merge-base: the
+// refusal stands exactly as before the merge-base was read, against base
+// and head alone.
+func TestOpenPullRequestRefusesAnUnmergedBranchsWorkflowEdit(t *testing.T) {
+	fj := &prForgejo{forgejo: map[string]string{"base": "f0", "c1": "f1", "mhead": "f2"}, mainHead: "mhead",
+		parents: map[string][]string{"c1": {"base"}, "mhead": {"base"}}}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+
+	_, err := execActivity(t, r, ActivityOpenPullRequest, "t1", "c1")
+	if err == nil || !isTerminal(err) || !strings.Contains(err.Error(), "changes .forgejo/") || !strings.Contains(err.Error(), "merge-base base") {
+		t.Fatalf("err = %v, want today's refusal with the base as the merge-base", err)
+	}
+	if len(fj.created) != 0 {
+		t.Fatalf("a pull request was opened for a workflow directory change")
 	}
 }
 
