@@ -112,7 +112,10 @@ fieldset legend { float: left; margin-right: 6px; color: var(--text-faint); }
 fieldset label { display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 0 0; }
 input[type=radio] { accent-color: var(--st-failed); margin: 0; }
 table { border-collapse: collapse; width: 100%; margin-top: 12px; font: 12px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
-th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: anywhere; }
+th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: break-word; }
+/* an id, a time or a state keeps to one line; a detail (a JSON line) breaks anywhere */
+td a[href^="/tasks/"], td time { white-space: nowrap; }
+td code { overflow-wrap: anywhere; }
 th { border-bottom-color: var(--line-strong); color: var(--text-muted); font: 600 12.5px var(--font-ui); white-space: nowrap; }
 tr.line td:first-child { padding-left: 1.5rem; color: var(--text-muted); }
 caption { text-align: left; color: var(--text-muted); font: 600 12.5px var(--font-ui); padding: 4px 0; }
