@@ -418,6 +418,9 @@ func main() {
 		SplitCard: func(ctx context.Context, taskID, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
 		},
+		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
+			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
+		},
 		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
 			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
 		},

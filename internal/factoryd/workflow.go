@@ -40,6 +40,11 @@ const (
 	// write the repository: it answers an information request newer than
 	// it (ruling 150), never an escalation.
 	SignalPosterComment = "poster_comment"
+	// SignalAnswerWhole is the console's notice that issue comment Comment,
+	// which its answer box posted, is a whole answer: the wait it answers
+	// resumes once it took that comment, with no quiet window
+	// (versionAnswerBurst).
+	SignalAnswerWhole = "answer_whole"
 	// SignalRollFolded is the roller's notice that newer images were
 	// folded into a roll task (ruling 178): it wakes the approval wait and
 	// is never a finding.
@@ -417,6 +422,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.approvalGreen = workflow.GetVersion(ctx, "approval-green", workflow.DefaultVersion, versionApprovalGreen)
 	run.adjudicated = workflow.GetVersion(ctx, "adjudicated", workflow.DefaultVersion, versionAdjudicated)
 	run.reviewParallel = workflow.GetVersion(ctx, "review-parallel", workflow.DefaultVersion, versionReviewSupervised)
+	run.answerBurst = workflow.GetVersion(ctx, "answer-burst", workflow.DefaultVersion, versionAnswerBurst)
 	final, err := run.program()
 	drainSignals(ctx)
 	return final, err
@@ -462,7 +468,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -751,6 +757,14 @@ const (
 	// acts on the review's gate trips as on the sequential review's, those
 	// that came while another wait ran kept for it.
 	versionReviewSupervised workflow.Version = 2
+	// versionAnswerBurst (change id "answer-burst", roadmap 237): the wait
+	// for a human's or the issue author's answer takes a comment that
+	// answers as the first of a burst (awaitBurst) and resumes once the
+	// answering party posted nothing for answerQuiet, at the latest
+	// answerMax after the first, with every comment of the burst; a
+	// comment the console names whole (SignalAnswerWhole) resumes it at
+	// once. A run from before the change resumes on the first comment.
+	versionAnswerBurst workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -787,6 +801,13 @@ const maxPosterAttempts = 2
 // infoWait is how long an information request waits for the issue
 // author's answer before the issue closes as not reproducible.
 const infoWait = 14 * 24 * time.Hour
+
+// answerQuiet and answerMax bound an answer in parts (versionAnswerBurst):
+// an answer longer than maxAnswer travels as several comments.
+const (
+	answerQuiet = 30 * time.Second
+	answerMax   = 3 * time.Minute
+)
 
 type taskRun struct {
 	ctx, short        workflow.Context
@@ -826,6 +847,7 @@ type taskRun struct {
 	approvalGreen     workflow.Version // the approval stage's green head read (versionApprovalGreen)
 	adjudicated       workflow.Version // approvals over review findings record overrules on the findings (versionAdjudicated)
 	reviewParallel    workflow.Version // the review beside the checks wait (versionReviewParallel, versionReviewSupervised)
+	answerBurst       workflow.Version // an answer's wait resumes after its burst (versionAnswerBurst)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -2216,13 +2238,28 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 
 // awaitHuman escalates the task with the agent's choices, if any, and
 // blocks, at no cost, until a human answers on the issue (a comment newer
-// than the escalation, or a change request on the task's PR) or a
-// terminal signal decides the task. answer is the change requests; the
-// human's answers go to t.answers (versionAnswers), or into answer before
-// it.
+// than the escalation and the rest of its burst, or a change request on
+// the task's PR) or a terminal signal decides the task. answer is the
+// change requests; the human's answers go to t.answers (versionAnswers),
+// or into answer before it.
 func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, why string, answer []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
+	}
+	take := func() (heard []int64) {
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			if !t.counted(SignalHumanComment, sig) {
+				continue
+			}
+			heard = append(heard, sig.Comment)
+			if t.v7 >= versionAnswers {
+				t.answers = append([]string{answerText(sig.Author, question, sig.Body)}, t.answers...)
+			} else {
+				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
+			}
+		}
+		return heard
 	}
 	for {
 		sel := workflow.NewSelector(t.ctx)
@@ -2233,22 +2270,59 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 		if final, why, ok := t.decided(); ok {
 			return final, why, nil
 		}
-		var sig TaskSignal
-		answered := false
-		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
-			if !t.counted(SignalHumanComment, sig) {
-				continue
-			}
-			answered = true
-			if t.v7 >= versionAnswers {
-				t.answers = append([]string{answerText(sig.Author, question, sig.Body)}, t.answers...)
-			} else {
-				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
-			}
-		}
+		heard := take()
 		answer = append(answer, t.drainChanges()...)
-		if answered || len(answer) > 0 {
+		if len(heard) > 0 && t.answerBurst >= versionAnswerBurst {
+			final, why, changes := t.awaitBurst([]string{SignalHumanComment}, take, heard)
+			if final != "" {
+				return final, why, nil
+			}
+			answer = append(answer, changes...)
+		}
+		if len(heard) > 0 || len(answer) > 0 {
 			return "", "", answer
+		}
+	}
+}
+
+// awaitBurst holds a wait that took heard, the first comments of an
+// answer, until the answering party has posted nothing for answerQuiet,
+// at the latest answerMax after them, so an answer in parts lands whole
+// (versionAnswerBurst); once the wait took the comment the console names
+// whole (SignalAnswerWhole) it resumes at once. take drains the wait's
+// comment signals, comments, and returns the ones that answer. final is a
+// decision that came meanwhile, changes the change requests.
+func (t *taskRun) awaitBurst(comments []string, take func() []int64, heard []int64) (final, why string, changes []string) {
+	end := workflow.Now(t.ctx).Add(answerMax)
+	timerCtx, cancel := workflow.WithCancel(t.ctx)
+	defer func() { cancel() }()
+	quiet := workflow.NewTimer(timerCtx, answerQuiet)
+	var whole int64
+	for {
+		closed := false
+		sel := workflow.NewSelector(t.ctx)
+		for _, n := range append([]string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalAnswerWhole}, comments...) {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.AddFuture(quiet, func(workflow.Future) { closed = true })
+		sel.Select(t.ctx)
+		if final, why, ok := t.decided(); ok {
+			return final, why, nil
+		}
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalAnswerWhole).ReceiveAsync(&sig) {
+			whole = max(whole, sig.Comment)
+		}
+		changes = append(changes, t.drainChanges()...)
+		more := take()
+		heard = append(heard, more...)
+		if closed || slices.Contains(heard, whole) {
+			return "", "", changes
+		}
+		if len(more) > 0 {
+			cancel()
+			timerCtx, cancel = workflow.WithCancel(t.ctx)
+			quiet = workflow.NewTimer(timerCtx, min(answerQuiet, end.Sub(workflow.Now(t.ctx))))
 		}
 	}
 }
@@ -2264,16 +2338,30 @@ func (t *taskRun) awaitPoster(reason string) (final, why string, changes []strin
 }
 
 // waitPoster blocks, at no cost, until the issue's author (or a writer)
-// comments after the information request of since, a reviewer asks for
-// changes, a terminal signal decides the task, or infoWait after since
-// passes: then the issue closes as not reproducible and the task ends
-// closed. An answer goes to t.posterInfo; changes are the change requests.
+// comments after the information request of since (and the burst that
+// comment opens is over), a reviewer asks for changes, a terminal signal
+// decides the task, or infoWait after since passes: then the issue closes
+// as not reproducible and the task ends closed. An answer goes to
+// t.posterInfo; changes are the change requests.
 func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []string) {
 	timerCtx, cancel := workflow.WithCancel(t.ctx)
 	defer cancel()
 	var expiry workflow.Future
 	if left := infoWait - workflow.Now(t.ctx).Sub(since); left > 0 {
 		expiry = workflow.NewTimer(timerCtx, left)
+	}
+	comments := []string{SignalHumanComment, SignalPosterComment}
+	take := func() (heard []int64) {
+		for _, n := range comments {
+			var sig TaskSignal
+			for workflow.GetSignalChannel(t.ctx, n).ReceiveAsync(&sig) {
+				if t.answersInfoRequest(n, sig) {
+					heard = append(heard, sig.Comment)
+					t.posterInfo = append(t.posterInfo, posterText(sig.Author, sig.Body))
+				}
+			}
+		}
+		return heard
 	}
 	for {
 		expired := expiry == nil
@@ -2288,18 +2376,16 @@ func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []stri
 		if final, why, ok := t.decided(); ok {
 			return final, why, nil
 		}
-		answered := false
-		for _, n := range []string{SignalHumanComment, SignalPosterComment} {
-			var sig TaskSignal
-			for workflow.GetSignalChannel(t.ctx, n).ReceiveAsync(&sig) {
-				if t.answersInfoRequest(n, sig) {
-					answered = true
-					t.posterInfo = append(t.posterInfo, posterText(sig.Author, sig.Body))
-				}
-			}
-		}
+		heard := take()
 		changes = t.drainChanges()
-		if answered || len(changes) > 0 {
+		if len(heard) > 0 && t.answerBurst >= versionAnswerBurst {
+			final, why, more := t.awaitBurst(comments, take, heard)
+			if final != "" {
+				return final, why, nil
+			}
+			changes = append(changes, more...)
+		}
+		if len(heard) > 0 || len(changes) > 0 {
 			return "", "", changes
 		}
 		if expired {

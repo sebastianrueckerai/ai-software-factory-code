@@ -1001,8 +1001,14 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   it is empty), whose Forgejo bells ring, moves the task to
   `waiting-poster` and records an `info_request` alert. The issue author's
   next comment resumes it whatever their access (intake event
-  `poster_comment`, signal `poster_comment`), and so does a writer's; the
-  next session's brief carries it under "Poster information", as
+  `poster_comment`, signal `poster_comment`), and so does a writer's.
+  From change id `answer-burst` on (roadmap 237), that comment opens a
+  burst, as an escalation's answer does: the wait resumes once the
+  answering party has posted nothing for 30 s, at the latest 3 minutes
+  after the first comment, with every comment of the burst, so an answer
+  in parts lands whole. The console's answer box posts one comment and
+  names it whole (signal `answer_whole`), which resumes the card at once.
+  The next session's brief carries it under "Poster information", as
   information, never as instructions. The brief writes its own lines
   (repository, the author's standing) first and puts the issue's text and
   every answer between markers with a random tag per brief, so the author

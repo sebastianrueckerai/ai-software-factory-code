@@ -796,10 +796,10 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 
 // doAnswer posts the member's answer to card id's escalation as an
 // issue comment under their own name; intake's human_comment path resumes
-// the task. The event names the comment, so intake records no second
-// question_answered when its webhook delivers that very comment; at the
-// session cap the answer is a grant, and its event session_granted as
-// doGrantSession's.
+// the task, at once since the comment is whole (answerWhole). The event
+// names the comment, so intake records no second question_answered when
+// its webhook delivers that very comment; at the session cap the answer
+// is a grant, and its event session_granted as doGrantSession's.
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" || len(text) > 64<<10 {
@@ -823,6 +823,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return "", &forgejoRefusal{"post the answer", err}
 	}
+	c.answerWhole(ctx, a, t, posted)
 	log.Printf("console: %s answered the escalation of %s via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, commentDetail(posted))
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
@@ -850,9 +851,22 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
 		return "", &forgejoRefusal{"post the answer", err}
 	}
+	c.answerWhole(ctx, a, t, posted)
 	log.Printf("console: %s granted %s a session via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventSessionGranted, commentDetail(posted))
 	return fmt.Sprintf("Your answer is on #%d; it grants the card one session.", t.IssueNumber), nil
+}
+
+// answerWhole tells card t's workflow that comment posted, the member's
+// answer, is whole (Config.AnswerWhole). The answer is on the issue
+// either way: a failed signal costs only the quiet window.
+func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, posted int64) {
+	if c.cfg.AnswerWhole == nil || posted == 0 {
+		return
+	}
+	if err := c.cfg.AnswerWhole(ctx, t.ID, posted, a.s.user); err != nil {
+		log.Printf("console: %s's answer %d to %s not signalled whole, the card resumes after the quiet window: %v", a.s.user, posted, t.ID, err)
+	}
 }
 
 // unfundedAnswer is the answer path's floor (ruling 322): the refusal a

@@ -1,6 +1,8 @@
 package console
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -149,6 +151,11 @@ func TestEditBody(t *testing.T) {
 // no card at its cap: the refusal names the answer tool.
 func TestChatGrantSession(t *testing.T) {
 	r, g := newWritesRig(t)
+	var whole []string
+	r.c.cfg.AnswerWhole = func(ctx context.Context, taskID string, comment int64, by string) error {
+		whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
+		return nil
+	}
 	before := r.events.count()
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
@@ -159,6 +166,7 @@ func TestChatGrantSession(t *testing.T) {
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted, Detail: postedDetail(1)})
+	equal(t, "the whole signal", whole, []string{"t-cap 1 sebastian"})
 
 	code, msg := refused(t, r, "grant_session", toolInput{TaskID: "t-e", Text: "yes"})
 	equal(t, "grant to a question", []any{code, msg}, []any{http.StatusConflict,

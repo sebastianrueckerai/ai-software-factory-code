@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -265,6 +266,157 @@ func TestWorkflowEscalationIgnoresThePoster(t *testing.T) {
 	}
 	if len(h.sessions) != 2 || len(h.sessions[1].Answers) != 1 || !strings.Contains(h.sessions[1].Answers[0], "sebastian") || h.sessions[1].PosterInfo != nil {
 		t.Fatalf("sessions = %+v, want only the writer's answer", h.sessions)
+	}
+}
+
+var licenseQuestion = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "The agent asks: Which license?\nWhy: none\nRecommendation: MIT"}
+
+// Roadmap 237: an answer in parts lands whole (card #756 got part 1 of
+// 12). Three comments 10 s apart, then quiet: the wait resumes once, 30 s
+// after the third, and the next session gets all three in their list's
+// order: the author's oldest first, the human's newest first.
+func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		first  SessionResult
+		signal string
+		author string
+		got    func(SessionInput) []string
+		want   []string
+	}{
+		{"an information request", needsInfo("s1"), SignalPosterComment, "visitor", func(in SessionInput) []string { return in.PosterInfo },
+			[]string{"visitor: part 1 of 3", "visitor: part 2 of 3", "visitor: part 3 of 3"}},
+		{"an escalation", licenseQuestion, SignalHumanComment, "sebastian", func(in SessionInput) []string { return in.Answers },
+			[]string{`sebastian, to "Which license?": part 3 of 3`, `sebastian, to "Which license?": part 2 of 3`, `sebastian, to "Which license?": part 1 of 3`}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, began, _ := providerHarness(t, tc.first, pushed("s2", "c2"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			start := h.env.Now()
+			for i := range 3 {
+				h.signalAfter(time.Hour+time.Duration(i)*10*time.Second, tc.signal,
+					TaskSignal{Author: tc.author, Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(700 + i)})
+			}
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if len(h.sessions) != 2 || !slices.Equal(tc.got(h.sessions[1]), tc.want) {
+				t.Fatalf("sessions = %+v, want two, the second with %q", h.sessions, tc.want)
+			}
+			if resumed := (*began)[1].Sub(start); resumed != time.Hour+50*time.Second {
+				t.Fatalf("the second session began %s after the start, want 1h0m50s: the third part at 1h0m20s and 30 s of quiet", resumed)
+			}
+			if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 1 {
+				t.Fatalf("usage = %+v, want the one extra attempt one answer buys", u)
+			}
+		})
+	}
+}
+
+// A lone comment is an answer in one part: the wait resumes when its
+// quiet window closes, 30 s after it.
+func TestWorkflowLoneAnswerResumesAfterTheQuietWindow(t *testing.T) {
+	h, began, _ := providerHarness(t, licenseQuestion, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	start := h.env.Now()
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "MIT", Comment: 701})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "Which license?": MIT`}) {
+		t.Fatalf("sessions = %+v, want the second with the answer", h.sessions)
+	}
+	if resumed := (*began)[1].Sub(start); resumed != time.Hour+30*time.Second {
+		t.Fatalf("the second session began %s after the start, want 1h0m30s", resumed)
+	}
+}
+
+// A burst longer than answerMax resumes 3 minutes after its first
+// comment with what arrived by then: parts every 25 s from 1h, the eighth
+// at 1h2m55s, the ninth at 1h3m20s too late.
+func TestWorkflowAnswerBurstEndsAtItsMaximum(t *testing.T) {
+	h, began, _ := providerHarness(t, needsInfo("s1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	start := h.env.Now()
+	for i := range 13 {
+		h.signalAfter(time.Hour+time.Duration(i)*25*time.Second, SignalPosterComment,
+			TaskSignal{Author: "visitor", Body: fmt.Sprintf("part %d of 13", i+1), Comment: int64(700 + i)})
+	}
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	var want []string
+	for i := range 8 {
+		want = append(want, fmt.Sprintf("visitor: part %d of 13", i+1))
+	}
+	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].PosterInfo, want) {
+		t.Fatalf("sessions = %+v, want two, the second with parts 1 to 8", h.sessions)
+	}
+	if resumed := (*began)[1].Sub(start); resumed != time.Hour+3*time.Minute {
+		t.Fatalf("the second session began %s after the start, want 1h3m0s", resumed)
+	}
+}
+
+// The console's answer box posts one comment and names it whole
+// (SignalAnswerWhole): the wait resumes once it took that comment,
+// whichever of the two signals comes first. A whole naming another
+// comment, an earlier answer's, leaves the quiet window.
+func TestWorkflowConsoleAnswerResumesAtOnce(t *testing.T) {
+	answer := TaskSignal{Author: "sebastian", Body: "MIT", Comment: 701}
+	for _, tc := range []struct {
+		name         string
+		comment      time.Duration
+		whole        time.Duration
+		wholeComment int64
+		resumed      time.Duration
+	}{
+		{"its comment first", time.Hour, time.Hour + 2*time.Second, 701, time.Hour + 2*time.Second},
+		{"its whole first", time.Hour + 2*time.Second, time.Hour, 701, time.Hour + 2*time.Second},
+		{"another comment's whole", time.Hour, time.Hour + 2*time.Second, 600, time.Hour + 30*time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, began, _ := providerHarness(t, licenseQuestion, pushed("s2", "c2"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			start := h.env.Now()
+			h.signalAfter(tc.comment, SignalHumanComment, answer)
+			h.signalAfter(tc.whole, SignalAnswerWhole, TaskSignal{Author: "sebastian", Comment: tc.wholeComment})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "Which license?": MIT`}) {
+				t.Fatalf("sessions = %+v, want the second with the answer", h.sessions)
+			}
+			if resumed := (*began)[1].Sub(start); resumed != tc.resumed {
+				t.Fatalf("the second session began %s after the start, want %s", resumed, tc.resumed)
+			}
+		})
+	}
+}
+
+// A run from before versionAnswerBurst resumes on the first comment as it
+// did: the later parts never reach it.
+func TestWorkflowAnswerBurstOldRunResumesOnTheFirstComment(t *testing.T) {
+	h, began, _ := providerHarness(t, needsInfo("s1"), pushed("s2", "c2"))
+	h.env.OnGetVersion("answer-burst", workflow.DefaultVersion, versionAnswerBurst).Return(workflow.DefaultVersion)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	start := h.env.Now()
+	for i := range 3 {
+		h.signalAfter(time.Hour+time.Duration(i)*10*time.Second, SignalPosterComment,
+			TaskSignal{Author: "visitor", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(700 + i)})
+	}
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].PosterInfo, []string{"visitor: part 1 of 3"}) {
+		t.Fatalf("sessions = %+v, want the second with part 1 only", h.sessions)
+	}
+	if resumed := (*began)[1].Sub(start); resumed != time.Hour {
+		t.Fatalf("the second session began %s after the start, want 1h", resumed)
 	}
 }
 

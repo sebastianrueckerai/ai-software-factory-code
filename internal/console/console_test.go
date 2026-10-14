@@ -1445,6 +1445,28 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	}
 }
 
+// Roadmap 237: the answer box posts one comment, a whole answer, and
+// names it to the card's workflow (AnswerWhole), which resumes without
+// the quiet window an answer in parts waits out. A failed signal still
+// answers: the comment is on the issue, and the window resumes the card.
+func TestAnswerNamesItsCommentWhole(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
+	var whole []string
+	r.c.cfg.AnswerWhole = func(ctx context.Context, taskID string, comment int64, by string) error {
+		whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
+		return errors.New("temporal: unavailable")
+	}
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(whole, []string{"t-e 1 sebastian"}) {
+		t.Fatalf("whole signals %q, want the posted comment 1 by sebastian", whole)
+	}
+}
+
 // Ruling 322 (finding 215): the answer is refused before it is posted
 // when the task's remaining budget cannot fund a call. No comment goes
 // to the issue, and the refusal carries the message the card will carry:

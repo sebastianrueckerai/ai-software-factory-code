@@ -435,7 +435,7 @@ func TestStagesReviewBesideTheChecksKeepsItsTripsForTheStage(t *testing.T) {
 			g.tripAfter(20*time.Minute, ActivityModelReview, 2)
 			g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "runner registered", Comment: 700})
 		}, []GateDecision{{Action: ActionEscalate, Diagnosis: "no runner serves the label", Recommendation: "register a runner"}, cancel},
-			[]string{"WaitChecks [true,true]", "ModelReview [true,true]"}, time.Hour},
+			[]string{"WaitChecks [true,true]", "ModelReview [true,true]"}, time.Hour + answerQuiet},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
@@ -482,8 +482,8 @@ func TestStagesEscalatedReviewBesideTheChecksRunsAgainAfterTheAnswer(t *testing.
 	if last := g.reviewGates[len(g.reviewGates)-1]; !last.ChecksPassed || last.Beside {
 		t.Fatalf("review gates %+v: want the last review after the green checks, not beside them", g.reviewGates)
 	}
-	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour {
-		t.Fatalf("approval requested %v, want once, at 4h: the answer at 1h and the sequential review's 3h", g.requested)
+	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour+answerQuiet {
+		t.Fatalf("approval requested %v, want once, at 4h30s: the answer at 1h, its quiet window and the sequential review's 3h", g.requested)
 	}
 }
 

@@ -156,6 +156,11 @@ type Config struct {
 	// SplitCard signals card taskID's workflow to split its large pull
 	// request for by (factoryd.SignalSplit).
 	SplitCard func(ctx context.Context, taskID, by string) error
+	// AnswerWhole signals card taskID's workflow that comment, which the
+	// answer box posted for by, is a whole answer
+	// (factoryd.SignalAnswerWhole): the card resumes on it without the
+	// quiet window an answer in parts waits out. nil sends none.
+	AnswerWhole func(ctx context.Context, taskID string, comment int64, by string) error
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).
