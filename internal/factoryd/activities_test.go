@@ -650,6 +650,37 @@ func TestWaitChecksKeepsFindingWhenMainGreen(t *testing.T) {
 	}
 }
 
+// A main run that is missing counts as passing: a main head no check has
+// reported on, and a main head that reads empty, leave the head's finding
+// as today's refusal — never a false "also failing on main".
+func TestWaitChecksMissingMainRunIsPassing(t *testing.T) {
+	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	for name, fj := range map[string]*prForgejo{
+		"no check has reported on main's head": {
+			statusesBySHA: map[string][]string{
+				"c1": {statusBody("failure", headFail)},
+				"m1": {statusBody("")},
+			},
+			mainHead: "m1",
+		},
+		"main's head reads empty": {
+			statusesBySHA: map[string][]string{"c1": {statusBody("failure", headFail)}},
+		},
+	} {
+		r, _, _ := newActivityRunner(t, prTask, fj)
+		r.forgejo.PublicURL = "https://git.example.org"
+		want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)`
+		var res ChecksResult
+		val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+		if err != nil || val.Get(&res) != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if res.State != ChecksFailure || len(res.Findings) != 1 || res.Findings[0] != want {
+			t.Fatalf("%s: findings = %q, want %q", name, res.Findings, want)
+		}
+	}
+}
+
 // checksResult appends a failed status's log tail to its finding: the last
 // 40 of 50 lines, none dropped for length (design 4.4).
 func TestChecksFindingCarriesLogTail(t *testing.T) {
