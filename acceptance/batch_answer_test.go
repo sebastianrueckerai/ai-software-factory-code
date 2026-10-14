@@ -544,7 +544,7 @@ func (s *accBatchStore) RollHead(ctx context.Context, taskID string) (string, er
 func (s *accBatchStore) RebaseRolls(ctx context.Context, taskID, head string) (bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SetTaskSHA(ctx context.Context, id, sha string) error        { panic("unused") }
+func (s *accBatchStore) SetTaskSHA(ctx context.Context, id, sha string) error { panic("unused") }
 func (s *accBatchStore) EnterQueue(ctx context.Context, project, taskID string) (factoryd.QueueSpot, error) {
 	panic("unused")
 }
