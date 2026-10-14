@@ -78,8 +78,13 @@ jobs:
             echo "$pkgs"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
+      # No race detector and packages in parallel on a pull request
+      # (roadmap 222, item 3): each test package has its own database
+      # (internal/schema/schematest), and the runner image carries the
+      # module cache and a warm build cache (Dockerfile.runner). main and
+      # the nightly run keep -race over the whole suite.
       - name: test the affected packages
-        run: scripts/pg-test.sh go test -race -p 1 ${{ steps.select.outputs.pkgs || './...' }}
+        run: scripts/pg-test.sh go test ${{ steps.select.outputs.pkgs || './...' }}
   vet-and-format:
     runs-on: pr-untrusted
     steps:
@@ -154,12 +159,17 @@ jobs:
           echo "changed files:"
           echo "$changed"
 
+          # An image builds on a pull request only when its recipe changes
+          # (roadmap 222, item 3): a Dockerfile, .dockerignore, go.mod,
+          # go.sum, or the sandbox's opencode-plugin/. A Go change under cmd/
+          # or internal/ is built by main CI after the merge, and a red
+          # main pauses the project's queue and files its fix-forward card.
           images=""
           for df in Dockerfile Dockerfile.sandbox Dockerfile.runner; do
             case "$df" in
-              Dockerfile) inputs="go.mod go.sum cmd/ internal/" ;;
-              Dockerfile.sandbox) inputs="go.mod go.sum cmd/ internal/ opencode-plugin/" ;;
-              Dockerfile.runner) inputs="" ;;
+              Dockerfile) inputs="go.mod go.sum" ;;
+              Dockerfile.sandbox) inputs="go.mod go.sum opencode-plugin/" ;;
+              Dockerfile.runner) inputs="go.mod go.sum" ;;
               *) echo "no input map for $df" >&2; exit 1 ;;
             esac
             build=0

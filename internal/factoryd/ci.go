@@ -734,16 +734,17 @@ func jobIDFromRunnerName(name string) (int64, bool) {
 	return id, err == nil
 }
 
-// CI namespace resources: `go test -race` and gosec need more headroom than
-// the LLM-harness worker sandbox; a namespace holds exactly one pod.
+// CI namespace resources: the test packages run in parallel (roadmap 222,
+// item 3) and gosec needs headroom; a namespace holds exactly one pod.
+// The nodes have 8 CPUs each.
 var (
-	ciRequests = map[string]any{"cpu": "500m", "memory": "1Gi"}
-	ciLimits   = map[string]any{"cpu": "2", "memory": "4Gi"}
+	ciRequests = map[string]any{"cpu": "1", "memory": "1Gi"}
+	ciLimits   = map[string]any{"cpu": "4", "memory": "4Gi"}
 	ciQuota    = map[string]any{
 		"pods":            "1",
-		"requests.cpu":    "500m",
+		"requests.cpu":    "1",
 		"requests.memory": "1Gi",
-		"limits.cpu":      "2",
+		"limits.cpu":      "4",
 		"limits.memory":   "4Gi",
 	}
 )
