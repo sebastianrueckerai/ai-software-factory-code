@@ -633,11 +633,15 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
 		htmx("/tasks/t-c2/summary") + ` class="edit-form summary-edit">` + filter,
-		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit">` + filter,
+		htmx("/tasks/t-c2/accent") + ` class="edit-form accent-edit auto-submit">` + filter,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the filtered drawer lacks %s", want)
 		}
+	}
+	// the accent applies as it is chosen: its form has no button to press
+	if i := strings.Index(drawer, `class="edit-form accent-edit auto-submit">`); i < 0 || strings.Contains(drawer[i:i+strings.Index(drawer[i:], "</form>")], "<button") {
+		t.Error("the accent form is missing or holds a button")
 	}
 	for path, form := range map[string]url.Values{
 		"/tasks/t-c2/summary": {"summary": {"links"}},

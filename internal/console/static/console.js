@@ -76,8 +76,10 @@ function offerLanes() {
 }
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
-  // the board's project shows at once
-  if (e.target.id === "project-filter") e.target.form.submit();
+  // a setting applies at once, with no button to press: the board's
+  // project, a column's order and show, a card's accent
+  var f = e.target.form;
+  if (f && f.classList.contains("auto-submit")) f.requestSubmit();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
@@ -453,14 +455,10 @@ document.addEventListener("htmx:afterSwap", function (e) {
   });
 })();
 
-// The column menus (C13): a choice submits the menu's form, so the board
-// reloads with the column's order and show in its query; Escape or a
-// click outside closes an open menu. An open menu holds the board's
-// swaps, as any open disclosure does.
-document.addEventListener("change", function (e) {
-  var f = e.target.closest && e.target.closest("details.col-menu form");
-  if (f && e.target.type === "radio") f.requestSubmit();
-});
+// The column menus (C13): a choice submits the menu's form (auto-submit),
+// so the board reloads with the column's order and show in its query;
+// Escape or a click outside closes an open menu. An open menu holds the
+// board's swaps, as any open disclosure does.
 document.addEventListener("click", function (e) {
   document.querySelectorAll("details.col-menu[open]").forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
 });

@@ -13,7 +13,7 @@
 <body{{if .CSRF}} hx-headers='{"X-CSRF-Token":"{{.CSRF}}"}'{{end}}>
 <header class="top">
 <a class="home" href="/">Factory console</a>
-{{if .CSRF}}{{if switch .}}<form method="get" action="/" class="switch"><label for="project-filter" class="visually-hidden">Project</label><select id="project-filter" name="project">
+{{if .CSRF}}{{if switch .}}<form method="get" action="/" class="switch auto-submit"><label for="project-filter" class="visually-hidden">Project</label><select id="project-filter" name="project">
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select>{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
 {{end}}<nav aria-label="Main"><a href="/">Board</a>{{if .Factory}} <a href="/tasks/new">New task</a> <a href="/projects">Projects</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a>{{end}}</nav>{{end}}

@@ -511,7 +511,6 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .menu-pop label:hover { color: var(--text); }
 .menu-pop input[type=radio] { margin: 0; accent-color: var(--accent); }
 .menu-pop input[type=radio]:checked + span { color: var(--text); }
-.menu-pop .apply { height: 24px; margin-top: 6px; padding: 0 10px; font-size: 12px; }
 .col-state { display: flex; align-items: center; gap: 6px; margin: 0; padding: 3px 6px 3px 10px; border-bottom: 1px solid var(--line); color: var(--accent); font: 11px/1.5 var(--font-mono); flex: none; }
 .col-state span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .col-x { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--text-muted); font: 15px/1 var(--font-mono); text-decoration: none; }
@@ -748,7 +747,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .col-menu > summary { width: 44px; height: 44px; margin-left: auto; font-size: 14px; pointer-events: auto; }
   .menu-pop { left: 0; right: 0; top: 43px; pointer-events: auto; }
   .menu-pop label { min-height: 44px; }
-  .menu-pop .apply { height: 44px; }
   .col-state { padding: 0 0 0 12px; }
   .col-x { width: 44px; height: 44px; font-size: 20px; }
   #board { overflow: visible; }
