@@ -1212,6 +1212,59 @@ func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	}
 }
 
+// Roadmap 184: the return alone is not a circle. After a message, an edit
+// undone — the file back at a content it had before, the check that was
+// failing when it returned never failing again — leaves the card where it
+// is and the session runs on.
+func TestUndoAfterAMessageLeavesTheCardWhereItIs(t *testing.T) {
+	const check = "go test ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour, Churn: 1000}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	s.Messaged(minute(2))
+	s.Event(fileEvent("main.go", "v1"), minute(3))
+	s.Event(fileEvent("main.go", "v2"), minute(4))
+	s.Event(cmdEvent(check, 1, "FAIL: TestMain"), minute(5))
+	// main.go returns to v1 with the check failing: the return is pending
+	// evidence, but no refail ever comes — the undo holds
+	if trip := s.Event(fileEvent("main.go", "v1"), minute(6)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	s.Event(fileEvent("other.go", "n1"), minute(7))
+	if trip := s.Event(cmdEvent("gofmt -w other.go", 0, ""), minute(8)); trip != nil {
+		t.Fatalf("work after the undo tripped: %+v", trip)
+	}
+	if trip := s.Tick(minute(30)); trip != nil {
+		t.Fatalf("the session cannot run on after an undo: %+v", trip)
+	}
+}
+
+// Roadmap 184: a check that failed not before the return but only after
+// it is new work, not the circle's second half: the refail finds nothing
+// pending and the card does not move.
+func TestAFailureOnlyAfterAReturnIsNewWork(t *testing.T) {
+	const check = "go vet ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour, Churn: 1000}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	s.Messaged(minute(2))
+	s.Event(fileEvent("main.go", "v1"), minute(3))
+	s.Event(fileEvent("main.go", "v2"), minute(4))
+	s.Event(cmdEvent(check, 0, "ok"), minute(5)) // nothing fails yet
+	if trip := s.Event(fileEvent("main.go", "v1"), minute(6)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	if trip := s.Event(cmdEvent(check, 1, "FAIL: TestVet"), minute(7)); trip != nil {
+		t.Fatalf("the first failure tripped: %+v", trip)
+	}
+	s.Event(fileEvent("other.go", "n1"), minute(8))
+	if trip := s.Event(cmdEvent(check, 1, "FAIL: TestVet"), minute(9)); trip != nil {
+		t.Fatalf("refail of a check that was passing at the return = %+v decided=%+v, want no circle", trip, trip.decided)
+	}
+}
+
 // No check-in in a session's first 10 minutes: anchor t0, 45m, a session
 // from t0+40m skips t0+45m and checks in at t0+90m.
 func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
