@@ -603,12 +603,14 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 }
 
 // When a head check fails, the gate reads main's state for the same check:
-// a context also failing on main is named as such in the finding, so the
-// agent's session and the supervisor's guidance point at the pre-existing
-// defect instead of the card (Stage 19, finding 195).
+// a check also failing on main is named as such in the finding, closed
+// with main's failing context — the check, not the context, for main runs
+// the push workflow — so the agent's session and the supervisor's guidance
+// point at the pre-existing defect instead of the card (Stage 19, finding
+// 195).
 func TestWaitChecksNamesMainFailure(t *testing.T) {
 	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
-	mainFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 3m"}
+	mainFail := [4]string{"failure", "ci / test (push)", "/sf/repo/actions/runs/8/jobs/0", "Failure after 3m"}
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
 			"c1": {statusBody("failure", headFail)},
@@ -617,23 +619,27 @@ func TestWaitChecksNamesMainFailure(t *testing.T) {
 		mainHead: "m1",
 	}
 	r, _, _ := newActivityRunner(t, prTask, fj)
+	r.forgejo.PublicURL = "https://git.example.org"
+	want := `check "pr / test (pull_request)": failure — Failure after 2m (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` +
+		` (also failing on main: ci / test (push))`
 	var res ChecksResult
 	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
 	if err != nil || val.Get(&res) != nil {
 		t.Fatal(err)
 	}
-	if len(res.Findings) != 1 || !strings.Contains(res.Findings[0], "also failing on main") {
-		t.Fatalf("findings = %q, want the finding naming 'also failing on main'", res.Findings)
+	if len(res.Findings) != 1 || res.Findings[0] != want {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
 	}
 }
 
-// A head failure main does not share keeps today's finding, with no suffix.
+// A head failure main does not share keeps today's finding, with no note:
+// main runs the check green, under its own push context.
 func TestWaitChecksKeepsFindingWhenMainGreen(t *testing.T) {
 	headFail := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
 			"c1": {statusBody("failure", headFail)},
-			"m1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+			"m1": {statusBody("success", [4]string{"success", "ci / test (push)", "", ""})},
 		},
 		mainHead: "m1",
 	}
@@ -678,6 +684,27 @@ func TestWaitChecksMissingMainRunIsPassing(t *testing.T) {
 		if res.State != ChecksFailure || len(res.Findings) != 1 || res.Findings[0] != want {
 			t.Fatalf("%s: findings = %q, want %q", name, res.Findings, want)
 		}
+	}
+}
+
+// A green head is untouched: main's state is not even read, so a red main
+// cannot sink a green head's verdict.
+func TestWaitChecksGreenHeadUntouched(t *testing.T) {
+	fj := &prForgejo{
+		statusesBySHA: map[string][]string{
+			"c1": {statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})},
+			"m1": {statusBody("failure", [4]string{"failure", "ci / test (push)", "", ""})},
+		},
+		mainHead: "m1",
+	}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatal(err)
+	}
+	if res.State != ChecksSuccess || len(res.Findings) != 0 {
+		t.Fatalf("res = %+v, want green with no findings", res)
 	}
 }
 
