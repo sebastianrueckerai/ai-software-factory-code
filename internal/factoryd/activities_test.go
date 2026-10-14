@@ -2074,10 +2074,11 @@ func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}}}
 
 	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
-	if want := budgetRefused + ": 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), " +
+	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
+		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
+		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), " +
 		"so 0.000000 EUR is free, and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-		"an answer would start an attempt whose first call cannot run. Wait for the holds to settle and answer (a released hold books its call's cost, " +
-		"an expired one is booked in full), or raise the budget (Fund on the board) and answer."; err != nil || why != want {
+		"an answer would start an attempt whose first call cannot run."; err != nil || why != want {
 		t.Fatalf("held: (%q, %v), want %q", why, err, want)
 	}
 
@@ -2093,10 +2094,15 @@ func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	swept.SpentEUR = 5
 	store.tasks["t-756"] = swept
 	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
-	if want := budgetRefused + ": 0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/coding-frontier needs 0.015360 EUR " +
-		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run. " +
-		"Raise the budget (Fund on the board) and answer, or close the card."; err != nil || why != want {
+	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/coding-frontier needs 0.015360 EUR " +
+		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."; err != nil || why != want {
 		t.Fatalf("swept: (%q, %v), want %q", why, err, want)
+	}
+	// the card's question row is the refusal's first line, cut at 300: it
+	// carries both actions whole
+	if q := escalationQuestion(why); len(q) > 300 || !strings.Contains(q, "Raise the budget (Fund on the board) and answer, or close the card.") {
+		t.Errorf("the question row = %q, want the actions within 300 characters", q)
 	}
 }
 

@@ -369,8 +369,10 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 			free.Held, free.Holds, stamp(free.Expires), max(free.Free(), 0))
 		act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 	}
-	return fmt.Sprintf("%s: %s, and the cheapest call on %s needs %.6f EUR (%d output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run. %s",
-		budgetRefused, state, model, float64(policy.MinCallTokens)*price.Out, policy.MinCallTokens, act), nil
+	// the first line is the card's question row (escalationQuestion), cut
+	// at 300 characters: it carries the actions, the state follows
+	return fmt.Sprintf("%s: %s\n%s, and the cheapest call on %s needs %.6f EUR (%d output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run.",
+		budgetRefused, act, state, model, float64(policy.MinCallTokens)*price.Out, policy.MinCallTokens), nil
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
