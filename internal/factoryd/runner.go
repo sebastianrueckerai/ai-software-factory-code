@@ -425,6 +425,7 @@ type sessionOutcome struct {
 	digest    string
 	noResult  string
 	start     *startFailure // the session could not start
+	pending   *podPending   // its pod never left Pending: no session ran
 	model     string        // the model the session ended on
 	findings  []string
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
@@ -527,7 +528,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 		out.noResult = err.Error()
-		errors.As(err, &out.start)
+		if !errors.As(err, &out.start) {
+			errors.As(err, &out.pending)
+		}
 		return out, nil
 	}
 	progress(0, nil)
@@ -1001,7 +1004,8 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 // for a configuration error, once the same container has waited with it
 // for r.configGrace, since the kubelet's view of a secret written just
 // before the pod can lag. factoryd stopping ends it with errWorkerStop
-// (the retry creates the pod anew); a timeout says what the pod waits on.
+// (the retry creates the pod anew); a timeout is a *podPending, which says
+// what the pod waits on.
 func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
 	// configSince is when each container's configuration error began
@@ -1043,11 +1047,24 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 		case <-time.After(min(r.startPoll, time.Until(deadline))):
 		}
 	}
-	why := fmt.Sprintf("pod %s still pending after %s", podName, timeout)
-	if on := waitsOn(last); on != "" {
-		why += ": " + on
+	return &podPending{pod: podName, after: timeout, on: waitsOn(last)}
+}
+
+// podPending is a pod still Pending when its start's wait ran out: on is
+// what it waits on (waitsOn), a node with the capacity it requests or a
+// pull that has not failed for good. No container of it ran.
+type podPending struct {
+	pod   string
+	after time.Duration
+	on    string
+}
+
+func (p *podPending) Error() string {
+	why := fmt.Sprintf("pod %s still pending after %s", p.pod, p.after)
+	if p.on != "" {
+		why += ": " + p.on
 	}
-	return errors.New(why)
+	return why
 }
 
 // configErrorGrace is how long a container may wait with a configuration

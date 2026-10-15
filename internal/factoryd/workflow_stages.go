@@ -38,6 +38,9 @@ type ReportResult struct {
 	// Capped: the gateway refused a model call of the session at a cap,
 	// and it left no report (versionDayCap).
 	Capped *CapRefusal `json:",omitempty"`
+	// NotStarted: the session's pod never left Pending, and why
+	// (versionPodWait).
+	NotStarted string `json:",omitempty"`
 }
 
 // screenedLine is all the issue of a suspect screening shows: its reasons
@@ -918,6 +921,17 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish(v.final, v.reason)
 	case err != nil:
 		return t.finish("failed", "report session: "+errMessage(err))
+	case res.NotStarted != "" && t.podWait < versionPodWait:
+		return t.finish("failed", "report session: the report session ended without a report: "+res.NotStarted)
+	case res.NotStarted != "":
+		if ask := t.notStarted(res.NotStarted); ask != "" {
+			if final, why, _ := t.awaitHuman(ask, escalationQuestion(ask), nil); final != "" {
+				return t.finish(final, why)
+			}
+		} else if final, why, ok := t.decided(); ok {
+			return t.finish(final, why)
+		}
+		return t.report(stronger, refusals)
 	case res.Capped != nil && t.dayCap < versionDayCap:
 		return t.finish("failed", "report session: the report session ended without a report: "+res.Capped.reason())
 	case res.Capped != nil:

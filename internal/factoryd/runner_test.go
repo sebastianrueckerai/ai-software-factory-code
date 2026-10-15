@@ -1841,10 +1841,72 @@ func TestAwaitPodStartTimeoutSaysWhatThePodWaitsOn(t *testing.T) {
 			kube := newFakeKube()
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
 			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
-			if err == nil || err.Error() != tc.want {
-				t.Fatalf("awaitPodStart = %v, want %q", err, tc.want)
+			var p *podPending
+			if !errors.As(err, &p) || err.Error() != tc.want {
+				t.Fatalf("awaitPodStart = %v, want the pending pod %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A session whose pod no node takes ends not_started when its start's
+// wait runs out, here the 300 ms of agent time the pinned version leaves
+// it, naming the scheduler's refusal; so does a report session, whose
+// report task then reads NotStarted instead of failing.
+func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
+	const refusal = "Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."
+	unschedulable := func(kube *fakeKube) {
+		kube.onCreatePod = func() {
+			p := kube.podOrder[len(kube.podOrder)-1]
+			p.phase, p.conditions = "Pending", []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient ephemeral-storage."}}
+		}
+	}
+	short := func(r *Runner) {
+		v := testPolicyVersion()
+		v.Document.Limits.AgentTime = 300 * time.Millisecond
+		r.cfg.Policy = func() policy.Version { return v }
+		r.startPoll = 20 * time.Millisecond
+	}
+
+	kube := newFakeKube()
+	unschedulable(kube)
+	runner, _, _ := newTestRunner(t, Task{ID: "t6", Status: "running", Objective: "o", Repository: "sf/repo"}, kube, &fakeObjectStore{})
+	short(runner)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil)
+	if err != nil || res.Outcome != OutcomeNotStarted || !strings.HasPrefix(res.Summary, "pod worker-") || !strings.HasSuffix(res.Summary, ": "+refusal) {
+		t.Fatalf("result = (%+v, %v), want not_started naming %q", res, err, refusal)
+	}
+
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube = newFakeKube()
+	unschedulable(kube)
+	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), parentTask())
+	short(runner)
+	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+	var rep ReportResult
+	if err == nil {
+		err = val.Get(&rep)
+	}
+	if err != nil || !strings.HasSuffix(rep.NotStarted, ": "+refusal) || rep.Comment != 0 || len(hub.comments) != 0 {
+		t.Fatalf("RunReport = %+v, %v; want NotStarted naming %q, no comment", rep, err, refusal)
+	}
+}
+
+// A session whose pod never left Pending ends not_started (versionPodWait),
+// with the line and the finding a no-push session's would carry; a start
+// failure stays an escalation.
+func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {
+	pending := &podPending{pod: "worker-s1", after: 10 * time.Minute, on: "Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: pending.Error(), pending: pending})
+	why := "pod worker-s1 still pending after 10m0s: Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."
+	if res.Outcome != OutcomeNotStarted || res.Summary != why || !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: " + why}) || res.StartFailed {
+		t.Fatalf("result %+v, want not_started with %q", res, why)
+	}
+	failed := &startFailure{step: stepImagePull, text: "start failed: image pull: not found"}
+	if res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: failed.Error(), start: failed}); res.Outcome != OutcomeEscalate || !res.StartFailed {
+		t.Fatalf("result %+v, want the start failure's escalation", res)
 	}
 }
 

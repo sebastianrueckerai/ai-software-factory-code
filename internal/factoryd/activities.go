@@ -742,6 +742,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		ended = "previous session ended unfinished: "
 	}
 	res.Findings = append(slices.Clone(out.findings), ended+res.Summary)
+	if out.pending != nil {
+		res.Outcome = OutcomeNotStarted
+	}
 	return res
 }
 

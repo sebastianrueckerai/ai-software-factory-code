@@ -130,6 +130,9 @@ type PlanResult struct {
 	// Capped: the gateway refused a model call of the session at a cap
 	// (versionDayCap); Findings say it as a run from before reads them.
 	Capped *CapRefusal `json:",omitempty"`
+	// NotStarted: the session's pod never left Pending, and why
+	// (versionPodWait); Findings say it as a run from before reads them.
+	NotStarted string `json:",omitempty"`
 }
 
 // maxPlanEcho bounds the last message a planner answered without a plan,
@@ -1104,6 +1107,21 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 			continue
 		}
+		if t.podWait >= versionPodWait && err == nil && !decided && res.NotStarted != "" {
+			// no planner ran: no attempt, no agent time, the same findings
+			if ask = t.notStarted(res.NotStarted); ask != "" {
+				reason, carried = "no node started the planner session's pod", findings
+			}
+			if final, why, ok := t.decided(); ok {
+				final, why, _ = closedBeforeStart(final, why)
+				return t.finish(final, why)
+			}
+			if final, why, ok := t.planRejected(); ok {
+				return t.finish(final, why)
+			}
+			continue
+		}
+		t.pendingPods = 0
 		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil
 		// a session the day cap refused at its first call is no attempt
 		if !res.StartFailed && !(capped && res.Capped.Decision == policy.RefusedDayCap && !res.Capped.Allowed) {
@@ -1463,7 +1481,11 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
-	return PlanResult{Findings: found, Capped: end.capped}, nil
+	res := PlanResult{Findings: found, Capped: end.capped}
+	if end.pending != nil {
+		res.NotStarted = why
+	}
+	return res, nil
 }
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of

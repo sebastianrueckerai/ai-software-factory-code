@@ -98,6 +98,8 @@ func escalationSource(reason string) string {
 		return "queue"
 	case strings.HasPrefix(reason, startRefused):
 		return "start"
+	case strings.HasPrefix(reason, podNeverStarted):
+		return "capacity"
 	case strings.HasPrefix(reason, contentFilterRefusal):
 		return "content_filter"
 	}
