@@ -1,4 +1,16 @@
 ARG OPENCODE_VERSION=v1.18.32
+ARG NODE_VERSION=24.21.0
+
+# The archives the image unpacks, each checked against its sha256 before
+# a layer holds it. The image's steps mount this stage, so no layer of the
+# image keeps an archive. opencode's release asset arch is "x64", not
+# "amd64"; Node's sum is the tarball's line in nodejs.org's signed
+# SHASUMS256.txt for its version.
+FROM scratch AS downloads
+ARG OPENCODE_VERSION
+ARG NODE_VERSION
+ADD --checksum=sha256:3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
+ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
 
 FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
@@ -35,8 +47,6 @@ RUN npm ci \
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
-ARG OPENCODE_VERSION
-ARG NODE_VERSION=24.21.0
 # useradd dates the worker's /etc/shadow entry by SOURCE_DATE_EPOCH, else
 # by the build's day.
 ARG SOURCE_DATE_EPOCH
@@ -47,7 +57,7 @@ ARG SOURCE_DATE_EPOCH
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
 # alternatives logs carry the build's time.
-ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
            > /etc/apt/sources.list.d/pgdg.list \
@@ -60,24 +70,19 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && useradd -m -u 1000 -s /bin/bash worker \
       && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \
            /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
-# release asset arch is "x64", not "amd64"; remote ADD does not auto-extract
-ADD https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /tmp/opencode.tar.gz
-RUN echo "3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b  /tmp/opencode.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
+RUN --mount=type=bind,from=downloads,source=/opencode.tar.gz,target=/tmp/opencode.tar.gz \
+      tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
       && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
-      && rm /tmp/opencode.tar.gz /tmp/opencode
+      && rm /tmp/opencode
 # Go toolchain (ruling 99), the same pin as Dockerfile.runner, so the agent
 # can run the tests the PR checks will run: taken from the pinned golang base
 # image stage instead of go.dev/dl, which redirects to dl.google.com and that
 # host is unreachable here.
 COPY --from=build /usr/local/go /usr/local/go
 # Node 24 (the active LTS line), npm with it: the project checks run npm
-# scripts. The sha256 is the tarball's line in nodejs.org's signed
-# SHASUMS256.txt for this version. One layer: no image keeps the archive.
-RUN curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
-      && echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
-      && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
-      && rm /tmp/node.tar.xz \
+# scripts.
+RUN --mount=type=bind,from=downloads,source=/node.tar.xz,target=/tmp/node.tar.xz \
+      tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
       && node --version && npm --version \
       && rm -r /tmp/node-compile-cache
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker

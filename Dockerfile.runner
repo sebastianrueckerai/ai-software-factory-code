@@ -1,4 +1,24 @@
+ARG FORGEJO_RUNNER_VERSION=13.2.0
+ARG BUILDKIT_VERSION=0.33.0
+ARG NODE_VERSION=24.21.0
+ARG GOSEC_VERSION=2.29.0
+ARG CRANE_VERSION=0.22.1
+
 FROM golang:1.26.9@sha256:37cfcca63222ec499bec5e8ad7aad52dbf7529db36d5812b8eae2f0621aa92d6 AS go-toolchain
+
+# The archives the image unpacks, each checked against its sha256 before
+# a layer holds it. The image's steps mount this stage, so no layer of the
+# image keeps an archive. Node's sum is the tarball's line in nodejs.org's
+# signed SHASUMS256.txt for its version.
+FROM scratch AS downloads
+ARG BUILDKIT_VERSION
+ARG CRANE_VERSION
+ARG NODE_VERSION
+ARG GOSEC_VERSION
+ADD --checksum=sha256:b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
+ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
+ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+ADD --checksum=sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
@@ -10,11 +30,7 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 # the build cache) ships
 # pre-installed so the job itself never has to reach past the egress
 # allowlist for tooling.
-ARG FORGEJO_RUNNER_VERSION=13.2.0
-ARG BUILDKIT_VERSION=0.33.0
-ARG NODE_VERSION=24.21.0
-ARG GOSEC_VERSION=2.29.0
-ARG CRANE_VERSION=0.22.1
+ARG FORGEJO_RUNNER_VERSION
 # roadmap 232: the warm-cache go build below runs on the commit's clock, not
 # the build clock (ci.yml passes --build-arg SOURCE_DATE_EPOCH=<commit time>).
 ARG SOURCE_DATE_EPOCH
@@ -26,7 +42,7 @@ ARG SOURCE_DATE_EPOCH
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
 # alternatives logs carry the build's time.
-ADD https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
            > /etc/apt/sources.list.d/pgdg.list \
@@ -41,24 +57,18 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
            /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 
 # forgejo-runner: single static binary, no extraction.
-ADD https://code.forgejo.org/forgejo/runner/releases/download/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
-RUN echo "fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1  /usr/local/bin/forgejo-runner" | sha256sum -c - \
-      && chmod 0755 /usr/local/bin/forgejo-runner
+ADD --checksum=sha256:fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1 --chmod=0755 https://code.forgejo.org/forgejo/runner/releases/download/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
 
 # buildctl only: the image-build job drives buildkitd on its throwaway VM
 # (ruling 110, internal/factoryd/buildvm.go); no docker CLI, no daemon here.
-ADD https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /tmp/buildkit.tar.gz
-RUN echo "b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead  /tmp/buildkit.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/buildkit.tar.gz -C /usr/local bin/buildctl \
-      && rm /tmp/buildkit.tar.gz
+RUN --mount=type=bind,from=downloads,source=/buildkit.tar.gz,target=/tmp/buildkit.tar.gz \
+      tar -xzf /tmp/buildkit.tar.gz -C /usr/local bin/buildctl
 
 # crane: image-build copies each image's layer cache from the in-cluster
 # build cache into a local OCI layout that buildctl streams to the VM
 # (ruling 111).
-ADD https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /tmp/crane.tar.gz
-RUN echo "0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0  /tmp/crane.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane \
-      && rm /tmp/crane.tar.gz
+RUN --mount=type=bind,from=downloads,source=/crane.tar.gz,target=/tmp/crane.tar.gz \
+      tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane
 
 # The Go toolchain, pre-installed so a job never downloads it mid-run: taken
 # from the pinned golang base image stage instead of go.dev/dl, which redirects
@@ -67,21 +77,16 @@ COPY --from=go-toolchain /usr/local/go /usr/local/go
 
 # Node 24 (the active LTS line), npm with it: forgejo-runner runs
 # JavaScript actions (actions/checkout) with the node on PATH, and the project
-# checks run npm scripts. The sha256 is the tarball's line in nodejs.org's signed
-# SHASUMS256.txt for this version. One layer: no image keeps the archive.
-RUN curl -fsSL -o /tmp/node.tar.xz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz \
-      && echo "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6  /tmp/node.tar.xz" | sha256sum -c - \
-      && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
-      && rm /tmp/node.tar.xz \
+# checks run npm scripts.
+RUN --mount=type=bind,from=downloads,source=/node.tar.xz,target=/tmp/node.tar.xz \
+      tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 --no-same-owner \
       && node --version && npm --version \
       && rm -r /tmp/node-compile-cache
 
 # gosec: pr.yml's static security scan (design decision #6 — chosen over
 # govulncheck so the job's egress allowlist never needs vuln.go.dev).
-ADD https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /tmp/gosec.tar.gz
-RUN echo "6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095  /tmp/gosec.tar.gz" | sha256sum -c - \
-      && tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec \
-      && rm /tmp/gosec.tar.gz
+RUN --mount=type=bind,from=downloads,source=/gosec.tar.gz,target=/tmp/gosec.tar.gz \
+      tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec
 
 ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
     HOME=/home/runner \

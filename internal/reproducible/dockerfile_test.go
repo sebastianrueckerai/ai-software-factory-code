@@ -526,3 +526,28 @@ func goTrees(t *testing.T) []string {
 	}
 	return trees
 }
+
+// Every file a Dockerfile downloads with ADD carries its checksum: the
+// bytes behind a URL can change, and the image with them.
+func TestDockerfileDownloadsCarryAChecksum(t *testing.T) {
+	for _, f := range []string{"Dockerfile", "Dockerfile.sandbox", "Dockerfile.runner"} {
+		for _, s := range parseDockerfile(t, filepath.Join("..", "..", f)) {
+			for _, line := range s.lines {
+				fields := strings.Fields(line)
+				if len(fields) < 2 || strings.ToUpper(fields[0]) != "ADD" || !strings.Contains(line, "://") {
+					continue
+				}
+				pinned := false
+				for _, flag := range fields[1:] {
+					if !strings.HasPrefix(flag, "--") {
+						break
+					}
+					pinned = pinned || strings.HasPrefix(flag, "--checksum=sha256:")
+				}
+				if !pinned {
+					t.Errorf("%s: %q downloads without --checksum", f, line)
+				}
+			}
+		}
+	}
+}
