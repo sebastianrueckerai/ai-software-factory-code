@@ -1446,10 +1446,9 @@ func finishedColumn(f boardFilter, key string) (column, bool) {
 
 // readFinishedColumn is the board's column of finished cards f.Col, f's
 // view of it: the column's page after f.After with the form of the page
-// after it, false after it answered the refusal. The project shown
-// follows boardOf's rule — f.Project, else the first the viewer writes,
-// and a member sees only a project they write or read (ruling 254) — and
-// the column holds the same cards boardOf's would.
+// after it, false after it answered the refusal. shownProject picks the
+// project the whole board would show under f, so the column holds the
+// same cards boardOf's would.
 func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f boardFilter) (column, bool) {
 	ctx := r.Context()
 	v, all, err := c.projectsOf(r, f)
@@ -1458,37 +1457,10 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 		http.Error(w, "cannot read the board", http.StatusInternalServerError)
 		return column{}, false
 	}
-	var shown factoryd.Project
-	writable := map[string]bool{}
-	for _, p := range all {
-		// a project whose writers could not be checked is offered, its
-		// buttons hidden, rather than an empty board
-		writes, err := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
-		if err != nil && !v.unchecked {
-			v.unchecked = true
-			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
-		}
-		writable[p.Name] = writes
-		if writes || err != nil {
-			if f.Project == "" && shown.Name == "" {
-				shown = p
-			}
-		}
-		if p.Name == f.Project {
-			shown = p
-		}
-	}
-	if f.Project != "" && shown.Name == "" {
+	shown, _, _, err := c.shownProject(ctx, r, v, all, f)
+	if errors.Is(err, errNoProject) {
 		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
 		return column{}, false
-	}
-	// a member sees only the projects they write or read (ruling 254); the
-	// factory's writers see every board, read-only where they do not write
-	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !c.factoryWriter(r) {
-		if reads, err := c.reads(ctx, current(r), shown); err != nil || !reads {
-			http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
-			return column{}, false
-		}
 	}
 	col, ok := finishedColumn(f, f.Col)
 	if !ok {
@@ -1918,6 +1890,48 @@ func callsLine(t policy.CallTotals) string {
 		t.Prompt, t.Cached, t.Output, t.ModeledEUR)
 }
 
+// shownProject is the board's shown project under f among all, the
+// projects agents work on — f.Project's, else the first the viewer
+// writes — with projects, the top bar's select choices, every project the
+// viewer writes and the shown one, and writable saying each project by
+// name. A project whose writers could not be checked is offered, its
+// buttons hidden, rather than an empty board; a member sees only a
+// project they write or read (ruling 254), the factory's writers every
+// board, read-only where they do not write; errNoProject is the refusal.
+// The whole board and a page of finished cards show the same one.
+func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardView, all []factoryd.Project, f boardFilter) (shown factoryd.Project, projects []string, writable map[string]bool, err error) {
+	writable = map[string]bool{}
+	for _, p := range all {
+		writes, werr := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
+		if werr != nil && !v.unchecked {
+			v.unchecked = true
+			log.Printf("console: may %s write %s: %v", v.user, p.Repository, werr)
+			v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
+		}
+		writable[p.Name] = writes
+		if writes || werr != nil {
+			projects = append(projects, p.Name)
+			if f.Project == "" && shown.Name == "" {
+				shown = p
+			}
+		}
+		if p.Name == f.Project {
+			shown = p
+		}
+	}
+	if f.Project != "" && shown.Name == "" {
+		return shown, projects, writable, errNoProject
+	}
+	// a member sees only the projects they write or read (ruling 254); the
+	// factory's writers see every board, read-only where they do not write
+	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !c.factoryWriter(r) {
+		if reads, rerr := c.reads(ctx, current(r), shown); rerr != nil || !reads {
+			return shown, projects, writable, errNoProject
+		}
+	}
+	return shown, projects, writable, nil
+}
+
 // boardOf is the board of one project, f.Project or else the first the
 // viewer writes, the project's cards, as the session's
 // human sees it. The five columns are the default, the human lane folded
@@ -1934,42 +1948,15 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	if err != nil {
 		return d, err
 	}
-	var shown factoryd.Project
-	writable := map[string]bool{}
-	for _, p := range all {
-		// a project whose writers could not be checked is offered, its
-		// buttons hidden, rather than an empty board
-		writes, err := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
-		if err != nil && !v.unchecked {
-			v.unchecked = true
-			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
-			v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
-		}
-		writable[p.Name] = writes
-		if writes || err != nil {
-			d.Projects = append(d.Projects, p.Name)
-			if f.Project == "" && shown.Name == "" {
-				shown = p
-			}
-		}
-		if p.Name == f.Project {
-			shown = p
-		}
+	shown, projects, writable, err := c.shownProject(ctx, r, v, all, f)
+	if err != nil {
+		return d, err
 	}
-	switch {
-	case f.Project != "" && shown.Name == "":
-		return d, errNoProject
-	case shown.Name == "":
+	d.Projects = projects
+	if shown.Name == "" {
 		d.Problems = append(d.Problems, "You write none of the projects agents work on.")
-	case !slices.Contains(d.Projects, shown.Name):
+	} else if !slices.Contains(d.Projects, shown.Name) {
 		d.Projects = append(d.Projects, shown.Name)
-	}
-	// a member sees only the projects they write or read (ruling 254); the
-	// factory's writers see every board, read-only where they do not write
-	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !d.Factory {
-		if reads, err := c.reads(ctx, current(r), shown); err != nil || !reads {
-			return d, errNoProject
-		}
 	}
 	f.Project, d.Writes, d.Approver = shown.Name, writable[shown.Name], v.approves(shown.Repository)
 	d.Commands = policy.BuiltinCommands
