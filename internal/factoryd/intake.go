@@ -916,38 +916,20 @@ func FileAgentTask(ctx context.Context, store interface {
 
 // FileFactoryPRTask files a card for pull request prNumber, which factoryd
 // opened outside any card's workflow (a GitHub sync, a schema copy, a
-// template update): the issue through FileTask as the roller files its
-// roll task, then store.SetTaskPR links the already open pull request to
-// the row, then enterLane starts the workflow, whose run finds the pull
-// request recorded and verifies it instead of opening one. t.Source names
-// the kind (SourceGitHubSync, SourceSchemaCopy or SourceTemplateUpdate);
-// fileEntry gives such a card ready's class and no lane, like a roll, so
-// the workflow starts at once and moves running before its verify reaches
-// in-review. tl records the card's events.
+// template update, a revert) through FileAgentTask, its row inserted with
+// the pull request linked: no card of these sources exists without it.
+// Its run finds the pull request recorded and verifies it instead of
+// opening one. t.Source names the kind (factoryPRSources); fileEntry gives
+// such a card ready's class and no lane, like a roll, so the workflow
+// starts at once and moves running before its verify reaches in-review.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-	SetTaskPR(ctx context.Context, id string, number int64) error
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
-	var err error
-	if t, labels, err = fileEntry(p, t, labels); err != nil {
-		return Task{}, IssueRef{}, err
-	}
-	t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
-	if err != nil {
-		return Task{}, IssueRef{}, err
-	}
-	if err := store.SetTaskPR(ctx, t.ID, prNumber); err != nil {
-		return Task{}, IssueRef{}, fmt.Errorf("link pull request %d to task %s: %w", prNumber, t.ID, err)
+	if prNumber == 0 {
+		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
 	t.PRNumber = prNumber
-	by := cmp.Or(t.Author, forgejo.BotUser)
-	if t.Lane != "" {
-		tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": ref.Number})
-	}
-	if err := enterLane(ctx, tl, workflows, t, by, nil); err != nil {
-		log.Printf("task %s: start workflow: %v", t.ID, err)
-	}
-	return t, ref, nil
+	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
 }
 
 func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error {

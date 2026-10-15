@@ -539,8 +539,9 @@ func TestTemplateUpdateKeepFilesTheDueCard(t *testing.T) {
 	}
 }
 
-// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a pull
-// request's cards come newest first, and only a card whose status moved to
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a card's
+// row is inserted with its pull request; a pull request's cards come newest
+// first, TaskByPR is the newest, and only a card whose status moved to
 // in-review reached the gates (cardDue).
 func TestPGStoreTasksByPRAndReachedReview(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
@@ -550,16 +551,16 @@ func TestPGStoreTasksByPRAndReachedReview(t *testing.T) {
 		pr int64
 	}{{"t-new", 9}, {"t-old", 9}, {"t-other", 10}} {
 		if err := s.CreateTask(ctx, Task{ID: c.id, Kind: "agent", Status: "queued", Repository: "sf/r", Source: SourceTemplateUpdate,
-			CreatedAt: at.Add(-time.Duration(i) * time.Minute)}); err != nil {
-			t.Fatal(err)
-		}
-		if err := s.SetTaskPR(ctx, c.id, c.pr); err != nil {
+			PRNumber: c.pr, CreatedAt: at.Add(-time.Duration(i) * time.Minute)}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	cards, err := s.TasksByPR(ctx, "sf/r", 9)
-	if err != nil || len(cards) != 2 || cards[0].ID != "t-new" || cards[1].ID != "t-old" {
+	if err != nil || len(cards) != 2 || cards[0].ID != "t-new" || cards[1].ID != "t-old" || cards[1].PRNumber != 9 {
 		t.Fatalf("TasksByPR(sf/r, 9) = %+v, %v; want t-new, then t-old", cards, err)
+	}
+	if card, ok, err := s.TaskByPR(ctx, "sf/r", 9); err != nil || !ok || card.ID != "t-new" {
+		t.Fatalf("TaskByPR(sf/r, 9) = %s, %v, %v; want the newest, t-new", card.ID, ok, err)
 	}
 	if err := s.MarkStarted(ctx, "t-old"); err != nil {
 		t.Fatal(err)

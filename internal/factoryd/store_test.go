@@ -249,12 +249,11 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 }
 
 func (s *fakeStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
-	for _, t := range s.tasks {
-		if t.Repository == repository && t.PRNumber == pr && pr != 0 {
-			return t, true, nil
-		}
+	cards, _ := s.TasksByPR(ctx, repository, pr)
+	if len(cards) == 0 {
+		return Task{}, false, nil
 	}
-	return Task{}, false, nil
+	return cards[0], true, nil
 }
 
 func (s *fakeStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {

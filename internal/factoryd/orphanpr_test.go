@@ -68,6 +68,34 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	}
 }
 
+// FileFactoryPRTask inserts the card's row with its pull request linked,
+// one statement: a store that refuses the insert leaves no row and starts
+// no run, and no card stands queued without its pull request, which a link
+// written after the row once could leave when it failed. A card asked for
+// no pull request at all is refused before its issue is filed.
+func TestFileFactoryPRTaskInsertsThePullRequestWithTheRow(t *testing.T) {
+	ctx := context.Background()
+	f, labels := fileStub(t)
+	store, wf := newFakeStore(), &fakeWorkflows{}
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t0", Source: SourceSchemaCopy}, 0); err == nil ||
+		err.Error() != "a schema-copy card needs its pull request" || *labels != nil {
+		t.Fatalf("err %v, labels %v: want the refusal before any issue", err, *labels)
+	}
+	store.createFails = 1
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err == nil {
+		t.Fatal("want the refused insert's error")
+	}
+	if len(store.tasks) != 0 || len(wf.started) != 0 {
+		t.Fatalf("tasks %v, started %v: a refused insert leaves no card", store.tasks, wf.started)
+	}
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err != nil {
+		t.Fatal(err)
+	}
+	if store.createCalls != 2 || store.tasks["t1"].PRNumber != 9 || !slices.Equal(wf.started, []string{"t1"}) {
+		t.Fatalf("inserts %d, row %+v, started %v: want the row inserted with pull request #9", store.createCalls, store.tasks["t1"], wf.started)
+	}
+}
+
 // fileEntry gives every factory pull request source the roll's entry:
 // ready's class, queued, no lane, the workflow started at once. The lane
 // the writers' ready move gave these cards before (finding 224) queued
@@ -192,6 +220,11 @@ func TestReconcileAdoptsFactoryPRCard(t *testing.T) {
 	r3, _, _ := newActivityRunner(t, withStatus(prTask, "running"), forked)
 	if st3 := reconcileInto(t, r3); st3.FactoryPR || st3.PR.Number != 12 {
 		t.Fatalf("RunState = %+v, want the coding card's branch pull request found as before", st3)
+	}
+	// a factory pull request card without its number adopts no branch's
+	r4, _, _ := newActivityRunner(t, withSource(withStatus(prTask, "queued"), SourceTemplateUpdate), forked)
+	if st4 := reconcileInto(t, r4); !st4.FactoryPR || st4.PR.Number != 0 || st4.Head != "" {
+		t.Fatalf("RunState = %+v, want no pull request", st4)
 	}
 }
 
@@ -319,6 +352,56 @@ func TestFactoryPRCardRunsItsGatesFromRunning(t *testing.T) {
 				t.Fatalf("sessions = %v, want none: the card's work is the open pull request", g.sessions)
 			}
 		})
+	}
+}
+
+// A factory pull request card the heal pass restarts in a waiting state
+// (a gate's escalation, an information request) is known by its source
+// first: its run takes the gates on its linked pull request again, asks
+// no one again and starts no session, which the waiting state's answer
+// would otherwise buy it.
+func TestFactoryPRCardRestartedWhileWaitingRunsNoSession(t *testing.T) {
+	for _, st := range []RunState{
+		{Status: "waiting-human", Question: "the review's supervisor asks whether the copy may merge"},
+		{Status: "waiting-poster", InfoRequest: 651, PosterInfo: []string{"visitor: Linux"}, InfoAnswered: true},
+	} {
+		t.Run(st.Status, func(t *testing.T) {
+			g := newGateHarness(t)
+			st.FactoryPR, st.Source, st.PR, st.Head = true, SourceSchemaCopy, PullRequest{Number: 9}, "c7"
+			g.state = st
+			g.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					t.Errorf("a factory pull request card ran a session: %+v", in)
+					return SessionResult{}, nil
+				})
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(g.states, []string{"running", "in-review"}) || len(g.escalated) != 0 || !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
+				t.Fatalf("states %v, escalations %q, merges %v: want the gates again from running and no question", g.states, g.escalated, g.merges)
+			}
+		})
+	}
+}
+
+// A factory pull request card with no pull request linked, which
+// FileFactoryPRTask no longer files, fails at once when a run meets one:
+// no session can do its work.
+func TestFactoryPRCardWithoutItsPullRequestFails(t *testing.T) {
+	g := newGateHarness(t)
+	g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceSchemaCopy}
+	g.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			t.Errorf("a factory pull request card ran a session: %+v", in)
+			return SessionResult{}, nil
+		})
+	if final := g.run(t); final != "failed" || g.finals[0][1] != "factory pull request: none is linked to the card" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.states) != 0 || len(g.steps) != 0 {
+		t.Fatalf("states %v, steps %v: want no gate", g.states, g.steps)
 	}
 }
 

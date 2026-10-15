@@ -452,6 +452,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.burstAccept = workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
 	run.queueTurns = workflow.GetVersion(ctx, "queue-turns", workflow.DefaultVersion, versionQueueTurns)
 	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
+	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -861,6 +862,13 @@ const (
 	// a code session's day cap as no push, a plan's or a split's as no
 	// plan, and fails a report task's.
 	versionDayCap workflow.Version = 1
+	// versionFactoryPRSource (change id "factory-pr-source"): a card of a
+	// pull request factoryd opened outside any card's workflow is known by
+	// its source before the waiting states: whatever state the heal pass
+	// restarts it in, its run takes the gates on the pull request linked
+	// to it and never a session, and one with none linked fails. A run
+	// from before the change answers a waiting state as a coding card does.
+	versionFactoryPRSource workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -951,6 +959,7 @@ type taskRun struct {
 	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
 	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
+	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	pr                PullRequest
@@ -1132,6 +1141,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v17 >= versionRoll && st.Roll:
 			t.pr = st.PR
 			return t.roll(st.Head)
+		case t.factoryPRSource >= versionFactoryPRSource && st.FactoryPR:
+			// a card for a pull request factoryd opened outside any card's
+			// workflow (roadmap 187) has no session work in any state: its
+			// work is the pull request linked to it, so one without it
+			// (FileFactoryPRTask files none) fails
+			if st.PR.Number == 0 {
+				return t.finish("failed", "factory pull request: none is linked to the card")
+			}
+			t.pr = st.PR
+			return t.factoryPR(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
 			// the screening's human, asked again; the answer runs the next
 			// session, whose rebuilt answers are screened again
@@ -1184,6 +1203,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// work is the pull request linked to it — and takes the gates
 			// from running, not straight from queued. Unlike a roll no
 			// RollCommit writes its branch, the pull request exists already.
+			// Only a run from before versionFactoryPRSource comes here.
 			t.pr = st.PR
 			return t.factoryPR(st.Head)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:

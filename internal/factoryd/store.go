@@ -560,16 +560,16 @@ func insertTask(ctx context.Context, db interface {
 	// an agent task starts in intake, since the work was asked for
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
 	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
 	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
-	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26)
+	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27)
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber)
 	return err
 }
 
@@ -651,7 +651,11 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 // the template pass reads it to tell whether a pull request already has
 // its card (roadmap 187).
 func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND pr_number = $2`, repository, pr)
+	cards, err := s.TasksByPR(ctx, repository, pr)
+	if err != nil || len(cards) == 0 {
+		return Task{}, false, err
+	}
+	return cards[0], true, nil
 }
 
 func (s *PGStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {

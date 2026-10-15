@@ -1249,15 +1249,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		pr = &got
-	case st.FactoryPR:
-		// a pull request factoryd opened outside a card's workflow: its
-		// head is main's, no branch of the bot's carries it
-		head, err := r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
-		if err != nil {
-			return RunState{}, fmt.Errorf("base head: %w", err)
-		}
-		pr = &PullRequestRef{Number: t.PRNumber, HeadSHA: head}
-	default:
+	case !st.FactoryPR: // a card of a factory pull request has the one on its row
 		if pr, err = r.forgejo.FindPullRequestByHead(ctx, repo.Owner, repo.Name, prBase, r.forgejo.Fork(repo), taskBranch(t)); err != nil {
 			return RunState{}, err
 		}
