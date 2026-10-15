@@ -417,8 +417,9 @@ func TestFit(t *testing.T) {
 	}
 }
 
-// An alias's output limit is the one its deployments publish, else the
-// policy's; with neither, no call of it can be held.
+// An alias's output limit is the policy's, lowered by a smaller one its
+// deployments publish; without the policy's, no call of it can be held,
+// whatever its deployments publish.
 func TestLimited(t *testing.T) {
 	d, err := Parse([]byte(valid + "prices: {max_output_tokens: {coding-frontier: 8192}}\n"))
 	if err != nil {
@@ -430,10 +431,10 @@ func TestLimited(t *testing.T) {
 		want      int
 		err       string
 	}{
-		{alias: "coding-frontier", published: 32768, want: 32768},
 		{alias: "coding-frontier", want: 8192},
-		{alias: "coding-cheap", published: 4096, want: 4096},
-		{alias: "coding-cheap", err: "coding-cheap has no output limit"},
+		{alias: "coding-frontier", published: 4096, want: 4096},
+		{alias: "coding-frontier", published: 32768, want: 8192},
+		{alias: "coding-cheap", published: 4096, err: "coding-cheap has no output limit"},
 	} {
 		p, err := d.Limited(tc.alias, Price{In: 1e-6, Out: 4e-6, MaxOutput: tc.published})
 		if tc.err != "" {

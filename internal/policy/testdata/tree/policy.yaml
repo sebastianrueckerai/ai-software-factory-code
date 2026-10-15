@@ -47,6 +47,7 @@ classes:
       file_plan: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}
+  max_output_tokens: {coding-cheap: 24576, coding-frontier: 24576, review-frontier: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}

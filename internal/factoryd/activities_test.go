@@ -2186,7 +2186,7 @@ func TestDayResume(t *testing.T) {
 	store := newFakeStore()
 	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "agent", TaskID: "t1"},
 		{ID: 3, Kind: AlertEscalation, Source: "day_cap", TaskID: "t2"}}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}}}}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}, Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"coding-frontier": 32768}}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}, Policy: func() policy.Version { return v }}}
 	ctx := context.Background()
 	verdicts := func() []string {
@@ -2627,13 +2627,14 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 		why != "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model" {
 		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
 	}
-	limitless := cheap
-	limitless.MaxOutput = 0
-	r.cfg.Prices = stubPrices{price: limitless}
+	limitless := testPolicyVersion()
+	limitless.Tree.Document.Prices.MaxOutputTokens = nil
+	r.cfg.Prices, r.cfg.Policy = stubPrices{price: cheap}, func() policy.Version { return limitless }
 	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
-		why != "the attempt's floor on coding-cheap cannot be read: coding-cheap has no output limit: no deployment publishes max_output_tokens, and prices.max_output_tokens in policy.yaml names none" {
+		why != "the attempt's floor on coding-cheap cannot be read: coding-cheap has no output limit: prices.max_output_tokens in policy.yaml names none" {
 		t.Fatalf("limitless: (%q, %v), want the refusal naming the missing limit", why, err)
 	}
+	r.cfg.Policy = testPolicyVersion
 	// the price is read for the alias LiteLLM knows, not the prefixed name
 	asked := &askedPrices{price: cheap}
 	r.cfg.Prices = asked

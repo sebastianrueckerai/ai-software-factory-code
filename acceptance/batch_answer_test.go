@@ -881,6 +881,8 @@ limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 
 classes:
   coder: {session: code, models: [coding-cheap], tools: {}, review_model: review-frontier, supervisor_model: supervisor}
   planner: {session: plan, models: [plan-cheap], tools: {}, supervisor_model: supervisor}
+prices:
+  max_output_tokens: {coding-cheap: 24576, plan-cheap: 24576, review-frontier: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
 approvers: [sebastian]
 risk:
   classes: [{name: normal, outcome: requires_approval}]

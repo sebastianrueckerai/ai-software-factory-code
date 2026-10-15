@@ -729,22 +729,25 @@ type ToolPrices struct {
 	Replicate ReplicatePrices `yaml:"replicate,omitempty" json:"replicate"`
 	// Fal bounds fal_run.
 	Fal FalPrices `yaml:"fal,omitempty" json:"fal"`
-	// MaxOutputTokens is a model alias's output limit where none of its
-	// LiteLLM deployments publishes max_output_tokens (Document.Limited).
+	// MaxOutputTokens is each model alias's output limit, the most output
+	// tokens a call asks for and is held at (Document.Limited). The tree's
+	// check requires one for every alias a class or the chat calls.
 	MaxOutputTokens map[string]int `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
 }
 
-// Limited is alias's price p with its output limit: the largest its
-// deployments publish, else prices.max_output_tokens. An alias with
-// neither is refused like an unpriced one: no hold may take all the free
-// headroom.
+// Limited is alias's price p with its output limit:
+// prices.max_output_tokens, lowered to the largest its deployments
+// publish when that is less. An alias without one is refused like an
+// unpriced one: no hold may take all the free headroom.
 func (d Document) Limited(alias string, p Price) (Price, error) {
-	if p.MaxOutput <= 0 {
-		p.MaxOutput = d.Prices.MaxOutputTokens[alias]
+	limit, ok := d.Prices.MaxOutputTokens[alias]
+	if !ok {
+		return Price{}, fmt.Errorf("%s has no output limit: prices.max_output_tokens in policy.yaml names none", alias)
 	}
-	if p.MaxOutput <= 0 {
-		return Price{}, fmt.Errorf("%s has no output limit: no deployment publishes max_output_tokens, and prices.max_output_tokens in policy.yaml names none", alias)
+	if p.MaxOutput > 0 {
+		limit = min(limit, p.MaxOutput)
 	}
+	p.MaxOutput = limit
 	return p, nil
 }
 

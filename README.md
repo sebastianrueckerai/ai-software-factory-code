@@ -914,9 +914,10 @@ The caps hold on the call itself. Prices per alias come from LiteLLM's
 `GET /model/info` (the figures it bills with), read every 5 minutes: per
 alias the maximum over its deployments of every per-token input rate
 (base, long-context `*_above_*_tokens`, service tiers, cache writes,
-`tiered_pricing`), every output and reasoning rate, and the output limit
-(`max_output_tokens`; where no deployment publishes one, the policy's
-`prices.max_output_tokens` per alias).
+`tiered_pricing`), every output and reasoning rate, and `max_output_tokens`.
+An alias's output limit is the policy's `prices.max_output_tokens`, lowered
+to that published maximum when it is less; the tree's check refuses a
+policy without one for an alias a class or the chat calls.
 A deployment with any other cost field set (per query, second, image,
 character) or without an input and output rate makes its alias unpriced,
 and an alias the policy allows but LiteLLM cannot price, or without an

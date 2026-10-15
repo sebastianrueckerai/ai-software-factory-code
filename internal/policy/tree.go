@@ -52,7 +52,7 @@ func ProjectFile(name string) string { return DirProjects + "/" + name + ".yaml"
 // Validate checks every file of a tree, as ParseTree does after decoding;
 // for a tree read back from Postgres.
 func (t Tree) Validate() error {
-	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document))), inFile(FileCommands, t.Commands.Validate())}
+	errs := []error{inFile(FilePolicy, errors.Join(t.Document.Validate(), checkSessions(t.Document), checkOutputLimits(t.Document))), inFile(FileCommands, t.Commands.Validate())}
 	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
 		errs = append(errs, inFile(ProcessFile(name), t.Processes[name].Validate()))
 	}
@@ -90,7 +90,7 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 		case strings.HasPrefix(name, DirSchema+"/"):
 			continue
 		case name == FilePolicy:
-			t.Document, err = parseFile(b, FilePolicy, kindPolicy, func(d Document) error { return errors.Join(d.Validate(), checkSessions(d)) })
+			t.Document, err = parseFile(b, FilePolicy, kindPolicy, func(d Document) error { return errors.Join(d.Validate(), checkSessions(d), checkOutputLimits(d)) })
 			policyOK = err == nil
 		case name == FileCommands:
 			t.Commands, err = parseFile(b, FileCommands, kindCommands, Commands.Validate)
@@ -171,6 +171,26 @@ func checkSessions(d Document) error {
 			errs = append(errs, fmt.Errorf("classes.%s: session is required, one of %v", name, Sessions))
 		case !slices.Contains(Sessions, s):
 			errs = append(errs, fmt.Errorf("classes.%s: session %q, want one of %v", name, s, Sessions))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// checkOutputLimits requires prices.max_output_tokens for every alias a
+// class or the chat calls, which Document.Validate leaves out for the
+// gateway: a version stored before the key stays readable, and the
+// gateway refuses its calls (Document.Limited).
+func checkOutputLimits(d Document) error {
+	aliases := append(slices.Clone(ChatModels), PulseModel)
+	for _, c := range d.Classes {
+		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel)
+		aliases = append(aliases, c.Models...)
+	}
+	slices.Sort(aliases)
+	var errs []error
+	for _, a := range slices.Compact(aliases) {
+		if _, ok := d.Prices.MaxOutputTokens[a]; a != "" && !ok {
+			errs = append(errs, fmt.Errorf("prices.max_output_tokens: %s has no output limit; every alias a class or the chat calls needs one", a))
 		}
 	}
 	return errors.Join(errs...)

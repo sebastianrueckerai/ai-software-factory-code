@@ -35,6 +35,7 @@ func testPolicy(id int64, dayEUR float64) policy.Version {
 			"coder": {Models: []string{"coding-cheap", "coding-frontier"}},
 			"odd":   {Models: []string{"unpriced"}},
 		},
+		Prices: policy.ToolPrices{MaxOutputTokens: testLimits()},
 	}}}
 }
 
@@ -45,8 +46,13 @@ type ledgerRow struct {
 }
 
 // testPrice prices every test alias: 1e-6 in, 4e-6 out per token, at most
-// 32768 output tokens.
+// 32768 output tokens, the limit testPolicy configures for each.
 var testPrice = policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}
+
+// testLimits are testPolicy's prices.max_output_tokens.
+func testLimits() map[string]int {
+	return map[string]int{"coding-cheap": 32768, "coding-frontier": 32768, "review-frontier": 32768, "supervisor": 32768, "operator": 32768, "pulse": 32768}
+}
 
 type fakePrices map[string]policy.Price
 
@@ -1378,46 +1384,49 @@ func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
 }
 
 // A call that asks for no output limit is held and forwarded at its
-// alias's: the one its deployments publish, else the policy's; an alias
-// with neither is refused like an unpriced one. Hand-derived at 1e-6 in,
-// 4e-6 out per token, the body's bytes plus 64 at most its prompt tokens.
+// alias's: prices.max_output_tokens, lowered by a smaller one its
+// deployments publish, never raised by a larger; an alias the policy
+// names no limit for is refused like an unpriced one, whatever its
+// deployments publish. Hand-derived at 1e-6 in, 4e-6 out per token, the
+// body's 38 bytes plus 64 at most its 102 prompt tokens (0.000102).
 func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
-	unpublished := testPrice
-	unpublished.MaxOutput = 0
-	prices := fakePrices{"coding-cheap": testPrice, "coding-frontier": unpublished}
 	for _, tc := range []struct {
-		name, model string
-		configured  map[string]int
-		wantStatus  int
-		wantLimit   int
-		wantEUR     float64
+		name       string
+		published  int
+		configured map[string]int
+		wantLimit  int
+		wantEUR    float64
 	}{
-		// 38 bytes: 102 prompt tokens 0.000102, 32768 output tokens 0.131072
-		{name: "the published limit", model: "coding-cheap", wantStatus: http.StatusOK, wantLimit: 32768, wantEUR: 0.131174},
-		// 41 bytes: 105 prompt tokens 0.000105, 8192 output tokens 0.032768
-		{name: "the configured limit", model: "coding-frontier", configured: map[string]int{"coding-frontier": 8192}, wantStatus: http.StatusOK, wantLimit: 8192, wantEUR: 0.032873},
-		{name: "no limit at all", model: "coding-frontier", wantStatus: http.StatusServiceUnavailable},
+		// 32768 output tokens 0.131072
+		{name: "the configured limit", configured: map[string]int{"coding-cheap": 32768}, wantLimit: 32768, wantEUR: 0.131174},
+		// 8192 output tokens 0.032768
+		{name: "a smaller published limit lowers it", published: 8192, configured: map[string]int{"coding-cheap": 32768}, wantLimit: 8192, wantEUR: 0.03287},
+		{name: "a larger published limit leaves it", published: 65536, configured: map[string]int{"coding-cheap": 8192}, wantLimit: 8192, wantEUR: 0.03287},
+		{name: "no configured limit", published: 32768},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stub := newStubUpstream(t)
 			stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.001"}})
-			store := newMemStore(Task{Classes: coder, ModelAlias: tc.model, ID: "42", BudgetEUR: 10, Status: "running"})
+			store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "running"})
 			v := testPolicy(1, 20)
 			v.Document.Prices.MaxOutputTokens = tc.configured
 			store.setPolicy(v)
-			s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: prices})
-			body := `{"messages":[],"model":"` + tc.model + `"}`
+			price := testPrice
+			price.MaxOutput = tc.published
+			s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{},
+				LiteLLMURL: stub.URL, Prices: fakePrices{"coding-cheap": price}})
+			const body = `{"messages":[],"model":"coding-cheap"}`
 			rr := doChat(t, s.Routes("test"), body)
 			_, bodies, _ := stub.seen()
 			a := store.auditRows()
 			last := a[len(a)-1]
 			if tc.wantLimit == 0 {
-				if rr.Code != tc.wantStatus || last.Decision != "error_price" || !strings.Contains(last.Reason, "coding-frontier has no output limit") || len(bodies) != 0 {
+				if rr.Code != http.StatusServiceUnavailable || last.Decision != "error_price" || last.Reason != "coding-cheap has no output limit: prices.max_output_tokens in policy.yaml names none" || len(bodies) != 0 {
 					t.Fatalf("%d %s, audit %+v, %d upstream calls; want 503 error_price for the missing limit", rr.Code, rr.Body.String(), last, len(bodies))
 				}
 				return
 			}
-			if rr.Code != tc.wantStatus || last.Decision != "allowed" || len(bodies) != 1 ||
+			if rr.Code != http.StatusOK || last.Decision != "allowed" || len(bodies) != 1 ||
 				bodies[0] != withMaxTokens(t, body, tc.wantLimit) || *last.OutputLimit != tc.wantLimit || math.Abs(*last.HoldEUR-tc.wantEUR) > 1e-12 {
 				t.Fatalf("%d %s, audit %+v, upstream %q; want max_tokens %d held at %g EUR", rr.Code, rr.Body.String(), last, bodies, tc.wantLimit, tc.wantEUR)
 			}

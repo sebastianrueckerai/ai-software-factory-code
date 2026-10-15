@@ -33,6 +33,8 @@ classes:
     tools: {}
     review_model: review-frontier
     supervisor_model: supervisor
+prices:
+  max_output_tokens: {coding-cheap: 32768, coding-frontier: 32768, review-frontier: 32768, supervisor: 32768, operator: 32768, pulse: 32768}
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}
