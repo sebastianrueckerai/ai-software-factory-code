@@ -110,7 +110,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 	fork := f.Fork(repo)
 	_, err := f.BranchHeadSHA(ctx, fork.Owner, fork.Name, TemplateUpdateBranch)
 	if err == nil {
-		return r.leftBranch(ctx, f, repo, want)
+		return r.leftBranch(ctx, f, p, want)
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return "", err
@@ -154,23 +154,75 @@ func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int6
 		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
 }
 
-// cardByPR is the card the template update pull request number on repo
-// has, if any; a Registrar without a card store has none, and the pass
-// behaves as before roadmap 187.
+// cardByPR is the newest card the template update pull request number on
+// repo has, if any; a Registrar without a card store has none, and the
+// pass behaves as before roadmap 187.
 func (r *Registrar) cardByPR(ctx context.Context, repo Repo, number int64) (Task, bool, error) {
 	if r.Cards == nil {
 		return Task{}, false, nil
 	}
-	return r.Cards.TaskByPR(ctx, repo.String(), number)
+	cards, err := r.Cards.TasksByPR(ctx, repo.String(), number)
+	if err != nil || len(cards) == 0 {
+		return Task{}, false, err
+	}
+	return cards[0], true, nil
+}
+
+// cardDue reports whether the template update pull request number on repo
+// is due a card: it has none (it came before roadmap 187), or its one card
+// failed before any gate judged it (finding 224). Such a failure is
+// factoryd's own, no verdict on the pull request, and buys one card more;
+// a second card that fails leaves it be, so the pass files again once per
+// pull request. failed is that failed card. Without a card store no card
+// is due.
+func (r *Registrar) cardDue(ctx context.Context, repo Repo, number int64) (failed *Task, due bool, err error) {
+	if r.Cards == nil {
+		return nil, false, nil
+	}
+	cards, err := r.Cards.TasksByPR(ctx, repo.String(), number)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case len(cards) == 0:
+		return nil, true, nil
+	case len(cards) > 1 || cards[0].Status != "failed":
+		return nil, false, nil
+	}
+	judged, err := r.Cards.ReachedReview(ctx, cards[0].ID)
+	if err != nil || judged {
+		return nil, false, err
+	}
+	return &cards[0], true, nil
+}
+
+// fileDueCard files the card pull request number is due (cardDue). The
+// failed card it replaces closes as factoryd's recorded close, its issue
+// naming the new card, as a retried plan card's does.
+func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, failed *Task, want map[string][]byte) error {
+	_, ref, err := r.fileTemplateCard(ctx, p, number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	if err != nil || failed == nil {
+		return err
+	}
+	repo := p.Repo()
+	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, failed.IssueNumber, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number)); err != nil {
+		return err
+	}
+	if err := recordFactoryClose(ctx, r.Cards, *failed); err != nil {
+		return err
+	}
+	return r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, failed.IssueNumber)
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
 // closed it unmerged and it still holds want (ruling 296): the close stands
-// until the render changes. Otherwise it deletes the branch, and the next
-// pass opens the new pull request: Forgejo closes a deleted branch's pull
-// requests in the background, which could take a new one with them.
-func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, repo Repo, want map[string][]byte) (Change, error) {
-	fork := f.Fork(repo)
+// until the render changes. A close by its card's failure before any gate
+// judged it is factoryd's own: the pass reopens the pull request, as the
+// bot that closed it, and files its card again (cardDue). Otherwise it
+// deletes the branch, and the next pass opens the new pull request: Forgejo
+// closes a deleted branch's pull requests in the background, which could
+// take a new one with them.
+func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, p Project, want map[string][]byte) (Change, error) {
+	repo, fork := p.Repo(), f.Fork(p.Repo())
 	last, err := f.LastClosedPullRequestFrom(ctx, repo.Owner, repo.Name, f.BotUser, fork, TemplateUpdateBranch)
 	if err != nil {
 		return "", err
@@ -181,7 +233,20 @@ func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, repo Repo, want 
 			return "", err
 		}
 		if len(changes) == 0 {
-			return Change(fmt.Sprintf("waiting: #%d closed unmerged; the template's next change reopens it", last.Number)), nil
+			failed, _, err := r.cardDue(ctx, repo, last.Number)
+			if err != nil {
+				return "", err
+			}
+			if failed == nil {
+				return Change(fmt.Sprintf("waiting: #%d closed unmerged; the template's next change reopens it", last.Number)), nil
+			}
+			if err := r.Forgejo.ReopenPullRequest(ctx, repo.Owner, repo.Name, last.Number); err != nil {
+				return "", err
+			}
+			if err := r.fileDueCard(ctx, p, last.Number, failed, want); err != nil {
+				return "", err
+			}
+			return Change(fmt.Sprintf("reopened pull request #%d: card %s failed before any gate judged it, filed again", last.Number, failed.ID)), nil
 		}
 	}
 	return Change("waiting: deleted the branch " + fork.String() + ":" + TemplateUpdateBranch + " a closed pull request left; the next pass opens a new one"),
@@ -231,12 +296,10 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 			c = Change(fmt.Sprintf("updated pull request #%d: its description", pr.Number))
 		}
 	}
-	// a pull request that came before roadmap 187 has no card yet: file it
-	// now, so the pass never refiles one it tracks.
-	if _, ok, err := r.cardByPR(ctx, repo, pr.Number); err != nil {
+	if failed, due, err := r.cardDue(ctx, repo, pr.Number); err != nil {
 		return "", err
-	} else if !ok {
-		if _, _, err := r.fileTemplateCard(ctx, p, pr.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", ")); err != nil {
+	} else if due {
+		if err := r.fileDueCard(ctx, p, pr.Number, failed, want); err != nil {
 			return "", err
 		}
 	}

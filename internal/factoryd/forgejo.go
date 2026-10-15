@@ -1342,6 +1342,12 @@ func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, numb
 	return err
 }
 
+// ReopenPullRequest reopens closed pull request number.
+func (f *Forgejo) ReopenPullRequest(ctx context.Context, owner, repo string, number int64) error {
+	_, err := f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), mustJSON(map[string]string{"state": "open"}), http.StatusCreated)
+	return err
+}
+
 // EditPullRequestBody sets pull request number's description.
 func (f *Forgejo) EditPullRequestBody(ctx context.Context, owner, repo string, number int64, body string) error {
 	_, err := f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), mustJSON(map[string]string{"body": body}), http.StatusCreated)

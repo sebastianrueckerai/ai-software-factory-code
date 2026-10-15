@@ -654,6 +654,10 @@ func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Ta
 	return s.oneTask(ctx, `repository = $1 AND pr_number = $2`, repository, pr)
 }
 
+func (s *PGStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND pr_number = $2 ORDER BY created_at DESC, id DESC`, repository, pr)
+}
+
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	choices := any(nil)
 	if len(e.Choices) > 0 {

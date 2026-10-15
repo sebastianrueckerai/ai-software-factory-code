@@ -172,6 +172,15 @@ func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event
 	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, id, limit)
 }
 
+// ReachedReview reads changeStatus's record: a task_status event that
+// says in-review.
+func (s *PGStore) ReachedReview(ctx context.Context, id string) (bool, error) {
+	var ok bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = $2 AND detail->>'status' = 'in-review')`,
+		id, EventTaskStatus).Scan(&ok)
+	return ok, err
+}
+
 // events runs query, which returns eventColumns, and scans its rows.
 func (s *PGStore) events(ctx context.Context, query string, args ...any) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
