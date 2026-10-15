@@ -37,11 +37,11 @@ async function open(browser, viewport, theme) {
   await ctx.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
   await ctx.addInitScript((t) => localStorage.setItem("theme", t), theme);
   const page = await ctx.newPage();
-  const inflight = new Set(), failures = [];
+  const inflight = new Set(), failures = [], expected = [];
   page.on("request", (r) => { if (!r.url().includes("/events/stream")) inflight.add(r); });
   page.on("requestfinished", (r) => inflight.delete(r));
   page.on("requestfailed", (r) => { inflight.delete(r); if (!r.url().includes("/events/stream")) failures.push(r.url() + " " + r.failure().errorText); });
-  page.on("response", (r) => { if (r.url().startsWith(base) && r.status() >= 400) failures.push(r.url() + " " + r.status()); });
+  page.on("response", (r) => { if (r.url().startsWith(base) && r.status() >= 400 && !expected.some((re) => re.test(r.url() + " " + r.status()))) failures.push(r.url() + " " + r.status()); });
   page.on("pageerror", (e) => failures.push("script error: " + e.message));
   async function idle() {
     const start = Date.now();
@@ -54,7 +54,10 @@ async function open(browser, viewport, theme) {
     await page.waitForTimeout(600);
     if (failures.length) throw new Error(page.url() + ": " + failures.join("; "));
   }
-  return { ctx, page, idle };
+  // expect marks an answer of 400 and above as the state a shot drives —
+  // the refused clash save's 409 — so it is no failure of the page
+  const expect = (re) => expected.push(re);
+  return { ctx, page, idle, expect };
 }
 
 async function go(p, url) {
@@ -228,6 +231,55 @@ async function main() {
         await shot("docs-draft-390.png", phone, "/", async (p) => {
           await openEditor(p);
           await p.page.waitForTimeout(300);
+        }, false);
+        // the outside change and the merge (items 5+6): the read view's
+        // note with its reload, the editor's note saying the save will
+        // merge, the landed merge, the refused clash with theirs beside
+        // the editor, and load-theirs' ask — the editor's note on the
+        // phone too
+        const editorReady = (p) => p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
+        const noteSays = (p, re) => p.page.waitForFunction((r) => { const n = document.getElementById("doc-note"); const t = n && !n.hidden ? n.innerText.replace(/\s+/g, " ") : ""; return new RegExp(r).test(t); }, re.replace(/\s+/g, " ").trim(), { timeout: 5000 });
+        const outside = (p, q) => p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-change" + (q || ""));
+        await shot("docs-changed-read-1440.png", desk, "/", async (p) => {
+          await openDocs(p);
+          await outside(p);
+          await noteSays(p, "changed by Sebastian \\d\\d:\\d\\d · reload");
+        }, false);
+        const changedEditor = async (p, q, typed) => {
+          await openDocs(p);
+          await p.page.locator("#doc-mode-edit").click();
+          await editorReady(p);
+          await p.page.keyboard.type(typed);
+          await outside(p, q);
+          await noteSays(p, "changed by Sebastian \\d\\d:\\d\\d · your save will merge · load theirs");
+        };
+        await shot("docs-changed-edit-1440.png", desk, "/", async (p) => {
+          await changedEditor(p, "?line=3", "The changed editor shot's draft. ");
+        }, false);
+        await shot("docs-merged-1440.png", desk, "/", async (p) => {
+          await changedEditor(p, "?line=3", "The merged shot's words. ");
+          await p.page.keyboard.press("Control+S");
+          await p.page.waitForFunction(() => { const f = document.querySelector("#doc-facts"); return f && /Saved: \S{7} on master · \d\d:\d\d · merged with Sebastian's change/.test(f.textContent); }, null, { timeout: 8000 });
+          await p.idle();
+        }, false);
+        const clashEditor = async (p, typed) => {
+          p.expect(/\/docs\/docs\/roadmap\.md 409$/);
+          await changedEditor(p, "", typed);
+          await p.page.keyboard.press("Control+S");
+          await p.page.waitForFunction(() => document.querySelector("#doc-facts .doc-refused"), null, { timeout: 5000 });
+        };
+        await shot("docs-clash-1440.png", desk, "/", async (p) => {
+          await clashEditor(p, "The clash shot's words. ");
+          await p.page.locator('#doc-facts [data-act="theirs"]').click();
+          await p.page.waitForTimeout(300);
+        }, false);
+        await shot("docs-load-theirs-1440.png", desk, "/", async (p) => {
+          await clashEditor(p, "The load-theirs shot's words. ");
+          await p.page.locator('#doc-facts [data-act="load-theirs"]').click();
+          await p.page.waitForTimeout(300);
+        }, false);
+        await shot("docs-changed-edit-390.png", phone, "/", async (p) => {
+          await changedEditor(p, "?line=3", "The phone's changed draft. ");
         }, false);
         for (const pg of pages) await shot(pg + "-1440.png", desk, "/" + pg);
         await shot("timeline-1440.png", desk, "/tasks/" + drawer + "/timeline");
