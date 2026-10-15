@@ -893,14 +893,14 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("container securityContext = %v", sc)
 	}
 	// ephemeral-storage: workspace 4, home 1, tmp 1 and the module cache 8
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:14Gi memory:512Mi]]" {
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:17Gi memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
 		t.Fatalf("dnsConfig = %s", dns)
 	}
 	volumes := spec["volumes"].([]any)
-	for i, want := range []string{"4Gi", "1Gi", "1Gi"} {
+	for i, want := range []string{"4Gi", "1Gi", "4Gi"} {
 		if got := volumes[i].(map[string]any)["emptyDir"].(map[string]any)["sizeLimit"]; got != want {
 			t.Fatalf("volume %d sizeLimit = %v, want %s", i, got, want)
 		}

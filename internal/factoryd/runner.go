@@ -1544,7 +1544,9 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
-		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
+		// the agent runs the checks CI runs, so its tmp is the CI pod's:
+		// 1 GiB evicted a session building factoryd's race tests (#816)
+		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
 	}
 	if gatewayToken {
 		mounts = append(mounts, map[string]any{"name": "gateway-token", "mountPath": "/var/run/secrets/tokens", "readOnly": true})

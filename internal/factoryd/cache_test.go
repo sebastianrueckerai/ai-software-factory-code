@@ -112,7 +112,7 @@ func TestReproPodHasNoSharedCache(t *testing.T) {
 		vols = append(vols, string(mustJSON(v)))
 	}
 	if want := []string{`{"emptyDir":{"sizeLimit":"4Gi"},"name":"workspace"}`, `{"emptyDir":{"sizeLimit":"1Gi"},"name":"home"}`,
-		`{"emptyDir":{"sizeLimit":"1Gi"},"name":"tmp"}`, `{"emptyDir":{"sizeLimit":"8Gi"},"name":"build"}`}; !reflect.DeepEqual(vols, want) {
+		`{"emptyDir":{"sizeLimit":"4Gi"},"name":"tmp"}`, `{"emptyDir":{"sizeLimit":"8Gi"},"name":"build"}`}; !reflect.DeepEqual(vols, want) {
 		t.Errorf("volumes = %v, want %v", vols, want)
 	}
 	wantMounts := `[{"mountPath":"/workspace","name":"workspace"},{"mountPath":"/home/worker","name":"home"},{"mountPath":"/tmp","name":"tmp"},{"mountPath":"/build","name":"build"}]`
@@ -197,8 +197,8 @@ func TestPodsRequestTheirEmptyDirs(t *testing.T) {
 		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "22Gi", "1", false},
 		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
 		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "14Gi", "1", false},
-		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "14Gi", "250m", true},
-		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "14Gi", "250m", true},
+		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "17Gi", "250m", true},
+		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "17Gi", "250m", true},
 	} {
 		spec := c.pod["spec"].(map[string]any)
 		requests := spec["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)
