@@ -928,6 +928,75 @@ func TestFluxAlertGraceCountsFalseReads(t *testing.T) {
 	}
 }
 
+// A broken staging environment holds a promotion like a SigNoz alert does:
+// the project's alerts endpoint reads the Flux alert's row while it fires,
+// and nothing once the Kustomization is Ready again.
+func TestProjectAlertsHoldAPromotionOnAFluxAlert(t *testing.T) {
+	r, flux, p := fluxRig(t)
+	token, hash := NewReadToken()
+	projects := r.in.Projects.(*memProjects)
+	demo := projects.m["demo-app"]
+	demo.ReadTokenHash = hash
+	projects.m["demo-app"] = demo
+	kube := newFakeProjectKube()
+	kube.deploys = map[string][]DeploymentState{}
+	staging := func() []ProjectAlert {
+		t.Helper()
+		mux := http.NewServeMux()
+		mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(projects, r.store, kube))
+		rec := getAlerts(mux, "/projects/demo-app/alerts?namespace=demo-staging", token)
+		var got []ProjectAlert
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("= %d %s", rec.Code, rec.Body)
+		}
+		return got
+	}
+	ctx := context.Background()
+	r.in.FluxPass(ctx, p, t0)
+	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
+	want := ProjectAlert{Name: "Kustomization not Ready", Namespace: "demo-staging", Source: "flux", Since: t0, Summary: fluxBroken.Message}
+	if got := staging(); len(got) != 1 || got[0] != want {
+		t.Fatalf("staging failing: %+v, want [%+v]", got, want)
+	}
+	flux["demo-staging/demo-app"] = fluxReady
+	r.in.FluxPass(ctx, p, t0.Add(12*time.Minute))
+	if got := staging(); len(got) != 0 {
+		t.Fatalf("staging Ready again: %+v, want none", got)
+	}
+}
+
+// An alerts row whose filing failed is resolved all the same once its
+// environment is Ready again, with no issue to tell; the next break waits
+// out the grace again and files a fresh card, not under the old row.
+func TestFluxAlertResolvesARowWhoseFilingFailed(t *testing.T) {
+	r, flux, p := fluxRig(t)
+	r.in.Store = &flakyBook{fakeStore: r.store, creates: 1}
+	ctx := context.Background()
+	r.in.FluxPass(ctx, p, t0)
+	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
+	if len(r.store.alertRows()) != 1 || len(r.store.tasks) != 0 {
+		t.Fatalf("the failed filing: %d rows, %d tasks; want 1, 0", len(r.store.alertRows()), len(r.store.tasks))
+	}
+	flux["demo-staging/demo-app"] = fluxReady
+	r.in.FluxPass(ctx, p, t0.Add(11*time.Minute))
+	if got := r.store.alertRows()[0].Detail["resolved_at"]; got != "2026-10-15T09:11:00Z" || len(r.fj.comments) != 0 {
+		t.Fatalf("Ready again: resolved_at %v, comments %q; want 2026-10-15T09:11:00Z and none", got, r.fj.comments)
+	}
+	flux["demo-staging/demo-app"] = fluxBroken
+	r.in.FluxPass(ctx, p, t0.Add(20*time.Minute))
+	r.in.FluxPass(ctx, p, t0.Add(29*time.Minute))
+	if len(r.fj.issues) != 1 || len(r.store.tasks) != 0 {
+		t.Fatalf("failing again inside the grace: %d issues, %d tasks; want only the failed filing's orphan issue", len(r.fj.issues), len(r.store.tasks))
+	}
+	r.in.FluxPass(ctx, p, t0.Add(30*time.Minute))
+	rows := r.store.alertRows()
+	if len(rows) != 2 || len(r.store.tasks) != 1 || rows[1].Detail["starts_at"] != "2026-10-15T09:20:00Z" ||
+		r.store.tasks[rows[1].TaskID].IssueNumber != 2 || len(r.fj.issues) != 2 {
+		t.Fatalf("failing again past the grace: rows %+v, %d tasks, %d issues; want a second row since 09:20 with its task on issue #2",
+			rows, len(r.store.tasks), len(r.fj.issues))
+	}
+}
+
 // A restart of factoryd forgets FluxPass's reads, not the alert: a fresh
 // intake on the same store finds the open alert's start on its row, so the
 // still failing environment files and says nothing more, and Ready again

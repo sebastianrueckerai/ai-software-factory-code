@@ -1796,14 +1796,15 @@ export row's last sync. At most every 5 minutes the poll deletes the fork's
 (`http://factoryd.factory.svc.cluster.local:8080`): bearer the project's
 `FACTORY_READ_TOKEN` (compared by hash in constant time; 401 otherwise, an
 unknown project too), the namespace one of the project's (403 otherwise).
-It answers a JSON array: SigNoz's firing alerts whose `k8s.namespace.name`,
-`k8s_namespace_name` or `namespace` label is the namespace (`GET
-/api/v1/alerts` on SigNoz v0.143.0, logged in as a viewer-role user, secret
-`factory/signoz-factoryd`), plus one `rollout_not_ready` per Deployment whose
-rollout has not finished (kubectl's test: generation observed, every replica
-updated, no old one left, every updated one available); `[]` when none.
-Cached 30 s per project and namespace; a source it cannot read answers 502,
-never `[]`.
+It answers a JSON array: the alerts firing in the namespace, read from
+their alerts rows, the one record of SigNoz's alerts (`source` `signoz`,
+taken in by the webhook below) and of factoryd's own alert of a
+Kustomization that applied once and stands not Ready (`flux`): each
+fingerprint's newest row while no resolve came after its start, plus one
+`rollout_not_ready` per Deployment whose rollout has not finished
+(kubectl's test: generation observed, every replica updated, no old one
+left, every updated one available); `[]` when none. Cached 30 s per
+project and namespace; a source it cannot read answers 502, never `[]`.
 
 `POST /webhooks/signoz` on 8080 is SigNoz's webhook channel `factoryd`
 (written by the infra's `signoz-objects` job, basic auth user `signoz` with
@@ -1829,13 +1830,27 @@ agent task at the default branch's head (source `alert`, standing
 agent brings its own); a firing still resent 30 minutes after its task
 ended is filed once more; a later firing comments `fired again at <time>`
 while that task runs and files a new issue once it ended; a resend of the
-same firing does nothing; a resolve comments `resolved at <time>` once.
-Each issue is an alerts row of kind `alert` with the fingerprint, judged
+same firing does nothing; a resolve comments `resolved at <time>` once,
+and is recorded on the alerts row even when its filing failed, so a later
+firing files anew. Each issue is an alerts row of kind `alert` with the
+fingerprint, judged
 when its task ends: `real` on a merge, `noise` when a human closed the
 issue without one. A human-lane alert issue is judged by its close: `noise`
 when it carries the label `noise`, `real` otherwise (the closer is
 `resolved_by`). A notification that fails in part answers 500, and
 SigNoz sends it again.
+
+factoryd raises one alert of its own the same way (roadmap 259): every
+minute the registrar's poll reads the Flux Kustomization of each
+environment of each ready factory project, and one that applied once
+(`status.lastAppliedRevision`) and has read Ready `False` for 10 minutes
+fires `Kustomization not Ready` in its namespace, fingerprint
+`flux/<namespace>/<project>`, with Flux's message as its value and the
+action as an annotation; Ready again resolves it. A path no green build
+wrote never applied and raises nothing; `Unknown`, Flux mid-reconcile,
+changes nothing. The firing's start is kept on its alerts row, so a
+restart of factoryd neither files it again nor misses the resolve, and
+the card's pre-check reads that row instead of SigNoz.
 
 The factory's own rules are `k8s/alerts/*.json`, ConfigMap `signoz-rules`
 in namespace `factory`: 5xx rate above 5 % per service (factoryd, its

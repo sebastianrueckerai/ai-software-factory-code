@@ -157,6 +157,27 @@ func (s *PGStore) Alerts(ctx context.Context, limit int) ([]Alert, error) {
 	return out, rows.Err()
 }
 
+// NewestAlertRows is the newest alerts row of kind of each fingerprint
+// whose detail names namespace, oldest first.
+func (s *PGStore) NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+alertColumns+` FROM (
+		SELECT DISTINCT ON (fingerprint) * FROM alerts WHERE kind = $1 AND fingerprint IS NOT NULL ORDER BY fingerprint, id DESC) newest
+		WHERE detail->>'namespace' = $2 ORDER BY id`, kind, namespace)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Alert
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
 // AlertByFingerprint is the newest SigNoz alert row of fingerprint.
 func (s *PGStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	a, err := scanAlert(s.db.QueryRowContext(ctx,

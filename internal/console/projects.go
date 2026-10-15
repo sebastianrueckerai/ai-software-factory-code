@@ -88,10 +88,14 @@ func (c *Console) envRows(ctx context.Context, ps []factoryd.Project) [][]envRow
 // source's revision lacks the Kustomization's path.
 const fluxPathNotFound = "kustomization path not found"
 
+// fluxNotReconciled stands for Flux's message while it has set none.
+const fluxNotReconciled = "Flux has not reconciled it yet"
+
 // deployState is environment e of project p as its Flux Kustomization
-// tells it (roadmap 257): ready, or not ready with Flux's message, and
-// not deployed yet while the deploy branch lacks e's path, which only a
-// green build of main writes. Registration makes the Kustomization once
+// tells it (roadmap 257): ready; not ready with Flux's message once Flux
+// has applied it; and not deployed yet while it never has, worded as no
+// green build having written e's path when the deploy branch lacks it,
+// else with Flux's message. Registration makes the Kustomization once
 // the project is minted. "" without a reader.
 func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factoryd.Environment) string {
 	if c.cfg.Kustomization == nil {
@@ -109,12 +113,12 @@ func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factory
 		return "deploy state unreadable"
 	case s.Ready == "True":
 		return "ready"
+	case s.Applied != "":
+		return "not ready: " + cmp.Or(s.Message, fluxNotReconciled)
 	case strings.HasPrefix(s.Message, fluxPathNotFound):
 		return "not deployed yet: no green build has written " + e.Path
-	case s.Message == "":
-		return "not ready: Flux has not reconciled it yet"
 	}
-	return "not ready: " + s.Message
+	return "not deployed yet: " + cmp.Or(s.Message, fluxNotReconciled)
 }
 
 // projects shows every project read-only (ruling 183): its file's

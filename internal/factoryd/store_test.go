@@ -928,6 +928,25 @@ func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint st
 	return Alert{}, false, nil
 }
 
+func (s *fakeStore) NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	newest := map[string]int{}
+	for i, a := range s.alerts {
+		if a.Kind == kind && a.Fingerprint != "" {
+			newest[a.Fingerprint] = i
+		}
+	}
+	var out []Alert
+	for i, a := range s.alerts {
+		if a.Kind == kind && a.Fingerprint != "" && newest[a.Fingerprint] == i && a.Detail["namespace"] == namespace {
+			a.Detail = maps.Clone(a.Detail)
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -1808,6 +1827,53 @@ func TestPGStoreConfigRejectedAlert(t *testing.T) {
 	a, _, _ = s.AlertByFingerprint(ctx, AlertConfigRejected, "c1")
 	if a.Verdict != VerdictReal || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil || a.Detail["fixed_by"] != "c2" {
 		t.Fatalf("resolved config_rejected = %+v", a)
+	}
+}
+
+// NewestAlertRows keeps each fingerprint's newest row of the kind, and that
+// only when it names the namespace, oldest first: a fingerprint whose
+// newest row names none (a roll window's noise row) is not listed by an
+// older row that does.
+func TestPGStoreNewestAlertRows(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
+		t.Fatal(err)
+	}
+	insert := func(kind, fingerprint, namespace string) int64 {
+		t.Helper()
+		detail := map[string]any{"starts_at": "2026-10-15T09:00:00Z"}
+		if namespace != "" {
+			detail["namespace"] = namespace
+		}
+		id, err := s.InsertAlert(ctx, Alert{Kind: kind, Source: "r", Fingerprint: fingerprint, Detail: detail})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	insert(AlertSigNoz, "fp1", "demo-prod")
+	fp1 := insert(AlertSigNoz, "fp1", "demo-prod")
+	flux := insert(AlertSigNoz, "flux/demo-prod/demo-app", "demo-prod")
+	insert(AlertSigNoz, "fp3", "demo-prod")
+	insert(AlertSigNoz, "fp3", "")
+	insert(AlertSigNoz, "fp4", "demo-staging")
+	insert(AlertEscalation, "fp5", "demo-prod")
+	got, err := s.NewestAlertRows(ctx, AlertSigNoz, "demo-prod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, a := range got {
+		ids = append(ids, a.ID)
+	}
+	if want := []int64{fp1, flux}; !slices.Equal(ids, want) || got[1].Detail["starts_at"] != "2026-10-15T09:00:00Z" {
+		t.Fatalf("rows %+v, want ids %v", got, want)
 	}
 }
 

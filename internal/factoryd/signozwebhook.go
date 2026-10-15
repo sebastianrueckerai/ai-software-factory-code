@@ -206,12 +206,16 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	}
 	repo := p.Repo()
 	if a.Status == "resolved" {
+		// the row is resolved even when its filing failed, so it no longer
+		// fires; its issue, if any, hears of it
 		at := stamp(a.EndsAt)
-		if !filed || row.Detail["resolved_at"] == at {
+		if !seen || row.Detail["resolved_at"] == at {
 			return nil
 		}
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
-			return err
+		if filed {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
+				return err
+			}
 		}
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"resolved_at": at})
 	}
@@ -220,16 +224,17 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
 	}
 	if !filed {
-		if row.Verdict != "" {
-			if row.Detail["starts_at"] == at {
-				// the exact same firing redelivered: nothing
-				return nil
-			}
+		switch {
+		case row.Detail["starts_at"] != at:
 			// Alertmanager's fingerprint hashes the alert's label set, the
 			// same across every firing of this rule in this namespace, so a
 			// later, distinct start is not this row's redelivery: judged
-			// again rather than trusted on the strength of the first verdict
+			// again rather than trusted on the strength of the row's verdict
+			// or filed under the task its failed filing never made
 			return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+		case row.Verdict != "":
+			// the exact same firing redelivered: nothing
+			return nil
 		}
 		// an earlier delivery wrote the row and failed before its task
 		// was filed: file it now, under the row's task id
@@ -423,7 +428,8 @@ func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, a
 	}
 	row := Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: NewTaskID(), Fingerprint: a.Fingerprint,
 		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": p.Repo().String(),
-			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled}}
+			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled,
+			"summary": oneLine(cmp.Or(a.Annotations["summary"], a.Annotations["description"], a.Annotations["value"]))}}
 	var err error
 	if row.ID, err = in.Store.InsertAlert(ctx, row); err != nil {
 		return err
@@ -611,15 +617,6 @@ func alertVerdict(final, reason string) string {
 		return VerdictReal
 	case strings.HasPrefix(reason, ReasonIssueClosed) && !strings.HasPrefix(reason, ReasonIssueClosed+ReasonMergeUnknown):
 		return VerdictNoise
-	}
-	return ""
-}
-
-func namespaceOf(labels map[string]string) string {
-	for _, l := range namespaceLabels {
-		if v := labels[l]; v != "" {
-			return v
-		}
 	}
 	return ""
 }

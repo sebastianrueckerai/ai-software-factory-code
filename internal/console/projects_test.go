@@ -99,10 +99,12 @@ func TestProjectsPage(t *testing.T) {
 
 // Roadmap 257: the projects page and its tool show each environment of a
 // factory project with the Ready condition of its Flux Kustomization:
-// ready, not ready with Flux's message, not deployed yet while the deploy
-// branch lacks its path, no Kustomization before Flux has one, and
-// unreadable when the read fails. A project registration has not minted
-// has no Kustomization yet and is not read.
+// ready, not ready with Flux's message once Flux applied it (even when the
+// deploy branch has since lost its path), not deployed yet while Flux never
+// applied it (no green build wrote its path, or Flux's message), no
+// Kustomization before Flux has one, and unreadable when the read fails. A
+// project registration has not minted has no Kustomization yet and is not
+// read.
 func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, _ := r.loggedIn(t)
@@ -119,7 +121,8 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 			factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"}),
 		factory("broken", true, factoryd.Environment{Namespace: "broken-staging", Path: "deploy/staging"},
 			factoryd.Environment{Namespace: "broken-prod", Path: "deploy/prod"}, factoryd.Environment{Namespace: "broken-new", Path: "deploy/new"},
-			factoryd.Environment{Namespace: "broken-locked", Path: "deploy/locked"}),
+			factoryd.Environment{Namespace: "broken-locked", Path: "deploy/locked"}, factoryd.Environment{Namespace: "broken-gone", Path: "deploy/gone"},
+			factoryd.Environment{Namespace: "broken-first", Path: "deploy/first"}),
 		factory("waiting", false, factoryd.Environment{Namespace: "waiting-staging", Path: "deploy/staging"}),
 	}
 	type ready struct {
@@ -127,13 +130,18 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		err error
 	}
 	flux := map[string]ready{
-		"demo-staging/demo-app": {factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil},
+		"demo-staging/demo-app": {factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
+			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil},
 		"demo-prod/demo-app": {factoryd.FluxState{Ready: "False",
 			Message: "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory"}, nil},
-		"broken-staging/broken": {factoryd.FluxState{Ready: "False", Message: "Deployment/broken-staging/app dry-run failed: no matches for kind Thing"}, nil},
-		"broken-prod/broken":    {},
-		"broken-new/broken":     {err: factoryd.ErrNotFound},
-		"broken-locked/broken":  {err: factoryd.ErrForbidden},
+		"broken-staging/broken": {factoryd.FluxState{Ready: "False", Message: "Deployment/broken-staging/app dry-run failed: no matches for kind Thing",
+			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil},
+		"broken-prod/broken":   {},
+		"broken-new/broken":    {err: factoryd.ErrNotFound},
+		"broken-locked/broken": {err: factoryd.ErrForbidden},
+		"broken-gone/broken": {factoryd.FluxState{Ready: "False", Message: "kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory",
+			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil},
+		"broken-first/broken": {factoryd.FluxState{Ready: "False", Message: "Deployment/broken-first/app dry-run failed: no matches for kind Thing"}, nil},
 	}
 	var mu sync.Mutex
 	var read []string
@@ -147,7 +155,8 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		}
 		return f.s, f.err
 	}
-	readOnce := []string{"broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken", "demo-prod/demo-app", "demo-staging/demo-app"}
+	readOnce := []string{"broken-first/broken", "broken-gone/broken", "broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken",
+		"demo-prod/demo-app", "demo-staging/demo-app"}
 
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
 	if rec.Code != http.StatusOK {
@@ -157,8 +166,10 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		"Environments: demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
 			"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</li>",
 		"Environments: broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
-			"broken-prod: deploy/prod (not ready: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
-			"broken-locked: deploy/locked (deploy state unreadable)</li>",
+			"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
+			"broken-locked: deploy/locked (deploy state unreadable); " +
+			"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory); " +
+			"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)</li>",
 		"Environments: waiting-staging: deploy/staging (no Flux Kustomization yet)</li>",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -176,8 +187,10 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)\n" +
 		"broken (broken/broken): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
 		"environments broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing), " +
-		"broken-prod: deploy/prod (not ready: Flux has not reconciled it yet), broken-new: deploy/new (no Flux Kustomization yet), " +
-		"broken-locked: deploy/locked (deploy state unreadable)\n" +
+		"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet), broken-new: deploy/new (no Flux Kustomization yet), " +
+		"broken-locked: deploy/locked (deploy state unreadable), " +
+		"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory), " +
+		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)\n" +
 		"waiting (waiting/waiting): objects factory; process none; merge rule auto; not registered; GitHub export none; " +
 		"environments waiting-staging: deploy/staging (no Flux Kustomization yet)"})
 	slices.Sort(read)

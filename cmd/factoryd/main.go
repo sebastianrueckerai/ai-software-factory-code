@@ -392,7 +392,7 @@ func main() {
 	mux.Handle("GET /tasks/{id}/timeline", requireBearer(intakeToken, recordHandler(store, objects)))
 	// a project's own workflow asks whether anything fires in a namespace
 	// of its, with its FACTORY_READ_TOKEN
-	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, signoz, kube))
+	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, store, kube))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{

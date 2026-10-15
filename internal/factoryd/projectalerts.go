@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,14 +17,15 @@ import (
 	"time"
 )
 
-// ProjectAlert is one entry of GET /projects/{name}/alerts: a SigNoz alert
-// firing for the namespace, or rollout_not_ready for a Deployment whose
-// rollout has not finished (review-task64 I3: a promotion never passes on
-// a rollout that never finished).
+// ProjectAlert is one entry of GET /projects/{name}/alerts: an alert
+// firing in the namespace, SigNoz's or factoryd's own of a Kustomization
+// (roadmap 259), or rollout_not_ready for a Deployment whose rollout has
+// not finished (review-task64 I3: a promotion never passes on a rollout
+// that never finished).
 type ProjectAlert struct {
 	Name      string    `json:"name"`
 	Namespace string    `json:"namespace"`
-	Source    string    `json:"source"` // signoz | factoryd
+	Source    string    `json:"source"` // signoz | flux | factoryd
 	Since     time.Time `json:"since,omitzero"`
 	Summary   string    `json:"summary"`
 }
@@ -43,12 +43,6 @@ type FiringAlert struct {
 	} `json:"status"`
 }
 
-// namespaceLabels are the label names a namespace arrives under: the OTel
-// resource attribute, its Prometheus form, and Kubernetes' own.
-var namespaceLabels = []string{"k8s.namespace.name", "k8s_namespace_name", "namespace"}
-
-func (a FiringAlert) namespace() string { return namespaceOf(a.Labels) }
-
 // AlertSource lists the alerts firing now.
 type AlertSource interface {
 	FiringAlerts(ctx context.Context) ([]FiringAlert, error)
@@ -57,6 +51,12 @@ type AlertSource interface {
 // DeploymentLister lists a namespace's Deployments with their rollout.
 type DeploymentLister interface {
 	Deployments(ctx context.Context, namespace string) ([]DeploymentState, error)
+}
+
+// AlertRowReader reads the newest alerts row of kind of each fingerprint
+// whose detail names namespace (PGStore).
+type AlertRowReader interface {
+	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
 
 // ProjectReader finds a project row.
@@ -69,7 +69,11 @@ const alertsCacheFor = 30 * time.Second
 
 // ProjectAlertsHandler serves GET /projects/{name}/alerts?namespace=&digest=:
 // the bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
-// project too), the namespace one of the project's (403 otherwise). With no
+// project too), the namespace one of the project's (403 otherwise). The
+// alerts that fire are read from their alerts rows, the one record of
+// SigNoz's alerts and factoryd's alike: each fingerprint's newest row while
+// no resolve came after its start (a roll window's noise row names no
+// namespace, so it holds nothing). With no
 // digest, a Deployment lags only when its own rollout has not finished. With
 // a digest (a staging rollout's wait), a namespace lags when it holds no
 // Deployment, when a Deployment's images do not all end in @digest, or when
@@ -77,7 +81,7 @@ const alertsCacheFor = 30 * time.Second
 // not mean the new pod is up. The answer is a JSON array, [] when nothing
 // fires, cached 30 s per project, namespace and digest; a source that
 // cannot be read answers 502, never [].
-func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys DeploymentLister) http.Handler {
+func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys DeploymentLister) http.Handler {
 	type entry struct {
 		at   time.Time
 		body []byte
@@ -125,18 +129,23 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertSource, deploys De
 	})
 }
 
-func namespaceAlerts(ctx context.Context, alerts AlertSource, deploys DeploymentLister, ns, digest string) ([]ProjectAlert, error) {
-	firing, err := alerts.FiringAlerts(ctx)
+func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys DeploymentLister, ns, digest string) ([]ProjectAlert, error) {
+	rows, err := alerts.NewestAlertRows(ctx, AlertSigNoz, ns)
 	if err != nil {
-		return nil, fmt.Errorf("signoz: %w", err)
+		return nil, fmt.Errorf("alerts: %w", err)
 	}
 	out := []ProjectAlert{}
-	for _, a := range firing {
-		if a.Status.State != "active" || a.namespace() != ns {
+	for _, a := range rows {
+		since, firing := firingSince(a)
+		if !firing {
 			continue
 		}
-		out = append(out, ProjectAlert{Name: a.Labels["alertname"], Namespace: ns, Source: "signoz", Since: a.StartsAt,
-			Summary: cmp.Or(a.Annotations["summary"], a.Annotations["description"])})
+		source := "signoz"
+		if strings.HasPrefix(a.Fingerprint, fluxPrefix) {
+			source = "flux"
+		}
+		summary, _ := a.Detail["summary"].(string)
+		out = append(out, ProjectAlert{Name: a.Source, Namespace: ns, Source: source, Since: since, Summary: summary})
 	}
 	ds, err := deploys.Deployments(ctx, ns)
 	if err != nil {

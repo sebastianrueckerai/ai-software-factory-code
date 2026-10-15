@@ -31,7 +31,34 @@ func firing(state string, labels map[string]string, summary string) FiringAlert 
 	return a
 }
 
-func alertsRig(t *testing.T) (*memProjects, *fakeAlerts, *fakeProjectKube, http.Handler, string) {
+// rowAlerts is the alerts rows the endpoint reads, counting the reads;
+// err fails them.
+type rowAlerts struct {
+	*fakeStore
+	err   error
+	calls atomic.Int32
+}
+
+func (r *rowAlerts) NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error) {
+	r.calls.Add(1)
+	if r.err != nil {
+		return nil, r.err
+	}
+	return r.fakeStore.NewestAlertRows(ctx, kind, namespace)
+}
+
+// firingRow is an alerts row of kind alert in namespace, firing since
+// starts_at unless resolved_at follows.
+func firingRow(name, fingerprint, namespace, startsAt, resolvedAt, summary string) Alert {
+	a := Alert{Kind: AlertSigNoz, Source: name, TaskID: "t-" + fingerprint, Fingerprint: fingerprint,
+		Detail: map[string]any{"namespace": namespace, "starts_at": startsAt, "summary": summary}}
+	if resolvedAt != "" {
+		a.Detail["resolved_at"] = resolvedAt
+	}
+	return a
+}
+
+func alertsRig(t *testing.T) (*memProjects, *rowAlerts, *fakeProjectKube, http.Handler, string) {
 	t.Helper()
 	store := &memProjects{m: map[string]Project{}}
 	token, hash := NewReadToken()
@@ -39,7 +66,7 @@ func alertsRig(t *testing.T) (*memProjects, *fakeAlerts, *fakeProjectKube, http.
 	p.ReadTokenHash = hash
 	store.m[p.Name] = p
 	store.m["other"] = Project{Name: "other", Namespaces: []string{"other-ns"}, ReadTokenHash: HashToken("other-token")}
-	alerts := &fakeAlerts{}
+	alerts := &rowAlerts{fakeStore: newFakeStore()}
 	kube := newFakeProjectKube()
 	kube.deploys = map[string][]DeploymentState{}
 	mux := http.NewServeMux()
@@ -82,7 +109,7 @@ func TestProjectAlertsAuth(t *testing.T) {
 		}
 	}
 	if n := alerts.calls.Load(); n != 1 {
-		t.Fatalf("SigNoz read %d times; only the admitted request may read it", n)
+		t.Fatalf("the alerts rows read %d times; only the admitted request may read them", n)
 	}
 }
 
@@ -93,12 +120,25 @@ func TestProjectAlertsAnswer(t *testing.T) {
 		t.Fatalf("nothing firing = %d %q", rec.Code, rec.Body)
 	}
 
-	alerts.list = []FiringAlert{
-		firing("active", map[string]string{"alertname": "demo 5xx rate", "k8s.namespace.name": "demo-prod"}, "5xx above 1%"),
-		firing("active", map[string]string{"alertname": "demo p95", "k8s_namespace_name": "demo-prod"}, "p95 above 300 ms"),
-		firing("suppressed", map[string]string{"alertname": "silenced", "namespace": "demo-prod"}, "silenced"),
-		firing("active", map[string]string{"alertname": "staging only", "namespace": "demo-staging"}, "x"),
-		firing("active", map[string]string{"alertname": "no namespace"}, "x"),
+	ctx := context.Background()
+	for _, a := range []Alert{
+		firingRow("demo 5xx rate", "fp1", "demo-prod", "2026-09-28T17:00:00Z", "", "5xx above 1%"),
+		firingRow("Kustomization not Ready", "flux/demo-prod/demo-app", "demo-prod", "2026-09-28T17:05:00Z", "",
+			`Secret/demo-prod/db dry-run failed: secrets "db" not found`),
+		// resolved after its start: no longer fires
+		firingRow("demo p95", "fp2", "demo-prod", "2026-09-28T17:00:00Z", "2026-09-28T17:30:00Z", "p95 above 300 ms"),
+		// fired again since its last resolve
+		firingRow("demo restarts", "fp3", "demo-prod", "2026-09-28T18:00:00Z", "2026-09-28T17:30:00Z", "restarts"),
+		// an older row of a fingerprint whose newest row resolved
+		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "", "old"),
+		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "2026-09-28T16:20:00Z", "old"),
+		firingRow("staging only", "fp5", "demo-staging", "2026-09-28T17:00:00Z", "", "x"),
+		// a roll window's noise row names no namespace
+		{Kind: AlertSigNoz, Source: "5xx rate above 5 %", Fingerprint: "fp6", Verdict: VerdictNoise, ResolvedBy: "factoryd",
+			Detail: map[string]any{"starts_at": "2026-09-28T17:00:00Z"}},
+		{Kind: AlertEscalation, Source: "agent", TaskID: "t1", Fingerprint: "fp7", Detail: map[string]any{"namespace": "demo-prod", "starts_at": "2026-09-28T17:00:00Z"}},
+	} {
+		alerts.InsertAlert(ctx, a)
 	}
 	kube.deploys["demo-prod"] = []DeploymentState{
 		{Name: "demo-app", Generation: 4, ObservedGeneration: 4, Replicas: 1, StatusReplicas: 2, UpdatedReplicas: 1, AvailableReplicas: 1},
@@ -109,10 +149,11 @@ func TestProjectAlertsAnswer(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
 		t.Fatalf("= %d %s", rec.Code, rec.Body)
 	}
-	since := time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC)
 	want := []ProjectAlert{
-		{Name: "demo 5xx rate", Namespace: "demo-prod", Source: "signoz", Since: since, Summary: "5xx above 1%"},
-		{Name: "demo p95", Namespace: "demo-prod", Source: "signoz", Since: since, Summary: "p95 above 300 ms"},
+		{Name: "demo 5xx rate", Namespace: "demo-prod", Source: "signoz", Since: time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC), Summary: "5xx above 1%"},
+		{Name: "Kustomization not Ready", Namespace: "demo-prod", Source: "flux", Since: time.Date(2026, 9, 28, 17, 5, 0, 0, time.UTC),
+			Summary: `Secret/demo-prod/db dry-run failed: secrets "db" not found`},
+		{Name: "demo restarts", Namespace: "demo-prod", Source: "signoz", Since: time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC), Summary: "restarts"},
 		{Name: "rollout_not_ready", Namespace: "demo-prod", Source: "factoryd", Summary: "deployment demo-app: 1 old replicas pending termination"},
 	}
 	if len(got) != len(want) {
@@ -126,7 +167,9 @@ func TestProjectAlertsAnswer(t *testing.T) {
 
 	// cached for 30 s: the fix does not show before, and staging's answer
 	// was cached empty although staging now has an alert
-	alerts.list = nil
+	for _, a := range alerts.alertRows() {
+		alerts.MergeAlertDetail(ctx, a.ID, map[string]any{"resolved_at": "2026-09-28T19:00:00Z"})
+	}
 	calls := alerts.calls.Load()
 	if again := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod", token); again.Body.String() != rec.Body.String() {
 		t.Fatalf("second read within 30 s differs: %s", again.Body)
@@ -135,7 +178,7 @@ func TestProjectAlertsAnswer(t *testing.T) {
 		t.Fatalf("staging = %s", staged.Body)
 	}
 	if alerts.calls.Load() != calls {
-		t.Fatal("a cached answer read SigNoz again")
+		t.Fatal("a cached answer read the alerts rows again")
 	}
 }
 
@@ -243,7 +286,7 @@ func TestProjectAlertsFailClosed(t *testing.T) {
 	alerts.err = errors.New("connection refused")
 	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging", token)
 	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("SigNoz down = %d %s", rec.Code, rec.Body)
+		t.Fatalf("the store down = %d %s", rec.Code, rec.Body)
 	}
 	alerts.err = nil
 	if rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging", token); rec.Code != http.StatusOK {
@@ -286,7 +329,7 @@ func TestSigNozFiringAlerts(t *testing.T) {
 	s := &SigNoz{BaseURL: srv.URL, Email: "root@example.com", Password: "pw", HTTP: srv.Client()}
 	for i := range 2 {
 		got, err := s.FiringAlerts(context.Background())
-		if err != nil || len(got) != 1 || got[0].namespace() != "demo-staging" || got[0].Status.State != "active" {
+		if err != nil || len(got) != 1 || got[0].Labels["namespace"] != "demo-staging" || got[0].Status.State != "active" {
 			t.Fatalf("read %d = %+v, %v", i, got, err)
 		}
 	}
