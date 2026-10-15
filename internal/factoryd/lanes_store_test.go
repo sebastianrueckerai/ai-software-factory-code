@@ -28,20 +28,20 @@ func TestLanesMigrationBackfill(t *testing.T) {
 		`DROP INDEX tasks_parent_source_key`,
 		`CREATE UNIQUE INDEX tasks_parent_source_key ON tasks (parent_task, source) WHERE parent_task IS NOT NULL`,
 		`ALTER TABLE tasks DROP COLUMN lane, DROP COLUMN process, DROP COLUMN plan_key`,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, parent_task) VALUES
-			('t-sug', 1, 0, 'suggested', 'sf/r', 'agent', 'webhook', NULL),
-			('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'api', NULL),
-			('t-run', 1, 0, 'running', 'sf/r', 'agent', 'alert', NULL),
-			('t-rev', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL),
-			('t-wh', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL),
-			('t-wp', 1, 0, 'waiting-poster', 'sf/r', 'agent', 'webhook', NULL),
-			('t-cl', 1, 0, 'closing', 'sf/r', 'agent', 'webhook', NULL),
-			('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL),
-			('t-closed', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', NULL),
-			('t-roll', 1, 0, 'queued', 'sf/r', 'agent', 'roll', NULL),
-			('t-human', 1, 0, 'waiting-human', 'sf/r', 'human', 'config', NULL),
-			('t-pre', 1, 0, 'queued', 'sf/r', 'agent', 'presort', 't-sug'),
-			('t-scr', 1, 0, 'running', 'sf/r', 'agent', 'screening', 't-q')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, parent_task, finished_at) VALUES
+			('t-sug', 1, 0, 'suggested', 'sf/r', 'agent', 'webhook', NULL, NULL),
+			('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'api', NULL, NULL),
+			('t-run', 1, 0, 'running', 'sf/r', 'agent', 'alert', NULL, NULL),
+			('t-rev', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL, NULL),
+			('t-wh', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL, NULL),
+			('t-wp', 1, 0, 'waiting-poster', 'sf/r', 'agent', 'webhook', NULL, NULL),
+			('t-cl', 1, 0, 'closing', 'sf/r', 'agent', 'webhook', NULL, NULL),
+			('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, now()),
+			('t-closed', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', NULL, now()),
+			('t-roll', 1, 0, 'queued', 'sf/r', 'agent', 'roll', NULL, NULL),
+			('t-human', 1, 0, 'waiting-human', 'sf/r', 'human', 'config', NULL, NULL),
+			('t-pre', 1, 0, 'queued', 'sf/r', 'agent', 'presort', 't-sug', NULL),
+			('t-scr', 1, 0, 'running', 'sf/r', 'agent', 'screening', 't-q', NULL)`,
 		`DELETE FROM schema_migrations WHERE name = '` + lanesMigration + `'`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
@@ -151,13 +151,13 @@ func TestProcessBackfilledOnLoad(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, lane, process) VALUES
-		('t-ready', 1, 0, 'running', 'sf/r', 'agent', 'webhook', 'ready', NULL),
-		('t-backlog', 1, 0, 'backlog', 'sf/r', 'agent', 'webhook', 'backlog', NULL),
-		('t-has', 1, 0, 'queued', 'sf/r', 'agent', 'webhook', 'ready', 'spec'),
-		('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'ready', NULL),
-		('t-roll', 1, 0, 'queued', 'sf/r', 'agent', 'roll', NULL, NULL),
-		('t-infra', 1, 0, 'queued', 'sf/infra', 'agent', 'webhook', 'ready', NULL)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, lane, process, finished_at) VALUES
+		('t-ready', 1, 0, 'running', 'sf/r', 'agent', 'webhook', 'ready', NULL, NULL),
+		('t-backlog', 1, 0, 'backlog', 'sf/r', 'agent', 'webhook', 'backlog', NULL, NULL),
+		('t-has', 1, 0, 'queued', 'sf/r', 'agent', 'webhook', 'ready', 'spec', NULL),
+		('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'ready', NULL, now()),
+		('t-roll', 1, 0, 'queued', 'sf/r', 'agent', 'roll', NULL, NULL, NULL),
+		('t-infra', 1, 0, 'queued', 'sf/infra', 'agent', 'webhook', 'ready', NULL, NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	v := policy.Version{ID: 3, Commit: "c3", Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
@@ -201,13 +201,13 @@ func TestOpenCardsByLane(t *testing.T) {
 	if _, _, err := s.RecordPolicy(ctx, "open-cards", fixtureVersion(t).Tree); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, lane, process, issue_number) VALUES
-		('t-plan', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 14),
-		('t-backlog', 1, 0, 'backlog', 'linkshort/linkshort', 'agent', 'webhook', 'backlog', NULL, 1),
-		('t-done', 1, 0, 'done', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 2),
-		('t-failed', 1, 0, 'failed', 'linkshort/linkshort', 'agent', 'webhook', 'ready', 'spec', 3),
-		('t-roll', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'roll', NULL, NULL, 4),
-		('t-stray', 1, 0, 'queued', 'x/y', 'agent', 'webhook', 'ready', 'maintenance', 5)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, lane, process, issue_number, finished_at) VALUES
+		('t-plan', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 14, NULL),
+		('t-backlog', 1, 0, 'backlog', 'linkshort/linkshort', 'agent', 'webhook', 'backlog', NULL, 1, NULL),
+		('t-done', 1, 0, 'done', 'linkshort/linkshort', 'agent', 'webhook', 'plan', 'spec', 2, now()),
+		('t-failed', 1, 0, 'failed', 'linkshort/linkshort', 'agent', 'webhook', 'ready', 'spec', 3, now()),
+		('t-roll', 1, 0, 'queued', 'linkshort/linkshort', 'agent', 'roll', NULL, NULL, 4, NULL),
+		('t-stray', 1, 0, 'queued', 'x/y', 'agent', 'webhook', 'ready', 'maintenance', 5, NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.OpenCardsByLane(ctx)

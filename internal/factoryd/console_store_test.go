@@ -12,6 +12,29 @@ import (
 	"time"
 )
 
+// withoutFinishStamp takes the tasks_final_finished_at check off for a
+// fixture that manufactures a final card without its finish stamp, the
+// pre-migration state roadmap 271's check refuses; the returned restore
+// drops those cards and puts the check back, so its caller defers it.
+func withoutFinishStamp(t *testing.T, s *PGStore) func() {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_final_finished_at`); err != nil {
+		t.Fatal(err)
+	}
+	return func() {
+		// the unstamped cards go before the check returns: it refuses the
+		// very rows it comes back to
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM tasks WHERE status IN ('done', 'failed', 'closed') AND finished_at IS NULL`); err != nil {
+			t.Errorf("drop the unstamped cards: %v", err)
+		}
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD CONSTRAINT tasks_final_finished_at
+			CHECK (status NOT IN ('done', 'failed', 'closed') OR finished_at IS NOT NULL)`); err != nil {
+			t.Errorf("restore the finished check: %v", err)
+		}
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL), like TestPGStore.
 func TestPGStoreBoardTasks(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -109,6 +132,10 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
+	// the unstampable card is the state the finished check refuses since
+	// roadmap 271: the check comes off so the board's fallback stays
+	// covered, and the deferred restore puts it back
+	defer withoutFinishStamp(t, s)()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -127,7 +154,7 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 days' WHERE id = 'older';
 		UPDATE tasks SET finished_at = now() WHERE id = 'roll';
-		UPDATE tasks SET created_at = now() - interval '1 day' WHERE id = 'unstamped';
+		UPDATE tasks SET finished_at = NULL, created_at = now() - interval '1 day' WHERE id = 'unstamped';
 		INSERT INTO task_deps (task_id, depends_on) VALUES ('waiter', 'unstamped')`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
@@ -181,6 +208,10 @@ func TestPGStoreFinishedPages(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
+	// card f keeps no finish stamp, the state the finished check refuses
+	// since roadmap 271: the check comes off so the page's fallback for an
+	// unstamped card stays covered, and the deferred restore puts it back
+	defer withoutFinishStamp(t, s)()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
