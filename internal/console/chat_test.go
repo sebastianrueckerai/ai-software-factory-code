@@ -800,7 +800,8 @@ func TestChatToolSentences(t *testing.T) {
 	}
 	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
 		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
-		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy"})
+		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy",
+		"routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
 		required["session_step"], required["answer"]},
 		[]any{[]any{"title"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
@@ -832,12 +833,13 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
-			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "notes_read",
-			"notes_write", "escalate", "active_threads"}},
+			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "active_threads"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "notes_read", "notes_write", "escalate", "active_threads"}},
+			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"active_threads"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)

@@ -54,7 +54,7 @@ func TestChatRecordsTheDecider(t *testing.T) {
 // default takes the key off.
 func TestEditProjectFile(t *testing.T) {
 	raw := []byte("# the code project\nrepository: sf/code\nmerge_rule: human\n")
-	out, err := editProjectFile(raw, policy.AutonomyAssisted, 0)
+	out, err := editProjectFile(raw, autonomyEdit(policy.AutonomyAssisted, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestEditProjectFile(t *testing.T) {
 	if strings.Contains(got, "backlog_cap") {
 		t.Errorf("editProjectFile wrote the default cap:\n%s", got)
 	}
-	out, err = editProjectFile(out, policy.AutonomyAutonomous, 3)
+	out, err = editProjectFile(out, autonomyEdit(policy.AutonomyAutonomous, 3))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,19 +75,19 @@ func TestEditProjectFile(t *testing.T) {
 		t.Errorf("editProjectFile = %s, want autonomous with cap 3", got)
 	}
 	// an existing cap changes as an integer: a quoted "5" fails the schema
-	if out, err = editProjectFile(out, policy.AutonomyAutonomous, 5); err != nil {
+	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyAutonomous, 5)); err != nil {
 		t.Fatal(err)
 	}
 	if got = string(out); !strings.Contains(got, "backlog_cap: 5\n") {
 		t.Errorf("editProjectFile = %s, want backlog_cap: 5 unquoted", got)
 	}
-	if out, err = editProjectFile(out, policy.AutonomyManual, 0); err != nil {
+	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyManual, 0)); err != nil {
 		t.Fatal(err)
 	}
 	if got = string(out); !strings.Contains(got, "autonomy: manual") || !strings.Contains(got, "backlog_cap: 5\n") {
 		t.Errorf("editProjectFile = %s, want manual with cap 5 kept", got)
 	}
-	if out, err = editProjectFile(out, policy.AutonomyManual, policy.DefaultBacklogCap); err != nil {
+	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyManual, policy.DefaultBacklogCap)); err != nil {
 		t.Fatal(err)
 	}
 	if got = string(out); strings.Contains(got, "backlog_cap") {
@@ -106,7 +106,7 @@ func TestEditProjectFileStates(t *testing.T) {
 		{policy.AutonomyFullAuto, "repository: sf/code\nmerge_rule: auto\nautonomy: autonomous\n"},
 		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: auto\nautonomy: manual\n"},
 	} {
-		out, err := editProjectFile(raw, tt.state, 0)
+		out, err := editProjectFile(raw, autonomyEdit(tt.state, 0))
 		equal(t, tt.state, []any{string(out), err}, []any{tt.want, error(nil)})
 	}
 }
@@ -120,8 +120,10 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	infra := withInfra(t, r)
 	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
 	var checked []string
-	r.c.cfg.CheckProject = func(_ context.Context, name string, file []byte) ([]string, error) {
-		checked = append(checked, name+": "+string(file))
+	r.c.cfg.CheckChange = func(_ context.Context, changes map[string][]byte) ([]string, error) {
+		for path, file := range changes {
+			checked = append(checked, path+": "+string(file))
+		}
 		return nil, nil
 	}
 	ck, s := r.loggedIn(t)
@@ -131,7 +133,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 		t.Fatalf("POST autonomy = %d %s", rec.Code, rec.Body.String())
 	}
 	file := "# demo\nrepository: demo-app/demo-app\nmerge_rule: auto\nautonomy: autonomous\n"
-	equal(t, "the read and the check", []any{infra.reads, checked}, []any{[]string{"Bearer config-token"}, []string{"demo-app: " + file}})
+	equal(t, "the read and the check", []any{infra.reads, checked}, []any{[]string{"Bearer config-token"}, []string{"projects/demo-app.yaml: " + file}})
 	if len(infra.contents) != 1 || infra.contents[0].auth != "Bearer access-1" {
 		t.Fatalf("contents = %+v", infra.contents)
 	}
@@ -139,7 +141,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	change := body["files"].([]any)[0].(map[string]any)
 	content, _ := base64.StdEncoding.DecodeString(change["content"].(string))
 	branch, _ := body["new_branch"].(string)
-	if body["branch"] != "main" || !strings.HasPrefix(branch, "autonomy-demo-app-") || body["message"] != "Project demo-app: autonomy full auto\n\nFactory-Role: console\nRequested-by: sebastian\n" ||
+	if body["branch"] != "main" || !strings.HasPrefix(branch, "config-demo-app-") || body["message"] != "Project demo-app: autonomy full auto\n\nFactory-Role: console\nRequested-by: sebastian\n" ||
 		change["operation"] != "update" || change["path"] != "factory/projects/demo-app.yaml" || change["sha"] != "blob1" || string(content) != file {
 		t.Fatalf("the commit = %+v (%q)", body, content)
 	}
@@ -156,7 +158,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	equal(t, "the event", rows[0], factoryd.Event{ID: rows[0].ID, At: rows[0].At, Repository: "demo-app/demo-app", Kind: factoryd.EventAutonomyChanged,
 		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"from": "manual", "to": "full auto", "pr": int64(12)}})
 
-	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
+	r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
 		return []string{"projects/demo-app.yaml: autonomy: no"}, nil
 	}
 	rec = r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"assisted"}}), ck)

@@ -684,6 +684,7 @@ type fakeLedger struct {
 	files     map[string]policy.ProjectConfig
 	calls     map[string][]policy.ModelCall // by task
 	risk      policy.Risk
+	routines  []policy.Routine // policy.yaml's
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -751,7 +752,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
-			Chat:            l.chat, Risk: l.risk},
+			Chat:            l.chat, Risk: l.risk, Routines: l.routines},
 			Projects: map[string]policy.ProjectConfig{
 				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
 					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},

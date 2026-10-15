@@ -487,6 +487,9 @@ func main() {
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
 		},
+		CheckChange: func(ctx context.Context, changes map[string][]byte) ([]string, error) {
+			return checkChange(ctx, configSource, changes, ladder.Aliases())
+		},
 		MainExists: func(ctx context.Context, repo factoryd.Repo) (bool, error) {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
 		},

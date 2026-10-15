@@ -59,6 +59,12 @@ const (
 	// EventRoutineRunNow is a Run now: detail {"project", "routine",
 	// "outcome"}, the run's outcome or "pending" when none came in time.
 	EventRoutineRunNow = "routine_run_now"
+	// EventRoutineWritten is a routine created or changed in its
+	// project's file: detail {"project", "routine", "created"}.
+	EventRoutineWritten = "routine_written"
+	// EventRoutineDeleted is a routine taken out of its project's file:
+	// detail {"project", "routine"}.
+	EventRoutineDeleted = "routine_deleted"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

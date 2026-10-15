@@ -13,17 +13,17 @@ import (
 
 var wantManual = []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy"}
+	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}
 
 var wantAssisted = []string{"answer", "tell_card", "steer", "request_changes", "reject_plan",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "set_dependency", "split_card",
-	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy"}
+	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_skip"}
 
 var wantAutonomous = []string{"approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource",
-	"github_export", "github_sync", "write_doc", "set_autonomy"}
+	"github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
 
 var wantFullAuto = []string{"invite", "alert_verdict", "promote_resource", "release_resource",
-	"github_export", "github_sync", "write_doc", "set_autonomy"}
+	"github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
 
 func TestConfirmFor(t *testing.T) {
 	base := DefaultChat.Confirm
@@ -50,7 +50,8 @@ func TestConfirmForCustomBase(t *testing.T) {
 		t.Errorf("ConfirmFor(manual, [close]) = %v, want [close]", got)
 	}
 	got := ConfirmFor(AutonomyAssisted, MergeHuman, []string{"deny_merge", "new_card"})
-	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy"}
+	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
+		"routine_write", "routine_delete"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ConfirmFor(assisted, [deny_merge new_card]) = %v, want %v", got, want)
 	}

@@ -1,12 +1,14 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -57,12 +59,9 @@ func autonomyRefusal(state string, backlogCap int) string {
 }
 
 // doSetAutonomy writes project name's autonomy state and backlog cap, 0
-// for the file's own, into its project file on the configuration
-// repository's main as the member, an approver, through the path a
-// project's filing takes: the file judged the loader's way, a branch with
-// the one change, its pull request and its merge. Full auto writes
-// autonomous with merge_rule auto, autonomous merge_rule human; manual and
-// assisted leave the rule.
+// for the file's own, into its project file as the member, an approver,
+// through commitProjectFile. Full auto writes autonomous with merge_rule
+// auto, autonomous merge_rule human; manual and assisted leave the rule.
 // The change records one event naming the member.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlogCap int, a actor) error {
 	if line := autonomyRefusal(state, backlogCap); line != "" {
@@ -74,62 +73,115 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 			from, repo = p.AutonomyState(), p.Repository
 		}
 	}
-	path := c.cfg.ConfigDir + "/" + policy.ProjectFile(name)
-	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
-	var file struct {
-		Content string `json:"content"`
-		SHA     string `json:"sha"`
-	}
-	if err := c.api(ctx, c.cfg.InfraToken, http.MethodGet, infra+"/contents/"+path+"?ref=main", nil, http.StatusOK, &file); err != nil {
-		return &forgejoRefusal{"read the project file", err}
-	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
+	pr, err := c.commitProjectFile(ctx, a, name, fmt.Sprintf("Project %s: autonomy %s", name, state), autonomyEdit(state, backlogCap), nil)
 	if err != nil {
-		return refuse(http.StatusInternalServerError, "cannot decode the project file")
+		return err
 	}
-	out, err := editProjectFile(raw, state, backlogCap)
-	if err != nil {
-		return refuse(http.StatusConflict, err.Error())
-	}
-	if c.cfg.CheckProject != nil {
-		refused, err := c.cfg.CheckProject(ctx, name, out)
-		switch {
-		case err != nil:
-			log.Printf("console: check projects/%s.yaml against infra's head: %v", name, err)
-			return refuse(http.StatusBadGateway, "cannot read the configuration at infra's head; see the factoryd log")
-		case len(refused) > 0:
-			return refuse(http.StatusUnprocessableEntity, "The project file would not load: "+strings.Join(refused, "; "))
-		}
-	}
-	l := docLock(c.cfg.InfraRepo.String())
-	l.Lock()
-	defer l.Unlock()
-	branch := fmt.Sprintf("autonomy-%s-%d", name, time.Now().Unix())
-	title := fmt.Sprintf("Project %s: autonomy %s", name, state)
-	if err := c.as(ctx, a.s, http.MethodPost, infra+"/contents", map[string]any{
-		"branch": "main", "new_branch": branch, "message": a.attribution().Message(title),
-		"files": []map[string]string{{"operation": "update", "path": path, "content": base64.StdEncoding.EncodeToString(out), "sha": file.SHA}}},
-		http.StatusCreated, nil); err != nil {
-		return &forgejoRefusal{"commit the project file", err}
-	}
-	var pull struct {
-		Number int64 `json:"number"`
-	}
-	if err := c.as(ctx, a.s, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": title},
-		http.StatusCreated, &pull); err != nil {
-		return &forgejoRefusal{"open the pull request", err}
-	}
-	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
-		return &forgejoRefusal{fmt.Sprintf("merge the pull request #%d", pull.Number), err}
-	}
-	detail := map[string]any{"from": from, "to": state, "pr": pull.Number}
+	detail := map[string]any{"from": from, "to": state, "pr": pr}
 	if backlogCap > 0 && backlogCap != policy.DefaultBacklogCap {
 		detail["backlog_cap"] = backlogCap
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventAutonomyChanged,
 		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
-	log.Printf("console: %s set %s to %s via %s (%s#%d)", a.s.user, name, state, a.via, c.cfg.InfraRepo, pull.Number)
+	log.Printf("console: %s set %s to %s via %s (%s#%d)", a.s.user, name, state, a.via, c.cfg.InfraRepo, pr)
 	return nil
+}
+
+// commitProjectFile changes project name's file on the configuration
+// repository's main as member a, through the path a project's filing
+// takes, and answers the pull request's number. Under the repository's
+// commit lock it reads the file with the config token, applies edit to
+// its YAML with every other line and comment kept, and judges the tree
+// with the change and extra's files the loader's way. extra maps a path
+// under the configuration directory to its text, "" deleting the file.
+// One commit with message lands on a new branch, its pull request opens
+// with message as its title, and the member merges it.
+func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message string, edit func(doc *yaml.Node) error, extra map[string]string) (int64, error) {
+	l := docLock(c.cfg.InfraRepo.String())
+	l.Lock()
+	defer l.Unlock()
+	path := policy.ProjectFile(name)
+	raw, blob, present, err := c.infraFile(ctx, path)
+	switch {
+	case err != nil:
+		return 0, err
+	case !present:
+		return 0, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	}
+	out, err := editProjectFile(raw, edit)
+	if err != nil {
+		return 0, refuse(http.StatusConflict, err.Error())
+	}
+	changes := map[string][]byte{path: out}
+	files := []map[string]string{{"operation": "update", "path": c.cfg.ConfigDir + "/" + path, "content": base64.StdEncoding.EncodeToString(out), "sha": blob}}
+	for _, p := range slices.Sorted(maps.Keys(extra)) {
+		old, blob, present, err := c.infraFile(ctx, p)
+		if err != nil {
+			return 0, err
+		}
+		text := extra[p]
+		change := map[string]string{"path": c.cfg.ConfigDir + "/" + p}
+		switch {
+		case text == "" && !present, text != "" && present && string(old) == text:
+			continue
+		case text == "":
+			change["operation"], change["sha"], changes[p] = "delete", blob, nil
+		case present:
+			change["operation"], change["sha"], change["content"], changes[p] = "update", blob, base64.StdEncoding.EncodeToString([]byte(text)), []byte(text)
+		default:
+			change["operation"], change["content"], changes[p] = "create", base64.StdEncoding.EncodeToString([]byte(text)), []byte(text)
+		}
+		files = append(files, change)
+	}
+	if c.cfg.CheckChange != nil {
+		refused, err := c.cfg.CheckChange(ctx, changes)
+		switch {
+		case err != nil:
+			log.Printf("console: check %s against infra's head: %v", path, err)
+			return 0, refuse(http.StatusBadGateway, "cannot read the configuration at infra's head; see the factoryd log")
+		case len(refused) > 0:
+			return 0, refuse(http.StatusUnprocessableEntity, "The project file would not load: "+strings.Join(refused, "; "))
+		}
+	}
+	infra := c.infraAPI()
+	branch := fmt.Sprintf("config-%s-%d", name, time.Now().UnixNano())
+	if err := c.as(ctx, a.s, http.MethodPost, infra+"/contents", map[string]any{
+		"branch": "main", "new_branch": branch, "message": a.attribution().Message(message), "files": files},
+		http.StatusCreated, nil); err != nil {
+		return 0, &forgejoRefusal{"commit the project file", err}
+	}
+	var pull struct {
+		Number int64 `json:"number"`
+	}
+	if err := c.as(ctx, a.s, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": message},
+		http.StatusCreated, &pull); err != nil {
+		return 0, &forgejoRefusal{"open the pull request", err}
+	}
+	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
+		return 0, &forgejoRefusal{fmt.Sprintf("merge the pull request #%d", pull.Number), err}
+	}
+	return pull.Number, nil
+}
+
+// infraFile is path, under the configuration directory, on infra's main
+// with its blob sha, read with the config token; present false when there
+// is no such file.
+func (c *Console) infraFile(ctx context.Context, path string) (content []byte, blob string, present bool, err error) {
+	var file struct {
+		Content string `json:"content"`
+		SHA     string `json:"sha"`
+	}
+	if err := c.api(ctx, c.cfg.InfraToken, http.MethodGet, c.infraAPI()+"/contents/"+c.cfg.ConfigDir+"/"+path+"?ref=main", nil, http.StatusOK, &file); err != nil {
+		if apiStatus(err) == http.StatusNotFound {
+			return nil, "", false, nil
+		}
+		return nil, "", false, &forgejoRefusal{"read " + path, err}
+	}
+	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
+	if err != nil {
+		return nil, "", false, refuse(http.StatusInternalServerError, "cannot decode "+path)
+	}
+	return raw, file.SHA, true, nil
 }
 
 // autonomyButton answers POST /projects/{name}/autonomy, the chat's level
@@ -154,12 +206,10 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// editProjectFile is the project file at autonomy state with backlog_cap
-// set, its comments and key order kept: full auto is autonomous with
-// merge_rule auto, autonomous takes merge_rule human, manual and assisted
-// keep the rule; a cap of 0 keeps the file's, another lands only away
-// from the default, and an existing key set to the default comes off.
-func editProjectFile(raw []byte, state string, backlogCap int) ([]byte, error) {
+// editProjectFile is the project file raw with edit applied to its
+// YAML, written back with two-space indents, so every line edit leaves
+// alone keeps its comments, order and style.
+func editProjectFile(raw []byte, edit func(doc *yaml.Node) error) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
 		return nil, fmt.Errorf("the project file is no YAML: %w", err)
@@ -167,53 +217,70 @@ func editProjectFile(raw []byte, state string, backlogCap int) ([]byte, error) {
 	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
 		return nil, fmt.Errorf("the project file is no YAML map")
 	}
-	m := doc.Content[0]
-	scalar := func(v, tag string) *yaml.Node {
-		return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: v}
-	}
-	index := func(key string) int {
-		for i := 0; i+1 < len(m.Content); i += 2 {
-			if m.Content[i].Value == key {
-				return i
-			}
-		}
-		return -1
-	}
-	set := func(key, v string) {
-		if i := index(key); i >= 0 {
-			m.Content[i+1].SetString(v)
-		} else {
-			m.Content = append(m.Content, scalar(key, "!!str"), scalar(v, "!!str"))
-		}
-	}
-	switch state {
-	case policy.AutonomyFullAuto:
-		set("autonomy", policy.AutonomyAutonomous)
-		set("merge_rule", policy.MergeAuto)
-	case policy.AutonomyAutonomous:
-		set("autonomy", state)
-		set("merge_rule", policy.MergeHuman)
-	default:
-		set("autonomy", state)
-	}
-	switch {
-	case backlogCap == 0:
-	case backlogCap != policy.DefaultBacklogCap:
-		if i := index("backlog_cap"); i >= 0 {
-			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(backlogCap), "!!int", 0
-		} else {
-			m.Content = append(m.Content, scalar("backlog_cap", "!!str"), scalar(strconv.Itoa(backlogCap), "!!int"))
-		}
-	default:
-		if i := index("backlog_cap"); i >= 0 {
-			m.Content = append(m.Content[:i], m.Content[i+2:]...)
-		}
-	}
-	out, err := yaml.Marshal(&doc)
-	if err != nil {
+	if err := edit(&doc); err != nil {
 		return nil, err
 	}
-	return out, nil
+	var b bytes.Buffer
+	e := yaml.NewEncoder(&b)
+	e.SetIndent(2)
+	if err := e.Encode(&doc); err != nil {
+		return nil, err
+	}
+	if err := e.Close(); err != nil {
+		return nil, err
+	}
+	return b.Bytes(), nil
+}
+
+// keyIndex is the index of key in mapping m's content, -1 for none.
+func keyIndex(m *yaml.Node, key string) int {
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return i
+		}
+	}
+	return -1
+}
+
+// autonomyEdit sets the project file to autonomy state with backlog_cap:
+// full auto is autonomous with merge_rule auto, autonomous takes
+// merge_rule human, manual and assisted keep the rule; a cap of 0 keeps
+// the file's, another lands only away from the default, and an existing
+// key set to the default comes off.
+func autonomyEdit(state string, backlogCap int) func(doc *yaml.Node) error {
+	return func(doc *yaml.Node) error {
+		m := doc.Content[0]
+		scalar := func(v, tag string) *yaml.Node {
+			return &yaml.Node{Kind: yaml.ScalarNode, Tag: tag, Value: v}
+		}
+		set := func(key, v string) {
+			if i := keyIndex(m, key); i >= 0 {
+				m.Content[i+1].SetString(v)
+			} else {
+				m.Content = append(m.Content, scalar(key, "!!str"), scalar(v, "!!str"))
+			}
+		}
+		switch state {
+		case policy.AutonomyFullAuto:
+			set("autonomy", policy.AutonomyAutonomous)
+			set("merge_rule", policy.MergeAuto)
+		case policy.AutonomyAutonomous:
+			set("autonomy", state)
+			set("merge_rule", policy.MergeHuman)
+		default:
+			set("autonomy", state)
+		}
+		switch i := keyIndex(m, "backlog_cap"); {
+		case backlogCap == 0:
+		case backlogCap != policy.DefaultBacklogCap && i >= 0:
+			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(backlogCap), "!!int", 0
+		case backlogCap != policy.DefaultBacklogCap:
+			m.Content = append(m.Content, scalar("backlog_cap", "!!str"), scalar(strconv.Itoa(backlogCap), "!!int"))
+		case i >= 0:
+			m.Content = append(m.Content[:i], m.Content[i+2:]...)
+		}
+		return nil
+	}
 }
 
 // docMax bounds one document's content.

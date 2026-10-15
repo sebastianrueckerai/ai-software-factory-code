@@ -122,7 +122,8 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-	"read_doc", "write_doc", "set_autonomy", "notes_read", "notes_write", "escalate", "active_threads"}
+	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
+	"notes_read", "notes_write", "escalate", "active_threads"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -131,7 +132,7 @@ var ChatModels = []string{"operator"}
 var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy"}}
+		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
 // agent may do without its member's OK. Full auto is no level of its
@@ -167,14 +168,15 @@ const DefaultBacklogCap = 8
 
 // assistedOff are the tools that come off the confirm list at assisted:
 // the agent starts and files ready work itself, and every start and
-// filing still passes the ready check.
-var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session"}
+// filing still passes the ready check. routine_run files a routine's
+// card, as new_card files one.
+var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session", "routine_run"}
 
 // AlwaysConfirm are the tools confirmed at every level: merges while the
-// rule is human, invites, the actions outside the project, and the level
-// and cap changes themselves.
+// rule is human, invites, the actions outside the project, and the
+// changes of the project's file: the level, the cap and the routines.
 var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
-	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy"}
+	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is

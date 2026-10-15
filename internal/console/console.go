@@ -184,6 +184,12 @@ type Config struct {
 	// (factoryd.CheckProjectFile): the refusal's lines, none when it
 	// passes; err when the tree could not be read.
 	CheckProject func(ctx context.Context, name string, file []byte) (refused []string, err error)
+	// CheckChange judges the tree at infra's head with changes made, each
+	// a path under the configuration directory to its new content, nil
+	// deleting the file, the loader's way (factoryd.CheckChange): the
+	// refusal's lines, none when it passes; err when the tree could not
+	// be read.
+	CheckChange func(ctx context.Context, changes map[string][]byte) (refused []string, err error)
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
 	// ReconcileError is Registrar.ReconcileError: why the project's last

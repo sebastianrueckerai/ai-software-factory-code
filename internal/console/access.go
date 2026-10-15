@@ -142,7 +142,7 @@ var accessTable = map[string]accessRule{
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
-	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember,
+	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "routines": rMember,
 	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "projects": rFactory, "policy": rFactory,
 
 	// chat tools: writes
@@ -176,6 +176,10 @@ var accessTable = map[string]accessRule{
 	"unmove_card":      rCard,
 	"delete_comment":   rCard,
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
+	"routine_write":    {need: approver, scope: scChat, what: "change a routine"},
+	"routine_delete":   {need: approver, scope: scChat, what: "delete a routine"},
+	"routine_run":      {need: writer, scope: scChat},
+	"routine_skip":     {need: writer, scope: scChat},
 	"write_doc":        {need: writer, scope: scChat},
 	"notes_write":      {need: writer, scope: scChat},
 	"escalate":         {need: writer, scope: scChat},

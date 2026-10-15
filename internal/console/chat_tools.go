@@ -74,6 +74,18 @@ type toolInput struct {
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
+	// Name names a routine; the routine tools' other arguments are its
+	// keys, Schedule the triggers in one string, BriefText its brief's
+	// text and SkipUndo a Skip once's undo.
+	Name      string `json:"name,omitempty"`
+	Schedule  string `json:"schedule,omitempty"`
+	Files     string `json:"files,omitempty"`
+	Skill     string `json:"skill,omitempty"`
+	BriefText string `json:"brief_text,omitempty"`
+	WhileOpen string `json:"while_open,omitempty"`
+	Missed    string `json:"missed,omitempty"`
+	Tell      string `json:"tell,omitempty"`
+	SkipUndo  bool   `json:"undo,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -147,20 +159,22 @@ func fallback(v any, p map[string]any) map[string]any {
 }
 
 var (
-	taskParam = str("the card's task id or issue number")
-	nParam    = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
-	textParam = str("the text")
-	sessionN  = stepParam("the session's number")
-	docPath   = str("the file's path under docs/")
+	taskParam   = str("the card's task id or issue number")
+	routineName = str("the routine's name: lowercase letters, digits and dashes")
+	nParam      = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
+	textParam   = str("the text")
+	sessionN    = stepParam("the session's number")
+	docPath     = str("the file's path under docs/")
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session, github_export
-// where it keeps exports, github_sync where it syncs them.
+// where it keeps exports, github_sync where it syncs them, the routine
+// tools where it runs routines.
 func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
 		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil ||
-			t.name == "github_sync" && c.cfg.GitHubSync == nil
+			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
 	})
 }
 
@@ -253,6 +267,9 @@ func (t *turn) byTaskID(in *toolInput) error {
 // approve_merge without a pending merge request and a github_export the
 // console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
+	if tool.name == "routine_write" || tool.name == "routine_delete" {
+		return t.describeRoutine(tool, *in)
+	}
 	if tool.name == "github_export" {
 		if _, err := t.exportToken(); err != nil {
 			return "", err
@@ -283,12 +300,15 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
-	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if tool.name == "routine_skip" && in.SkipUndo {
+		parts = append(parts, "undo the pending skip")
 	}
 	if tool.name == "set_autonomy" {
 		if in.BacklogCap > 0 {
@@ -1020,6 +1040,49 @@ var tools = []chatTool{
 			}
 			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
 		}},
+	{name: "routines", title: "Read the routines",
+		about: "The project's routines: each one's schedule, next run, last run and open card.",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.routinesText()
+			return s, nil, err
+		}},
+	{name: "routine_write", title: "Write a routine", write: true,
+		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
+			"schedule":   str("a cron, merges:<n> or on:<event>, split by semicolons"),
+			"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
+			"skill":      str("the skill an agent routine's card runs"),
+			"brief_text": str("the body of each card a run files, Markdown"),
+			"while_open": enum("what a run does while the last card is open", policy.WhileOpenValues...),
+			"missed":     enum("what a run does when the factory was down", policy.MissedValues...),
+			"tell":       enum("whether a filing tells the inbox", policy.TellValues...)},
+		required: []string{"name", "title", "schedule", "files"},
+		about:    "Create or change one of the project's routines through a pull request on its project file.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.writeRoutine(in)
+			return s, nil, err
+		}},
+	{name: "routine_delete", title: "Delete a routine", write: true,
+		params: map[string]any{"name": routineName}, required: []string{"name"},
+		about: "Delete one of the project's routines through a pull request on its project file.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.deleteRoutine(in)
+			return s, nil, err
+		}},
+	{name: "routine_run", title: "Run a routine now", write: true,
+		params: map[string]any{"name": routineName}, required: []string{"name"},
+		about: "Run one of the project's routines now, as the board's Run now does.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doRoutineRun(t.r.Context(), t.a, t.p.Name, in.Name)
+			return note, nil, err
+		}},
+	{name: "routine_skip", title: "Skip a routine's next run", write: true,
+		params:   map[string]any{"name": routineName, "undo": map[string]any{"type": "boolean", "description": "clears a pending skip"}},
+		required: []string{"name"},
+		about:    "Skip the next run of one of the project's routines, or undo a pending skip.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doRoutineSkip(t.r.Context(), t.a, t.p.Name, in.Name, in.SkipUndo)
+			return note, nil, err
+		}},
 	{name: "notes_read", title: "Read the scratchpad",
 		about: "The project's scratchpad, which every thread of the chat shares.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
@@ -1099,6 +1162,7 @@ const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, proj
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
+  routine_write's schedule lists its triggers split by ";", such as "0 6 * * 4; merges:20; on:push-main": a cron of five fields in the factory's time zone, merges:<n> for every n merged cards, or on:configuration-version or on:push-main.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
 `
