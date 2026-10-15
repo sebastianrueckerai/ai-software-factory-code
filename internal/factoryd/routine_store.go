@@ -253,3 +253,8 @@ func (s *PGStore) SetRoutineMergeCursor(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE routine_merge_cursor SET last_event_id = $1`, id)
 	return err
 }
+
+func (s *PGStore) MergedEvents(ctx context.Context, after int64, limit int) ([]Event, error) {
+	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE id > $1 AND kind = $2 ORDER BY id LIMIT $3`,
+		after, EventPullRequestMerged, limit)
+}

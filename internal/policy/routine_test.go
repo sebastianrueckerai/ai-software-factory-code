@@ -140,9 +140,10 @@ func TestTreeParsesRoutinesAndBriefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// the code project has its own routine and no template
+	// the code project has its own routines and no template
 	rs := tr.ProjectRoutines("ai-software-factory-code")
-	if len(rs) != 1 || rs[0].Name != "weekly-bump" || rs[0].Words() != "every Monday 06:00" || rs[0].Brief != "routines/weekly-bump.md" {
+	if len(rs) != 2 || rs[0].Name != "weekly-bump" || rs[0].Words() != "every Monday 06:00" || rs[0].Brief != "routines/weekly-bump.md" ||
+		rs[1].Name != "audit" || rs[1].Words() != "every 20 merges" || rs[1].Skill != "audit" {
 		t.Fatalf("code: got %+v", rs)
 	}
 	// linkshort has a template, so policy.yaml's template pass runs for it

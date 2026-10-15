@@ -106,6 +106,9 @@ type Registrar struct {
 	// project's environments every poll (AlertIntake.FluxPass, roadmap
 	// 259); nil raises none.
 	FluxAlerts func(ctx context.Context, p Project, now time.Time)
+	// PushRoutines starts a project's push-main routines at each push to
+	// its main (Routines.MainPushed), nil starts none.
+	PushRoutines func(ctx context.Context, project string) error
 	// githubAt is githubPass's last read of the GitHub pull requests'
 	// states.
 	githubAt time.Time
@@ -364,24 +367,32 @@ func (r *Registrar) refreshStaging(ctx context.Context, p Project) {
 	}
 }
 
-// MainPushed reconciles the factory project whose repository this is when
-// its main was pushed and DeployBranch does not exist yet: a new project's
-// first push (ruling 166). Any other repository or push is nothing to do.
+// MainPushed starts the push-main routines of the project whose
+// repository this is, and reconciles a factory project when DeployBranch
+// does not exist yet: a new project's first push (ruling 166). A
+// repository of no project is nothing to do.
 func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 	repo, err := SplitRepo(strings.ToLower(repository))
 	if err != nil {
 		return err
 	}
-	p, ok, err := r.Store.Project(ctx, repo.Owner)
-	if err != nil || !ok || !p.File || p.Objects != policy.ObjectsFactory || p.Repository != repo.String() {
+	p, ok, err := findProject(ctx, r.Store, func(p Project) bool { return p.File && p.Repository == repo.String() })
+	if err != nil || !ok {
 		return err
+	}
+	var routines error
+	if r.PushRoutines != nil {
+		routines = r.PushRoutines(ctx, p.Name)
+	}
+	if p.Objects != policy.ObjectsFactory {
+		return routines
 	}
 	exists, err := r.Forgejo.ProjectBranchExists(ctx, repo, DeployBranch)
 	if err != nil || exists {
-		return err
+		return errors.Join(routines, err)
 	}
 	log.Printf("project %s: main pushed, no %s branch yet: reconcile", p.Name, DeployBranch)
-	return r.Reconcile(ctx, p)
+	return errors.Join(routines, r.Reconcile(ctx, p))
 }
 
 // Reconcile brings p's objects to its file. A row without a file is left

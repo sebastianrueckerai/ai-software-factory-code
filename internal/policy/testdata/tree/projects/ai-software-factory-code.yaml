@@ -17,3 +17,10 @@ routines:
     while_open: hold
     missed: file-once
     tell: inbox
+  - name: audit
+    title: "Audit: bug hunt and architecture review"
+    schedule:
+      - merges: 20
+    files: agent
+    skill: audit
+    tell: inbox

@@ -304,6 +304,11 @@ func main() {
 	registrar.Cards, registrar.Infra = store, configSource
 	registrar.Workflows, registrar.Timeline = workflows, runner.Timeline()
 	webhookIntake.MainPushed = registrar.MainPushed
+	// the routines' clocks are Temporal schedules, their merge counters and
+	// runs store rows (roadmap 267)
+	routines := &factoryd.Routines{Store: store, Events: store, Current: policyLoader.Current,
+		Schedules: factoryd.TemporalSchedules{Client: temporal}, Workflows: workflows, Now: time.Now}
+	registrar.PushRoutines = routines.MainPushed
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it),
 	// and the alerts of the factory projects' Kustomizations (roadmap 259)
 	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
@@ -320,6 +325,7 @@ func main() {
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
+	go routines.Loop(ctx, 10*time.Second)
 	go func() {
 		// nudged is the stale sweep's memory of its signals, task id → when
 		nudged := map[string]time.Time{}

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -62,6 +63,42 @@ func TestPGStoreRoutineRunsBeginConcurrently(t *testing.T) {
 				t.Fatalf("two dues: began %v, runs %+v", began, runs)
 			}
 		}
+	}
+}
+
+// The merge pass reads the merges after its cursor, oldest first, a batch
+// at a time.
+func TestPGStoreMergedEvents(t *testing.T) {
+	ctx := t.Context()
+	s := routinePGStore(t)
+	var ids []int64
+	for _, e := range []Event{{Repository: "sf/code", Kind: EventPullRequestMerged}, {Repository: "sf/code", Kind: EventTaskEnded},
+		{Repository: "demo/app", Kind: EventPullRequestMerged}} {
+		id, err := s.Record(ctx, e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	got := func(after int64, limit int) []int64 {
+		es, err := s.MergedEvents(ctx, after, limit)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, e := range es {
+			out = append(out, e.ID)
+		}
+		return out
+	}
+	if all := got(ids[0]-1, 10); !slices.Equal(all, []int64{ids[0], ids[2]}) {
+		t.Fatalf("after %d: %v, recorded %v", ids[0]-1, all, ids)
+	}
+	if rest := got(ids[0], 10); !slices.Equal(rest, []int64{ids[2]}) {
+		t.Fatalf("after %d: %v", ids[0], rest)
+	}
+	if first := got(ids[0]-1, 1); !slices.Equal(first, []int64{ids[0]}) {
+		t.Fatalf("limit 1: %v", first)
 	}
 }
 
