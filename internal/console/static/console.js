@@ -802,20 +802,24 @@ document.addEventListener("keydown", function (e) {
       else if (s.err) {
         // only the reason keeps the refusal colour; retry is its own
         // button, so the keyboard reaches it, and a change that met the
-        // member's own lines adds the theirs view and load-theirs
+        // member's own lines adds the theirs view and load-theirs. Retry
+        // stands only on a passing failure — the door never judged the
+        // save — a clash would refuse again
         var why = facts.appendChild(document.createElement("span"));
         why.className = "doc-refused";
         why.textContent = "not saved: " + s.err.why;
-        facts.appendChild(document.createTextNode(" · "));
         if (s.err.current != null && s.err.who) {
+          facts.appendChild(document.createTextNode(" · "));
           var show = facts.appendChild(noteLink("theirs", theirs.path === path && theirs.open ? "hide theirs" : "show theirs"));
           show.setAttribute("aria-expanded", String(theirs.path === path && theirs.open));
           facts.appendChild(document.createTextNode(" · "));
           facts.appendChild(noteLink("load-theirs", "load theirs"));
-          facts.appendChild(document.createTextNode(" · "));
         }
-        facts.appendChild(noteLink("retry", "retry"));
-        facts.title = "the save did not land; retry sends it again";
+        if (s.err.retry) {
+          facts.appendChild(document.createTextNode(" · "));
+          facts.appendChild(noteLink("retry", "retry"));
+          facts.title = "the save did not land; retry sends it again";
+        }
       } else if (s.landed) {
         facts.className = "doc-facts doc-saved";
         facts.textContent = "Saved: " + s.landed.sha.slice(0, 7) + " on master · " + s.landed.at +
@@ -873,7 +877,7 @@ document.addEventListener("keydown", function (e) {
   }
   // confirmHTML is the ask of the moment: Discard your changes?, or the
   // load-theirs one, Discard your changes and load the version of <time>?
-  // — Load takes master's text, Keep keeps the member's own
+  // — Load takes master's text, Keep mine keeps the member's own
   function confirmHTML() {
     var load = !!(confirmAsk && confirmAsk.load);
     var span = document.createElement("span");
@@ -890,7 +894,7 @@ document.addEventListener("keydown", function (e) {
     var no = span.appendChild(document.createElement("button"));
     no.type = "button";
     no.dataset.act = "confirm-no";
-    no.textContent = "Keep";
+    no.textContent = load ? "Keep mine" : "Keep";
     return span;
   }
   // the editor's row: the ask while one is open, else Save as commit,
@@ -1015,10 +1019,11 @@ document.addEventListener("keydown", function (e) {
     s.queued = false;
     // a change the door refused to merge names who changed it, when, the
     // current text and the clashing lines: the theirs view and
-    // load-theirs stand on them
+    // load-theirs stand on them, and no retry — it would refuse again
     s.err = { why: j && j.reason || "the save did not land; try again",
       current: j && typeof j.current === "string" ? j.current : null,
-      who: j && j.who || "", at: j && j.at || "", lines: j && j.lines || null };
+      who: j && j.who || "", at: j && j.at || "", lines: j && j.lines || null,
+      retry: !(j && typeof j.current === "string") };
     changed[path] = null;
     syncDoc();
   }

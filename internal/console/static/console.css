@@ -814,8 +814,12 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .doc-dot { color: var(--accent); font: 11px/1 var(--font-ui); }
 .doc-refused { color: var(--need-text); }
 .doc-saved::before { content: "✓ "; color: var(--st-done); }
-.doc-note { flex: none; margin: 0; padding: 5px 24px 5px 10px; border-bottom: 1px solid var(--line); color: var(--text-muted); font: 11.5px/1.6 var(--font-mono); }
+.doc-note { flex: none; margin: 0; padding: 5px 24px; border-bottom: 1px solid var(--line); color: var(--text-muted); font: 11.5px/1.6 var(--font-mono); }
 .doc-note .linkbtn { font-size: 11.5px; }
+/* the doc view's links — the path line's and the note's — underline like
+   the design round's prototype, a quiet line that fills on hover */
+.doc-view .linkbtn { text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--accent) 45%, transparent); text-underline-offset: 3px; }
+.doc-view .linkbtn:hover { text-decoration-color: var(--accent); }
 .doc-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
 .doc-confirm-q { margin-right: 2px; color: var(--text); font-size: 12.5px; }
 .doc-confirm button { height: 22px; padding: 0 8px; font-size: 12px; }
@@ -945,7 +949,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   #doc-new-form .doc-new-l { flex-basis: 100%; margin: 4px 0 2px 6px; }
   #doc-name { height: 44px; }
   #doc-new-form .doc-sm, #doc-new-form #doc-new-cancel { height: 44px; padding: 0 16px; font-size: 13px; }
-  .doc-note { padding: 7px 16px 5px 10px; }
+  .doc-note { padding: 7px 16px 3px; }
   .doc-note .doc-confirm button { height: 44px; padding: 0 16px; font-size: 13px; }
   .doc-edit { padding: 12px 14px 20px; }
   #doc-editor { min-height: 180px; font-size: 14px; }

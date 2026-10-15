@@ -365,7 +365,9 @@ async function text(page) {
         const clash = (await p.page.locator("#doc-facts .doc-refused").innerText().catch(() => "")).trim();
         if (clash !== "not saved: Sebastian changed the same lines (14:08)") fails.push('outside: the refusal reads "' + clash + '"');
         const clashRow = (await p.page.locator("#doc-facts").innerText()).replace(/\s+/g, " ");
-        for (const w of ["show theirs", "load theirs", "retry"]) if (!clashRow.includes(w)) fails.push('outside: the refused row lacks "' + w + '" (' + clashRow + ")");
+        for (const w of ["show theirs", "load theirs"]) if (!clashRow.includes(w)) fails.push('outside: the refused row lacks "' + w + '" (' + clashRow + ")");
+        // a clash met the door's judgement: no retry, it would refuse again
+        if (clashRow.includes("retry")) fails.push('outside: the refused clash carries a retry (' + clashRow + ")");
         const theirs = p.page.locator("#doc-theirs-slot");
         await p.page.locator('#doc-facts [data-act="theirs"]').click();
         await p.page.waitForTimeout(300);
@@ -378,10 +380,12 @@ async function text(page) {
         await p.page.locator('#doc-facts [data-act="load-theirs"]').click();
         await p.page.waitForTimeout(300);
         const loadAsk = p.page.locator("#doc-view .doc-confirm").first();
-        const askText = (await loadAsk.count()) ? (await loadAsk.innerText()).replace(/\s+/g, " ") : "";
+        // the question's own element, not the group: the buttons are not part of the ask
+        const askText = (await loadAsk.count()) ? (await loadAsk.locator(".doc-confirm-q").innerText()).replace(/\s+/g, " ") : "";
         if (!/^Discard your changes and load the version of \d\d:\d\d\?$/.test(askText)) fails.push("outside: load theirs asks \"" + askText + "\"");
         else {
-          if (!(await loadAsk.getByRole("button", { name: "Keep" }).count())) fails.push("outside: the ask has no Keep");
+          if (!(await loadAsk.getByRole("button", { name: "Load", exact: true }).count())) fails.push("outside: the ask has no Load");
+          if (!(await loadAsk.getByRole("button", { name: "Keep mine", exact: true }).count())) fails.push("outside: the ask has no Keep mine");
           await p.page.locator('[data-act="load-theirs-yes"]').click();
           await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && e.value.includes("Changed outside the console."); }, null, { timeout: 5000 })
             .catch(() => fails.push("outside: load theirs loads no master text"));
