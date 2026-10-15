@@ -94,7 +94,7 @@ func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	want := map[string][]string{
 		"Dockerfile": {
 			"docker.io/library/golang:1.26.9-alpine",
-			"docker.io/library/alpine:3.22",
+			"docker.io/library/debian:bookworm-slim",
 		},
 		"Dockerfile.sandbox": {
 			"docker.io/library/golang:1.26.9-alpine",

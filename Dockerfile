@@ -20,13 +20,26 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
  && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
 
-FROM ${UPSTREAM}docker.io/library/alpine:3.22@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
+ARG DEBIAN_SNAPSHOT=20261015T000000Z
+# git: factoryd's GitHub exports of mode pull_requests fetch and push with
+# it; ca-certificates: every HTTPS call of both binaries. Debian's packages
+# come from snapshot.debian.org at DEBIAN_SNAPSHOT, as in Dockerfile.runner,
+# which says why; the install's clocks go with it.
+RUN printf '%s\n' 'Acquire::Retries "8";' 'Acquire::http::Timeout "60";' 'Acquire::https::Timeout "60";' 'Acquire::Check-Valid-Until "false";' \
+           > /etc/apt/apt.conf.d/80snapshot \
+      && rm /etc/apt/sources.list.d/debian.sources \
+      && printf '%s\n' "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
+           "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm-updates main" \
+           "deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" > /etc/apt/sources.list \
+      && DEBIAN_FRONTEND=noninteractive apt-get update \
+      && apt-get install -y --no-install-recommends git ca-certificates \
+      && rm -rf /var/lib/apt/lists/* \
+      && rm /var/cache/ldconfig/aux-cache /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 # One image, both control-plane binaries; each deployment sets its command.
 COPY --from=build /out/factory-gateway /usr/local/bin/factory-gateway
 COPY --from=build /out/factoryd /usr/local/bin/factoryd
-# git: factoryd's GitHub exports of mode pull_requests fetch and push with it
-RUN apk add --no-cache git
 USER 65534:65534
 EXPOSE 8081
 ENTRYPOINT ["factory-gateway"]

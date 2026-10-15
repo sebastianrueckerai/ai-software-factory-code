@@ -215,7 +215,16 @@ func TestDockerfilesTurnGoTelemetryOffBeforeTheFirstGoCall(t *testing.T) {
 func TestDockerfilesDropTheAptInstallClocks(t *testing.T) {
 	// Hand-derived from the two-build proof's layer diff of 2026-10-14: the
 	// only files of an apt-get install layer that differ between two builds.
+	// The gateway's install of git and ca-certificates writes no snakeoil
+	// pair (ssl-cert's, which postgresql-common pulls in) and runs no
+	// update-alternatives.
 	clocks := []string{
+		"/var/cache/ldconfig/aux-cache",
+		"/var/log/apt/history.log",
+		"/var/log/apt/term.log",
+		"/var/log/dpkg.log",
+	}
+	withSSLCert := []string{
 		"/etc/ssl/certs/ssl-cert-snakeoil.pem",
 		"/etc/ssl/private/ssl-cert-snakeoil.key",
 		"/var/cache/ldconfig/aux-cache",
@@ -227,10 +236,11 @@ func TestDockerfilesDropTheAptInstallClocks(t *testing.T) {
 	want := []struct {
 		file   string
 		stages []string
+		clocks []string
 	}{
-		{"Dockerfile", nil},
-		{"Dockerfile.sandbox", []string{"final"}},
-		{"Dockerfile.runner", []string{"final"}},
+		{"Dockerfile", []string{"final"}, clocks},
+		{"Dockerfile.sandbox", []string{"final"}, withSSLCert},
+		{"Dockerfile.runner", []string{"final"}, withSSLCert},
 	}
 	for _, w := range want {
 		t.Run(w.file, func(t *testing.T) {
@@ -247,8 +257,8 @@ func TestDockerfilesDropTheAptInstallClocks(t *testing.T) {
 					}
 					cmds := strings.Split(run, "&&")
 					last := strings.Fields(cmds[len(cmds)-1])
-					if len(last) == 0 || last[0] != "rm" || !reflect.DeepEqual(last[1:], clocks) {
-						t.Errorf("%s stage %s: the apt-get install step ends with %q, want rm %v", w.file, s.name, strings.Join(last, " "), clocks)
+					if len(last) == 0 || last[0] != "rm" || !reflect.DeepEqual(last[1:], w.clocks) {
+						t.Errorf("%s stage %s: the apt-get install step ends with %q, want rm %v", w.file, s.name, strings.Join(last, " "), w.clocks)
 					}
 				}
 			}
@@ -576,8 +586,9 @@ func TestRunnerEpochHasADefault(t *testing.T) {
 	}
 }
 
-// The ARGs that date or pin every apt source: one Debian snapshot and one
-// version of each PGDG package for both images, as one Go builds them all.
+// The ARGs that date or pin every apt source: one Debian snapshot for
+// every image, and one version of each PGDG package for the two that
+// install PostgreSQL, as one Go builds them all.
 var aptPins = []string{"DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION"}
 
 const pgdgArchive = "https://apt-archive.postgresql.org/pub/repos/apt"
@@ -596,14 +607,14 @@ var (
 // image's undated deb.debian.org source removed before the first update;
 // PGDG's from its archive, pinned at priority 1 so that apt takes from it
 // only a package named with its version, and every PostgreSQL package is
-// named so. apt retries a slow snapshot. Hand-derived from the two
+// named so. apt retries a slow snapshot. Hand-derived from the three
 // Dockerfiles: these stages run apt-get install.
 func TestDockerfilesTakeAptFromDatedOrVersionPinnedSources(t *testing.T) {
 	want := []struct {
 		file   string
 		stages []string
 	}{
-		{"Dockerfile", nil},
+		{"Dockerfile", []string{"final"}},
 		{"Dockerfile.sandbox", []string{"final"}},
 		{"Dockerfile.runner", []string{"final"}},
 	}
@@ -622,6 +633,9 @@ func TestDockerfilesTakeAptFromDatedOrVersionPinnedSources(t *testing.T) {
 				}
 				for _, arg := range aptPins {
 					v := s.args[arg]
+					if arg != "DEBIAN_SNAPSHOT" && !strings.Contains(strings.Join(s.runs, "\n"), pgdgArchive) {
+						continue
+					}
 					if v == "" {
 						t.Errorf("%s stage %s: no ARG %s with a value, so its apt step reads it empty", w.file, s.name, arg)
 						continue
