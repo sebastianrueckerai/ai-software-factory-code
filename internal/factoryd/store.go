@@ -591,14 +591,17 @@ func insertTask(ctx context.Context, db interface {
 	if !t.CreatedAt.IsZero() {
 		created = &t.CreatedAt
 	}
-	// an agent task starts in intake, since the work was asked for
+	// an agent task starts in intake, since the work was asked for; a task
+	// inserted already ended carries its finish time in the same statement
+	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, finished_at)
 		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
 	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
 	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
-	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27)
+	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27,
+	         CASE WHEN $7 IN ('done', 'failed', 'closed') THEN COALESCE($16, now()) END)
 		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,

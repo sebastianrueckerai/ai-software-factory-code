@@ -90,6 +90,10 @@ func TestSpendRepairMigration(t *testing.T) {
 		t.Fatalf("migrate an empty database: %v", err)
 	}
 	for _, stmt := range []string{
+		// the stage 4 rows ended before finished_at was stamped: they go
+		// in beside the finished check of roadmap 271's migration, which
+		// is restored once this migration stamped them
+		`ALTER TABLE tasks DROP CONSTRAINT tasks_final_finished_at`,
 		`INSERT INTO tasks (id, budget_eur, spent_eur, status, finished_at, settled_at, created_at) VALUES
 			('doubled', 1, 0.02595072, 'done', '2026-09-26 20:53:41Z', '2026-09-29 20:38:20Z', '2026-09-28 16:56:56Z'),
 			('noise', 1, 0.031115548, 'done', '2026-09-27 22:55:14Z', '2026-09-30 00:55:40Z', '2026-09-28 16:56:56Z'),
@@ -118,6 +122,12 @@ func TestSpendRepairMigration(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
+	// the finished check goes back on: this migration stamped every final
+	// row, so none is left without its finish time
+	if _, err := db.ExecContext(ctx, `ALTER TABLE tasks ADD CONSTRAINT tasks_final_finished_at
+		CHECK (status NOT IN ('done', 'failed', 'closed') OR finished_at IS NOT NULL)`); err != nil {
+		t.Fatalf("restore the finished check: %v", err)
+	}
 	want := map[string]string{
 		"doubled":        "0.01297536 2026-09-26 20:53:41",
 		"noise":          "0.031115548 2026-09-27 22:55:14",
@@ -142,6 +152,64 @@ func TestSpendRepairMigration(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tasks (spent_eur finished_at) = %q, want %q", got, want)
+	}
+}
+
+// The finished check (roadmap 271): a final row without its finish time
+// first gets its gate_since, else its created_at, and the check refuses
+// from then on any write that ends a task without the stamp — the SQL
+// close that left #568's card in no column fails where it happens, and
+// the write that carries its stamp goes through.
+func TestFinalFinishedAtMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "finishedcheck")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE tasks DROP CONSTRAINT tasks_final_finished_at`,
+		`INSERT INTO tasks (id, budget_eur, status, gate_since, created_at) VALUES
+		 ('gated', 1, 'done', '2026-10-13 09:15:00Z', '2026-10-12 08:00:00Z'),
+		 ('filed', 1, 'failed', NULL, '2026-10-12 09:30:00Z'),
+		 ('live', 1, 'running', NULL, '2026-10-14 09:30:00Z')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261015180000_final_finished_at.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the unstamped finals: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, COALESCE((finished_at AT TIME ZONE 'UTC')::text, '') FROM tasks`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var id, stamp string
+		if err := rows.Scan(&id, &stamp); err != nil {
+			t.Fatal(err)
+		}
+		got[id] = stamp
+	}
+	// gated takes its gate_since over the earlier filing, filed its
+	// filing, and a task still live keeps none
+	want := map[string]string{"gated": "2026-10-13 09:15:00", "filed": "2026-10-12 09:30:00", "live": ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("finish stamps = %q, want %q", got, want)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 'live'`); err == nil {
+		t.Fatal("an UPDATE to done without finished_at was stored; the check is missing")
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'live'`); err != nil {
+		t.Fatalf("an UPDATE to done with its stamp: %v", err)
 	}
 }
 

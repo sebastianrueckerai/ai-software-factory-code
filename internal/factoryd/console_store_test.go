@@ -149,8 +149,8 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 }
 
 // The Done column orders finished cards by date, not by rank (roadmap
-// 234): the newest first however low its priority, an unstampable card
-// at its filing; the open cards stay most urgent first.
+// 234): the newest first however low its priority; the open cards stay
+// most urgent first.
 func TestPGStoreBoardDoneOrder(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -177,7 +177,7 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 days' WHERE id = 'older';
 		UPDATE tasks SET finished_at = now() WHERE id = 'roll';
-		UPDATE tasks SET created_at = now() - interval '1 day' WHERE id = 'unstamped';
+		UPDATE tasks SET created_at = now() - interval '1 day', finished_at = now() - interval '1 day' WHERE id = 'unstamped';
 		INSERT INTO task_deps (task_id, depends_on) VALUES ('waiter', 'unstamped')`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
@@ -198,9 +198,8 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 		return out
 	}
 	// the open cards stay most urgent first (q2, waiter, q0); the roll
-	// finished newest heads Done, the card that never got a stamp sits at
-	// its filing a day ago, and the older card follows however higher its
-	// rank
+	// finished newest heads Done, the card finished a day ago follows,
+	// and the older one last however higher its rank
 	if want := []string{"q2", "waiter", "q0"}; !slices.Equal(ids(open), want) {
 		t.Fatalf("BoardTasks = %v, want %v", ids(open), want)
 	}
@@ -219,11 +218,10 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 }
 
 // The board pages a project's finished cards by arrival and id: ties on
-// the arrival go by id, a card without a finish stamp arrives at its
-// filing, each page
-// starts after the card the one before ended with, so cards finishing
-// between two pages neither repeat nor push one off; a page says how
-// many cards are left from it on. Requires FACTORYD_TEST_DATABASE_URL.
+// the arrival go by id, each page starts after the card the one before
+// ended with, so cards finishing between two pages neither repeat nor
+// push one off; a page says how many cards are left from it on.
+// Requires FACTORYD_TEST_DATABASE_URL.
 func TestPGStoreFinishedPages(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -237,6 +235,7 @@ func TestPGStoreFinishedPages(t *testing.T) {
 	base := time.Now().Add(-time.Hour).Truncate(time.Second)
 	minute := func(n int) *time.Time { at := base.Add(time.Duration(-n) * time.Minute); return &at }
 	week := base.AddDate(0, 0, -8)
+	at90 := base.Add(-90 * time.Second)
 	for _, tk := range []struct {
 		Task
 		at *time.Time
@@ -246,7 +245,7 @@ func TestPGStoreFinishedPages(t *testing.T) {
 		{Task{ID: "c", Status: "done"}, minute(1)},
 		{Task{ID: "d", Status: "closed"}, minute(1)},
 		{Task{ID: "e", Status: "done"}, minute(2)},
-		{Task{ID: "f", Status: "failed", PlanKey: "k", CreatedAt: base.Add(-90 * time.Second)}, nil},
+		{Task{ID: "f", Status: "failed", PlanKey: "k", CreatedAt: at90}, &at90},
 		{Task{ID: "g", Status: "done"}, &week},
 		{Task{ID: "h", Status: "done", Kind: "human"}, minute(0)},
 		{Task{ID: "i", Status: "closed", Kind: KindChat}, minute(0)},

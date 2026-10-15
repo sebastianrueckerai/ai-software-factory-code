@@ -123,7 +123,7 @@ func TestPGStoreRollRequests(t *testing.T) {
 	// rt1 merges with c folded in too late (never committed); rt2's row
 	// lost its task (a crash between the row and the issue); rt3 failed;
 	// f's refusal has its card, closed; g's refusal lost its card
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 'rt1'`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'rt1'`); err != nil {
 		t.Fatal(err)
 	}
 	insert(RollRequest{SHA: "d", Repository: repo, RunID: 13, State: RollOpened, TaskID: "rt2"})

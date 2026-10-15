@@ -163,6 +163,11 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.Kind == "agent" && t.Status != "backlog" && t.Gate == "" {
 		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
+	// the insert stamps a task already ended with its filing, as the
+	// database insert does (roadmap 271)
+	if Final(t.Status) && t.FinishedAt == nil {
+		t.FinishedAt = &t.CreatedAt
+	}
 	s.tasks[t.ID] = t
 	return nil
 }
@@ -1416,10 +1421,12 @@ func TestPGStore(t *testing.T) {
 	}
 
 	// the capability backfill gives pre-policy agent tasks "coder", once
+	// (the rows carry their finish time: the finished check refuses a
+	// final row without one)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM backfills WHERE name = '0014_task_capabilities';
 		DELETE FROM schema_migrations WHERE name = 'factoryd/0014_task_capabilities.sql';
-		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities) VALUES
-		('b-agent', 1, 'done', 'agent', 'null'), ('b-human', 1, 'done', 'human', 'null')`); err != nil {
+		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities, finished_at) VALUES
+		('b-agent', 1, 'done', 'agent', 'null', now()), ('b-human', 1, 'done', 'human', 'null', now())`); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.Migrate(ctx, s2.db); err != nil {
