@@ -1,33 +1,37 @@
 {{template "head" .}}
 <h2>New task</h2>
+{{if .Flags}}<div class="problem" role="alert"><p>The sanitiser or the provider would change this text on the card's way to the agent:</p>
+<ul>{{range .Flags}}<li><code>{{.}}</code></li>{{end}}</ul>
+<p>Rewrite it, or press File as written below: a human may mean it.</p></div>{{end}}
 <form method="post" action="/tasks" class="newtask">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <p>Files an issue on the project's repository as you.</p>
 <label for="project">Project</label>
 <select id="project" name="project" required>
-{{range .Projects}}<option value="{{.Name}}">{{.Name}} ({{.Repository}})</option>{{end}}
+{{range .Projects}}<option value="{{.Name}}"{{if eq .Name $.Form.Project}} selected{{end}}>{{.Name}} ({{.Repository}})</option>{{end}}
 </select>
 <label for="title">Title</label>
-<input id="title" name="title" type="text" maxlength="255" required>
+<input id="title" name="title" type="text" maxlength="255" value="{{.Form.Title}}" required>
 <label for="body">Description</label>
-<textarea id="body" name="body" rows="10"></textarea>
+<textarea id="body" name="body" rows="10">{{.Form.Body}}</textarea>
 <label for="lane">Lane</label>
 <select id="lane" name="lane">
-{{range .Lanes}}<option value="{{.Name}}" data-projects="{{.Projects}}"{{if eq .Name "ready"}} selected{{end}}>{{.Title}}</option>
-{{end}}<option value="human">Human lane</option>
+{{range .Lanes}}<option value="{{.Name}}" data-projects="{{.Projects}}"{{if eq .Name $.Form.Lane}} selected{{end}}>{{.Title}}</option>
+{{end}}<option value="human"{{if eq .Form.Lane "human"}} selected{{end}}>Human lane</option>
 </select>
 <label for="priority">Priority</label>
 <select id="priority" name="priority">
 <option value="">none</option>
-{{range .Priorities}}<option value="{{.}}">{{.}}</option>{{end}}
+{{range .Priorities}}<option value="{{.}}"{{if eq . $.Form.Priority}} selected{{end}}>{{.}}</option>{{end}}
 </select>
 <label for="size">Size</label>
 <select id="size" name="size">
 <option value="">default</option>
-<option value="small">small</option>
-<option value="medium">medium</option>
-<option value="large">large</option>
+<option value="small"{{if eq .Form.Size "small"}} selected{{end}}>small</option>
+<option value="medium"{{if eq .Form.Size "medium"}} selected{{end}}>medium</option>
+<option value="large"{{if eq .Form.Size "large"}} selected{{end}}>large</option>
 </select>
 <button type="submit">File the issue</button>
+{{if .Flags}}<button type="submit" name="as_written" value="yes">File as written</button>{{end}}
 </form>
 {{template "foot"}}
