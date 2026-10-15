@@ -879,7 +879,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .doc-view { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view.wide { left: 0; }
   /* the document head in rows: the nav and × first, the path line with the
-     Forgejo link second, Read|Edit third, so every control fits 390 px */
+     Forgejo link second, Read|Edit with New document at the row's right
+     end, so every control fits 390 px */
   .doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
   .doc-row { display: contents; }
   .doc-row .xs { width: 44px; height: 44px; justify-content: center; font-size: 14px; }
@@ -889,7 +890,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .doc-pathline { order: 2; flex: 1 1 200px; padding: 4px 4px 4px 10px; }
   .doc-path { white-space: normal; overflow-wrap: anywhere; }
   .doc-forgejo { order: 3; display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; font-size: 13px; }
-  .doc-mode { order: 4; margin: 4px 0 4px 4px; }
+  .doc-mode, .doc-gap { order: 4; }
+  .doc-mode { margin: 4px 0 4px 4px; }
   .doc-mode button { height: 44px; padding: 0 18px; font-size: 13px; }
   #doc-new { order: 5; height: 44px; padding: 0 14px; font-size: 13px; }
   #doc-new-form { padding: 4px 8px 8px 4px; }

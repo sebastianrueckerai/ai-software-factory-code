@@ -166,7 +166,8 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 	}
 	var landed struct {
 		Commit struct {
-			SHA string `json:"sha"`
+			SHA     string    `json:"sha"`
+			Created time.Time `json:"created"`
 		} `json:"commit"`
 	}
 	if err := c.as(ctx, a.s, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
@@ -174,8 +175,13 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 		http.StatusCreated, &landed); err != nil {
 		return nil, &forgejoRefusal{"commit the document", err}
 	}
-	if commit, at, err = c.docCommit(ctx, repo, docPath); err != nil {
-		return nil, err
+	// The commit is on master: whatever the head-commit read answers a
+	// beat later, the save has landed and owes its event, so it answers
+	// success; a docCommit that fails leaves the contents answer's own
+	// time in its place.
+	if _, at, err = c.docCommit(ctx, repo, docPath); err != nil {
+		log.Printf("console: %s saved %s on %s; its commit's facts do not read: %v", a.s.user, docPath, docRepo, err)
+		at = landed.Commit.Created
 	}
 	c.docWritten(ctx, a, project, docPath, factoryd.ContentHash(save.Text), landed.Commit.SHA)
 	return &docSaved{SHA256: factoryd.ContentHash(save.Text), Commit: landed.Commit.SHA, At: at}, nil

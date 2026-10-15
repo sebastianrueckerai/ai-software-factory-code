@@ -578,7 +578,11 @@ document.addEventListener("keydown", function (e) {
       b.dataset.doc = p;
       b.title = p;
       if (p === current) b.setAttribute("aria-current", "page");
-      b.textContent = (draftOf(p) ? "● " : "") + label(p);
+      if (draftOf(p)) {
+        b.appendChild(dotSpan());
+        b.appendChild(document.createTextNode(" "));
+      }
+      b.appendChild(document.createTextNode(label(p)));
     });
     if (current && list.indexOf(current) < 0) {
       var add = navEl.appendChild(document.createElement("button"));
@@ -611,12 +615,27 @@ document.addEventListener("keydown", function (e) {
     if (!m) return "";
     try { return decodeURIComponent(m[1]); } catch (err) { return m[1]; }
   }
+  // the draft's dot: the accent colour everywhere it shows — the path
+  // line, a pin, a Recent row, the Documents button
+  function dotSpan() {
+    var d = document.createElement("span");
+    d.className = "doc-dot";
+    d.setAttribute("role", "img");
+    d.setAttribute("aria-label", "unsaved");
+    d.textContent = "●";
+    return d;
+  }
   function syncButton(open) {
     var b = document.getElementById("documents");
     if (!b) return;
     b.setAttribute("aria-expanded", String(open));
     // the dot: a draft waits in the editor
-    b.textContent = (anyDraft() ? "● " : "") + "Documents";
+    b.textContent = "";
+    if (anyDraft()) {
+      b.appendChild(dotSpan());
+      b.appendChild(document.createTextNode(" "));
+    }
+    b.appendChild(document.createTextNode("Documents"));
   }
   function syncNav() {
     var back = document.getElementById("doc-back"), fwd = document.getElementById("doc-fwd");
@@ -647,7 +666,12 @@ document.addEventListener("keydown", function (e) {
       row.setAttribute("role", "menuitem");
       row.appendChild(document.createElement("span")).className = "doc-recent-label";
       // ✓ the open document, ● a draft of it waiting in the editor
-      row.firstChild.textContent = (p === current ? "✓ " : "") + (draftOf(p) ? "● " : "") + label(p);
+      if (p === current) row.firstChild.appendChild(document.createTextNode("✓ "));
+      if (draftOf(p)) {
+        row.firstChild.appendChild(dotSpan());
+        row.firstChild.appendChild(document.createTextNode(" "));
+      }
+      row.firstChild.appendChild(document.createTextNode(label(p)));
     });
   }
   function remember(path) {
@@ -762,6 +786,7 @@ document.addEventListener("keydown", function (e) {
     syncRecent(path);
     syncNote();
     syncEditRow();
+    syncButton(visible());
   }
   // the note line: a confirm ask, else the restored draft
   function syncNote() {
@@ -861,7 +886,9 @@ document.addEventListener("keydown", function (e) {
   }
   // a save landed: the answer's hash, commit and time become the
   // version; the draft goes when nothing more was typed, and one queued
-  // save runs when something was
+  // save runs when something was. With nothing typed since, the view
+  // returns to Read and renders the saved version, the path line keeping
+  // its Saved line
   function landed(path, text, ans) {
     var s = saves[path] = saves[path] || {};
     s.busy = false;
@@ -874,6 +901,7 @@ document.addEventListener("keydown", function (e) {
       s.queued = false;
       if (typed !== text) { saveDoc(path); return; }
     }
+    if (typed === text && edit.mode === "edit" && current() === path && visible()) { readMode(); return; }
     syncDoc();
   }
   function failed(path, j) {

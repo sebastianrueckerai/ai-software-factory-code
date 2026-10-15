@@ -31,6 +31,9 @@ type docsFake struct {
 	slow    time.Duration
 	// failCommits, when set, is Forgejo refusing every commit: a save's 502.
 	failCommits bool
+	// failReads, when set, is Forgejo refusing the file's head-commit
+	// read: a save whose commit landed whose facts then do not read.
+	failReads bool
 }
 
 // docsOver is the document repository sf/docs on the Forgejo at next: a
@@ -59,6 +62,10 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": factoryd.ContentHash(text)[:12]})
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/commits" && req.URL.Query().Get("path") != "" &&
 			req.URL.Query().Get("sha") == "master":
+			if f.failReads {
+				http.Error(w, `{"message":"Forgejo is down"}`, http.StatusBadGateway)
+				return
+			}
 			// the file's head commit: the fake's version as its sha
 			json.NewEncoder(w).Encode([]map[string]any{{"sha": "c0ffee" + strings.Repeat("0", f.version),
 				"commit": map[string]any{"committer": map[string]any{"date": "2026-10-15T14:00:00Z"}}}})
@@ -89,7 +96,8 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 			f.commits = append(f.commits, body)
 			f.tokens = append(f.tokens, req.Header.Get("Authorization"))
 			w.WriteHeader(http.StatusCreated)
-			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": "c0ffee" + strings.Repeat("0", f.version)}})
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{
+				"sha": "c0ffee" + strings.Repeat("0", f.version), "created": "2026-10-15T15:00:00Z"}})
 		default:
 			proxy.ServeHTTP(w, req)
 		}
@@ -372,6 +380,45 @@ func TestDocsSaveCommitsAsMember(t *testing.T) {
 	equal(t, "the commits", len(f.commits), 1)
 	equal(t, "the message", f.commits[0]["message"], "docs/plans/cache.md: edited in the console\n\nFactory-Role: console\nRequested-by: sebastian\n")
 	equal(t, "the member's token", f.tokens, []string{"Bearer access-1"})
+	rows := r.events.all()[before:]
+	equal(t, "the event rows", len(rows), 1)
+	equal(t, "the doc_written event", []any{rows[0].Repository, rows[0].Kind, rows[0].Actor, rows[0].Via, rows[0].Detail["path"],
+		rows[0].Detail["hash"], rows[0].Detail["commit"]},
+		[]any{"sf/code", factoryd.EventDocWritten, "sebastian", factoryd.ViaConsole, "docs/plans/cache.md",
+			factoryd.ContentHash(edited), "c0ffee0"})
+}
+
+// A save whose commit lands but whose facts then do not read — Forgejo
+// refusing the head-commit read a beat after the 201 — still answers
+// success, for the commit is on master and the editor must not show a
+// failure for it: the time falls back to the contents answer's own, and
+// the door's one doc_written row follows.
+func TestDocsSaveAnswersWhenTheFactsRefuse(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	f.failReads = true
+	edited := strings.Replace(docsPlan, "one week", "two weeks", 1)
+	body, err := json.Marshal(docSave{Text: edited, Base: factoryd.ContentHash(docsPlan)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/projects/ai-software-factory-code/docs/docs/plans/cache.md", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", s.csrf)
+	rec := r.do(req, ck)
+	equal(t, "the status", rec.Code, http.StatusOK)
+	var saved docSaved
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatalf("the answer decodes: %v (%s)", err, rec.Body.String())
+	}
+	equal(t, "the hash", saved.SHA256, factoryd.ContentHash(edited))
+	equal(t, "the commit", saved.Commit, "c0ffee0")
+	equal(t, "the time", saved.At.UTC(), time.Date(2026, 10, 15, 15, 0, 0, 0, time.UTC))
+	equal(t, "the commits", len(f.commits), 1)
+	equal(t, "the file", f.files["docs/plans/cache.md"], edited)
 	rows := r.events.all()[before:]
 	equal(t, "the event rows", len(rows), 1)
 	equal(t, "the doc_written event", []any{rows[0].Repository, rows[0].Kind, rows[0].Actor, rows[0].Via, rows[0].Detail["path"],

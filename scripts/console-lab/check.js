@@ -221,7 +221,14 @@ async function text(page) {
         await p.page.keyboard.press("Control+S");
         await p.page.waitForFunction(() => document.querySelector("#doc-facts") && /Saved: \S{7} on master/.test(document.querySelector("#doc-facts").textContent), null, { timeout: 5000 });
         if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the dot stays after a landed save");
+        // a landed save with nothing typed since returns to Read, the saved
+        // version rendered, the path line keeping its Saved line
+        if (await p.page.locator("#doc-edit").isVisible()) fails.push("editor: a landed save stays in the editor");
+        if (!(await p.page.locator("#doc-article").innerText()).includes("The editor check wrote this."))
+          fails.push("editor: the landed save does not render");
         // a draft outlives the reload: the note says restored, Discard asks
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForTimeout(300);
         await p.page.keyboard.type("A draft. ");
         await p.page.waitForTimeout(300);
         await p.page.reload({ waitUntil: "load" });
