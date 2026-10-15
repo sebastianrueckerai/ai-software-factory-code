@@ -1800,7 +1800,9 @@ It answers a JSON array: the alerts firing in the namespace, read from
 their alerts rows, the one record of SigNoz's alerts (`source` `signoz`,
 taken in by the webhook below) and of factoryd's own alert of a
 Kustomization that applied once and stands not Ready (`flux`): each
-fingerprint's newest row while no resolve came after its start, plus one
+fingerprint's newest row while no resolve came after its start and its
+verdict is not `noise` (a roll window's own restart, or a human's close),
+plus one
 `rollout_not_ready` per Deployment whose rollout has not finished
 (kubectl's test: generation observed, every replica updated, no old one
 left, every updated one available); `[]` when none. Cached 30 s per
@@ -1809,9 +1811,11 @@ project and namespace; a source it cannot read answers 502, never `[]`.
 `POST /webhooks/signoz` on 8080 is SigNoz's webhook channel `factoryd`
 (written by the infra's `signoz-objects` job, basic auth user `signoz` with
 the password of secret `signoz-webhook`, env `SIGNOZ_WEBHOOK_PASSWORD`;
-401 otherwise). Each alert's `namespace` label, which the job sets on
-every project rule, names the project through the namespace's
-`factory/project` label (read once per namespace); an active project that
+401 otherwise). Each alert's namespace, its `namespace` label (which the
+job sets on every project rule), else its `k8s.namespace.name` or
+`k8s_namespace_name` label (a rule's query grouped by it), names the
+project through the namespace's `factory/project` label (read once per
+namespace); an active project that
 lists the namespace, or the alert is logged and dropped. On a project on
 `agents: none` the issue is the human lane's (labels `bug`, `human`), and no
 task runs. The factory's own namespaces route the same way (ruling 180):
@@ -1832,7 +1836,15 @@ ended is filed once more; a later firing comments `fired again at <time>`
 while that task runs and files a new issue once it ended; a resend of the
 same firing does nothing; a resolve comments `resolved at <time>` once,
 and is recorded on the alerts row even when its filing failed, so a later
-firing files anew. Each issue is an alerts row of kind `alert` with the
+firing files anew. Every minute, beside the heal pass, factoryd reads
+SigNoz's list of firing alerts (`GET /api/v1/alerts` on SigNoz v0.143.0,
+logged in as a viewer-role user, secret `factory/signoz-factoryd`) and
+resolves the same way each row that still fires while SigNoz no longer
+lists its fingerprint as active, so a lost resolve delivery heals within
+a minute (SigNoz's rules evaluate every minute); a list whose active
+alerts carry no fingerprint resolves nothing. An alert card's pre-check
+before its first model call reads the card's alerts row: a resolve after
+its start closes the card. Each issue is an alerts row of kind `alert` with the
 fingerprint, judged
 when its task ends: `real` on a merge, `noise` when a human closed the
 issue without one. A human-lane alert issue is judged by its close: `noise`
@@ -1849,8 +1861,8 @@ fires `Kustomization not Ready` in its namespace, fingerprint
 action as an annotation; Ready again resolves it. A path no green build
 wrote never applied and raises nothing; `Unknown`, Flux mid-reconcile,
 changes nothing. The firing's start is kept on its alerts row, so a
-restart of factoryd neither files it again nor misses the resolve, and
-the card's pre-check reads that row instead of SigNoz.
+restart of factoryd neither files it again nor misses the resolve; the
+SigNoz sweep leaves these rows alone.
 
 The factory's own rules are `k8s/alerts/*.json`, ConfigMap `signoz-rules`
 in namespace `factory`: 5xx rate above 5 % per service (factoryd, its

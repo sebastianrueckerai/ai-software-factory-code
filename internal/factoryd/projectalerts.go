@@ -54,7 +54,7 @@ type DeploymentLister interface {
 }
 
 // AlertRowReader reads the newest alerts row of kind of each fingerprint
-// whose detail names namespace (PGStore).
+// whose detail names namespace (PGStore.NewestAlertRows).
 type AlertRowReader interface {
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
@@ -72,8 +72,8 @@ const alertsCacheFor = 30 * time.Second
 // project too), the namespace one of the project's (403 otherwise). The
 // alerts that fire are read from their alerts rows, the one record of
 // SigNoz's alerts and factoryd's alike: each fingerprint's newest row while
-// no resolve came after its start (a roll window's noise row names no
-// namespace, so it holds nothing). With no
+// no resolve came after its start, unless its verdict is noise (a roll
+// window's restart, ruling 237, or a human's close). With no
 // digest, a Deployment lags only when its own rollout has not finished. With
 // a digest (a staging rollout's wait), a namespace lags when it holds no
 // Deployment, when a Deployment's images do not all end in @digest, or when
@@ -137,7 +137,7 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 	out := []ProjectAlert{}
 	for _, a := range rows {
 		since, firing := firingSince(a)
-		if !firing {
+		if !firing || a.Verdict == VerdictNoise {
 			continue
 		}
 		source := "signoz"
@@ -198,7 +198,8 @@ func digestRunning(images []string, digest string) (string, bool) {
 
 // SigNoz reads the alerts SigNoz v0.143.0 holds firing: GET /api/v1/alerts
 // (its Alertmanager's list) with a bearer from its email/password login,
-// the root account of secret platform/signoz-root. A 401 logs in again once.
+// the viewer-role user of secret factory/signoz-factoryd. A 401 logs in
+// again once.
 type SigNoz struct {
 	BaseURL, Email, Password string
 	HTTP                     *http.Client // nil = 15 s timeout

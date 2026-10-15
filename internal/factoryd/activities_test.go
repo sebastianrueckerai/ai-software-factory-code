@@ -2113,92 +2113,39 @@ type T struct{ S int ` + "`json:\"spec\"`" + ` }
 	}
 }
 
-// An alert card's pre-check (roadmap 181, Stage 18 item 3.12): its alert is
-// gone from SigNoz's firing list, so the card closes itself before its
-// first model call; a transient burst files no work.
-func TestAlertPreCheckClosesWhenNotFiring(t *testing.T) {
-	fj := &prForgejo{}
-	task := prTask
-	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
-	r, store, _ := newActivityRunner(t, task, fj)
-	ctx := context.Background()
-	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
-		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
-	// SigNoz answers another rule firing, and this one resolved: no match
-	alerts := &fakeAlerts{list: []FiringAlert{
-		firing("active", map[string]string{"alertname": "gateway restarts"}, "restarts"),
-		firing("suppressed", map[string]string{"alertname": "ci queue p95"}, "p95 back under 5m"),
-	}}
-	alerts.list[1].Fingerprint = "fp-burst"
-	r.alerts = alerts
-	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
-	var got bool
-	if err != nil || val.Get(&got) != nil {
-		t.Fatalf("AlertPreCheck: %v", err)
-	}
-	if got {
-		t.Fatal("pre-check = true, want false: the fingerprint no longer fires")
-	}
-	if alerts.calls.Load() == 0 {
-		t.Fatal("the pre-check never asked SigNoz")
-	}
-}
-
-// The same card with its alert still held firing by SigNoz passes: the
-// check only stops a card whose alert actually stopped firing.
-func TestAlertPreCheckPassesWhenFiring(t *testing.T) {
-	fj := &prForgejo{}
-	task := prTask
-	task.Source, task.AlertFingerprint = SourceAlert, "fp-burst"
-	r, store, _ := newActivityRunner(t, task, fj)
-	ctx := context.Background()
-	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: "fp-burst",
-		Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
-	a := firing("active", map[string]string{"alertname": "ci queue p95"}, "p95 above 5m")
-	a.Fingerprint = "fp-burst"
-	a.StartsAt = time.Date(2026, 10, 12, 10, 0, 0, 0, time.UTC)
-	r.alerts = &fakeAlerts{list: []FiringAlert{a}}
-	val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
-	var got bool
-	if err != nil || val.Get(&got) != nil {
-		t.Fatalf("AlertPreCheck: %v", err)
-	}
-	if !got {
-		t.Fatal("pre-check = false, want true: the fingerprint still fires")
-	}
-}
-
-// A Flux alert's card (roadmap 259): SigNoz never lists factoryd's own
-// alert, so its pre-check reads the alert's row instead, firing until the
-// row records a resolve at or after its start.
-func TestAlertPreCheckReadsAFluxAlertsRow(t *testing.T) {
-	fj := &prForgejo{}
-	task := prTask
-	task.Source, task.AlertFingerprint = SourceAlert, "flux/demo-staging/demo-app"
-	r, store, _ := newActivityRunner(t, task, fj)
-	ctx := context.Background()
-	id, _ := store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "Kustomization not Ready", TaskID: "t1", Fingerprint: "flux/demo-staging/demo-app",
-		Detail: map[string]any{"starts_at": "2026-10-15T09:00:00Z"}})
-	alerts := &fakeAlerts{list: []FiringAlert{firing("active", map[string]string{"alertname": "gateway restarts"}, "restarts")}}
-	r.alerts = alerts
-	precheck := func() bool {
-		t.Helper()
-		val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
-		var got bool
-		if err != nil || val.Get(&got) != nil {
-			t.Fatalf("AlertPreCheck: %v", err)
-		}
-		return got
-	}
-	if !precheck() {
-		t.Fatal("pre-check = false while the row has no resolve, want true")
-	}
-	store.MergeAlertDetail(ctx, id, map[string]any{"resolved_at": "2026-10-15T09:12:00Z"})
-	if precheck() {
-		t.Fatal("pre-check = true after the row's resolve, want false")
-	}
-	if alerts.calls.Load() != 0 {
-		t.Fatalf("the pre-check asked SigNoz %d times about factoryd's own alert", alerts.calls.Load())
+// An alert card's pre-check (roadmap 181, Stage 18 item 3.12) reads its
+// alerts row, the one record of whether the alert fires, SigNoz's alert or
+// factoryd's Flux alert alike: it passes while no resolve follows the
+// row's start, closes the card once one does (a transient burst files no
+// work), and passes again once the alert fired anew.
+func TestAlertPreCheckReadsTheAlertsRow(t *testing.T) {
+	for _, fp := range []string{"fp-burst", "flux/demo-staging/demo-app"} {
+		t.Run(fp, func(t *testing.T) {
+			task := prTask
+			task.Source, task.AlertFingerprint = SourceAlert, fp
+			r, store, _ := newActivityRunner(t, task, &prForgejo{})
+			ctx := context.Background()
+			id, _ := store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "ci queue p95", TaskID: "t1", Fingerprint: fp,
+				Detail: map[string]any{"starts_at": "2026-10-12T10:00:00Z"}})
+			for _, step := range []struct {
+				detail map[string]any
+				want   bool
+			}{
+				{nil, true},
+				{map[string]any{"resolved_at": "2026-10-12T10:05:00Z"}, false},
+				{map[string]any{"starts_at": "2026-10-12T10:20:00Z"}, true},
+			} {
+				store.MergeAlertDetail(ctx, id, step.detail)
+				val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+				var got bool
+				if err != nil || val.Get(&got) != nil {
+					t.Fatalf("AlertPreCheck: %v", err)
+				}
+				if got != step.want {
+					t.Fatalf("after %v: pre-check = %v, want %v", step.detail, got, step.want)
+				}
+			}
+		})
 	}
 }
 

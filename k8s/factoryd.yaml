@@ -555,7 +555,7 @@ spec:
         # other repository factoryd works on is named by a project file
         - name: CONFIG_REPO
           value: sf/ai-software-factory-infra
-        # a SigNoz user with the viewer role: the alerts endpoint reads the
+        # a SigNoz user with the viewer role: the SigNoz sweep reads the
         # firing alerts with it and can change nothing
         - name: SIGNOZ_EMAIL
           valueFrom: {secretKeyRef: {name: signoz-factoryd, key: email}}

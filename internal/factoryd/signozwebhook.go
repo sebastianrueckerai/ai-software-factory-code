@@ -90,17 +90,20 @@ type AlertBook interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
+	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
 // factoryd (basic auth from secret signoz-webhook). An alert's namespace
-// label, which the signoz-objects job sets on a project's rule, names the
-// project through the namespace's factory/project label;
+// (namespaceOf) names the project through the namespace's factory/project
+// label;
 // the first firing of a fingerprint files a bug issue on the project's
 // repository as the bot and starts its task, a later firing is a comment
 // on it while the task runs and a new issue once it ended, and a resolve
 // is a comment. An alert no project owns is logged and dropped. FluxPass
-// takes factoryd's own alert of a broken environment the same way.
+// takes factoryd's own alert of a broken environment the same way, and
+// SweepSigNoz resolves the rows SigNoz no longer lists, so the alerts rows
+// are the one answer to whether an alert fires.
 type AlertIntake struct {
 	User, Password string
 	Namespaces     NamespaceLabeler
@@ -129,6 +132,8 @@ type AlertIntake struct {
 	LinkHosts func() []string
 	// Flux reads the Kustomizations FluxPass watches.
 	Flux FluxReader
+	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
+	SigNoz AlertSource
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
@@ -175,14 +180,13 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
-	// the namespace label the signoz-objects job sets on a project's rule,
-	// never a label the rule's query produced
-	name, ns := a.Labels["alertname"], a.Labels["namespace"]
+	name, ns := a.Labels["alertname"], namespaceOf(a.Labels)
 	p, ok, err := in.project(ctx, ns)
 	if err != nil {
 		return err
 	}
-	if !ok || a.Fingerprint == "" {
+	// a resolve still closes the row of a project gone since it fired
+	if (!ok && a.Status != "resolved") || a.Fingerprint == "" {
 		log.Printf("signoz webhook: alert %s in namespace %s: no project owns it, dropped", strconv.Quote(name), strconv.Quote(ns)) // #nosec G706 -- quoted
 		return nil
 	}
@@ -207,12 +211,12 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	repo := p.Repo()
 	if a.Status == "resolved" {
 		// the row is resolved even when its filing failed, so it no longer
-		// fires; its issue, if any, hears of it
+		// fires; its issue, if its project still owns one, hears of it
 		at := stamp(a.EndsAt)
 		if !seen || row.Detail["resolved_at"] == at {
 			return nil
 		}
-		if filed {
+		if filed && ok {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
 			}
@@ -326,6 +330,49 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 	return in.take(ctx, a)
 }
 
+// SweepSigNoz resolves, through take as its lost resolve delivery would
+// have, each SigNoz alerts row that still fires while SigNoz no longer
+// lists its fingerprint as active, so a row stays true to SigNoz (Flux
+// alerts' rows are FluxPass's). A list whose active alerts carry no
+// fingerprint cannot be matched and resolves nothing. The rows are read
+// before the list, so a row filed meanwhile waits for the next sweep.
+func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		return err
+	}
+	live, err := in.SigNoz.FiringAlerts(ctx)
+	if err != nil {
+		return fmt.Errorf("signoz: %w", err)
+	}
+	active := map[string]bool{}
+	for _, a := range live {
+		if a.Status.State != "active" {
+			continue
+		}
+		fp := cmp.Or(a.Fingerprint, a.Labels["fingerprint"])
+		if fp == "" {
+			return fmt.Errorf("signoz lists the active alert %s without a fingerprint: no row resolved", strconv.Quote(a.Labels["alertname"]))
+		}
+		active[fp] = true
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	var errs []error
+	for _, row := range rows {
+		if _, firing := firingSince(row); !firing || active[row.Fingerprint] || strings.HasPrefix(row.Fingerprint, fluxPrefix) {
+			continue
+		}
+		ns, _ := row.Detail["namespace"].(string)
+		a := SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
+			Labels: map[string]string{"alertname": row.Source, "namespace": ns}}
+		if err := in.take(ctx, a); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
 // firingSince is the start alerts row a records, and whether it still
 // fires: no resolve recorded at or after that start.
 func firingSince(a Alert) (time.Time, bool) {
@@ -408,7 +455,8 @@ func (in *AlertIntake) inRestartWindow(ctx context.Context, starts time.Time) (d
 // (Alertmanager's fingerprint never changes between firings of this rule),
 // which is judged again rather than trusted on the strength of this one.
 func (in *AlertIntake) recordRestartWindowNoise(ctx context.Context, a SigNozAlert, deployment string, applied, live time.Time) error {
-	detail := map[string]any{"roll_window": "roll window of " + deployment, "applied": stamp(applied), "starts_at": stamp(a.StartsAt)}
+	detail := map[string]any{"roll_window": "roll window of " + deployment, "applied": stamp(applied), "starts_at": stamp(a.StartsAt),
+		"namespace": in.Namespace}
 	if !live.IsZero() {
 		detail["live"] = stamp(live)
 	}
@@ -617,6 +665,22 @@ func alertVerdict(final, reason string) string {
 		return VerdictReal
 	case strings.HasPrefix(reason, ReasonIssueClosed) && !strings.HasPrefix(reason, ReasonIssueClosed+ReasonMergeUnknown):
 		return VerdictNoise
+	}
+	return ""
+}
+
+// namespaceLabels are the labels an alert's namespace arrives under, the
+// first set winning: the label the signoz-objects job sets on a project's
+// rule, then the OTel resource attribute and its Prometheus form a rule's
+// query groups by.
+var namespaceLabels = []string{"namespace", "k8s.namespace.name", "k8s_namespace_name"}
+
+// namespaceOf is the namespace an alert's labels name (namespaceLabels).
+func namespaceOf(labels map[string]string) string {
+	for _, l := range namespaceLabels {
+		if v := labels[l]; v != "" {
+			return v
+		}
 	}
 	return ""
 }

@@ -939,7 +939,7 @@ func (s *fakeStore) NewestAlertRows(ctx context.Context, kind, namespace string)
 	}
 	var out []Alert
 	for i, a := range s.alerts {
-		if a.Kind == kind && a.Fingerprint != "" && newest[a.Fingerprint] == i && a.Detail["namespace"] == namespace {
+		if a.Kind == kind && a.Fingerprint != "" && newest[a.Fingerprint] == i && (namespace == "" || a.Detail["namespace"] == namespace) {
 			a.Detail = maps.Clone(a.Detail)
 			out = append(out, a)
 		}
@@ -1832,8 +1832,8 @@ func TestPGStoreConfigRejectedAlert(t *testing.T) {
 
 // NewestAlertRows keeps each fingerprint's newest row of the kind, and that
 // only when it names the namespace, oldest first: a fingerprint whose
-// newest row names none (a roll window's noise row) is not listed by an
-// older row that does.
+// newest row names none is not listed by an older row that does. "" reads
+// every namespace's.
 func TestPGStoreNewestAlertRows(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -1861,8 +1861,8 @@ func TestPGStoreNewestAlertRows(t *testing.T) {
 	fp1 := insert(AlertSigNoz, "fp1", "demo-prod")
 	flux := insert(AlertSigNoz, "flux/demo-prod/demo-app", "demo-prod")
 	insert(AlertSigNoz, "fp3", "demo-prod")
-	insert(AlertSigNoz, "fp3", "")
-	insert(AlertSigNoz, "fp4", "demo-staging")
+	fp3 := insert(AlertSigNoz, "fp3", "")
+	fp4 := insert(AlertSigNoz, "fp4", "demo-staging")
 	insert(AlertEscalation, "fp5", "demo-prod")
 	got, err := s.NewestAlertRows(ctx, AlertSigNoz, "demo-prod")
 	if err != nil {
@@ -1874,6 +1874,17 @@ func TestPGStoreNewestAlertRows(t *testing.T) {
 	}
 	if want := []int64{fp1, flux}; !slices.Equal(ids, want) || got[1].Detail["starts_at"] != "2026-10-15T09:00:00Z" {
 		t.Fatalf("rows %+v, want ids %v", got, want)
+	}
+	every, err := s.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids = nil
+	for _, a := range every {
+		ids = append(ids, a.ID)
+	}
+	if want := []int64{fp1, flux, fp3, fp4}; !slices.Equal(ids, want) {
+		t.Fatalf("every namespace's rows %v, want %v", ids, want)
 	}
 }
 

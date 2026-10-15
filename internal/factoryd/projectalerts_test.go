@@ -133,9 +133,6 @@ func TestProjectAlertsAnswer(t *testing.T) {
 		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "", "old"),
 		firingRow("demo saturation", "fp4", "demo-prod", "2026-09-28T16:00:00Z", "2026-09-28T16:20:00Z", "old"),
 		firingRow("staging only", "fp5", "demo-staging", "2026-09-28T17:00:00Z", "", "x"),
-		// a roll window's noise row names no namespace
-		{Kind: AlertSigNoz, Source: "5xx rate above 5 %", Fingerprint: "fp6", Verdict: VerdictNoise, ResolvedBy: "factoryd",
-			Detail: map[string]any{"starts_at": "2026-09-28T17:00:00Z"}},
 		{Kind: AlertEscalation, Source: "agent", TaskID: "t1", Fingerprint: "fp7", Detail: map[string]any{"namespace": "demo-prod", "starts_at": "2026-09-28T17:00:00Z"}},
 	} {
 		alerts.InsertAlert(ctx, a)
@@ -179,6 +176,32 @@ func TestProjectAlertsAnswer(t *testing.T) {
 	}
 	if alerts.calls.Load() != calls {
 		t.Fatal("a cached answer read the alerts rows again")
+	}
+}
+
+// A noise row never holds a promotion, by its verdict: a roll window's own
+// restart (ruling 237) or an alert a human closed as noise, though either
+// still fires; a firing row judged real does.
+func TestProjectAlertsNoiseHoldsNothing(t *testing.T) {
+	_, alerts, _, h, token := alertsRig(t)
+	ctx := context.Background()
+	window := firingRow("5xx rate above 5 %", "fp-window", "demo-prod", "2026-09-28T17:00:00Z", "", "")
+	window.Verdict, window.ResolvedBy, window.TaskID = VerdictNoise, "factoryd", ""
+	closed := firingRow("demo p95", "fp-closed", "demo-prod", "2026-09-28T17:00:00Z", "", "p95 above 300 ms")
+	closed.Verdict, closed.ResolvedBy = VerdictNoise, "sebastian"
+	merged := firingRow("demo 5xx rate", "fp-merged", "demo-prod", "2026-09-28T17:00:00Z", "", "5xx above 1%")
+	merged.Verdict, merged.ResolvedBy = VerdictReal, "merge"
+	for _, a := range []Alert{window, closed, merged} {
+		alerts.InsertAlert(ctx, a)
+	}
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod", token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("= %d %s", rec.Code, rec.Body)
+	}
+	want := ProjectAlert{Name: "demo 5xx rate", Namespace: "demo-prod", Source: "signoz", Since: time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC), Summary: "5xx above 1%"}
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("alerts = %+v, want [%+v]", got, want)
 	}
 }
 

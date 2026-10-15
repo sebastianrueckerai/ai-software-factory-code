@@ -187,7 +187,6 @@ func main() {
 			return inner.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
-		Alerts:    signoz,
 		// the attempt grant's floor (ruling 322) reads the same price
 		// table the gateway's hold math prices a call with
 		Prices: &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
@@ -310,7 +309,7 @@ func main() {
 		// records of its own Deployments
 		Rolls:     store,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Flux:      kube}
+		Flux:      kube, SigNoz: signoz}
 	registrar.FluxAlerts = alertIntake.FluxPass
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
@@ -322,6 +321,12 @@ func main() {
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, gates, nudged)
+			// SigNoz's rules evaluate every minute, so its list changes no
+			// faster: a sweep a minute heals a lost resolve before a card's
+			// first model call or a promotion's check reads the row
+			if err := alertIntake.SweepSigNoz(ctx, time.Now()); err != nil {
+				log.Printf("signoz sweep: %v", err)
+			}
 			select {
 			case <-ctx.Done():
 				return

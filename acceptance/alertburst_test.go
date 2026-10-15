@@ -133,10 +133,11 @@ func TestCapacityAlertRoutesToHuman(t *testing.T) {
 
 // TestAlertPreCheckClosesTransientBurst (roadmap 181, Stage 18 item 3.12):
 // the burst came and went. The webhook files its card on a project with
-// agents, the card's workflow starts, and before its first model call the
-// real pre-check activity asks the real SigNoz client, which answers the
-// fingerprint resolved: the workflow closes the card itself, failed, and
-// the session that would have called the model never runs.
+// agents; its resolve delivery is lost, and the intake's sweep asks the
+// real SigNoz client, which no longer lists the fingerprint active, and
+// resolves the alert's row. Before the card's first model call the real
+// pre-check activity reads that row: the workflow closes the card itself,
+// failed, and the session that would have called the model never runs.
 func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 	signozCalls := 0
 	signoz := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +153,7 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 			}
 			signozCalls++
 			out := map[string]any{"status": "success", "data": []map[string]any{
-				{"status": map[string]string{"state": "active"},
+				{"status": map[string]string{"state": "active"}, "fingerprint": "fp-restarts",
 					"labels": map[string]string{"alertname": "gateway restarts"}, "startsAt": firedAt},
 				// this card's alert: resolved again, the burst is over
 				{"status": map[string]string{"state": "resolved"}, "fingerprint": "fp-burst",
@@ -173,8 +174,9 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 	// starts its workflow.
 	rig.projects.m["demo-app"] = demoProjectWithAgents()
 	rig.in.Projects = rig.projects
-	sessions := 0
-	rig.flows.onStart = func(taskID string) { sessions++; runCardWorkflow(t, rig, taskID, signoz.URL) }
+	rig.in.SigNoz = &factoryd.SigNoz{BaseURL: signoz.URL, Email: "root@example.com", Password: "pw"}
+	var started []string
+	rig.flows.onStart = func(taskID string) { started = append(started, taskID) }
 
 	rig.post(t, map[string]string{"alertname": "CI queue p95 above 5 minutes", "namespace": "demo-staging",
 		"severity": "warning", "service": "factoryd"}, "fp-burst")
@@ -184,12 +186,19 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 	if !ok || task.Kind != "agent" || task.Source != factoryd.SourceAlert {
 		t.Fatalf("the burst filed no agent card: row %+v task %+v (%v)", row, task, ok)
 	}
-	if sessions != 1 {
-		t.Fatalf("the card ran %d workflow(s), want the one the intake started", sessions)
+	if len(started) != 1 || started[0] != task.ID {
+		t.Fatalf("the intake started %v, want the card's one workflow", started)
+	}
+	if err := rig.in.SweepSigNoz(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
 	}
 	if signozCalls == 0 {
-		t.Fatal("the pre-check never asked SigNoz")
+		t.Fatal("the sweep never asked SigNoz")
 	}
+	if rig.store.alertRowByFingerprint("fp-burst").Detail["resolved_at"] == nil {
+		t.Fatal("the sweep left the burst's row firing")
+	}
+	runCardWorkflow(t, rig, task.ID)
 	if final := rig.store.statusOf(task.ID); final != "failed" {
 		t.Fatalf("the task row is %q, want failed", final)
 	}
@@ -201,11 +210,11 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 const firedAt = "2026-10-12T10:00:00Z"
 
 // runCardWorkflow runs the shipped TaskWorkflow against the shipped
-// activities of rig, wired to a live-shaped SigNoz at signozURL, and
-// reports how many sessions (model calls) the card ran.
-func runCardWorkflow(t *testing.T, rig *intakeRig, taskID, signozURL string) int {
+// activities of rig and reports how many sessions (model calls) the card
+// ran.
+func runCardWorkflow(t *testing.T, rig *intakeRig, taskID string) int {
 	t.Helper()
-	deps := newCardDeps(t, rig, signozURL)
+	deps := newCardDeps(t, rig)
 	var suite testsuite.WorkflowTestSuite
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestWorkflowEnvironment()
@@ -250,14 +259,13 @@ func runCardWorkflow(t *testing.T, rig *intakeRig, taskID, signozURL string) int
 }
 
 // cardDeps is the runner behind one card's workflow: the shipped activities
-// on the intake's own store, Forgejo and object store, with SigNoz wired as
-// the pre-check's source.
+// on the intake's own store, Forgejo and object store.
 type cardDeps struct {
 	runner      *factoryd.Runner
 	sessionRuns int
 }
 
-func newCardDeps(t *testing.T, rig *intakeRig, signozURL string) *cardDeps {
+func newCardDeps(t *testing.T, rig *intakeRig) *cardDeps {
 	t.Helper()
 	d := &cardDeps{}
 	cfg := factoryd.RunnerConfig{
@@ -277,7 +285,6 @@ func newCardDeps(t *testing.T, rig *intakeRig, signozURL string) *cardDeps {
 		Leases: &acceptanceLeases{}, Gates: &factoryd.GateWatch{},
 		LastFailure: func(context.Context, string, string) (string, error) { return "", nil },
 		Workflows:   rig.flows,
-		Alerts:      &factoryd.SigNoz{BaseURL: signozURL, Email: "root@example.com", Password: "pw"},
 	}
 	forgejo := rig.forgejoClient()
 	completion := &factoryd.Completion{Store: rig.store, Forgejo: forgejo, LiteLLM: &factoryd.LiteLLMAdmin{BaseURL: rig.litellm.URL, MasterKey: "mk"}}

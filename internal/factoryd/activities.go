@@ -1923,9 +1923,6 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	return pr.Merged, err
 }
 
-// AlertPreCheckSource lists the alerts firing now (the SigNoz client).
-type AlertPreCheckSource = AlertSource
-
 // alertStoreReader is what an alert card's pre-check reads of the alert
 // store: the newest alerts row of a fingerprint. PGStore has it; a test
 // store without it takes the check as passing.
@@ -1935,13 +1932,12 @@ type alertStoreReader interface {
 
 // AlertPreCheck is an alert card's pre-check before its first model call
 // (roadmap 181, Stage 18 item 3.12): it reads the task's alert fingerprint
-// from the store, queries SigNoz's firing alerts, and reports whether the
-// alert still fires. An alert that no longer fires was a transient burst:
-// the card closes itself without spending on a model call. No fingerprint,
-// or no source wired, says it still fires: the check never stops a card on
-// its own absence. The alert's own start time decides when it stopped: a
-// firing alert whose recorded start is later than the card's row is a fresh
-// firing, not this card's.
+// and its alerts row, the one record of whether the alert fires (kept true
+// by the resolve deliveries, FluxPass and SweepSigNoz), and reports whether
+// it still fires: no resolve after its start. An alert that no longer
+// fires was a transient burst: the card closes itself without spending on
+// a model call. No fingerprint, or no row of this card, says it still
+// fires: the check never stops a card on its own absence.
 func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -1961,40 +1957,8 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 	if !seen || row.TaskID != taskID {
 		return true, nil
 	}
-	if strings.HasPrefix(t.AlertFingerprint, fluxPrefix) {
-		// SigNoz never lists factoryd's own Flux alert: it fires until
-		// FluxPass records its resolve
-		_, open := firingSince(row)
-		return open, nil
-	}
-	if r.alerts == nil {
-		return true, nil
-	}
-	firing, err := r.alerts.FiringAlerts(ctx)
-	if err != nil {
-		return false, fmt.Errorf("signoz firing alerts: %w", err)
-	}
-	startedAt, _ := row.Detail["starts_at"].(string)
-	for _, a := range firing {
-		if !firingMatches(a, t.AlertFingerprint) || a.Status.State != "active" {
-			continue
-		}
-		if startedAt != "" && stamp(a.StartsAt) > startedAt {
-			continue
-		}
-		return true, nil
-	}
-	return false, nil
-}
-
-// firingMatches reports whether SigNoz's firing alert a is the one of
-// fingerprint: its top-level Fingerprint field when it carries one (the
-// Alertmanager message), else its labels' fingerprint.
-func firingMatches(a FiringAlert, fingerprint string) bool {
-	if a.Fingerprint != "" {
-		return a.Fingerprint == fingerprint
-	}
-	return a.Labels["fingerprint"] == fingerprint
+	_, firing := firingSince(row)
+	return firing, nil
 }
 
 // Finish is the terminal step. A failed task's open pull request is closed

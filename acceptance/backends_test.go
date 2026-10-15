@@ -575,6 +575,24 @@ func (s *acceptanceStore) AlertByFingerprint(_ context.Context, kind, fingerprin
 	return factoryd.Alert{}, false, nil
 }
 
+func (s *acceptanceStore) NewestAlertRows(_ context.Context, kind, namespace string) ([]factoryd.Alert, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	newest := map[string]int{}
+	for i, a := range s.alerts {
+		if a.Kind == kind && a.Fingerprint != "" {
+			newest[a.Fingerprint] = i
+		}
+	}
+	var out []factoryd.Alert
+	for i, a := range s.alerts {
+		if a.Kind == kind && a.Fingerprint != "" && newest[a.Fingerprint] == i && (namespace == "" || a.Detail["namespace"] == namespace) {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

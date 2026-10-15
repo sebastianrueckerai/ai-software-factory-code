@@ -389,16 +389,6 @@ func TestAlertIntakeMapsNamespaceToProject(t *testing.T) {
 	if len(r.fj.issues) != 3 || !strings.HasPrefix(r.fj.issues[2], "alert: 5xx rate above 5 % in demo-prod\n") {
 		t.Fatalf("demo-prod: %d issues", len(r.fj.issues))
 	}
-	// a label the rule's query produced never names the namespace: only
-	// the job's namespace label does
-	grouped := sigAlert("firing", "fp4", "", firedAt, neverEnds)
-	delete(grouped["labels"].(map[string]string), "namespace")
-	grouped["labels"].(map[string]string)["k8s.namespace.name"] = "demo-prod"
-	grouped["labels"].(map[string]string)["k8s_namespace_name"] = "demo-prod"
-	r.post(t, "signoz", "hook-pw", grouped)
-	if len(r.fj.issues) != 3 {
-		t.Fatalf("an alert without the namespace label filed issue %d", len(r.fj.issues))
-	}
 	for _, ns := range []string{"platform", "stray", "foreign", "legacy", "", "Bad/../ns"} {
 		if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp-"+ns, ns, firedAt, neverEnds)); rr.Code != http.StatusOK {
 			t.Fatalf("namespace %q: status %d", ns, rr.Code)
@@ -409,6 +399,115 @@ func TestAlertIntakeMapsNamespaceToProject(t *testing.T) {
 	}
 	if r.ns.reads != 6 {
 		t.Fatalf("namespace reads %d, want 6 (demo-staging, demo-prod, platform, stray, foreign, legacy; none for an empty or invalid name)", r.ns.reads)
+	}
+}
+
+// projectAlerts is GET /projects/demo-app/alerts?namespace=ns over the
+// rig's alerts rows, as a promotion asks it, through a fresh handler so no
+// earlier answer is cached.
+func (r *alertRig) projectAlerts(t *testing.T, ns string) []ProjectAlert {
+	t.Helper()
+	token, hash := NewReadToken()
+	projects := r.in.Projects.(*memProjects)
+	projects.mu.Lock()
+	demo := projects.m["demo-app"]
+	demo.ReadTokenHash = hash
+	projects.m["demo-app"] = demo
+	projects.mu.Unlock()
+	kube := newFakeProjectKube()
+	kube.deploys = map[string][]DeploymentState{}
+	mux := http.NewServeMux()
+	mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(projects, r.store, kube))
+	rec := getAlerts(mux, "/projects/demo-app/alerts?namespace="+ns, token)
+	var got []ProjectAlert
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("alerts of %s = %d %s", ns, rec.Code, rec.Body)
+	}
+	return got
+}
+
+// An alert's namespace comes by one rule from every label SigNoz names it
+// under: the job's namespace label first, else the query's
+// k8s.namespace.name or k8s_namespace_name. Each form files on the
+// namespace's project, and its row carries the namespace, so it holds a
+// promotion.
+func TestAlertIntakeReadsTheNamespaceFromEveryLabelForm(t *testing.T) {
+	r := newAlertRig(t)
+	for i, label := range []string{"namespace", "k8s.namespace.name", "k8s_namespace_name"} {
+		a := sigAlert("firing", "fp-"+label, "", firedAt, neverEnds)
+		labels := a["labels"].(map[string]string)
+		delete(labels, "namespace")
+		labels[label] = "demo-prod"
+		r.post(t, "signoz", "hook-pw", a)
+		if len(r.fj.issues) != i+1 || !strings.HasPrefix(r.fj.issues[i], "alert: 5xx rate above 5 % in demo-prod\n") {
+			t.Fatalf("label %s: issues %q, want issue %d in demo-prod", label, r.fj.issues, i+1)
+		}
+	}
+	both := sigAlert("firing", "fp-both", "demo-staging", firedAt, neverEnds)
+	both["labels"].(map[string]string)["k8s.namespace.name"] = "demo-prod"
+	r.post(t, "signoz", "hook-pw", both)
+	if len(r.fj.issues) != 4 || !strings.HasPrefix(r.fj.issues[3], "alert: 5xx rate above 5 % in demo-staging\n") {
+		t.Fatalf("the job's label beside a query's: issues %q, want the fourth in demo-staging", r.fj.issues)
+	}
+	for _, row := range r.store.alertRows() {
+		if want := map[bool]string{true: "demo-staging", false: "demo-prod"}[row.Fingerprint == "fp-both"]; row.Detail["namespace"] != want {
+			t.Errorf("row %s: namespace %v, want %s", row.Fingerprint, row.Detail["namespace"], want)
+		}
+	}
+	if got := r.projectAlerts(t, "demo-prod"); len(got) != 3 {
+		t.Fatalf("demo-prod's promotion reads %+v, want the three alerts", got)
+	}
+}
+
+// The sweep holds the alerts rows to SigNoz's list: a row that fires while
+// SigNoz no longer lists its fingerprint active (its resolve delivery lost,
+// or the alert silenced) is resolved as the delivery would have, with the
+// comment on its issue, once, and the row of a project gone since is
+// resolved too; a listed row, a resolved one and a Flux alert's are left
+// alone. A list whose active alerts carry no fingerprint cannot be matched
+// and resolves nothing.
+func TestSweepSigNozResolvesWhatSigNozNoLongerLists(t *testing.T) {
+	r := newAlertRig(t)
+	ctx := context.Background()
+	for _, fp := range []string{"fp-live", "fp-lost", "fp-silenced", "fp-done"} {
+		r.post(t, "signoz", "hook-pw", sigAlert("firing", fp, "demo-staging", firedAt, neverEnds))
+	}
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp-done", "demo-staging", firedAt, resolvedAt))
+	r.store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: fluxAlert, Fingerprint: "flux/demo-staging/demo-app",
+		Detail: map[string]any{"namespace": "demo-staging", "starts_at": firedAt}})
+	r.store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx rate above 5 %", TaskID: "t-gone", Fingerprint: "fp-gone",
+		Detail: map[string]any{"namespace": "stray", "starts_at": firedAt}})
+	sweptAt := at("2026-09-28T21:00:00Z")
+
+	unmatched := firing("active", map[string]string{"alertname": "5xx rate above 5 %"}, "s")
+	r.in.SigNoz = &fakeAlerts{list: []FiringAlert{unmatched}}
+	if err := r.in.SweepSigNoz(ctx, sweptAt); err == nil || !strings.Contains(err.Error(), "without a fingerprint") {
+		t.Fatalf("a list without fingerprints: %v, want its refusal", err)
+	}
+	if want := []string{"#4 factoryd: resolved at " + resolvedAt}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("a list without fingerprints resolved rows: comments %q", r.fj.comments)
+	}
+
+	live := firing("active", map[string]string{"alertname": "5xx rate above 5 %"}, "s")
+	live.Fingerprint = "fp-live"
+	silenced := firing("suppressed", map[string]string{"alertname": "5xx rate above 5 %"}, "s")
+	silenced.Fingerprint = "fp-silenced"
+	r.in.SigNoz = &fakeAlerts{list: []FiringAlert{live, silenced}}
+	for range 2 {
+		if err := r.in.SweepSigNoz(ctx, sweptAt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"#4 factoryd: resolved at " + resolvedAt,
+		"#2 factoryd: resolved at 2026-09-28T21:00:00Z", "#3 factoryd: resolved at 2026-09-28T21:00:00Z"}
+	if !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("comments %q, want %q", r.fj.comments, want)
+	}
+	for _, row := range r.store.alertRows() {
+		_, firing := firingSince(row)
+		if wantFiring := row.Fingerprint == "fp-live" || row.Fingerprint == "flux/demo-staging/demo-app"; firing != wantFiring {
+			t.Errorf("row %s firing %v, want %v", row.Fingerprint, firing, wantFiring)
+		}
 	}
 }
 
@@ -933,24 +1032,7 @@ func TestFluxAlertGraceCountsFalseReads(t *testing.T) {
 // and nothing once the Kustomization is Ready again.
 func TestProjectAlertsHoldAPromotionOnAFluxAlert(t *testing.T) {
 	r, flux, p := fluxRig(t)
-	token, hash := NewReadToken()
-	projects := r.in.Projects.(*memProjects)
-	demo := projects.m["demo-app"]
-	demo.ReadTokenHash = hash
-	projects.m["demo-app"] = demo
-	kube := newFakeProjectKube()
-	kube.deploys = map[string][]DeploymentState{}
-	staging := func() []ProjectAlert {
-		t.Helper()
-		mux := http.NewServeMux()
-		mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(projects, r.store, kube))
-		rec := getAlerts(mux, "/projects/demo-app/alerts?namespace=demo-staging", token)
-		var got []ProjectAlert
-		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
-			t.Fatalf("= %d %s", rec.Code, rec.Body)
-		}
-		return got
-	}
+	staging := func() []ProjectAlert { return r.projectAlerts(t, "demo-staging") }
 	ctx := context.Background()
 	r.in.FluxPass(ctx, p, t0)
 	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
