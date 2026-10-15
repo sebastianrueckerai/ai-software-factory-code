@@ -366,8 +366,7 @@ func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, e
 			var id int64
 			var c OpeningCall
 			if err := rows.Scan(&id, &c.Bytes, &c.WantOut); err != nil {
-				rows.Close()
-				return Opening{}, err
+				return Opening{}, errors.Join(err, rows.Close())
 			}
 			if id != session {
 				o.Sessions, session = append(o.Sessions, nil), id
