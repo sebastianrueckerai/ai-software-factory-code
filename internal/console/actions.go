@@ -893,9 +893,13 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 // unfundedAnswer is the answer path's floor (ruling 322): the refusal a
 // card's remaining budget owes an answer, "" when one can run. A card
 // with no session yet (no model to price) and a failed read answer as
-// before: the workflow's grant refuses the attempt anyway.
+// before: the workflow's grant refuses the attempt anyway. An answer at
+// the day cap is taken: its attempt waits for the day on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
-	return c.unfunded(ctx, t, c.cfg.AttemptFunded)
+	if why := c.unfunded(ctx, t, c.cfg.AttemptFunded); !factoryd.DayCapped(why) {
+		return why
+	}
+	return ""
 }
 
 // unfundedSession is the fund's floor (roadmap 243): the refusal a card's

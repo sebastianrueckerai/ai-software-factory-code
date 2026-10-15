@@ -1617,6 +1617,35 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	}
 }
 
+// An attempt the floor refuses at the day cap waits for the day as a
+// session the day cap refused does, with no human: the escalation is the
+// day cap's, and at 00:00 UTC the floor funds the attempt, which starts
+// as attempt 1.
+func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
+	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
+	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/coding-cheap needs 0.015360 EUR " +
+		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (string, error) {
+			if h.env.Now().Before(oct(15, 0, 0)) {
+				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
+			}
+			return "", nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if want := dayQuestion + "\n" + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
+		t.Fatalf("escalations = %q, want the day cap's wait once: %q", h.escalated, want)
+	}
+	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
+		t.Fatalf("sessions began at %v (%+v), turns %v; want attempt 1 at 00:00", run.began, h.sessions, run.turns)
+	}
+}
+
 // A check that finds the day's free headroom funding a session (holds
 // settled, budget.day_eur raised) ends the wait before the turn.
 func TestWorkflowDayCapResumesWhenTheDayFundsASession(t *testing.T) {

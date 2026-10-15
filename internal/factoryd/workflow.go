@@ -1266,6 +1266,19 @@ func (t *taskRun) lifecycle() (string, error) {
 			// whatever granted it: no session, no key, no failure round,
 			// and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
+				if DayCapped(why) {
+					// a spent day cap resets on its own: the day cap's
+					// wait, not a human's, and no attempt ran
+					_, state, _ := strings.Cut(why, "\n")
+					until := dayTurn(workflow.Now(t.ctx))
+					final, end, answer := t.awaitDay(dayCapRefused(policy.Refusal{Decision: policy.RefusedDayCap, Reason: state}, until), until, model)
+					if final != "" {
+						return t.finish(final, end)
+					}
+					findings = append(findings, answer...)
+					attempt--
+					continue
+				}
 				final, end, _ := t.awaitHuman(why, nil)
 				if final != "" {
 					return t.finish(final, end)

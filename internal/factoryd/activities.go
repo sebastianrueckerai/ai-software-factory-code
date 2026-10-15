@@ -374,6 +374,11 @@ var capRefusals = map[string]string{
 	policy.RefusedProjectCap: "the project's month cap cannot fund a call",
 }
 
+// DayCapped reports whether why is an attempt floor's refusal at the day
+// cap, which resets on its own: the workflow waits for the day (awaitDay),
+// and the console takes an answer.
+func DayCapped(why string) bool { return strings.HasPrefix(why, capRefusals[policy.RefusedDayCap]) }
+
 // floorRefused reports whether reason is an attempt floor's refusal for
 // money: the budget's or a cap's.
 func floorRefused(reason string) bool {
@@ -389,9 +394,7 @@ func floorRefused(reason string) bool {
 // when the free headroom can fund the cheapest call of model, a call of
 // no prompt and policy.MinCallTokens output tokens, else the refusal the
 // waiting-human card carries. It guards every attempt the workflow
-// grants, and the console's answer. A spent day cap stops neither: it
-// resets on its own, and a session the gateway refuses at it waits for
-// the day (OutcomeDayCap) with no human.
+// grants, and the console's answer (DayCapped).
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }
@@ -468,10 +471,6 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	own, free, err := r.store.Free(ctx, req)
 	if err != nil {
 		return "", err
-	}
-	if !opening {
-		// the day cap's path: the day-cap wait, not a human
-		free.Day = math.Inf(1)
 	}
 	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Project: project, EUR: need})
 	if err == nil {

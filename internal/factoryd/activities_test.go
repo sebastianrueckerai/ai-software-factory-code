@@ -2433,8 +2433,8 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 // 0.01536, which the fund's floor prices too with no opening recorded. The
 // refusal names the cap and the commit that raises it; no raise of the
 // task's budget answers it, so the board offers no Fund, while the card's
-// escalation counts as one for money. The answer path's floor leaves out
-// the day cap, which resets on its own.
+// escalation counts as one for money; the day cap's is DayCapped, which
+// the workflow waits out and the console's answer passes.
 func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
 	store := newFakeStore()
@@ -2454,14 +2454,13 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	for _, tc := range []struct {
 		decision, opening string
 		free              policy.Free
-		answered          bool
 	}{
 		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
-			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", policy.Free{Day: 0.01, Month: inf, Project: inf}, true},
+			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", policy.Free{Day: 0.01, Month: inf, Project: inf}},
 		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free", policy.Free{Day: inf, Month: 0.01, Project: inf}, false},
+			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free", policy.Free{Day: inf, Month: 0.01, Project: inf}},
 		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free", policy.Free{Day: inf, Month: inf, Project: 0.01}, false},
+			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free", policy.Free{Day: inf, Month: inf, Project: 0.01}},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			store.capsFree = &tc.free
@@ -2475,12 +2474,12 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
-			want := tc.opening + answerTail
-			if tc.answered {
-				want = ""
-			}
-			if why, err := r.AttemptFunded(context.Background(), "t-1", "factory/coding-frontier"); err != nil || why != want {
+			why, err = r.AttemptFunded(context.Background(), "t-1", "factory/coding-frontier")
+			if want := tc.opening + answerTail; err != nil || why != want {
 				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
+			}
+			if DayCapped(why) != (tc.decision == policy.RefusedDayCap) {
+				t.Fatalf("DayCapped = %v for %s", DayCapped(why), tc.decision)
 			}
 		})
 	}

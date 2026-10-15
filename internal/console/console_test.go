@@ -1539,6 +1539,23 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	}
 }
 
+// An answer at a spent day cap is taken: the day cap resets on its own,
+// and the attempt the answer buys waits for the day with no human.
+func TestAnswerTakenAtTheDayCap(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("cannot reach the database", []factoryd.Task{
+		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
+	}...)
+	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) {
+		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
+			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
+	}
+	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
+		t.Fatalf("answer at the day cap = %d %s, %d comments; want it taken", rec.Code, rec.Body, len(r.fg.comments))
+	}
+}
+
 func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin
