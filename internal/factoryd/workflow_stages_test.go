@@ -516,7 +516,7 @@ func TestStagesLateTripOfACancelledReviewReachesNoLaterReview(t *testing.T) {
 				Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
 			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
 			calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"})
-			drops := g.onDropTrip()
+			drops := g.onDropTrip(0)
 			g.runTripAfter(30*time.Minute, ActivityModelReview, 1, 1)
 			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 

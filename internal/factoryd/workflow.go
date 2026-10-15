@@ -433,11 +433,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
 	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
 	final, err := run.program()
-	// the trips no run took: their runs ended with the task
-	var trip GateTrip
-	for workflow.GetSignalChannel(ctx, SignalGateBound).ReceiveAsync(&trip) {
-		run.dropTrips(trip)
-	}
+	run.endTrips()
 	drainSignals(ctx)
 	return final, err
 }
@@ -920,6 +916,8 @@ type taskRun struct {
 	// flight is the model review scheduled beside the checks wait
 	// (versionReviewParallel), nil while none runs
 	flight *reviewInFlight
+	// drops are the DropTrip calls endTrips joins (versionTripRouting)
+	drops []workflow.Future
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -2164,15 +2162,35 @@ func (r *gateRun) nextTrip(trips workflow.ReceiveChannel, trip *GateTrip) bool {
 
 // dropTrips resolves the gate_bound alert of each trip no run takes
 // (versionTripRouting): its run ended before the gate supervisor took
-// it. A run from before the change leaves the alerts open.
+// it. The calls run beside the workflow, so a store that does not answer
+// holds no wait; endTrips joins them. A run from before the change
+// leaves the alerts open.
 func (t *taskRun) dropTrips(trips ...GateTrip) {
 	if t.tripRouting < versionTripRouting {
 		return
 	}
 	for _, trip := range trips {
-		if err := workflow.ExecuteActivity(t.short, ActivityDropTrip, t.taskID, trip).Get(t.ctx, nil); err != nil {
-			workflow.GetLogger(t.ctx).Warn("resolve a dropped trip's alert", "alert", trip.AlertID, "error", err)
+		t.drops = append(t.drops, workflow.ExecuteActivity(t.short, ActivityDropTrip, t.taskID, trip))
+	}
+}
+
+// endTrips drops the trips no run took, their runs ended with the task,
+// and waits for every drop, so none is abandoned with the workflow.
+func (t *taskRun) endTrips() {
+	for {
+		var trip GateTrip
+		for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
+			t.dropTrips(trip)
 		}
+		if len(t.drops) == 0 {
+			return
+		}
+		for _, f := range t.drops {
+			if err := f.Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("resolve a dropped trip's alert", "task", t.taskID, "error", err)
+			}
+		}
+		t.drops = nil
 	}
 }
 

@@ -337,9 +337,11 @@ func TestSuperviseGateEndedRunIsNoise(t *testing.T) {
 	}
 }
 
-// A trip the workflow dropped closes its alert unjudged without a model
-// call; a second call, a retry after a lost completion, leaves it so.
-func TestDropTripResolvesTheAlertUnjudged(t *testing.T) {
+// A trip the workflow dropped, its run ended, is the attempt that ended
+// before the supervisor looked: its alert is noise with that diagnosis,
+// without a model call; a second call, a retry after a lost completion,
+// leaves it so.
+func TestDropTripJudgesTheAlertAsAnEndedAttempt(t *testing.T) {
 	c := newGateCase(t, ActivityModelReview, `{"action":"cancel","diagnosis":"x"}`, nil)
 	trip := GateTrip{Activity: ActivityModelReview, ActivityID: "ModelReview-1", Attempt: 1, AlertID: c.alert}
 	for range 2 {
@@ -348,8 +350,8 @@ func TestDropTripResolvesTheAlertUnjudged(t *testing.T) {
 		}
 	}
 	a := c.alertRow(t)
-	if a.Verdict != VerdictUnjudged || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil ||
-		a.Detail["diagnosis"] != "dropped: its run ended before the gate supervisor took the trip" || len(c.model.chats) != 0 {
+	if a.Verdict != VerdictNoise || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil || a.Detail["action"] != "" ||
+		a.Detail["diagnosis"] != "the attempt ended before the supervisor looked" || len(c.model.chats) != 0 {
 		t.Fatalf("alert = %+v after %d model calls", a, len(c.model.chats))
 	}
 }

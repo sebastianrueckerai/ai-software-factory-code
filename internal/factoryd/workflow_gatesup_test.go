@@ -38,12 +38,12 @@ func (h *workflowHarness) runTripAfter(d time.Duration, activity string, n int, 
 	}, d)
 }
 
-// onDropTrip records each DropTrip call as "alert N at D", D on the
-// workflow's clock from now.
-func (h *workflowHarness) onDropTrip() *[]string {
+// onDropTrip answers each DropTrip call after d and records it as
+// "alert N at D", D its end on the workflow's clock from now.
+func (h *workflowHarness) onDropTrip(d time.Duration) *[]string {
 	var got []string
 	start := h.env.Now()
-	h.env.OnActivity(ActivityDropTrip, mock.Anything, "t1", mock.Anything).Return(
+	h.env.OnActivity(ActivityDropTrip, mock.Anything, "t1", mock.Anything).After(d).Return(
 		func(ctx context.Context, taskID string, trip GateTrip) error {
 			got = append(got, fmt.Sprintf("alert %d at %s", trip.AlertID, h.env.Now().Sub(start)))
 			return nil
@@ -223,7 +223,7 @@ func TestWorkflowDroppedTripsResolveTheirAlerts(t *testing.T) {
 			g := newGateHarness(t, func(g *gateHarness) { g.reviewDelay = tc.review })
 			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 			calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
-			drops := g.onDropTrip()
+			drops := g.onDropTrip(0)
 			tc.setup(g)
 
 			if final := g.run(t); final != tc.final || len(*calls) != 0 {
@@ -233,6 +233,27 @@ func TestWorkflowDroppedTripsResolveTheirAlerts(t *testing.T) {
 				t.Fatalf("drops = %q, want %q", *drops, tc.want)
 			}
 		})
+	}
+}
+
+// A drop runs beside the wait that dropped the trip: with the store
+// holding DropTrip for 2 h, the merge at 10 min still ends the check wait
+// and the task then, and the workflow ends only once the drop answered
+// at 2h5m, so none is abandoned.
+func TestWorkflowDropHoldsNoWait(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	drops := g.onDropTrip(2 * time.Hour)
+	g.tripAfter(5*time.Minute, ActivityRunSession, 1)
+	g.signalAfter(10*time.Minute, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || g.finishAt.Sub(g.started) != 10*time.Minute {
+		t.Fatalf("final = %q at %s, want done at 10m0s", final, g.finishAt.Sub(g.started))
+	}
+	if want := []string{"alert 1 at 2h5m0s"}; !slices.Equal(*drops, want) {
+		t.Fatalf("drops = %q, want %q", *drops, want)
 	}
 }
 

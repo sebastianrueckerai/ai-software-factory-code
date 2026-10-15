@@ -36,8 +36,7 @@ const (
 	VerdictReal  = "real"
 	VerdictNoise = "noise"
 	// VerdictUnjudged closes an escalation or info_request alert whose
-	// task ended before an approver judged it, and a gate_bound alert
-	// whose run ended before the gate supervisor took its trip.
+	// task ended before an approver judged it.
 	VerdictUnjudged = "unjudged"
 )
 

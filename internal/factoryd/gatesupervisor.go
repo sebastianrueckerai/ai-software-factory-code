@@ -53,11 +53,30 @@ func (g GateSupervision) allowed() []SupervisorAction {
 }
 
 // GateDecision is the supervisor's answer; no action when the attempt had
-// ended before it looked.
+// ended before it looked (attemptEnded).
 type GateDecision struct {
 	Action         SupervisorAction `json:"action"`
 	Diagnosis      string           `json:"diagnosis"`
 	Recommendation string           `json:"recommendation,omitempty"`
+}
+
+// attemptEnded is the answer on a trip whose attempt ended before the
+// gate supervisor looked: SuperviseGate's, and DropTrip's on a trip the
+// workflow dropped, its run ended first.
+var attemptEnded = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
+
+// verdict is the decision's verdict on its trip's alert: no action (the
+// attempt ended without one) is noise, like a wait.
+func (d GateDecision) verdict() string {
+	if d.Action == "" {
+		return VerdictNoise
+	}
+	return tripVerdict(d.Action)
+}
+
+// detail is the decision as its alert's detail.
+func (d GateDecision) detail() map[string]any {
+	return map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation}
 }
 
 // gateBundle is what the gate supervisor reads, assembled by factoryd with
@@ -109,7 +128,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	late := false
 	switch {
 	case !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt):
-		d = GateDecision{Diagnosis: "the attempt ended before the supervisor looked"}
+		d = attemptEnded
 	case t.Source == SourceRoll:
 		d = GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call (ruling 178): its gate trip goes to a human",
 			Recommendation: fmt.Sprintf("look at %s of roll task %s yourself", in.Trip.Activity, t.ID)}
@@ -140,15 +159,11 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 			r.cfg.Gates.Retry(workflowID, in.Trip.ActivityID, in.Trip.Attempt)
 		}
 	}
-	verdict := tripVerdict(d.Action)
-	if d.Action == "" {
-		verdict = VerdictNoise
-	}
-	detail := map[string]any{"action": string(d.Action), "diagnosis": d.Diagnosis, "recommendation": d.Recommendation}
+	detail := d.detail()
 	if late {
 		detail["note"] = "gate ended before the answer"
 	}
-	if err := r.store.ResolveAlert(ctx, in.Trip.AlertID, AlertGateBound, verdict, "supervisor", detail); err != nil {
+	if err := r.store.ResolveAlert(ctx, in.Trip.AlertID, AlertGateBound, d.verdict(), "supervisor", detail); err != nil {
 		log.Printf("task %s: judge alert %d: %v", t.ID, in.Trip.AlertID, err)
 	}
 	detail["activity"], detail["attempt"], detail["alert"] = in.Trip.Activity, in.Trip.Attempt, in.Trip.AlertID
@@ -156,19 +171,19 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	return d, nil
 }
 
-// tripDropped is the diagnosis on the alert of a trip the workflow dropped.
-const tripDropped = "dropped: its run ended before the gate supervisor took the trip"
-
 // DropTrip resolves the gate_bound alert of a trip the workflow dropped
-// (versionTripRouting): its run ended before the gate supervisor took
-// it, so nobody judged it. An alert resolved already (a retry of this
-// call) stays as it is.
+// (versionTripRouting) as SuperviseGate resolves one whose attempt ended
+// before it looked: the trip's run had ended. An alert resolved already
+// (a retry of this call) stays as it is.
 func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) error {
-	err := r.store.ResolveAlert(ctx, trip.AlertID, AlertGateBound, VerdictUnjudged, FactoryDecider, map[string]any{"diagnosis": tripDropped})
+	err := r.store.ResolveAlert(ctx, trip.AlertID, AlertGateBound, attemptEnded.verdict(), FactoryDecider, attemptEnded.detail())
 	if errors.Is(err, ErrNotFound) {
 		return nil
 	}
-	return err
+	if err != nil {
+		return fmt.Errorf("alert %d: %w", trip.AlertID, err)
+	}
+	return nil
 }
 
 // gateBundle reads what the supervisor needs for the activity, and the
