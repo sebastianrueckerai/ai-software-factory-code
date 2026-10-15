@@ -190,9 +190,10 @@ func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun
 
 // lostRunners answers, for each of run's failed statuses, the job's link
 // and the record that says it lost its runner (runnerLost), when every one
-// is a job of run that did; nil when any failed a step, is no job of run,
-// or has a log factoryd cannot read: the fix-forward card stays the
-// default.
+// is a job of run that did; nil when any failed a step or is no job of
+// run: the fix-forward card stays the default. A log factoryd cannot read
+// counts as lost: a runner lost before the job's first line leaves none,
+// and with no line run, no code failed.
 func (r *Roller) lostRunners(ctx context.Context, run ActionRun, failed []CommitStatus) []string {
 	jobs := fmt.Sprintf("/%s/actions/runs/%d/jobs/", r.Repo, run.Index)
 	var out []string
@@ -200,20 +201,25 @@ func (r *Roller) lostRunners(ctx context.Context, run ActionRun, failed []Commit
 		if !strings.HasPrefix(s.TargetURL, jobs) {
 			return nil
 		}
+		job := s.Context + ", " + r.Forgejo.PublicURL + s.TargetURL
 		body, err := r.Forgejo.JobLog(ctx, s.TargetURL)
 		if err != nil {
 			log.Printf("roller: job log %s: %v", s.TargetURL, err)
-			return nil
+			out = append(out, fmt.Sprintf("%s: factoryd cannot read its log (%v); a runner lost before the job's first line leaves none.", job, err))
+			continue
 		}
 		line, silent, ok := runnerLost(body, s.Created)
-		if !ok {
+		switch {
+		case !ok:
 			return nil
+		case line == "":
+			out = append(out, job+": its log is empty, its runner lost before the job's first line.")
+		case silent > 0:
+			out = append(out, fmt.Sprintf("%s: Forgejo failed it at %s, %s after its log's last line, its runner silent since:\n\n%s",
+				job, s.Created.UTC().Format(time.RFC3339), silent.Round(time.Second), fenced(line)))
+		default:
+			out = append(out, job+":\n\n"+fenced(line))
 		}
-		record := ""
-		if silent > 0 {
-			record = fmt.Sprintf(": Forgejo failed it at %s, %s after its log's last line, its runner silent since", s.Created.UTC().Format(time.RFC3339), silent.Round(time.Second))
-		}
-		out = append(out, fmt.Sprintf("%s, %s%s%s:\n\n%s", s.Context, r.Forgejo.PublicURL, s.TargetURL, record, fenced(line)))
 	}
 	return out
 }
@@ -256,7 +262,9 @@ const runnerSilence = 5 * time.Minute
 // context, first of the errors its line joins; one whose docker daemon
 // restarted names the daemon lost (dockerLost). A log with no runner line
 // that Forgejo failed runnerSilence or more after its last line lost its
-// runner outright: silent is that gap, the line the log's last.
+// runner outright: silent is that gap, the line the log's last. A log with
+// no line at all lost it before the job's first (the runner writes its
+// set-up lines before any step runs): line is then empty.
 func runnerLost(log []byte, recorded time.Time) (line string, silent time.Duration, ok bool) {
 	last := ""
 	for _, l := range strings.Split(string(log), "\n") {
@@ -276,6 +284,9 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 	}
 	if line != "" {
 		return line, 0, true
+	}
+	if last == "" {
+		return "", 0, true
 	}
 	ts, _, _ := strings.Cut(last, " ")
 	at, err := time.Parse(time.RFC3339Nano, ts)

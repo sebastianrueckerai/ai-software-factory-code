@@ -281,6 +281,46 @@ func TestRollerFilesARerunCardWhenARunnerWasKilledOrItsDockerRestarted(t *testin
 	}
 }
 
+// A runner killed before it uploaded a line leaves its job no log: an
+// empty one, or one Forgejo cannot open (actions.Logs answers 500 for a
+// log file never written). No line ran, so no code failed: the red run
+// files the re-run card, and no agent starts.
+func TestRollerFilesARerunCardWhenAJobLeftNoLog(t *testing.T) {
+	test, image := "/"+codeRepo+"/actions/runs/0/jobs/0", "/"+codeRepo+"/actions/runs/0/jobs/1"
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(58, commitC2, "failure"), pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx}, gwOldIdx, workerOldIdx, runnerIdx),
+		statuses: map[string][]map[string]string{commitC2: {
+			{"status": "failure", "context": "ci / test (push)", "target_url": test, "created_at": "2026-10-15T07:13:45Z"},
+			{"status": "failure", "context": "ci / image (push)", "target_url": image, "created_at": "2026-10-15T07:13:45Z"},
+		}},
+		logs:       map[string]string{test: ""},
+		unreadable: map[string]bool{image: true},
+	}
+	roller, store, wf := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.FixTask == "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
+	}
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push) (runner lost)\n\n") ||
+		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": its log is empty, its runner lost before the job's first line.") ||
+		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+": factoryd cannot read its log (forgejo job log "+image+": status 500); a runner lost before the job's first line leaves none.") {
+		t.Fatalf("issues %q, want the one re-run card naming both jobs", f.issues)
+	}
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceRerun || fix.Kind != "human" || fix.Status != "waiting-human" {
+		t.Fatalf("card %+v, want a human re-run card", fix)
+	}
+	if len(wf.started) != 0 {
+		t.Fatalf("workflows started %q, want none", wf.started)
+	}
+}
+
 // While main's newest push run waits, an older red one pauses nothing:
 // it says nothing of main's head.
 func TestRollerWaitsOnMainsNewestRun(t *testing.T) {
@@ -344,6 +384,9 @@ func TestRunnerLost(t *testing.T) {
 		readTestdata(t, "joblog-run1199-test.log") + "2026-10-14T19:06:36.0000000Z \u2699\ufe0f [runner]: context canceled\n": false,
 		// the same step output, no runner line
 		"2026-10-14T20:29:01.7686760Z context canceled\n": false,
+		// a runner lost before its first line: no line ran
+		"":   true,
+		"\n": true,
 		// dind back before the runner's next call: the daemon's answers
 		// for the job's stopped container and its lost exec
 		"2026-10-15T07:04:50.0000000Z \u2699\ufe0f [runner]: failed to create exec: Error response from daemon: container 3f2a is not running\n": true,
