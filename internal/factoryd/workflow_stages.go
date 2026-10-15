@@ -532,13 +532,15 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 // head is the commit it reads, the one the checks stage was waiting on
 // when it scheduled the call at since. asked is the escalation its gate
 // supervisor asked a human while the checks wait ran, comment its issue
-// comment (versionBesideLadder); "" for none.
+// comment, answers the answers to it another wait read
+// (versionBesideLadder); "" for none.
 type besideRun struct {
 	stage   string
 	head    string
 	since   time.Time
 	asked   string
 	comment int64
+	answers []string
 	*gateRun
 }
 
@@ -651,13 +653,59 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 }
 
 // besideAnswered waits for the answer to f's question, asked while the
-// checks wait ran (askBeside), as gateEscalated waits for one: asked
-// again when a later escalation took the answers since.
+// checks wait ran (askBeside), as gateEscalated waits for one: an answer
+// a later escalation's wait read is the question's at once
+// (answerBeside), and with none the question is asked again after a
+// later escalation.
 func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
-	if f.comment != t.escalation {
+	switch {
+	case len(f.answers) > 0:
+		t.keepAnswers(f)
+		return t.gateAnswered("", "", nil)
+	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
 	}
 	return t.gateAnswered(t.awaitAnswer(escalationQuestion(f.asked), nil))
+}
+
+// besideOf is the gate of runs, beside the checks wait, whose question
+// comment c answers (versionBesideLadder): the newest asked before c,
+// unless the escalation asked last came between them; nil for none. An
+// answer goes to the escalation it answers, whichever wait reads it.
+func (t *taskRun) besideOf(runs []*besideRun, c int64) *besideRun {
+	var to *besideRun
+	for _, f := range runs {
+		if f.asked != "" && f.comment < c && (to == nil || f.comment > to.comment) {
+			to = f
+		}
+	}
+	if to == nil || to.comment < t.escalation && t.escalation < c {
+		return nil
+	}
+	return to
+}
+
+// answerBeside keeps sig, a comment that answers f's question, for f: its
+// stage takes it, or its withdrawal keeps it with the human's answers.
+func (t *taskRun) answerBeside(f *besideRun, sig TaskSignal) {
+	detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "answers": f.comment}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+	}
+	f.answers = append(f.answers, answerText(sig.Author, escalationQuestion(f.asked), sig.Body))
+}
+
+// keepAnswers puts f's answers with the human's answers, after those to
+// the escalations asked after f's, as Reconcile rebuilds them
+// (answersFrom).
+func (t *taskRun) keepAnswers(f *besideRun) {
+	i := slices.IndexFunc(t.answerTo, func(c int64) bool { return c < f.comment })
+	if i < 0 {
+		i = len(t.answerTo)
+	}
+	t.answers = slices.Insert(t.answers, i, f.answers...)
+	t.answerTo = slices.Insert(t.answerTo, i, slices.Repeat([]int64{f.comment}, len(f.answers))...)
+	f.answers = nil
 }
 
 // awaitBeside waits for a gate scheduled beside the checks wait as watch
@@ -716,7 +764,8 @@ func (t *taskRun) cancelBeside(why string) {
 // review comment lands on a head that goes back to the agent, and no
 // call outlives the pass that scheduled it. The trips kept for them are
 // dropped, and a question one's escalation asked is withdrawn for why
-// (versionBesideLadder), none for "": the task's end closes it.
+// (versionBesideLadder), none for "": the task's end closes it. A
+// withdrawn question's answers so far stay with the human's answers.
 func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	for _, f := range runs {
 		f.cancel()
@@ -724,9 +773,25 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	for _, f := range runs {
 		_ = f.future.Get(t.ctx, nil)
 		t.dropTrips(f.trips...)
-		if f.asked == "" || why == "" {
-			continue
+	}
+	asked := slices.DeleteFunc(slices.Clone(runs), func(f *besideRun) bool { return f.asked == "" })
+	if why == "" || len(asked) == 0 {
+		return
+	}
+	if slices.ContainsFunc(asked, func(f *besideRun) bool { return f.comment == t.escalation }) {
+		// no wait reads the comments still unread: newer than the last
+		// question, each answers one of these
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			if f := t.besideOf(asked, sig.Comment); f != nil {
+				t.answerBeside(f, sig)
+			} else {
+				t.counted(SignalHumanComment, sig)
+			}
 		}
+	}
+	for _, f := range asked {
+		t.keepAnswers(f)
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
 		}

@@ -1495,12 +1495,14 @@ func TestStagesBesideGatesCancelFailsTheTaskAtOnce(t *testing.T) {
 // A beside gate's escalation asks the human at once, and red checks that
 // send the head back withdraw the question (versionBesideLadder): the
 // review's (or the audit's) trip at 15 min escalates then, its call
-// cancelled; the checks are red at 20 min, so the question, comment 601,
-// is withdrawn then because the checks failed, and the second session
-// starts with their findings. The next head's gates run beside its checks
+// cancelled; sebastian answers it at 17 min; the checks are red at 20
+// min, so the question, comment 601, is withdrawn then because the checks
+// failed, and the second session starts with their findings and the
+// answer, as Reconcile rebuilds it. The next head's gates run beside its checks
 // from 20 min, and its approval is asked at 3h20m, after its 3-hour
 // review and audit. A run from before the change keeps the trip for the
-// stage, which the red checks never reach: no question, none withdrawn.
+// stage, which the red checks never reach: no question, none withdrawn,
+// and the comment answers nothing.
 func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -1528,6 +1530,7 @@ func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 					return nil
 				})
 			g.tripAfter(15*time.Minute, tc.activity, 1)
+			g.signalAfter(17*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 700})
 			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
 			if final := g.run(t); final != "done" {
@@ -1540,19 +1543,21 @@ func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 			if !slices.Equal(asked, tc.asked) {
 				t.Fatalf("escalated at %v, want %v", asked, tc.asked)
 			}
-			var want []string
+			var want, answers []string
 			if tc.asked != nil {
-				reason := "The gate supervisor stopped " + tc.activity + " (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
+				question := "The gate supervisor stopped " + tc.activity + " (attempt 1) past its bound of 10m0s: the model hangs"
+				reason := question + "\nRecommendation: look at the gateway"
 				if !slices.Equal(g.escalated, []string{reason}) {
 					t.Fatalf("escalations = %q, want %q", g.escalated, reason)
 				}
 				want = []string{"601 at 20m0s because the checks failed: " + reason}
+				answers = []string{`sebastian, to "` + question + `": gateway restarted`}
 			}
 			if !slices.Equal(withdrawn, want) {
 				t.Fatalf("withdrawn %q, want %q", withdrawn, want)
 			}
-			if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) {
-				t.Fatalf("sessions = %+v", g.sessions)
+			if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) || !slices.Equal(g.sessions[1].Answers, answers) {
+				t.Fatalf("sessions = %+v, want the second with answers %q", g.sessions, answers)
 			}
 			if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || g.requested[0].Sub(g.started) != 200*time.Minute {
 				t.Fatalf("approvals %+v asked at %v, want one on c2 at 3h20m0s", g.approvals, g.requested)
@@ -1602,6 +1607,56 @@ func TestStagesGreenChecksHandTheQuestionToItsStage(t *testing.T) {
 				t.Fatalf("approval requested %v, want once at %s", g.requested, tc.approval)
 			}
 		})
+	}
+}
+
+// An answer goes to the escalation it answers, whichever wait reads it
+// (versionBesideLadder): the review's trip at 10 min asks comment 610,
+// sebastian answers it at 12 min with comment 615, and the checks' own
+// trip at 20 min asks comment 620, whose wait reads 615 first and keeps
+// it for the review. The checks' answer at 1 h runs them again; the review
+// stage takes 615 as its question's answer, asks nothing again, and
+// reviews the head again for 3 h: the approval at 4h0m30s. Before the
+// change the checks' wait dropped 615 as older than its question, and the
+// review stage asked again at 1h0m30s, unanswered until the close.
+func TestStagesAnAnswerGoesToTheQuestionItAnswers(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviewDelay = 3 * time.Hour
+		g.escalationIDs = []int64{610, 620, 630}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(time.Hour).Return(ChecksResult{State: ChecksSuccess}, nil).Once()
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(ChecksResult{State: ChecksSuccess}, nil)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "stuck", Recommendation: "look"})
+	g.tripAfter(10*time.Minute, ActivityModelReview, 1)
+	g.tripAfter(20*time.Minute, ActivityWaitChecks, 2)
+	g.signalAfter(12*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 615})
+	g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "runner registered", Comment: 700})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(20*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	var asked []time.Duration
+	for _, at := range g.escalatedAt {
+		asked = append(asked, at.Sub(g.started))
+	}
+	if want := []time.Duration{10 * time.Minute, 20 * time.Minute}; !slices.Equal(asked, want) {
+		t.Fatalf("escalated at %v, want %v", asked, want)
+	}
+	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour+answerQuiet {
+		t.Fatalf("approval requested %v, want once at 4h0m30s", g.requested)
+	}
+	var signals []string
+	for _, s := range g.recorded {
+		if s.step == "signal" && s.detail["signal"] == SignalHumanComment {
+			signals = append(signals, fmt.Sprintf("%v answers %v", s.detail["comment"], s.detail["answers"]))
+		}
+	}
+	if want := []string{"615 answers 610", "700 answers <nil>"}; !slices.Equal(signals, want) {
+		t.Fatalf("comment signals %q, want %q", signals, want)
 	}
 }
 

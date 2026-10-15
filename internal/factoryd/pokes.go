@@ -12,9 +12,10 @@ import (
 
 // Pokes (roadmap 239): factoryd's own turns in the inbox thread of each
 // member a project tells, its notify list else its approvers, on 145's
-// event classes: a card that needs a human, a card stopped by its budget,
-// a terminal failure, a card or plan done, the agent's own starts and
-// filings at assisted and autonomous, and a change of the level. A poke
+// event classes: a card that needs a human (and one that needs them no
+// more, its question withdrawn), a card stopped by its budget, a terminal
+// failure, a card or plan done, the agent's own starts and filings at
+// assisted and autonomous, and a change of the level. A poke
 // is a row written through the message path: no model turn and no queue,
 // one per state change. A repeat of the newest poke about the same card
 // counts on that row (74's rule).
@@ -27,7 +28,7 @@ const (
 )
 
 // pokeKinds are the events a poke may answer.
-var pokeKinds = []string{EventQuestionAsked, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
+var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted}
 
 // budgetSources are the escalation sources of a card stopped by money.
@@ -128,6 +129,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 				}
 			}
 		}
+	case EventQuestionWithdrawn:
+		// a row after the card's escalation: the inbox offers its answer
+		// row no more
+		m.Content = ref + " needs you no more: its question is withdrawn because " + str("reason") + "."
 	case EventApprovalRequested:
 		m.Kind = MessageEscalation
 		switch str("kind") {

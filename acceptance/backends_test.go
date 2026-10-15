@@ -625,6 +625,10 @@ func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdi
 	return nil
 }
 
+func (s *acceptanceStore) JudgeEscalation(_ context.Context, taskID string, comment int64, verdict, by string) error {
+	panic("unused")
+}
+
 func (s *acceptanceStore) OpenReportTask(_ context.Context, t factoryd.Task) (factoryd.Task, error) {
 	have, ok, _ := s.ReportOf(context.Background(), t.Parent, t.Source)
 	if ok {

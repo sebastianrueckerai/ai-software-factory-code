@@ -384,5 +384,43 @@ func TestPGStoreResolveAlert(t *testing.T) {
 		fmt.Sprint(a.Detail) != "map[action:wait attempt:1 diagnosis:checks run]" {
 		t.Fatalf("alert = %+v", a)
 	}
+}
 
+// JudgeEscalation judges one escalation's alert, the one its comment
+// names: not the task's other escalations, nor another task's, nor one
+// judged already.
+func TestPGStoreJudgeEscalation(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, a := range []Alert{{TaskID: "t1", Detail: map[string]any{"comment": 650}}, {TaskID: "t1", Detail: map[string]any{"comment": 701}},
+		{TaskID: "t2", Detail: map[string]any{"comment": 701}}} {
+		a.Kind, a.Source = AlertEscalation, "supervisor"
+		if _, err := s.InsertAlert(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 2 {
+		if err := s.JudgeEscalation(ctx, "t1", 701, VerdictNoise, FactoryDecider); err != nil {
+			t.Fatal(err)
+		}
+	}
+	alerts, err := s.Alerts(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, a := range alerts {
+		got = append(got, fmt.Sprintf("%s %v %q by %q", a.TaskID, a.Detail["comment"], a.Verdict, a.ResolvedBy))
+	}
+	slices.Sort(got)
+	if want := []string{`t1 650 "" by ""`, `t1 701 "noise" by "factoryd"`, `t2 701 "" by ""`}; !slices.Equal(got, want) {
+		t.Fatalf("alerts = %q, want %q", got, want)
+	}
 }

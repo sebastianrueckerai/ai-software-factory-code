@@ -67,17 +67,19 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// answerKinds are the events an answer to an escalation records, on any
-// venue: the first one after the escalation wins.
+// answerKinds are the events that settle an escalation: an answer on any
+// venue, or factoryd's withdrawal of the question. The first one after
+// the escalation wins.
 var answerKinds = []string{factoryd.EventQuestionAnswered, factoryd.EventSessionGranted, factoryd.EventMergeApproved, factoryd.EventMergeDenied,
-	factoryd.EventPlanAccepted, factoryd.EventPlanChangesRequested, factoryd.EventPlanRejected, factoryd.EventCardClosed}
+	factoryd.EventPlanAccepted, factoryd.EventPlanChangesRequested, factoryd.EventPlanRejected, factoryd.EventCardClosed, factoryd.EventQuestionWithdrawn}
 
 // resolveChoice decides card id with choice as its state asks: a pending
 // merge approves on Approve and a pending plan accepts on Accept, each
 // under the role its board button and chat tool need, a waiting
 // question takes the choice as the member's answer, a human-lane
 // escalation closes with it. A card answered since the escalation asked
-// at asked, or waiting no more, says so: the first answer wins.
+// at asked, its question withdrawn, or waiting no more, says so: the
+// first answer wins.
 func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, asked time.Time) (string, error) {
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	switch {
@@ -91,6 +93,9 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 		return "", refuse(http.StatusInternalServerError, "cannot read the card's events")
 	}
 	if i := slices.IndexFunc(events, func(e factoryd.Event) bool { return slices.Contains(answerKinds, e.Kind) && !e.At.Before(asked) }); i >= 0 {
+		if e := events[i]; e.Kind == factoryd.EventQuestionWithdrawn {
+			return fmt.Sprintf("#%d needs no answer: its question is withdrawn because %v.", t.IssueNumber, e.Detail["reason"]), nil
+		}
 		return fmt.Sprintf("#%d is answered already: %s by %s.", t.IssueNumber, strings.ReplaceAll(events[i].Kind, "_", " "), events[i].Actor), nil
 	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")

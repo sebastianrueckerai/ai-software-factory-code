@@ -518,6 +518,9 @@ func (s *accBatchStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdi
 func (s *accBatchStore) JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error {
 	panic("unused")
 }
+func (s *accBatchStore) JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error {
+	panic("unused")
+}
 func (s *accBatchStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
 	panic("unused")
 }

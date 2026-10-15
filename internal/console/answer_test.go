@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
@@ -144,4 +145,38 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 		"The answer did not land: Only the approvers of project ai-software-factory-code may accept a plan.",
 	})
 	equal(t, "the requests", []string{r.approvals.rows[len(r.approvals.rows)-2].Status, r.approvals.rows[len(r.approvals.rows)-1].Status}, []string{"pending", "pending"})
+}
+
+// The answer row of a question factoryd withdrew answers nothing (roadmap
+// 246): card #13 waits on a later question, and a press on the withdrawn
+// one's row says it needs no answer and posts no comment, where the card
+// waiting on a human again would take it as the later question's answer.
+func TestChatAnswerRowOfAWithdrawnQuestion(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#13 needs you: Use a replica?", Choices: []string{"Yes", "No"}, TaskID: "t-e", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	asked := rows[len(rows)-1]
+	if _, err := r.events.Record(ctx, factoryd.Event{At: asked.At.Add(time.Minute), Repository: "sf/code", TaskID: "t-e", IssueNumber: 13,
+		Kind: factoryd.EventQuestionWithdrawn, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
+		Detail: map[string]any{"question": "Use a replica?", "comment": 601, "reason": "the checks failed"}}); err != nil {
+		t.Fatal(err)
+	}
+	code, _, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(asked.ID, 10)}, "choice": {"Yes"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("the answer = %d", code)
+	}
+	if posted := r.fg.commentBodies("/api/v1/repos/sf/code/issues/13/comments"); len(posted) != 0 {
+		t.Fatalf("posted %q on #13, want nothing", posted)
+	}
+	rows, _ = chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	if last := rows[len(rows)-1]; last.Content != "#13 needs no answer: its question is withdrawn because the checks failed." {
+		t.Fatalf("the factory's row = %q", last.Content)
+	}
 }

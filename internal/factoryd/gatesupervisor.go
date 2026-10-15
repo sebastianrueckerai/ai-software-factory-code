@@ -193,8 +193,9 @@ const ActivityWithdrawQuestion = "WithdrawQuestion"
 // WithdrawQuestion withdraws the gate supervisor's escalation of reason,
 // asked with comment while the checks wait ran, for why: the task is in
 // review again, as before the question; a comment on the issue says the
-// question needs no answer and why; and a question_withdrawn row says it
-// on the card.
+// question needs no answer and why; its alert is no real problem, by
+// factoryd's verdict; the intake event ends its answers (answersFrom);
+// and a question_withdrawn row says it on the card and pokes the inbox.
 func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string) error {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -211,6 +212,12 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
 			return err
 		}
+	}
+	if err := r.store.JudgeEscalation(ctx, taskID, comment, VerdictNoise, FactoryDecider); err != nil {
+		return err
+	}
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: why, CommentID: comment}); err != nil {
+		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", taskID, comment, err)
 	}
 	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}
 	r.record(ctx, taskID, "question_withdrawn", detail)

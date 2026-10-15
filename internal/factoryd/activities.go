@@ -1371,10 +1371,11 @@ func waitsOnScreening(events []IntakeEvent) bool {
 
 // answersFrom rebuilds the human's answers from a task's intake events
 // (oldest first), newest first: every trusted issue comment newer than an
-// escalation's comment, tagged with that escalation's question (a healed
-// re-ask keeps the question it re-asks), the comments answering one
-// escalation in the order they were written (versionAnswerBurst).
-// question is the last one asked, choices the answers its agent offered.
+// escalation's comment, until its withdrawal, tagged with that
+// escalation's question (a healed re-ask keeps the question it re-asks),
+// the comments answering one escalation in the order they were written
+// (versionAnswerBurst). question is the last one asked, choices the
+// answers its agent offered.
 func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
 	var since int64
 	at := 0 // where the escalation's next answer goes
@@ -1387,6 +1388,8 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 			}
 		case e.Kind == IntakeInfoRequest:
 			since = 0 // what follows answers the information request
+		case e.Kind == IntakeEscalationWithdrawn && e.CommentID == since:
+			since = 0
 		case e.Kind == "issue_comment" && e.Trusted && since != 0 && e.CommentID > since:
 			answers = slices.Insert(answers, at, answerText(e.Author, question, e.Body))
 			at++

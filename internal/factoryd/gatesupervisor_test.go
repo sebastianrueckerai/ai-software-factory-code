@@ -399,14 +399,22 @@ func TestDropTripJudgesTheAlertAsAnEndedAttempt(t *testing.T) {
 
 // WithdrawQuestion withdraws a beside gate's question when the head it
 // was asked on went back: the task is in review again, on the issue too,
-// a comment there says why no answer is needed, and the question_withdrawn
-// row and the timeline step carry the question, its comment and why. A
-// second call, the task in review already, leaves the state as it is.
+// a comment there says why no answer is needed, its escalation alert is
+// no real problem by factoryd's verdict (the task's other escalation's
+// stays open), an intake event ends its answers, and the
+// question_withdrawn row and the timeline step carry the question, its
+// comment and why. A second call, the task in review already, leaves the
+// state as it is.
 func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/waiting-human"}}}
 	r, store, objects := newActivityRunner(t, withStatus(prTask, "waiting-human"), fj)
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
+	for _, comment := range []int64{650, 701} {
+		if _, err := store.InsertAlert(context.Background(), Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "t1", Detail: map[string]any{"comment": comment}}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	reason := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
 	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(701), checksFailed); err != nil {
 		t.Fatal(err)
@@ -426,6 +434,16 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	}
 	if step := timelineStep(t, objects, "t1", "question_withdrawn"); step["question"] != question || step["comment"] != 701.0 || step["reason"] != "the checks failed" {
 		t.Fatalf("question_withdrawn step = %v", step)
+	}
+	var alerts []string
+	for _, a := range store.alertRows() {
+		alerts = append(alerts, fmt.Sprintf("%v %q by %q", a.Detail["comment"], a.Verdict, a.ResolvedBy))
+	}
+	if want := []string{`650 "" by ""`, `701 "noise" by "factoryd"`}; !slices.Equal(alerts, want) {
+		t.Fatalf("escalation alerts = %q, want %q", alerts, want)
+	}
+	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeEscalationWithdrawn || e[0].CommentID != 701 || e[0].Body != "the checks failed" {
+		t.Fatalf("intake events = %+v, want the withdrawal of 701", e)
 	}
 	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(701), checksFailed); err != nil {
 		t.Fatalf("a second call: %v", err)

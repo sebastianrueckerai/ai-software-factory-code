@@ -96,6 +96,11 @@ const (
 	IntakeInfoRequest = "info_request"
 )
 
+// IntakeEscalationWithdrawn records the withdrawal of an escalation
+// (versionBesideLadder), CommentID the escalation's comment: later
+// comments answer it no more.
+const IntakeEscalationWithdrawn = "escalation_withdrawn"
+
 // IntakePosterComment is a comment on the issue by its author when they
 // cannot write the repository: signalled as information for an
 // information request, never an escalation's answer (ruling 150).

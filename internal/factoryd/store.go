@@ -397,6 +397,9 @@ type Store interface {
 	// JudgeEscalations sets verdict on the task's escalation alerts from
 	// source that have none.
 	JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error
+	// JudgeEscalation sets verdict on the task's open escalation alert of
+	// the escalation comment, none of its others.
+	JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error
 	// OpenReportTask creates report task t unless its parent has one of
 	// its source, and returns the parent's report task of that source.
 	OpenReportTask(ctx context.Context, t Task) (Task, error)

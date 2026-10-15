@@ -947,6 +947,19 @@ func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID, source, verdic
 	return nil
 }
 
+func (s *fakeStore) JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Verdict == "" && fmt.Sprint(a.Detail["comment"]) == fmt.Sprint(comment) {
+			now := time.Now()
+			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
+			s.alerts[i] = a
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
 	return dayEUR - s.daySpent, nil
 }

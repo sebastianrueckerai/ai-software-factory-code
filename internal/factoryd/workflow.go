@@ -994,6 +994,7 @@ type taskRun struct {
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
+	answerTo          []int64   // the escalation comment each answer this run took answers, the head of answers (keepAnswers)
 	escalation        int64     // the escalation comment human answers must be newer than
 	infoRequest       int64     // the information request comment the author's answers must be newer than
 	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
@@ -2681,6 +2682,10 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 		}
 		var sig TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+			if f := t.besideOf(t.beside, sig.Comment); f != nil {
+				t.answerBeside(f, sig)
+				continue
+			}
 			if !t.counted(SignalHumanComment, sig) {
 				continue
 			}
@@ -2690,6 +2695,7 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 				continue
 			}
 			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body))
+			t.answerTo = slices.Insert(t.answerTo, at, t.escalation)
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}

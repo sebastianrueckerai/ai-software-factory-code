@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -34,6 +35,10 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessageEscalation, Content: "#603 needs you: Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
 		{"a budget stop", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "the remaining budget cannot fund a call", "source": "budget"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 is stopped by its budget: the remaining budget cannot fund a call"}, true},
+		// a row after the card's escalation, so the inbox's answer row
+		// offers it no more
+		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "Merge PR #612 of #603 waits for you: risk class high.", Choices: []string{"Approve"}}, true},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
@@ -65,6 +70,9 @@ func TestPokeOf(t *testing.T) {
 			}
 			if !ok {
 				return
+			}
+			if !slices.Contains(pokeKinds, tt.e.Kind) {
+				t.Fatalf("the writer reads no %s event", tt.e.Kind)
 			}
 			tt.want.Role = "assistant"
 			if tt.e.Kind != EventAutonomyChanged {
@@ -165,5 +173,16 @@ func TestPGStorePokes(t *testing.T) {
 	rows, _ := s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
 	if len(rows) != 2 || rows[1].Content != "#603 needs you: Which port?" || rows[1].Repeats != 0 {
 		t.Fatalf("bob's inbox = %+v, want the second question as its own row", rows)
+	}
+
+	// its withdrawal is the inbox's newest row: the answer row is gone
+	record(Event{Repository: "sf/code", TaskID: "t-1", Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "Which port?", "reason": "the checks failed"}})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
+	if len(rows) != 3 || rows[2].Kind != MessagePoke || rows[2].Content != "#603 needs you no more: its question is withdrawn because the checks failed." {
+		t.Fatalf("bob's inbox = %+v, want the withdrawal as its newest row", rows)
 	}
 }

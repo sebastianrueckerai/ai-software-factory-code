@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -199,6 +200,16 @@ func (s *PGStore) JudgeEscalations(ctx context.Context, taskID, source, verdict,
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET verdict = $3, resolved_by = $4, resolved_at = now()
 		 WHERE task_id = $1 AND kind = $5 AND source = $2 AND verdict IS NULL`, taskID, source, verdict, by, AlertEscalation)
+	return err
+}
+
+// JudgeEscalation sets verdict on task's open escalation alert of the
+// escalation comment (its detail's comment).
+func (s *PGStore) JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET verdict = $3, resolved_by = $4, resolved_at = now()
+		 WHERE task_id = $1 AND kind = $5 AND verdict IS NULL AND detail->>'comment' = $2`,
+		taskID, strconv.FormatInt(comment, 10), verdict, by, AlertEscalation)
 	return err
 }
 

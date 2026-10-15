@@ -75,6 +75,8 @@ type workflowHarness struct {
 	closedAt    []time.Time // CloseNotReproduced calls
 	autoNotes   []string    // AutoMergeNote calls: "pr commit"
 	escalateErr error       // Escalate's error, nil = none
+	// escalationIDs are Escalate's comment ids in order; none: 601, 602, ...
+	escalationIDs []int64
 	// taskConfig answers TaskConfig when set; configPins are its calls' pins
 	taskConfig *TaskConfig
 	configPins []int64
@@ -245,6 +247,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			h.escalated = append(h.escalated, reason)
 			h.escalatedAt = append(h.escalatedAt, h.env.Now())
 			h.choices = append(h.choices, choices)
+			if n := len(h.escalated); n <= len(h.escalationIDs) {
+				return h.escalationIDs[n-1], h.escalateErr
+			}
 			return int64(600 + len(h.escalated)), h.escalateErr
 		})
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(

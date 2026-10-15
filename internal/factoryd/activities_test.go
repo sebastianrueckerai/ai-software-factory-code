@@ -1450,6 +1450,29 @@ func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
 	}
 }
 
+// A withdrawn escalation's answers end at its withdrawal: the comment
+// before it answers it, the one after it nothing; the withdrawal of an
+// earlier question leaves a later one's answers as they are.
+func TestAnswersFromEndsAWithdrawnEscalationsAnswers(t *testing.T) {
+	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs"
+	audit := "The gate supervisor stopped GateAudit (attempt 1) past its bound of 10m0s: hangs"
+	answers, _, _ := answersFrom([]IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 100, Body: review},
+		{Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 101, Trusted: true},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 100, Body: "the checks failed"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 102, Trusted: true},
+		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
+		{Kind: IntakeEscalation, CommentID: 300, Body: audit},
+		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 301, Trusted: true},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 200, Body: "the checks failed"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 302, Trusted: true},
+	})
+	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
+	if !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
 // at the cap, the model reviews oldest first, the last round, and
