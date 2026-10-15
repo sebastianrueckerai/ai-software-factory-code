@@ -268,7 +268,9 @@ async function text(page) {
         }
         // a save that refuses (the roadmap's structure): only the reason
         // keeps the refusal colour, retry is its own button the keyboard
-        // reaches, and it sends the save again
+        // reaches, and it sends the save again; its 422s are the expected
+        // answers, not errors
+        const refusedFrom = p.errors.length;
         await p.page.locator("#doc-mode-edit").click();
         await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
         await p.page.keyboard.press("Control+A");
@@ -294,6 +296,9 @@ async function text(page) {
         await p.page.locator('[data-act="discard-yes"]').click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the refused draft's dot stays after Discard");
+        const refusals = p.errors.splice(refusedFrom);
+        if (!refusals.some((e) => e.endsWith("/docs/docs/roadmap.md 422"))) fails.push("editor: the refused save answered no 422");
+        p.errors.push(...refusals.filter((e) => !e.endsWith("/docs/docs/roadmap.md 422")));
         // the slow save (item 7): three Ctrl+S with typing between them
         // leave exactly two commits, and the path line says saving…
         const count = await p.page.evaluate(async (u) => (await (await fetch(u)).json()).filter((e) => e.kind === "doc_written").length, base + "/projects/ai-software-factory-code/events");
