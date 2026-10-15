@@ -743,6 +743,68 @@ func TestIntakeUnknownEventTypeAccepted(t *testing.T) {
 	}
 }
 
+// A push to master of a project's document repository raises one
+// doc_written row per changed path under the document roots, via
+// webhook, for every project naming the repository as its chat's, the
+// commit that changed the path its actor; a commit carrying the door's
+// attribution trailers raised its event at the door and none here, and a
+// path outside the roots raises none (the 2026-10-15 plan, item 6).
+func TestPushRaisesDocWritten(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Timeline = &Timeline{Events: store}
+	in.Policy = func() policy.Tree {
+		return policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: "sf/code", Chat: &policy.ChatConfig{DocRepo: "sf/docs"}},
+			"demo": {Repository: "sf/demo", Chat: &policy.ChatConfig{DocRepo: "sf/demo-docs"}},
+		}}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"ref":        "refs/heads/master",
+		"repository": map[string]any{"full_name": "sf/docs"},
+		"commits": []map[string]any{
+			{"id": "d00d1", "message": "docs: the roadmap's fifth round",
+				"author":   map[string]string{"name": "Sebastian", "username": "sebastian"},
+				"added":    []string{"docs/board/night.md"},
+				"modified": []string{"docs/roadmap.md", "README.md"}},
+			{"id": "d00d2", "message": "docs/roadmap.md: edited in the console\n\nFactory-Role: console\nRequested-by: sebastian\n",
+				"author":   map[string]string{"name": "sebastian", "username": "sebastian"},
+				"modified": []string{"docs/roadmap.md"}},
+		},
+	})
+	if rr := postWebhook(in, "push", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	rows := store.events
+	if len(rows) != 2 {
+		t.Fatalf("doc_written rows = %+v, want two", rows)
+	}
+	for i, want := range []Event{
+		{Repository: "sf/code", Kind: EventDocWritten, Actor: "sebastian", Via: ViaWebhook,
+			Detail: map[string]any{"path": "docs/board/night.md", "commit": "d00d1"}},
+		{Repository: "sf/code", Kind: EventDocWritten, Actor: "sebastian", Via: ViaWebhook,
+			Detail: map[string]any{"path": "docs/roadmap.md", "commit": "d00d1"}},
+	} {
+		got := rows[i]
+		if got.Repository != want.Repository || got.Kind != want.Kind || got.Actor != want.Actor || got.Via != want.Via ||
+			got.Detail["path"] != want.Detail["path"] || got.Detail["commit"] != want.Detail["commit"] {
+			t.Errorf("row %d = %+v, want %+v", i, got, want)
+		}
+	}
+	// a push to master of a repository no project names as its own
+	// raises nothing
+	other, _ := json.Marshal(map[string]any{
+		"ref":        "refs/heads/master",
+		"repository": map[string]any{"full_name": "sf/other-docs"},
+		"commits":    []map[string]any{{"id": "x1", "message": "docs", "added": []string{"docs/other.md"}}},
+	})
+	if rr := postWebhook(in, "push", other, sign(webhookSecret, other)); rr.Code != http.StatusOK {
+		t.Fatalf("the other push's status = %d", rr.Code)
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("a push to another repository's master raised %d more rows", len(store.events)-2)
+	}
+}
+
 // TestIntakeBodySizeIsBounded documents the MaxBytesReader bound: a body
 // past the limit fails at the read, before signature verification even runs.
 func TestIntakeBodySizeIsBounded(t *testing.T) {

@@ -836,6 +836,13 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .doc-edit-row { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .doc-discard { font-size: 12.5px; }
 .doc-base { margin-left: auto; color: var(--text-faint); font: 11.5px var(--font-mono); }
+/* the refused save's theirs view: master's text read-only under the
+   editor, its clashing lines marked with the amber rule */
+.doc-theirs-wrap { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+.doc-theirs-l { color: var(--text-muted); font: 11.5px var(--font-mono); }
+.doc-theirs { position: relative; flex: 1; min-height: 60px; max-height: 40vh; overflow: auto; padding: 8px 0; border: 1px dashed var(--line-strong); border-radius: 2px; background: var(--bg-panel); color: var(--text-muted); font: 12.5px/1.55 var(--font-mono); }
+.doc-tl { padding: 0 12px 0 10px; white-space: pre-wrap; word-break: break-word; }
+.doc-tl.doc-clash { box-shadow: inset 2px 0 0 var(--need); color: var(--text); }
 @keyframes tick { to { transform: translateX(-50%); } }
 @media (min-width: 1700px) {
   #screen { gap: 14px; padding: 14px 18px; }

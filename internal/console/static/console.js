@@ -238,6 +238,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       var e = JSON.parse(m.data);
       if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
       else if (e.kind === "session_said") said(e);
+      else if (e.kind === "doc_written") document.dispatchEvent(new CustomEvent("docwritten", { detail: e }));
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
         if (e.kind === "card_steered") said(e);
@@ -519,12 +520,17 @@ document.addEventListener("keydown", function (e) {
   var nav = { stack: [], index: -1 }, peeks = {}, hoverTimer = null, peekEl = null, peekFor = null;
   // the editor (the 2026-10-15 plan, item 3): versions hold each
   // document's last read or landed save — its text, content hash, commit
-  // and time — saves each path's save state (busy, queued, the refusal,
-  // the landed commit), and edit is the open document's mode. The draft
-  // itself lives in localStorage, so it outlives the tab; the dot — on
-  // the path line, the pins, Recent and the Documents button — says a
-  // draft is there from the first keystroke to the save that lands.
-  var versions = {}, saves = {}, edit = { path: "", mode: "read" }, confirmAsk = null, restoredFor = "";
+  // and time — saves each path's save state (busy, queued, the refusal
+  // with its theirs, the landed commit), and edit is the open document's
+  // mode. The draft itself lives in localStorage, so it outlives the tab;
+  // the dot — on the path line, the pins, Recent and the Documents
+  // button — says a draft is there from the first keystroke to the save
+  // that lands. changed holds each path's outside change the stream
+  // reported (item 6): who and when, until a reload or a load of theirs.
+  // theirs is the refused save's read-only view of master's text with
+  // its clashing lines marked (item 5).
+  var versions = {}, saves = {}, changed = {}, theirs = { path: "", open: false },
+    edit = { path: "", mode: "read" }, confirmAsk = null, restoredFor = "";
 
   function view() { return document.getElementById("doc-view"); }
   function board() { return document.getElementById("board"); }
@@ -712,6 +718,8 @@ document.addEventListener("keydown", function (e) {
     if (!v || !art) return;
     var path = d.path, draft = draftOf(path);
     versions[path] = { text: null, html: d.html, sha256: d.sha256, commit: d.commit, at: d.at, forgejo: d.forgejo, title: d.title };
+    // the read version is the newest: an outside change it covers is gone
+    changed[path] = null;
     art.textContent = "";
     art.innerHTML = d.html;
     var pathEl = document.getElementById("doc-path");
@@ -793,16 +801,25 @@ document.addEventListener("keydown", function (e) {
       if (s.busy) facts.textContent = "· saving…";
       else if (s.err) {
         // only the reason keeps the refusal colour; retry is its own
-        // button, so the keyboard reaches it
+        // button, so the keyboard reaches it, and a change that met the
+        // member's own lines adds the theirs view and load-theirs
         var why = facts.appendChild(document.createElement("span"));
         why.className = "doc-refused";
         why.textContent = "not saved: " + s.err.why;
         facts.appendChild(document.createTextNode(" · "));
+        if (s.err.current != null && s.err.who) {
+          var show = facts.appendChild(noteLink("theirs", theirs.path === path && theirs.open ? "hide theirs" : "show theirs"));
+          show.setAttribute("aria-expanded", String(theirs.path === path && theirs.open));
+          facts.appendChild(document.createTextNode(" · "));
+          facts.appendChild(noteLink("load-theirs", "load theirs"));
+          facts.appendChild(document.createTextNode(" · "));
+        }
         facts.appendChild(noteLink("retry", "retry"));
         facts.title = "the save did not land; retry sends it again";
       } else if (s.landed) {
         facts.className = "doc-facts doc-saved";
-        facts.textContent = "Saved: " + s.landed.sha.slice(0, 7) + " on master · " + s.landed.at;
+        facts.textContent = "Saved: " + s.landed.sha.slice(0, 7) + " on master · " + s.landed.at +
+          (s.landed.merged ? " · " + s.landed.merged : "");
         facts.title = "commit " + s.landed.sha;
       } else if (ver && !draft && ver.commit) {
         facts.textContent = ver.commit.slice(0, 7) + " · " + timeOfDay(ver.at);
@@ -813,9 +830,13 @@ document.addEventListener("keydown", function (e) {
     syncRecent(path);
     syncNote();
     syncEditRow();
+    syncTheirs();
     syncButton(visible());
   }
-  // the note line: a confirm ask, else the restored draft
+  // the note line: a confirm ask, else the restored draft, else — beside
+  // it — the outside change the stream reported for the open document:
+  // who and when, with a reload in Read or a load-theirs in Edit, whose
+  // save will merge (item 6)
   function syncNote() {
     var note = document.getElementById("doc-note");
     if (!note) return;
@@ -829,6 +850,18 @@ document.addEventListener("keydown", function (e) {
       note.appendChild(document.createTextNode("draft from " + draft.at + " restored · "));
       note.appendChild(noteLink("discard", "discard"));
     }
+    var ch = changed[current()];
+    if (ch) {
+      note.hidden = false;
+      if (note.firstChild) note.appendChild(document.createTextNode(" · "));
+      note.appendChild(document.createTextNode("changed by " + ch.by + " " + ch.at + " · "));
+      if (edit.mode === "edit") {
+        note.appendChild(document.createTextNode("your save will merge · "));
+        note.appendChild(noteLink("load-theirs", "load theirs"));
+      } else {
+        note.appendChild(noteLink("reload", "reload"));
+      }
+    }
   }
   function noteLink(act, text) {
     var b = document.createElement("button");
@@ -838,18 +871,22 @@ document.addEventListener("keydown", function (e) {
     b.textContent = text;
     return b;
   }
+  // confirmHTML is the ask of the moment: Discard your changes?, or the
+  // load-theirs one, Discard your changes and load the version of <time>?
+  // — Load takes master's text, Keep keeps the member's own
   function confirmHTML() {
+    var load = !!(confirmAsk && confirmAsk.load);
     var span = document.createElement("span");
     span.className = "doc-confirm";
     span.setAttribute("role", "group");
-    span.setAttribute("aria-label", "Discard your changes?");
+    span.setAttribute("aria-label", load ? "Load the version on master?" : "Discard your changes?");
     span.appendChild(document.createElement("span")).className = "doc-confirm-q";
-    span.firstChild.textContent = "Discard your changes?";
+    span.firstChild.textContent = load ? "Discard your changes and load the version of " + confirmAsk.load + "?" : "Discard your changes?";
     var yes = span.appendChild(document.createElement("button"));
     yes.type = "button";
     yes.className = "deny";
-    yes.dataset.act = "discard-yes";
-    yes.textContent = "Discard";
+    yes.dataset.act = load ? "load-theirs-yes" : "discard-yes";
+    yes.textContent = load ? "Load" : "Discard";
     var no = span.appendChild(document.createElement("button"));
     no.type = "button";
     no.dataset.act = "confirm-no";
@@ -886,6 +923,38 @@ document.addEventListener("keydown", function (e) {
     var ver = versions[current()];
     base.textContent = ver && ver.commit ? "based on " + ver.commit.slice(0, 7) : "a new file: the first save creates it";
   }
+  // the refused save's theirs view (item 5): master's text read-only
+  // under the editor, its clashing lines marked with the amber rule,
+  // scrolled to the first clash
+  function syncTheirs() {
+    var w = document.getElementById("doc-theirs-slot");
+    if (!w) return;
+    var path = current(), s = saves[path] || {};
+    var err = theirs.path === path && theirs.open && edit.mode === "edit" && s.err && s.err.current != null ? s.err : null;
+    if (!err) { w.hidden = true; w.textContent = ""; return; }
+    w.hidden = false;
+    w.textContent = "";
+    var l = w.appendChild(document.createElement("span"));
+    l.className = "doc-theirs-l";
+    l.textContent = "theirs: the file on master now, read-only";
+    var box = w.appendChild(document.createElement("div"));
+    box.className = "doc-theirs";
+    box.tabIndex = 0;
+    box.setAttribute("role", "region");
+    box.setAttribute("aria-label", "Theirs: the file on master now, read-only");
+    var clash = {};
+    (err.lines || []).forEach(function (r) {
+      for (var i = r[0]; i <= (r[1] || r[0]); i++) clash[i] = true;
+    });
+    err.current.split("\n").forEach(function (line, i) {
+      var d = box.appendChild(document.createElement("div"));
+      d.className = "doc-tl" + (clash[i + 1] ? " doc-clash" : "");
+      d.textContent = line;
+    });
+    var first = box.querySelector(".doc-clash");
+    if (first) box.scrollTop = first.offsetTop - 8;
+  }
+
   // the text a save would take: the editor's, else the draft's
   function typedText(path) {
     var ed = document.getElementById("doc-editor");
@@ -912,17 +981,26 @@ document.addEventListener("keydown", function (e) {
     }).then(function (ans) { landed(path, text, ans); }).catch(function (j) { failed(path, j); });
   }
   // a save landed: the answer's hash, commit and time become the
-  // version; the draft goes when nothing more was typed, and one queued
-  // save runs when something was. With nothing typed since, the view
-  // returns to Read and renders the saved version, the path line keeping
-  // its Saved line
-  function landed(path, text, ans) {
+  // version; a merged one lays its text — master's change and the
+  // member's own as one — into the editor when nothing more was typed.
+  // The draft goes when nothing more was typed, and one queued save runs
+  // when something was. With nothing typed since, the view returns to
+  // Read and renders the saved version, the path line keeping its Saved
+  // line, saying the merge when one ran
+  function landed(path, sent, ans) {
     var s = saves[path] = saves[path] || {};
     s.busy = false;
+    var text = ans && ans.merged && typeof ans.text === "string" ? ans.text : sent;
     versions[path] = { text: text, html: null, sha256: ans.sha256, commit: ans.commit, at: ans.at };
-    s.landed = { sha: ans.commit, at: timeOfDay(ans.at) };
+    s.landed = { sha: ans.commit, at: timeOfDay(ans.at), merged: ans.merged || "" };
+    changed[path] = null;
     if (restoredFor === path) restoredFor = "";
     var typed = typedText(path);
+    if (ans.merged && current() === path && edit.mode === "edit" && typed === sent) {
+      var ed = document.getElementById("doc-editor");
+      if (ed) ed.value = text;
+      typed = text;
+    }
     if (typed === text) dropDraft(path); else keepDraft(path, typed);
     if (s.queued) {
       s.queued = false;
@@ -935,7 +1013,13 @@ document.addEventListener("keydown", function (e) {
     var s = saves[path] = saves[path] || {};
     s.busy = false;
     s.queued = false;
-    s.err = { why: j && j.reason || "the save did not land; try again" };
+    // a change the door refused to merge names who changed it, when, the
+    // current text and the clashing lines: the theirs view and
+    // load-theirs stand on them
+    s.err = { why: j && j.reason || "the save did not land; try again",
+      current: j && typeof j.current === "string" ? j.current : null,
+      who: j && j.who || "", at: j && j.at || "", lines: j && j.lines || null };
+    changed[path] = null;
     syncDoc();
   }
   function openDoc(path, opts) {
@@ -961,6 +1045,7 @@ document.addEventListener("keydown", function (e) {
     confirmAsk = null;
     cancelNew();
     restoredFor = "";
+    theirs = { path: "", open: false };
     var pathEl = document.getElementById("doc-path");
     pathEl.textContent = path;
     pathEl.title = path;
@@ -1010,6 +1095,35 @@ document.addEventListener("keydown", function (e) {
     if (location.hash.indexOf("#card=") === 0 || visible()) return;
     var path = docParam();
     if (path) openDoc(path, { push: false });
+  }
+
+  // an outside change of the open document the stream reported (item 6):
+  // the note says who and when — a reload in Read, a load-theirs in
+  // Edit, whose save will merge. Our own save's event is the answer's,
+  // not the note's: one in flight or already landed says nothing.
+  document.addEventListener("docwritten", function (m) {
+    var e = m.detail || {}, d = e.detail || {}, path = d.path;
+    if (!path || path !== current()) return;
+    var s = saves[path] || {}, ver = versions[path];
+    if (s.busy || d.commit && ver && d.commit === ver.commit) return;
+    changed[path] = { by: e.actor || "someone", at: timeOfDay(e.at) };
+    syncDoc();
+  });
+  // load theirs: master's text becomes the editor's, the draft and the
+  // change gone, the version the one on master now
+  function loadTheirs(path) {
+    confirmAsk = null;
+    changed[path] = null;
+    theirs = { path: "", open: false };
+    dropDraft(path);
+    saves[path] = {};
+    fetch(docURL(path), { headers: { Accept: "application/json" } }).then(function (r) {
+      return r.ok ? r.json() : Promise.reject(r.status);
+    }).then(function (d) {
+      if (current() !== path) return;
+      show(d);
+      enterEdit();
+    }).catch(function () { syncDoc(); });
   }
 
   // the Documents button: where you left it, else the roadmap
@@ -1105,6 +1219,26 @@ document.addEventListener("keydown", function (e) {
       saveDoc(path);
       var ed = document.getElementById("doc-editor");
       if (ed && act === "retry") ed.focus({ preventScroll: true });
+    } else if (act === "reload") {
+      // the outside change of the read view: read the new version where
+      // the member stood
+      changed[path] = null;
+      keepScroll();
+      openDoc(path, { push: false });
+    } else if (act === "theirs") {
+      theirs = { path: path, open: !(theirs.path === path && theirs.open) };
+      syncDoc();
+    } else if (act === "load-theirs") {
+      // ask before the member's own goes: the change's time names the
+      // version Load would take
+      var at = changed[path] && changed[path].at, s = saves[path] || {};
+      if (!at && s.err && s.err.at) at = timeOfDay(s.err.at);
+      confirmAsk = { at: b.closest("#doc-edit-row") ? "row" : "note", load: at || timeOfDay() };
+      syncDoc();
+      var no = document.querySelector('#doc-view [data-act="confirm-no"]');
+      if (no) no.focus();
+    } else if (act === "load-theirs-yes") {
+      loadTheirs(path);
     } else if (act === "cancel") {
       confirmAsk = null;
       if (ver) readMode(); else leaveNew();

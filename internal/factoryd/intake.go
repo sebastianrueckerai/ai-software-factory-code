@@ -537,24 +537,117 @@ func briefObjective(objective string, mapped bool) string {
 	return strings.TrimRight(title+"\n\n"+strings.TrimLeft(kept.String(), "\n"), "\n")
 }
 
-// handleIssue hands an issue event to intakeIssue; a close goes to the
-// task the issue is linked to.
+// pushPayload is a push webhook's body: the ref, the repository and the
+// push's commits, each with the paths it added, removed and changed.
+type pushPayload struct {
+	Ref        string `json:"ref"`
+	Repository struct {
+		FullName string `json:"full_name"`
+	} `json:"repository"`
+	Commits []pushCommit `json:"commits"`
+}
+
+// pushCommit is one commit of a push payload.
+type pushCommit struct {
+	ID       string     `json:"id"`
+	Message  string     `json:"message"`
+	Author   pushAuthor `json:"author"`
+	Added    []string   `json:"added"`
+	Removed  []string   `json:"removed"`
+	Modified []string   `json:"modified"`
+}
+
+// pushAuthor is a push commit's author: the Forgejo account and the name
+// git recorded.
+type pushAuthor struct {
+	Name     string `json:"name"`
+	UserName string `json:"username"`
+}
+
+// who is the author's name: the account's login, else git's own.
+func (a pushAuthor) who() string { return cmp.Or(a.UserName, a.Name) }
+
+// handlePush hands a push to a repository's main to MainPushed, and one
+// to a document repository's master to the doc_written rows of its
+// outside changes.
 func (in *Intake) handlePush(ctx context.Context, body []byte) error {
-	var p struct {
-		Ref        string `json:"ref"`
-		Repository struct {
-			FullName string `json:"full_name"`
-		} `json:"repository"`
-	}
+	var p pushPayload
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode push: %w", err)
 	}
-	if p.Ref != "refs/heads/main" || in.MainPushed == nil {
-		return nil
+	switch {
+	case p.Ref == "refs/heads/main" && in.MainPushed != nil:
+		return in.MainPushed(ctx, p.Repository.FullName)
+	case p.Ref == "refs/heads/master":
+		return in.docsWritten(ctx, p)
 	}
-	return in.MainPushed(ctx, p.Repository.FullName)
+	return nil
 }
 
+// DocRootOK is the document tools' path allow-list, the door and the
+// webhook share it: docs/roadmap.md, a file under docs/plans/ or
+// docs/board/, a new docs/<name>.md; no escapes.
+func DocRootOK(path string) bool {
+	if !strings.HasPrefix(path, "docs/") || !strings.HasSuffix(path, ".md") {
+		return false
+	}
+	if strings.Contains(path, "..") || strings.Contains(path, "//") {
+		return false
+	}
+	rest := strings.TrimPrefix(path, "docs/")
+	return rest == "roadmap.md" || strings.HasPrefix(rest, "plans/") || strings.HasPrefix(rest, "board/") ||
+		rest != "" && !strings.Contains(rest, "/")
+}
+
+// docsWritten raises the outside document changes of a push to master of
+// a document repository (the 2026-10-15 plan, item 6): one doc_written
+// row per changed path under the document roots, via webhook, for every
+// project naming the repository as its chat's document repository, the
+// commit that changed the path its actor. A commit carrying the door's
+// attribution trailers is the factory's own and raised its event at the
+// door, so none of its paths count.
+func (in *Intake) docsWritten(ctx context.Context, p pushPayload) error {
+	if in.Policy == nil || in.Timeline == nil {
+		return nil
+	}
+	changed, order := map[string]pushCommit{}, []string(nil)
+	for _, c := range p.Commits {
+		if strings.Contains(c.Message, "Factory-Role:") {
+			continue
+		}
+		for _, path := range slices.Concat(c.Added, c.Removed, c.Modified) {
+			if _, seen := changed[path]; !seen {
+				order = append(order, path)
+			}
+			changed[path] = c
+		}
+	}
+	if len(changed) == 0 {
+		return nil
+	}
+	tree := in.Policy()
+	var projects []policy.ProjectConfig
+	for _, pc := range tree.Projects {
+		if tree.Document.ChatOf(pc).DocRepo == p.Repository.FullName {
+			projects = append(projects, pc)
+		}
+	}
+	for _, pc := range projects {
+		for _, path := range order {
+			if !DocRootOK(path) {
+				continue
+			}
+			c := changed[path]
+			in.Timeline.RecordProjectRow(ctx, Event{Repository: pc.Repository, Kind: EventDocWritten,
+				Actor: c.Author.who(), Via: ViaWebhook,
+				Detail: map[string]any{"path": path, "commit": c.ID}})
+		}
+	}
+	return nil
+}
+
+// handleIssue hands an issue event to intakeIssue; a close goes to the
+// task the issue is linked to.
 func (in *Intake) handleIssue(ctx context.Context, body []byte, eventType string) error {
 	var p issuesPayload
 	if err := json.Unmarshal(body, &p); err != nil {

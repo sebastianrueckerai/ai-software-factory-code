@@ -293,19 +293,9 @@ const docMax = 512 << 10
 // docShown bounds the current content a stale compare-and-swap returns.
 const docShown = 20 << 10
 
-// docRootOK is the path allow-list: docs/roadmap.md, a file under
-// docs/plans/ or docs/board/, a new docs/<name>.md; no escapes.
-func docRootOK(path string) bool {
-	if !strings.HasPrefix(path, "docs/") || !strings.HasSuffix(path, ".md") {
-		return false
-	}
-	if strings.Contains(path, "..") || strings.Contains(path, "//") {
-		return false
-	}
-	rest := strings.TrimPrefix(path, "docs/")
-	return rest == "roadmap.md" || strings.HasPrefix(rest, "plans/") || strings.HasPrefix(rest, "board/") ||
-		rest != "" && !strings.Contains(rest, "/")
-}
+// docRootOK is the path allow-list, factoryd's own DocRootOK: the door
+// and the webhook's rows share it.
+func docRootOK(path string) bool { return factoryd.DocRootOK(path) }
 
 // roadmapItemRef matches a roadmap item's opening marker.
 var roadmapItemRef = regexp.MustCompile(`^-\s+\*\*(\d+)\.`)
@@ -381,11 +371,18 @@ func docAPI(repo factoryd.Repo) string {
 // docFile is path's content and blob sha on repo's master; present false
 // when there is no such file.
 func (c *Console) docFile(ctx context.Context, repo factoryd.Repo, path string) (content, blob string, present bool, err error) {
+	return c.docFileAt(ctx, repo, path, "master")
+}
+
+// docFileAt is path's content and blob sha at ref — master, or a commit
+// the door merges a stale save over; present false when there is no such
+// file at it.
+func (c *Console) docFileAt(ctx context.Context, repo factoryd.Repo, path, ref string) (content, blob string, present bool, err error) {
 	var file struct {
 		Content string `json:"content"`
 		SHA     string `json:"sha"`
 	}
-	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, docAPI(repo)+"/contents/"+path+"?ref=master", nil, http.StatusOK, &file); err != nil {
+	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, docAPI(repo)+"/contents/"+path+"?ref="+url.QueryEscape(ref), nil, http.StatusOK, &file); err != nil {
 		var api *apiError
 		if errors.As(err, &api) && api.status == http.StatusNotFound {
 			return "", "", false, nil
