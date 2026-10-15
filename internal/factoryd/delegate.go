@@ -106,7 +106,7 @@ func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Tas
 	body := fmt.Sprintf("Delegated by card #%d (%s): it starts when that card is done and builds on its merge.\n\n%s\n\nSize: small\nRung: cheap, delegated routine work",
 		parent.IssueNumber, parent.ID, brief)
 	t, labels, err := fileEntry(p, Task{
-		ID: NewTaskID(), Priority: parent.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(d.Budget(), p.Budget, "small", 0),
+		ID: NewTaskID(), Priority: parent.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(d.Budget(), p.Budget, "small", false, 0),
 		Objective: title + "\n\n" + body, Repository: parent.Repository, Source: SourceDelegate, Parent: parent.ID,
 		Rung: RungCheap, Size: "small", Author: parent.Author, AuthorWriter: true,
 	}, nil)

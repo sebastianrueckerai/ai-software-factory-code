@@ -644,6 +644,21 @@ type Budget struct {
 	// MonthEUR caps all tasks together per UTC calendar month; 0 stops all
 	// spend.
 	MonthEUR float64 `yaml:"month_eur" json:"month_eur"`
+	// SessionFloorCheapEUR is the least free budget a session on the cheap
+	// rung needs to start; a card that cannot fund it asks a human to fund
+	// it. Absent: 0, no floor beyond the session's opening calls.
+	SessionFloorCheapEUR float64 `yaml:"session_floor_cheap_eur,omitempty" json:"session_floor_cheap_eur,omitempty"`
+	// SessionFloorFrontierEUR is SessionFloorCheapEUR for a session on the
+	// frontier rung.
+	SessionFloorFrontierEUR float64 `yaml:"session_floor_frontier_eur,omitempty" json:"session_floor_frontier_eur,omitempty"`
+}
+
+// SessionFloor is the least free budget a session starts on, by its rung.
+func (b Budget) SessionFloor(frontier bool) float64 {
+	if frontier {
+		return b.SessionFloorFrontierEUR
+	}
+	return b.SessionFloorCheapEUR
 }
 
 // Class is a capability class a task can hold: the model aliases it may
@@ -831,6 +846,12 @@ func (d Document) Validate() error {
 	}
 	if b.TaskDefaultEUR > b.TaskMaxEUR {
 		return fmt.Errorf("policy: budget.task_default_eur %g exceeds task_max_eur %g", b.TaskDefaultEUR, b.TaskMaxEUR)
+	}
+	if b.SessionFloorCheapEUR < 0 || b.SessionFloorFrontierEUR < 0 {
+		return errors.New("policy: budget.session_floor_cheap_eur and session_floor_frontier_eur must not be negative")
+	}
+	if floor := max(b.SessionFloorCheapEUR, b.SessionFloorFrontierEUR); floor > b.TaskMaxEUR {
+		return fmt.Errorf("policy: a session floor of %g exceeds budget.task_max_eur %g, which no card could fund", floor, b.TaskMaxEUR)
 	}
 	for alias, n := range d.Prices.MaxOutputTokens {
 		if n <= 0 {
@@ -1097,21 +1118,28 @@ func (b Budget) SizeBudget(size string) float64 {
 // at most the project's card maximum (without one, a large card's budget)
 // and the policy's task maximum. A card that asks for nothing gets the
 // default, at most the project's card maximum and the policy's task
-// maximum.
-func CardBudget(b Budget, p *ProjectBudget, size string, requested float64) float64 {
+// maximum. A strong card (filed on the strong rung) is given at least a
+// medium card's budget unless it asked for its own.
+func CardBudget(b Budget, p *ProjectBudget, size string, strong bool, requested float64) float64 {
 	ceiling, own := b.SizeBudget("large"), p != nil && p.TaskMaxEUR > 0
 	if own {
 		ceiling = p.TaskMaxEUR
+	}
+	floor := func(eur float64) float64 {
+		if strong {
+			return max(eur, sizeEUR["medium"])
+		}
+		return eur
 	}
 	_, sized := sizeEUR[size]
 	switch {
 	case requested > 0:
 	case sized:
-		requested = sizeEUR[size]
+		requested = floor(sizeEUR[size])
 	case own:
-		return min(b.TaskDefaultEUR, ceiling, b.TaskMaxEUR)
+		return min(floor(b.TaskDefaultEUR), ceiling, b.TaskMaxEUR)
 	default:
-		return min(b.TaskDefaultEUR, b.TaskMaxEUR)
+		return min(floor(b.TaskDefaultEUR), b.TaskMaxEUR)
 	}
 	if eur := min(requested, ceiling, b.TaskMaxEUR); eur > 0 {
 		return eur

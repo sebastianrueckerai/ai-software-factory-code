@@ -676,7 +676,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, eur),
+		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, false, eur),
 		Size:         size,
 		Rung:         rungOf(issue.Body, size),
 		Objective:    objectiveFromIssue(issue),
@@ -932,7 +932,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
-	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", 0)
+	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", false, 0)
 	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
 }
 
