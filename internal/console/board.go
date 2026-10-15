@@ -2685,7 +2685,22 @@ func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error)
 	return slices.DeleteFunc(ps, func(p factoryd.Project) bool { return !p.Coder() }), err
 }
 
+// newTask is the New task form's values, kept when the form answers the
+// findings of a first submit with the text as the member wrote it
+// (roadmap 125).
+type newTask struct {
+	Project, Title, Body, Lane, Priority, Size string
+}
+
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
+	c.renderNewTask(w, r, newTask{Lane: policy.LaneReady}, nil)
+}
+
+// renderNewTask answers the New task form: the projects agents work on,
+// their lanes and the priority labels the first's repository offers. A
+// first submit whose text is flagged answers the form again, the form's
+// values kept and the findings shown above it.
+func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form newTask, flags []filingFlag) {
 	ps, err := c.coderProjects(r.Context())
 	if err != nil {
 		log.Printf("console: projects: %v", err)
@@ -2721,18 +2736,29 @@ func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	c.render(w, "new.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": true,
-		"Projects": ps, "Priorities": offered, "Lanes": lanes})
+		"Projects": ps, "Priorities": offered, "Lanes": lanes, "Form": form, "Flags": flags})
 }
 
-// createTask files the issue as the human (doFileCard).
+// createTask files the issue as the human (doFileCard). Text the
+// sanitiser or the provider would change (roadmap 125) is not filed at
+// once: the form answers the findings with everything the member wrote
+// kept, and only its File as written button files the text as it stands,
+// because a human may mean it.
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
-	_, issue, err := c.doFileCard(r.Context(), button(r), r.PostFormValue("project"), r.PostFormValue("title"),
-		r.PostFormValue("body"), r.PostFormValue("lane"), r.PostFormValue("priority"), r.PostFormValue("size"), "", "")
+	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Body: r.PostFormValue("body"),
+		Lane: r.PostFormValue("lane"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+	if r.PostFormValue("as_written") == "" {
+		if flags := filingFlags(form.Title, form.Body); len(flags) > 0 {
+			c.renderNewTask(w, r, form, flags)
+			return
+		}
+	}
+	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Lane, form.Priority, form.Size, "", "")
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/?"+url.Values{"project": {r.PostFormValue("project")}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
 }
 
 // answer posts the human's answer to an escalation (doAnswer).
