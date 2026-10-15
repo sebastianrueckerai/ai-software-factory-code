@@ -253,8 +253,10 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	if !strings.Contains(body, `<span class="cell routine warn">↻ bump held</span>`) {
 		t.Fatal("the strip does not say held")
 	}
-	if !strings.Contains(g, `<div class="line2 mono">last held</div>`) {
-		t.Fatalf("the held ghost does not name its last run:\n%s", g)
+	// the held run's words stand in for its last line, under the next run
+	if !strings.Contains(g, `<div class="line2 mono soon">Mon 06:00 · in 20 min · human card</div>`+"\n"+
+		`<div class="line2 mono"><span class="held">held: #781 is still open</span></div>`) || strings.Contains(g, "last held") {
+		t.Fatalf("the held ghost does not name its next run, or repeats the held run as its last:\n%s", g)
 	}
 	a := ghostIn(t, col(t, body, "Queued"), "audit")
 	if !strings.Contains(a, `<span class="run"><i class="dot" aria-hidden="true"></i>#792 running</span>`) || strings.Contains(a, "held") {

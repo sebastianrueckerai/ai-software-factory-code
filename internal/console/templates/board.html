@@ -224,8 +224,9 @@
 {{define "ghost"}}<article class="card ghost{{if .Held}} held{{end}}" data-ghost="{{.Project}}/{{.Name}}">
 {{if .CSRF}}<button type="button" class="open" data-routine="{{.Project}}/{{.Name}}"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></button>{{else}}<p class="open"><span class="ref">↻</span> <span class="ttl">{{.Title}}</span></p>{{end}}
 <div class="line2 mono">{{.Words}}</div>
-<div class="line2 mono{{if and .Soon (not .Held)}} soon{{end}}">{{if .Held}}<span class="held">{{.HeldWords}}</span>{{else}}{{.NextWords}}{{end}}</div>
-{{if .Running}}<div class="line2 mono"><span class="run"><i class="dot" aria-hidden="true"></i>#{{.Open}} running</span></div>
+<div class="line2 mono{{if .Soon}} soon{{end}}">{{.NextWords}}</div>
+{{if .Held}}<div class="line2 mono"><span class="held">{{.HeldWords}}</span></div>
+{{else if .Running}}<div class="line2 mono"><span class="run"><i class="dot" aria-hidden="true"></i>#{{.Open}} running</span></div>
 {{else if .LastWords}}<div class="line2 mono">{{.LastWords}}</div>
 {{end}}{{if .CSRF}}{{template "routine-acts" .}}
 {{end}}</article>{{end}}
