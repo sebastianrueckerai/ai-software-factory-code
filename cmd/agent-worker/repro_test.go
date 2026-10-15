@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,7 +87,7 @@ func TestReproProbesTheEgressBeforeTheCommand(t *testing.T) {
 			if tc.unset != "" {
 				t.Setenv(tc.unset, "")
 			}
-			got := reproEnvelope(context.Background(), ws, func(e workerEnv) egressProbe {
+			got := reproEnvelope(context.Background(), ws, nil, func(e workerEnv) egressProbe {
 				if e.gatewayURL != "http://gw" || e.egressCanary != "example.com:443" || e.egressDirectIP != "192.0.2.7:443" {
 					t.Errorf("the probe's env = %+v", e)
 				}
@@ -214,9 +215,17 @@ func TestLoadReproEnv(t *testing.T) {
 	}
 }
 
+// quickFetchRetry makes a transient fetch failure's retry wait no time.
+func quickFetchRetry(t *testing.T) {
+	previous := fetchRetry
+	fetchRetry = 0
+	t.Cleanup(func() { fetchRetry = previous })
+}
+
 // A fetch that fails reports git's error without the read token: the
 // failure file reaches the repro report, the PR comment and the timeline.
 func TestReproFetchFailureHidesTheToken(t *testing.T) {
+	quickFetchRetry(t)
 	reproEnvs(t, "https://x-access-token:s3cret-tok@127.0.0.1:1/repo.git", "0000", "true")
 	t.Setenv("REPO_TOKEN", "s3cret-tok")
 	ws := t.TempDir()
@@ -315,5 +324,31 @@ func TestReproHasNoGitMetadata(t *testing.T) {
 		} else if !same || (command == "test ! -e .git" && got[0] != 0) {
 			t.Errorf("%s: exits %v at base and head, want the same (no .git)", command, got)
 		}
+	}
+}
+
+// A repro worker that is not its container's init reports why as a start
+// failure at step init, the egress probe's path, and neither probes nor
+// runs the command: factoryd reads the start escalation, not a pod that
+// exited without a report.
+func TestReproModeReportsAWorkerThatIsNoInit(t *testing.T) {
+	ws := t.TempDir()
+	if err := os.Mkdir(filepath.Join(ws, "repo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	reproEnvs(t, "unused", "unused", "touch ran")
+	got := reproEnvelope(context.Background(), ws, errors.New("must run as the container's init (pid 1), runs as pid 7"), func(workerEnv) egressProbe {
+		t.Error("probed the egress of a worker that is no init")
+		return closedSandbox(t)
+	})
+	want := harness.WorkerEnvelope{Type: "result", Result: &harness.Result{
+		Summary: "start failed: init: must run as the container's init (pid 1), runs as pid 7", Step: "init"}}
+	if !reflect.DeepEqual(got, want) {
+		g, _ := json.Marshal(got)
+		w, _ := json.Marshal(want)
+		t.Fatalf("envelope = %s\nwant %s", g, w)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "repo", "ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the command ran: %v", err)
 	}
 }

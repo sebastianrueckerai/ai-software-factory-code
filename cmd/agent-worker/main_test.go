@@ -397,6 +397,102 @@ func TestCloneModeClones(t *testing.T) {
 	})
 }
 
+// The clone init container tells a failure on the way to Forgejo, a 5xx or
+// a network error, from a repository, ref or commit that is missing: only
+// the first is tried once more, so one blip of Forgejo's sends no card to a
+// human, and one that lasts reaches the card saying it was retried.
+func TestCloneModeRetriesATransientFailureOnce(t *testing.T) {
+	quickFetchRetry(t)
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	root, seed := t.TempDir(), t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, filepath.Join(root, "repo.git"))
+	head := run("-C", seed, "rev-parse", "HEAD")
+	git := &cgi.Handler{Path: filepath.Join(run("--exec-path"), "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	for name, tc := range map[string]struct {
+		refused   int    // how many clones Forgejo answers 502
+		repo      string // the repository asked for
+		tries     int
+		failed    string // in the failure the card reads, "" for a clone
+		notFailed string // not in it
+	}{
+		"a blip":            {refused: 1, repo: "repo.git", tries: 2},
+		"an outage":         {refused: 2, repo: "repo.git", tries: 2, failed: "failed again on its one retry 0s after a network error or a 5xx: git clone"},
+		"a missing project": {repo: "missing.git", tries: 1, failed: "not found", notFailed: "retry"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tries := 0
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasSuffix(r.URL.Path, "/info/refs") {
+					if tries++; tries <= tc.refused {
+						http.Error(w, "upstream down", http.StatusBadGateway)
+						return
+					}
+				}
+				git.ServeHTTP(w, r)
+			}))
+			defer srv.Close()
+			for k, v := range map[string]string{"MODE": "clone", "REPO_URL": srv.URL + "/" + tc.repo, "REPO_SHA": head, "BRANCH": "factory/t1", "REPO_TOKEN": "r3ad-tok"} {
+				t.Setenv(k, v)
+			}
+			ws := t.TempDir()
+			if code := runClone(nolog, ws); code != 0 {
+				t.Fatalf("clone exit %d, want 0: the worker reports the failure", code)
+			}
+			if tries != tc.tries {
+				t.Fatalf("%d clones, want %d", tries, tc.tries)
+			}
+			err := cloned(ws)
+			if tc.failed == "" {
+				if err != nil {
+					t.Fatalf("cloned = %v, want the retry's clone", err)
+				}
+				if got := run("-C", filepath.Join(ws, "repo"), "rev-parse", "HEAD"); got != head {
+					t.Fatalf("HEAD = %s, want %s", got, head)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.failed) || tc.notFailed != "" && strings.Contains(err.Error(), tc.notFailed) {
+				t.Fatalf("cloned = %v, want a failure with %q and without %q", err, tc.failed, tc.notFailed)
+			}
+		})
+	}
+}
+
+// Git's reports of a fetch that failed on the way to Forgejo, a 5xx or a
+// network error, are transient; a refused request (4xx) and a repository,
+// ref or commit that is missing are not.
+func TestTransientFetchFailures(t *testing.T) {
+	const clone = "git clone -q http://forgejo:3000/sf/repo.git /workspace/repo: exit status 128: "
+	for text, want := range map[string]bool{
+		clone + "fatal: unable to access 'http://forgejo:3000/sf/repo.git/': The requested URL returned error: 502":                                                                                                     true,
+		clone + "error: RPC failed; HTTP 500 curl 22 The requested URL returned error: 500\nfatal: expected flush after ref listing":                                                                                    true,
+		clone + "fatal: unable to access 'http://forgejo:3000/sf/repo.git/': Failed to connect to forgejo port 3000 after 2 ms: Couldn't connect to server":                                                             true,
+		clone + "fatal: unable to access 'http://forgejo:3000/sf/repo.git/': Could not resolve host: forgejo":                                                                                                           true,
+		clone + "error: RPC failed; curl 56 Recv failure: Connection reset by peer\nfatal: early EOF":                                                                                                                   true,
+		clone + "fatal: the remote end hung up unexpectedly":                                                                                                                                                            true,
+		clone + "remote: Not found.\nfatal: repository 'http://forgejo:3000/sf/repo.git/' not found":                                                                                                                    false,
+		clone + "fatal: unable to access 'http://forgejo:3000/sf/repo.git/': The requested URL returned error: 403":                                                                                                     false,
+		"the start abc123 is on no branch the session can fetch: git fetch -q http://forgejo:3000/factory-agent/repo.git refs/heads/factory/t1: exit status 128: fatal: couldn't find remote ref refs/heads/factory/t1": false,
+		"pull request #8's head does not hold the start abc123, and the fork's branch factory/t1 is gone":                                                                                                               false,
+		"REPO_URL is required": false,
+	} {
+		if got := transientFetch(errors.New(text)); got != want {
+			t.Errorf("transientFetch(%q) = %v, want %v", text, got, want)
+		}
+	}
+}
+
 // A session whose start fails before the harness runs leaves a result
 // naming the failed step, in Step and in its summary, and the step's
 // error, whatever the step: the card reads why, not a pod that exited

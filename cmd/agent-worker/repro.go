@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"syscall"
 	"time"
@@ -80,22 +81,62 @@ func recordFetch(log func(string, ...any), ws string, err error) int {
 	return 0
 }
 
+// fetchRetry is how long a fetch that failed on the way to Forgejo waits
+// for its one retry.
+var fetchRetry = 30 * time.Second
+
+var (
+	// gitStatus is the HTTP status git reports a refused request with
+	gitStatus = regexp.MustCompile(`(?:returned error:|HTTP) ([0-9]{3})`)
+	// gitNetwork is git's report of a request that got no answer, or lost
+	// it midway
+	gitNetwork = regexp.MustCompile(`unable to access|RPC failed|remote end hung up|early EOF|unexpected disconnect`)
+)
+
+// transientFetch reports whether a fetch failed on the way to Forgejo, a
+// 5xx or a network error, which a retry may get past, unlike a repository,
+// ref or commit that is missing.
+func transientFetch(err error) bool {
+	if m := gitStatus.FindStringSubmatch(err.Error()); m != nil {
+		return m[1][0] == '5'
+	}
+	return gitNetwork.MatchString(err.Error())
+}
+
+// retried runs fetch, and once more fetchRetry later when it failed
+// transiently: only a second failure reaches the card.
+func retried(log func(string, ...any), fetch func() error) error {
+	err := fetch()
+	if err == nil || !transientFetch(err) {
+		return err
+	}
+	log("fetch failed on the way to Forgejo, once more in %s: %v", fetchRetry, err)
+	time.Sleep(fetchRetry)
+	if err := fetch(); err != nil {
+		return fmt.Errorf("failed again on its one retry %s after a network error or a 5xx: %w", fetchRetry, err)
+	}
+	return nil
+}
+
 // runReproFetch is the init container's repro-fetch mode, into ws.
 func runReproFetch(log func(string, ...any), ws string) int {
 	e, err := loadFetchEnv()
 	if err == nil {
-		err = fetchHead(e, filepath.Join(ws, "repo"))
+		err = retried(log, func() error { return fetchHead(e, filepath.Join(ws, "repo")) })
 	}
 	return recordFetch(log, ws, err)
 }
 
 // runRepro is the worker's repro mode: it reports one envelope on stdout,
-// whatever happens, and exits 0 once it reported; probe builds the egress
-// probe of the sandbox.
-func runRepro(log func(string, ...any), probe func(workerEnv) egressProbe) int {
-	env := reproEnvelope(context.Background(), workspace, probe)
-	if err := killOthers(); err != nil {
-		log("stop the command's processes: %v", err)
+// whatever happens, and exits 0 once it reported; initErr is becomeInit's,
+// and probe builds the egress probe of the sandbox. A worker that is not
+// its container's init runs nothing, so it kills nothing.
+func runRepro(log func(string, ...any), initErr error, probe func(workerEnv) egressProbe) int {
+	env := reproEnvelope(context.Background(), workspace, initErr, probe)
+	if initErr == nil {
+		if err := killOthers(); err != nil {
+			log("stop the command's processes: %v", err)
+		}
 	}
 	line, _ := json.Marshal(env)
 	fmt.Println(string(line))
@@ -103,10 +144,17 @@ func runRepro(log func(string, ...any), probe func(workerEnv) egressProbe) int {
 }
 
 // reproEnvelope is the repro mode's report on ws: the start failure of a
-// sandbox other than its policy (the egress probe runs before the
-// repository's code), else the repro report.
-func reproEnvelope(ctx context.Context, ws string, probe func(workerEnv) egressProbe) harness.WorkerEnvelope {
-	if err := probeRepro(ctx, probe); err != nil {
+// worker that is not its container's init (initErr) or of a sandbox other
+// than its policy (the egress probe runs before the repository's code),
+// else the repro report.
+func reproEnvelope(ctx context.Context, ws string, initErr error, probe func(workerEnv) egressProbe) harness.WorkerEnvelope {
+	var err error
+	if initErr != nil {
+		err = startError{"init", initErr}
+	} else {
+		err = probeRepro(ctx, probe)
+	}
+	if err != nil {
 		res := startFailed(err)
 		return harness.WorkerEnvelope{Type: "result", Result: &res}
 	}

@@ -56,11 +56,8 @@ func run(log func(string, ...any)) int {
 		return runClone(log, workspace)
 	case mode == "repro-fetch":
 		return runReproFetch(log, workspace)
-	case mode == "repro" && initErr != nil:
-		log("%v", initErr)
-		return 1
 	case mode == "repro":
-		return runRepro(log, sandboxProbe)
+		return runRepro(log, initErr, sandboxProbe)
 	}
 	return runSession(context.Background(), log, workspace, os.Stdout, initErr, sandboxProbe)
 }
@@ -572,7 +569,14 @@ func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	if err == nil {
 		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR")}
-		err = cloneBase(e, filepath.Join(ws, "repo"))
+		dir := filepath.Join(ws, "repo")
+		err = retried(log, func() error {
+			// a retry clones afresh, over what the failed try left
+			if err := os.RemoveAll(dir); err != nil {
+				return err
+			}
+			return cloneBase(e, dir)
+		})
 	}
 	return recordFetch(log, ws, err)
 }
