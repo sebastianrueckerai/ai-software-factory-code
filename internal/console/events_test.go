@@ -1075,8 +1075,9 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // with its caret, and a card's swap after the focus moved on does not. A
 // find whose answer failed in its handling releases the hold too; two
 // reads of the board asked for during one in flight send one more after
-// it, and so does a read whose handling failed; an answer for a board
-// that left the page is dropped, the find's own answer through it not;
+// it, and so does a read whose handling failed, once htmx let go of the
+// board, so a reconnect during its rerun still goes out; an answer for a
+// board that left the page is not swapped, another's through it is;
 // the find's good answer writes its URL in place, with the open
 // document, the drawer's hash and the entry's state, a failed one none;
 // and Back to an entry with another q puts it in the box and runs the find.
@@ -1102,7 +1103,8 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], timers = 0, sources = [];
+	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], timers = 0, sources = [], locked = false, queued = [];
+function swapped() { locked = false; queued = []; }
 function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
     querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
@@ -1126,11 +1128,20 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
-  // a read is in flight until settle answers it
+  // a request is in flight until settle answers it; as htmx does, a read of
+  // the board asked for while one is in flight queues behind it, its
+  // promise settled at once, and is dropped when the first's swap replaces
+  // the board
   htmx: {ajax: function (verb, url) {
+    if (url.indexOf("/board") === 0 && locked) {
+      queued.push(verb + " " + url);
+      return Promise.resolve();
+    }
     requests.push(verb + " " + url);
     if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
-    return new Promise(function (ok) { pending.push(ok); });
+    if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
+    locked = true;
+    return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
   }, swap: function () {}, process: function () {}},
   window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
@@ -1147,6 +1158,24 @@ function settle() {
   return new Promise(function (done) { setImmediate(done); });
 }
 function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); }); }
+// fail is htmx failing in its handling of the board's read in flight: it
+// fires onLoadError while it holds the board, never settles that read's
+// promise, then lets go of the board and sends the read queued behind it
+function fail() {
+  pending.splice(0);
+  fire("htmx:onLoadError", {elt: {id: "board"}});
+  locked = false;
+  queued.splice(0, 1).forEach(function (r) {
+    locked = true;
+    requests.push(r);
+    pending.push(swapped);
+  });
+}
+// xhr is a request's, whose end the test calls
+function xhr() {
+  var ends = [];
+  return {addEventListener: function (type, fn) { if (type === "loadend") ends.push(fn); }, end: function () { ends.forEach(function (fn) { fn(); }); }};
+}
 (async function () {
 var es = sources[0], out = {url: es.url};
 function event(e) { es.on.event({data: JSON.stringify(e)}); }
@@ -1238,50 +1267,65 @@ out.reads.push(requests.length);
 await settle();
 out.reads.push(requests.length);
 // a read whose handling failed (htmx never settles its promise) releases
-// the next read too
+// the next read too, once htmx has let go of the board
 requests = [];
 event({id: 17, at: "2026-10-11T10:14:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
 event({id: 18, at: "2026-10-11T10:14:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
-pending.splice(0);
-fire("htmx:onLoadError", {elt: {id: "board"}});
+fail();
+await Promise.resolve();
 out.unsettled = requests.slice();
 await settle();
-// an answer for a board that has left the page is dropped; the find's own
-// answer bubbling through it is not; a board still in the page takes its
-// answer; the guard goes with its answer, and the find and other targets
-// get none
+// a reconnect asked for while that rerun is in flight still goes out after it
+requests = [];
+event({id: 21, at: "2026-10-11T10:16:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+event({id: 22, at: "2026-10-11T10:16:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+fail();
+await Promise.resolve();
+es.onopen();
+await settle();
+out.rerun = requests.slice();
+await settle();
+// an answer for a board that has left the page is not swapped; another
+// request's answer told to the same board is; a board still in the page
+// takes its answer; the guard goes when its xhr ends; the find and other
+// targets get none
 function asker(id) {
   var on = [];
   return Object.assign(el({id: id, isConnected: true}), {
-    addEventListener: function (type, fn) { if (type === "htmx:beforeOnLoad") on.push(fn); },
+    addEventListener: function (type, fn) { if (type === "htmx:beforeSwap") on.push(fn); },
     removeEventListener: function (type, fn) { on = on.filter(function (f) { return f !== fn; }); },
-    answer: function (xhr) {
-      var ev = {type: "htmx:beforeOnLoad", detail: {xhr: xhr}, defaultPrevented: false, preventDefault: function () { this.defaultPrevented = true; }};
+    answer: function (x) {
+      var ev = {type: "htmx:beforeSwap", detail: {xhr: x, shouldSwap: true}};
       on.slice().forEach(function (fn) { fn(ev); });
-      return ev.defaultPrevented;
+      return !ev.detail.shouldSwap;
     },
     guards: function () { return on.length; }});
 }
-var stale = asker("board"), late = {}, form = asker("t-1-close"), kept = {}, finder = asker("find"), other = asker("x");
+var stale = asker("board"), late = xhr(), live = asker("board"), kept = xhr(), findTarget = asker("board"), drawerTarget = asker("drawer");
 fire("htmx:beforeRequest", {elt: stale, target: stale, xhr: late});
-out.guard = [stale.guards(), stale.answer({})];
+out.guard = [stale.guards(), stale.answer(xhr())];
 stale.isConnected = false;
-out.guard.push(stale.answer(late), stale.guards());
-fire("htmx:beforeRequest", {elt: form, target: asker("board"), xhr: kept});
-out.guard.push(form.answer(kept), form.guards());
-fire("htmx:beforeRequest", {elt: finder, target: asker("board"), xhr: {}});
-fire("htmx:afterRequest", {elt: finder});
-fire("htmx:beforeRequest", {elt: other, target: {id: "drawer"}, xhr: {}});
-out.guard.push(finder.guards(), other.guards());
-// the stream's read whose answer the guard drops still settles, and the
-// next read goes out after it
+out.guard.push(stale.answer(late));
+late.end();
+out.guard.push(stale.guards());
+fire("htmx:beforeRequest", {elt: asker("t-1-summary"), target: live, xhr: kept});
+out.guard.push(live.answer(kept));
+kept.end();
+out.guard.push(live.guards());
+fire("htmx:beforeRequest", {elt: {id: "find"}, target: findTarget, xhr: xhr()});
+fire("htmx:afterRequest", {elt: {id: "find"}});
+fire("htmx:beforeRequest", {elt: asker("x"), target: drawerTarget, xhr: xhr()});
+out.guard.push(findTarget.guards(), drawerTarget.guards());
+// the stream's read whose answer the guard does not swap still settles,
+// and the next read goes out after it
 requests = [];
 event({id: 19, at: "2026-10-11T10:15:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
-var read = asker("board"), asked = {};
+var read = asker("board"), asked = xhr();
 fire("htmx:beforeRequest", {elt: read, target: read, xhr: asked});
 event({id: 20, at: "2026-10-11T10:15:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
 read.isConnected = false;
 out.dropped = [read.answer(asked)];
+asked.end();
 await settle();
 out.dropped.push(requests);
 await settle();
@@ -1344,6 +1388,7 @@ console.log(JSON.stringify(out));
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
 		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],"unsettled":["GET /board?project=code","GET /board?project=code"],` +
+		`"rerun":["GET /board?project=code","GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /board?project=code"],` +
 		`"guard":[1,false,true,0,false,0,0,0],"dropped":[true,["GET /board?project=code","GET /board?project=code"]],` +
 		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
 		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +

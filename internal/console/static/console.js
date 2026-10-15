@@ -50,20 +50,22 @@ document.addEventListener("htmx:beforeSwap", function (e) {
   }
 });
 // An answer for a board that has left the page since it was asked for (a
-// find answered first) is dropped: htmx would still run hx-preserve on it
-// and move the live find into the content it then throws away. The guard
-// sits on the asking element and knows its answer by the request's xhr,
-// as the find's own answer bubbles through the board. The stream's reads
-// and the cards' forms aimed at the board pass here; the find lands on
-// the board in place instead.
+// find answered first) is not swapped: htmx would still run hx-preserve on
+// it and move the live find into the content it then throws away. Only the
+// swap is skipped: a refusal still flashes and a redirect still leads. The
+// guard sits on the targeted board, which htmx tells of the swap even once
+// it left the page, knows its answer by the request's xhr, and goes when
+// the xhr ends. The stream's reads and the cards' and the drawer's forms
+// aimed at the board pass here; the find lands on the board in place
+// instead.
 document.addEventListener("htmx:beforeRequest", function (e) {
-  var t = e.detail.target, elt = e.detail.elt, xhr = e.detail.xhr;
-  if (e.defaultPrevented || !t || t.id !== "board" || elt.id === "find") return;
-  elt.addEventListener("htmx:beforeOnLoad", function guard(ev) {
-    if (ev.detail.xhr !== xhr) return;
-    elt.removeEventListener("htmx:beforeOnLoad", guard);
-    if (!t.isConnected) ev.preventDefault();
-  });
+  var t = e.detail.target, xhr = e.detail.xhr;
+  if (e.defaultPrevented || !t || t.id !== "board" || e.detail.elt.id === "find") return;
+  function guard(ev) {
+    if (ev.detail.xhr === xhr && !t.isConnected) ev.detail.shouldSwap = false;
+  }
+  t.addEventListener("htmx:beforeSwap", guard);
+  xhr.addEventListener("loadend", function () { t.removeEventListener("htmx:beforeSwap", guard); });
 });
 document.addEventListener("htmx:beforeRequest", function (e) {
   var flash = document.getElementById("flash");
@@ -223,12 +225,20 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   document.addEventListener("htmx:beforeRequest", function (e) {
     if (e.detail.elt.id === "find") finding = true;
   });
+  // a read whose handling failed is let go once htmx has let go of the
+  // board, after its error handler: a read asked for before would queue
+  // behind the failed one and settle at once while still in flight
   function released(e) {
     var id = e.detail.elt.id;
-    if (id === "find") finding = false;
-    else if (id === "board" && e.type === "htmx:onLoadError") reading = false;
-    else return;
-    retry();
+    if (id === "find") {
+      finding = false;
+      retry();
+    } else if (id === "board" && e.type === "htmx:onLoadError") {
+      Promise.resolve().then(function () {
+        reading = false;
+        retry();
+      });
+    }
   }
   document.addEventListener("htmx:afterRequest", released);
   document.addEventListener("htmx:onLoadError", released);

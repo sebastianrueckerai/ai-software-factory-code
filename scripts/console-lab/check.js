@@ -519,6 +519,28 @@ async function text(page) {
       await lateRead(lm.page, "late read without moveBefore", fails);
       if (lm.errors.length) fails.push("late read without moveBefore: " + lm.errors.join("; "));
       await lm.ctx.close();
+      // a drawer form aimed at the board whose refusal answers after a board swap still flashes it
+      await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
+      await p.page.waitForTimeout(800);
+      const summary = p.page.locator("#drawer form.summary-edit");
+      if (!(await summary.count())) fails.push("drawer refusal: the drawer has no summary form");
+      else {
+        const refuse = (u) => u.pathname.endsWith("/summary");
+        await p.page.route(refuse, async (r) => {
+          await new Promise((ok) => setTimeout(ok, 1000));
+          await r.fulfill({ status: 422, contentType: "text/plain", body: "Refused: not yours." });
+        });
+        await summary.evaluate((f) => f.requestSubmit());
+        await p.page.waitForTimeout(200);
+        await p.page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
+        await p.page.waitForTimeout(1500);
+        await p.page.unroute(refuse);
+        // the refusal is the step's own, not the console's
+        const own = p.errors.findIndex((x) => x.endsWith("/summary 422"));
+        if (own >= 0) p.errors.splice(own, 1);
+        const flash = p.page.locator("#flash"), said = (await flash.innerText()).trim();
+        if (!(await flash.isVisible()) || said !== "Refused: not yours.") fails.push('drawer refusal: after a board swap the flash reads "' + said + '", shown ' + (await flash.isVisible()));
+      }
       // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
       await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
