@@ -30,7 +30,6 @@ type Schedules interface {
 	Create(ctx context.Context, s ScheduleSpec) error
 	Update(ctx context.Context, s ScheduleSpec) error
 	Delete(ctx context.Context, id string) error
-	Trigger(ctx context.Context, id string) error
 }
 
 // TemporalSchedules is Schedules against a Temporal frontend.
@@ -95,10 +94,6 @@ func (t TemporalSchedules) Update(ctx context.Context, s ScheduleSpec) error {
 
 func (t TemporalSchedules) Delete(ctx context.Context, id string) error {
 	return t.Client.ScheduleClient().GetHandle(ctx, id).Delete(ctx)
-}
-
-func (t TemporalSchedules) Trigger(ctx context.Context, id string) error {
-	return t.Client.ScheduleClient().GetHandle(ctx, id).Trigger(ctx, client.ScheduleTriggerOptions{})
 }
 
 func scheduleOf(s ScheduleSpec) (client.ScheduleSpec, *client.ScheduleWorkflowAction) {

@@ -890,6 +890,11 @@ func (d Document) Validate() error {
 		if r.Files != FilesPullRequest {
 			return fmt.Errorf("policy: routine %q: a routine of policy.yaml is a pass over the projects, files pull-request, and a project's own routine goes in its project file", r.Name)
 		}
+		for _, t := range r.Schedule {
+			if t.Merges != 0 || t.On == OnPushMain {
+				return fmt.Errorf("policy: routine %q: %s counts one project's work, a trigger of a project's own routine: a routine of policy.yaml runs on cron or on each configuration version", r.Name, t.Words())
+			}
+		}
 		if slices.ContainsFunc(d.Routines[:i], func(o Routine) bool { return o.Name == r.Name }) {
 			return fmt.Errorf("policy: routine %q: given twice", r.Name)
 		}

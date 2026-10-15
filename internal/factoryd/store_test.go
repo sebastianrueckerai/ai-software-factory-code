@@ -863,16 +863,6 @@ func (s *fakeStore) RoutineStates(ctx context.Context, project string) ([]Routin
 	return out, nil
 }
 
-func (s *fakeStore) BumpRoutineMerges(ctx context.Context, project string) ([]RoutineState, error) {
-	for k, st := range s.routineStates {
-		if st.Project == project {
-			st.Merges++
-			s.routineStates[k] = st
-		}
-	}
-	return s.RoutineStates(ctx, project)
-}
-
 func (s *fakeStore) SetRoutineMerges(ctx context.Context, project, routine string, merges int) error {
 	st, _ := s.RoutineState(ctx, project, routine)
 	st.Merges = merges
@@ -962,8 +952,12 @@ func (s *fakeStore) RoutineMergeCursor(ctx context.Context) (int64, error) {
 	return s.routineCursor, nil
 }
 
-func (s *fakeStore) SetRoutineMergeCursor(ctx context.Context, id int64) error {
-	s.routineCursor = id
+func (s *fakeStore) CountRoutineMerges(ctx context.Context, through int64, merged map[string]int) error {
+	for k, st := range s.routineStates {
+		st.Merges += merged[st.Project]
+		s.routineStates[k] = st
+	}
+	s.routineCursor = through
 	return nil
 }
 

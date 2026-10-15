@@ -76,10 +76,10 @@ func (r *Routines) Loop(ctx context.Context, poll time.Duration) {
 	for {
 		v := r.Current()
 		var errs []error
-		if v.ID != reconciled || time.Since(at) >= reconcileEvery {
+		if v.ID != reconciled || r.Now().Sub(at) >= reconcileEvery {
 			err := r.Reconcile(ctx)
 			if err == nil {
-				reconciled, at = v.ID, time.Now()
+				reconciled, at = v.ID, r.Now()
 			}
 			errs = append(errs, err)
 		}
@@ -228,8 +228,8 @@ func (r *Routines) MergePass(ctx context.Context) error {
 }
 
 // countMerges adds the merges after the cursor to the state rows of their
-// repositories' projects, a batch at a time. A repository of no project
-// counts for none.
+// repositories' projects, a batch at a time, each batch with its cursor.
+// A repository of no project counts for none.
 func (r *Routines) countMerges(ctx context.Context, tree policy.Tree) error {
 	after, err := r.Store.RoutineMergeCursor(ctx)
 	if err != nil {
@@ -246,18 +246,9 @@ func (r *Routines) countMerges(ctx context.Context, tree policy.Tree) error {
 				merged[project]++
 			}
 		}
-		// the cursor moves first: a crash before the bumps loses this
-		// batch's merges, the lesser fault than counting them twice
 		after = events[len(events)-1].ID
-		if err := r.Store.SetRoutineMergeCursor(ctx, after); err != nil {
+		if err := r.Store.CountRoutineMerges(ctx, after, merged); err != nil {
 			return err
-		}
-		for project, n := range merged {
-			for range n {
-				if _, err := r.Store.BumpRoutineMerges(ctx, project); err != nil {
-					return err
-				}
-			}
 		}
 		if len(events) < mergeBatch {
 			return nil
@@ -295,9 +286,8 @@ func (r *Routines) startOn(ctx context.Context, key string, rs []policy.Routine,
 	return errors.Join(errs...)
 }
 
-// RunNow starts a run of project's routine, due now. The schedule's own
-// trigger would start it as cron. A project's template pass runs the
-// factory's.
+// RunNow starts a run of project's routine, due now. A project's template
+// pass runs the factory's.
 func (r *Routines) RunNow(ctx context.Context, project, routine string) error {
 	key, ok := routineKey(r.Current().Tree, project, routine)
 	if !ok {

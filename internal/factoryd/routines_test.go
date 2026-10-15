@@ -43,11 +43,10 @@ func withRoutines(tree policy.Tree, project string, rs ...policy.Routine) policy
 type fakeSchedules struct {
 	have             map[string]ScheduleSpec
 	updates, deletes int
-	listErr          error
 }
 
 func (f *fakeSchedules) List(context.Context) (map[string]ScheduleSpec, error) {
-	return maps.Clone(f.have), f.listErr
+	return maps.Clone(f.have), nil
 }
 
 func (f *fakeSchedules) Create(_ context.Context, s ScheduleSpec) error {
@@ -79,15 +78,11 @@ func (f *fakeSchedules) Delete(_ context.Context, id string) error {
 	return nil
 }
 
-// Trigger fails: a schedule's action says cron, so Run now never
-// triggers one.
-func (f *fakeSchedules) Trigger(_ context.Context, id string) error {
-	return fmt.Errorf("schedule %s triggered", id)
-}
-
-// fakeEvents answers the merge pass's reads from rows, oldest first.
+// fakeEvents answers the merge pass's reads from rows, oldest first, or
+// fails with err.
 type fakeEvents struct {
 	rows  []Event
+	err   error
 	reads int
 	// onRead runs after each read
 	onRead func(reads int)
@@ -100,11 +95,12 @@ func (f *fakeEvents) MergedEvents(_ context.Context, after int64, limit int) ([]
 			out = append(out, e)
 		}
 	}
+	err := f.err
 	f.reads++
 	if f.onRead != nil {
 		f.onRead(f.reads)
 	}
-	return out, nil
+	return out, err
 }
 
 // mon0540 is Monday 12 October 2026, 05:40 in Berlin.
@@ -318,7 +314,7 @@ func TestMainPushedStartsThePushRoutinesOfTheRepository(t *testing.T) {
 	}
 }
 
-func TestRunNowStartsTheRunAndNotTheSchedule(t *testing.T) {
+func TestRunNowStartsARunDueNow(t *testing.T) {
 	ctx := t.Context()
 	r, _, _, wf, _ := routinesRig(t)
 	for _, c := range [][2]string{{"ai-software-factory-code", "weekly-bump"}, {"linkshort", "template-pass"}, {"", "template-pass"}} {
@@ -434,13 +430,73 @@ func TestRoutinesLoop(t *testing.T) {
 		t.Fatalf("cursor %d after %d reads", c, events.reads)
 	}
 
+}
+
+// The loop logs a failure once while it lasts, and again when it comes
+// back after a recovery.
+func TestRoutinesLoopLogsAFailureOnceUntilItRecovers(t *testing.T) {
+	r, _, _, _, _ := routinesRig(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	down := errors.New("events down")
+	events := &fakeEvents{err: down}
+	events.onRead = func(reads int) {
+		switch reads {
+		case 2:
+			events.err = nil
+		case 3:
+			events.err = down
+		case 4:
+			cancel()
+		}
+	}
+	r.Events = events
 	logs := captureLog(t)
-	sched.listErr = errors.New("temporal down")
-	ctx, cancel = context.WithCancel(t.Context())
-	events.reads = 0
 	r.Loop(ctx, time.Millisecond)
-	cancel()
-	if got := logs.String(); strings.Count(got, "routines: ") != 1 || !strings.Contains(got, "temporal down") {
-		t.Fatalf("log %q", got)
+	if got := strings.Count(logs.String(), "events down"); got != 2 {
+		t.Fatalf("logged %d times:\n%s", got, logs)
+	}
+}
+
+// The loop reconciles again every hour, which sets back a schedule deleted
+// by hand, and at a new version, which also starts the
+// configuration-version routines again.
+func TestRoutinesLoopReconcilesHourlyAndAtANewVersion(t *testing.T) {
+	r, _, sched, wf, tree := routinesRig(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	v, now := policy.Version{ID: 7, Tree: *tree, ActivatedAt: mon0540}, mon0540
+	r.Current = func() policy.Version { return v }
+	r.Now = func() time.Time { return now }
+	const hourly = "routine//template-pass/0"
+	events := &fakeEvents{}
+	events.onRead = func(reads int) {
+		switch reads {
+		case 1:
+			delete(sched.have, hourly)
+			now = now.Add(30 * time.Minute)
+		case 2:
+			if _, ok := sched.have[hourly]; ok {
+				t.Error("reconciled within the hour")
+			}
+			now = now.Add(31 * time.Minute)
+		case 3:
+			if _, ok := sched.have[hourly]; !ok {
+				t.Error("an hour on, the deleted schedule is still missing")
+			}
+			v.ID, v.ActivatedAt = 8, now
+			v.Tree = withRoutines(v.Tree, "ai-software-factory-code", policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Files: policy.FilesHuman,
+				Schedule: []policy.Trigger{{Cron: "0 7 * * 1"}}})
+		case 4:
+			cancel()
+		}
+	}
+	r.Events = events
+	r.Loop(ctx, time.Millisecond)
+	if got := sched.have["routine/ai-software-factory-code/weekly-bump/0"].Cron; got != "0 7 * * 1" {
+		t.Fatalf("the new version's cron %q", got)
+	}
+	if len(wf.routineRuns) != 2 || wf.routineRuns[0].Due != mon0540 || wf.routineRuns[1].Due != v.ActivatedAt {
+		t.Fatalf("configuration-version runs %+v", wf.routineRuns)
 	}
 }

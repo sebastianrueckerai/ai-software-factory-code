@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
 	"sync"
 	"testing"
@@ -99,6 +100,31 @@ func TestPGStoreMergedEvents(t *testing.T) {
 	}
 	if first := got(ids[0]-1, 1); !slices.Equal(first, []int64{ids[0]}) {
 		t.Fatalf("limit 1: %v", first)
+	}
+}
+
+// A count that fails part-way counts none of the batch and leaves the
+// cursor, so the next pass reads the batch again.
+func TestPGStoreCountRoutineMergesIsOneTransaction(t *testing.T) {
+	ctx := t.Context()
+	s := routinePGStore(t)
+	for _, project := range []string{"demo-app", "linkshort"} {
+		if _, err := s.RoutineState(ctx, project, "audit"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// linkshort, counted after demo-app, overflows its column
+	if err := s.SetRoutineMerges(ctx, "linkshort", "audit", math.MaxInt32); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CountRoutineMerges(ctx, 9, map[string]int{"demo-app": 1, "linkshort": 1}); err == nil {
+		t.Fatal("an overflowing count succeeded")
+	}
+	if st, err := s.RoutineState(ctx, "demo-app", "audit"); err != nil || st.Merges != 0 {
+		t.Fatalf("demo-app counted %+v %v", st, err)
+	}
+	if c, err := s.RoutineMergeCursor(ctx); err != nil || c != 0 {
+		t.Fatalf("the cursor moved to %d %v", c, err)
 	}
 }
 
@@ -235,17 +261,27 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 		t.Fatalf("a missing state reads %+v, want zero", st)
 	}
 	state("demo-app", "audit")
-	states, err := s.BumpRoutineMerges(ctx, "linkshort")
-	if err != nil || len(states) != 2 || states[0].Routine != "audit" || states[0].Merges != 1 || states[1].Routine != "weekly-bump" || states[1].Merges != 1 {
-		t.Fatalf("bump %+v %v", states, err)
+	if c, err := s.RoutineMergeCursor(ctx); err != nil || c != 0 {
+		t.Fatalf("the first cursor %d %v", c, err)
+	}
+	// a project without state rows counts nowhere
+	if err := s.CountRoutineMerges(ctx, 7, map[string]int{"linkshort": 3, "sf-none": 2}); err != nil {
+		t.Fatal(err)
+	}
+	states, err := s.RoutineStates(ctx, "linkshort")
+	if err != nil || len(states) != 2 || states[0].Routine != "audit" || states[0].Merges != 3 || states[1].Routine != "weekly-bump" || states[1].Merges != 3 {
+		t.Fatalf("counted %+v %v", states, err)
 	}
 	if st := state("demo-app", "audit"); st.Merges != 0 {
-		t.Fatalf("another project's state was bumped: %+v", st)
+		t.Fatalf("another project's state was counted: %+v", st)
+	}
+	if c, err := s.RoutineMergeCursor(ctx); err != nil || c != 7 {
+		t.Fatalf("the cursor after a count %d %v", c, err)
 	}
 	if err := s.SetRoutineMerges(ctx, "linkshort", "weekly-bump", 0); err != nil {
 		t.Fatal(err)
 	}
-	if all, err := s.RoutineStates(ctx, "linkshort"); err != nil || len(all) != 2 || all[0].Merges != 1 || all[1].Merges != 0 || all[1].Runs != 3 {
+	if all, err := s.RoutineStates(ctx, "linkshort"); err != nil || len(all) != 2 || all[0].Merges != 3 || all[1].Merges != 0 || all[1].Runs != 3 {
 		t.Fatalf("states %+v %v", all, err)
 	}
 	if none, err := s.RoutineStates(ctx, "sf-none"); err != nil || len(none) != 0 {
@@ -263,15 +299,5 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 	}
 	if st := state("", "drift"); st.SkipNext || st.SkipBy != "" {
 		t.Fatalf("an undone skip: %+v", st)
-	}
-
-	if c, err := s.RoutineMergeCursor(ctx); err != nil || c != 0 {
-		t.Fatalf("the first cursor %d %v", c, err)
-	}
-	if err := s.SetRoutineMergeCursor(ctx, 7); err != nil {
-		t.Fatal(err)
-	}
-	if c, err := s.RoutineMergeCursor(ctx); err != nil || c != 7 {
-		t.Fatalf("the cursor after a set %d %v", c, err)
 	}
 }

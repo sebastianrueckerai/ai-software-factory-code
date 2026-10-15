@@ -6,6 +6,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 )
 
@@ -44,9 +46,6 @@ type RoutineStore interface {
 	// RoutineState reads the routine's row, creating it at zero when missing.
 	RoutineState(ctx context.Context, project, routine string) (RoutineState, error)
 	RoutineStates(ctx context.Context, project string) ([]RoutineState, error)
-	// BumpRoutineMerges adds one merge to every state row of project and
-	// returns them.
-	BumpRoutineMerges(ctx context.Context, project string) ([]RoutineState, error)
 	SetRoutineMerges(ctx context.Context, project, routine string, merges int) error
 	SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error
 	// BeginRoutineRun writes run Runs+1 of r's routine and returns it with
@@ -66,7 +65,10 @@ type RoutineStore interface {
 	// not final.
 	OpenRoutineTask(ctx context.Context, project, routine string) (Task, bool, error)
 	RoutineMergeCursor(ctx context.Context) (int64, error)
-	SetRoutineMergeCursor(ctx context.Context, id int64) error
+	// CountRoutineMerges adds merged[project] to the merges of every state
+	// row of each project and moves the merge pass's cursor to through, in
+	// one transaction.
+	CountRoutineMerges(ctx context.Context, through int64, merged map[string]int) error
 }
 
 const routineStateColumns = `project, routine, merges, skip_next, skip_by, runs`
@@ -119,11 +121,6 @@ func (s *PGStore) RoutineState(ctx context.Context, project, routine string) (Ro
 
 func (s *PGStore) RoutineStates(ctx context.Context, project string) ([]RoutineState, error) {
 	return s.routineStates(ctx, `SELECT `+routineStateColumns+` FROM routine_state WHERE project = $1 ORDER BY routine`, project)
-}
-
-func (s *PGStore) BumpRoutineMerges(ctx context.Context, project string) ([]RoutineState, error) {
-	return s.routineStates(ctx, `WITH bumped AS (UPDATE routine_state SET merges = merges + 1 WHERE project = $1
-		RETURNING `+routineStateColumns+`) SELECT `+routineStateColumns+` FROM bumped ORDER BY routine`, project)
 }
 
 func (s *PGStore) SetRoutineMerges(ctx context.Context, project, routine string, merges int) error {
@@ -249,9 +246,23 @@ func (s *PGStore) RoutineMergeCursor(ctx context.Context) (int64, error) {
 	return id, err
 }
 
-func (s *PGStore) SetRoutineMergeCursor(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE routine_merge_cursor SET last_event_id = $1`, id)
-	return err
+// CountRoutineMerges updates the projects in name order, so two passes
+// lock the rows in one order.
+func (s *PGStore) CountRoutineMerges(ctx context.Context, through int64, merged map[string]int) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	for _, project := range slices.Sorted(maps.Keys(merged)) {
+		if _, err := tx.ExecContext(ctx, `UPDATE routine_state SET merges = merges + $2 WHERE project = $1`, project, merged[project]); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE routine_merge_cursor SET last_event_id = $1`, through); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PGStore) MergedEvents(ctx context.Context, after int64, limit int) ([]Event, error) {
