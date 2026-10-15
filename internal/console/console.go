@@ -339,6 +339,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
+		{"GET /routines/{project}/{name}/drawer", c.routineDrawer, "", "a routine's drawer: a fragment of the board page, whose tool is routines"},
 		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
 		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
 		{"GET /projects/{name}/pulse", c.pulseGet, "", "the pulse sentence: every turn's starting context carries it"},

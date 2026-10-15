@@ -276,7 +276,7 @@ footer#live:empty { display: none; }
    no fill, no edge, its words faint; a run under an hour away names its
    time in the text colour, a held one in amber, a running card breathes */
 .card.ghost { border: 1px dashed var(--btn-line); background: none; box-shadow: none; }
-.card.ghost > .open { display: block; width: 100%; height: auto; padding: 0; border: 0; background: none; color: var(--text-faint); font: 13px/1.38 var(--font-ui); text-align: left; white-space: normal; }
+.card.ghost > .open { display: block; width: 100%; height: auto; margin: 0; padding: 0; border: 0; background: none; color: var(--text-faint); font: 13px/1.38 var(--font-ui); text-align: left; white-space: normal; }
 .card.ghost:has(> .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .card.ghost .ref, .card.ghost .line2 { color: var(--text-faint); }
 .card.ghost .line2.soon { color: var(--text); }
@@ -419,7 +419,6 @@ fieldset.question legend { float: none; color: var(--text); font-weight: 600; fo
 /* the card drawer: the raised panel with a cyan left edge and a deep
    shadow to its left (its dock is with the main area below) */
 @keyframes drin { from { opacity: 0; transform: translateX(16px); } }
-.drawer-head { padding-bottom: 10px; border-bottom: 1px solid var(--line); }
 .dr-title { display: flex; align-items: flex-start; gap: 10px; padding-right: 36px; }
 .dr-ref { color: var(--accent); font: 600 14px/22px var(--font-mono); text-decoration: none; white-space: nowrap; }
 a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
@@ -476,12 +475,25 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .life .k { font-weight: 600; white-space: nowrap; }
 .life .k::before { content: none; }
 .life .tnote { color: var(--text-muted); }
+.life.runs { grid-template-columns: auto auto auto auto auto 1fr; }
+.life.runs a { text-decoration: none; }
+.life.runs a:hover { text-decoration: underline; text-underline-offset: 3px; }
 @media (max-width: 720px) {
   .life { grid-template-columns: auto auto auto auto; row-gap: 1px; }
+  .life.runs { grid-template-columns: repeat(4, auto); }
+  .life.runs > :nth-child(6n+1) { grid-column: 1 / -1; }
   .life .tnote { grid-column: 1 / -1; margin: 0 0 8px; }
   .life .tnote:empty { margin: 0; }
 }
 .provenance { color: var(--text-muted); font: 12px var(--font-mono); margin: 2px 0 8px; }
+.provenance .linkbtn { font: inherit; }
+/* a routine's drawer (C16): the glyph before its title, the words after a
+   rule, its acts under the top block */
+.drawer h2 .glyph { color: var(--text-muted); font-weight: 400; }
+.top-block .why { color: var(--text-muted); font-size: 12.5px; }
+[data-routine-drawer] .top-block { grid-template-columns: 84px minmax(0, 1fr); }
+[data-routine-drawer] .acts { margin: 0 0 16px; }
+.drawer-body .quiet { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .objective-body { white-space: pre-wrap; margin: 0 0 8px; }
 .related { list-style: none; padding: 0; margin: 0; }
 .related li { display: flex; gap: 8px; align-items: center; padding: 5px 0; border-bottom: 1px solid var(--line); }
@@ -864,7 +876,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .col-menu.routines-ctl { flex: 1 1 100%; order: 6; }
   .col-menu.routines-ctl > summary { justify-content: flex-start; width: 100%; height: 44px; padding: 0 12px; font-size: 14px; }
   .col-menu.routines-ctl > .menu-pop { right: 0; top: 44px; }
-  .card.ghost > .open, .card.ghost .acts button { min-height: 44px; }
+  .card.ghost > button.open, .card.ghost .acts button, [data-routine-drawer] .acts button { min-height: 44px; }
+  .life.runs a { display: inline-flex; align-items: center; min-height: 44px; }
   .ghosts-hidden a { display: inline-flex; align-items: center; min-height: 44px; }
   #board { overflow: visible; }
   .lane, .lane.five { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
@@ -894,6 +907,9 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .doc-pin-add { padding: 0 10px; }
   #doc-article { padding: 12px 14px 40px; }
   .tabs { overflow-x: auto; }
+  .tabs button { height: 44px; }
+  .drawer-close { top: 6px; right: 6px; width: 44px; height: 44px; }
+  .dr-title { padding-right: 48px; }
 }
 
 /* the secondary pages: the form of a new task or project */

@@ -91,6 +91,7 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/events/stream":      rMember, // follows() judges the project's sight
 	"GET /cards/{id}":                         {need: writer, scope: scCard, hide: true},
 	"GET /cards/{id}/drawer":                  rCard,
+	"GET /routines/{project}/{name}/drawer":   rProject,
 	"GET /projects/{name}/chat":               rProject,
 	"GET /projects/{name}/chat/conversations": rProject,
 	"GET /projects/{name}/pulse":              rMember,

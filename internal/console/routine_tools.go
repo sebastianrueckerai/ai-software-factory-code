@@ -175,13 +175,11 @@ func (t *turn) describeRoutine(tool chatTool, in toolInput) (string, error) {
 	case ch.exists:
 		where = "in place of " + in.Name + " in " + file
 	}
-	var b bytes.Buffer
-	e := yaml.NewEncoder(&b)
-	e.SetIndent(2)
-	if err := e.Encode([]policy.Routine{shown}); err != nil {
+	entry, err := routineYAML(shown)
+	if err != nil {
 		return "", err
 	}
-	desc := tool.title + ", " + where + ":\n\n" + strings.TrimRight(b.String(), "\n")
+	desc := tool.title + ", " + where + ":\n\n" + entry
 	if text := ch.extra[ch.rt.Brief]; ch.rt.Brief != "" && text != "" {
 		desc += "\n\nIts brief, " + ch.rt.Brief + ":\n\n" + strings.TrimRight(text, "\n")
 	}
@@ -193,6 +191,17 @@ func (t *turn) describeRoutine(tool chatTool, in toolInput) (string, error) {
 		desc += "\n\nIts old brief, " + ch.old.Brief + ", goes."
 	}
 	return sanitize.Inbound(desc), nil
+}
+
+// routineYAML is rt as its entry in a project file's routines.
+func routineYAML(rt policy.Routine) (string, error) {
+	var b bytes.Buffer
+	e := yaml.NewEncoder(&b)
+	e.SetIndent(2)
+	if err := e.Encode([]policy.Routine{rt}); err != nil {
+		return "", err
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
 }
 
 // writeRoutine is routine_write: the routine into the chat project's file

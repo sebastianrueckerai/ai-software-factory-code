@@ -312,9 +312,20 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 
 // The whole card opens the drawer (item 226): a click anywhere on the
 // face that is not a link, a button or a field; the title's link is the
-// same door for the keyboard. A selection is left alone.
+// same door for the keyboard. A selection is left alone. A ghost opens
+// its routine's drawer the same way, and so does a card's routine (C16).
 document.addEventListener("click", function (e) {
+  var routine = e.target.closest("[data-routine], [data-open-routine]");
+  if (routine) {
+    location.hash = "#routine=" + (routine.dataset.routine || routine.dataset.openRoutine) + ":overview";
+    return;
+  }
   if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
+  var ghost = e.target.closest("#board [data-ghost]"), door = ghost && ghost.querySelector("button[data-routine]");
+  if (door && !String(getSelection && getSelection())) {
+    location.hash = "#routine=" + door.dataset.routine + ":overview";
+    return;
+  }
   var card = e.target.closest("#board [data-card]");
   // a card without the title's link belongs to a reader, who has no drawer
   if (!card || !card.querySelector("a.open") || String(getSelection && getSelection())) return;
@@ -368,19 +379,28 @@ document.addEventListener("click", function (e) {
 
 // The card drawer docked at the right edge over the board: #card=<id> in
 // the URL opens it, on load too, and a card links there; #card=<id>:<section>
-// opens it with that section of the overview open. Escape or its ✕
-// closes it.
+// opens it with that section of the overview open. A routine's drawer
+// opens the same way from #routine=<project>/<name>:<tab>. Escape or its
+// ✕ closes it.
 // Its tabs and related cards load into it by hx-get, and the URL follows
-// the card it shows.
+// the card or the routine it shows.
 function drawer() { return document.getElementById("drawer"); }
 function showDrawer() {
-  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash);
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
+    rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
-  document.body.classList.toggle("drawer-open", !!m);
-  d.hidden = !m;
-  if (!m) {
+  document.body.classList.toggle("drawer-open", !!(m || rt));
+  d.hidden = !(m || rt);
+  if (!m && !rt) {
     d.textContent = "";
     document.dispatchEvent(new Event("drawerclosed"));
+    return;
+  }
+  if (rt) {
+    htmx.ajax("GET", "/routines/" + rt[1] + "/drawer" + (rt[2] ? "?tab=" + rt[2] : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+      var h = d.querySelector("h2");
+      if (h) h.focus();
+    });
     return;
   }
   var id;
@@ -393,7 +413,7 @@ function showDrawer() {
   });
 }
 function closeDrawer() {
-  if (location.hash.indexOf("#card=") !== 0) return;
+  if (location.hash.indexOf("#card=") !== 0 && location.hash.indexOf("#routine=") !== 0) return;
   history.replaceState(null, "", location.pathname + location.search);
   showDrawer();
 }
@@ -408,9 +428,10 @@ document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
 // after a tab the focus is on the tab shown, after a steer in its input
 document.addEventListener("htmx:afterSwap", function (e) {
-  var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer]");
+  var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");
   if (!shown) return;
-  if (location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
+  var hash = shown.dataset.drawer ? "#card=" + shown.dataset.drawer : "#routine=" + shown.dataset.routineDrawer;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
   var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
   if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
   else if (from.id === "steer-form" && steer) steer.focus();

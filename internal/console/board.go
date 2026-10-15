@@ -2366,28 +2366,21 @@ var filesWords = map[string]string{policy.FilesHuman: "human card", policy.Files
 // ghostOf is routine rv's ghost at now. Its next line names the run's
 // time, how soon it comes and what it files. A merge-counted routine's
 // names the merges it lacks, an event's only what it files, as the
-// schedule line names the event. Its last line names the newest run's
-// card and outcome, and the card's time once it ended.
+// schedule line names the event. Its last line names the newest run.
 func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
 	rt := rv.Routine
-	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), NextWords: rv.NextWords, Soon: rv.Soon,
-		Held: rv.Held, Filter: f, CSRF: csrf}
+	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Filter: f, CSRF: csrf}
+	when, in, kind := nextWords(rv, now)
 	switch {
-	case !rv.Next.IsZero():
-		g.NextWords += " · in " + coarse(rv.Next.Sub(now)) + " · " + filesWords[rt.Files]
-	case rv.MergesLeft == 0:
-		g.NextWords = filesWords[rt.Files]
+	case in != "":
+		g.NextWords = when + " · in " + in + " · " + kind
+	case when != "":
+		g.NextWords = when
+	default:
+		g.NextWords = kind
 	}
-	if l := rv.Last; l.Run > 0 {
-		w := []string{"last"}
-		if l.Issue > 0 {
-			w = append(w, fmt.Sprintf("#%d", l.Issue))
-		}
-		w = append(w, l.Outcome)
-		if l.Issue > 0 && !l.Ended.IsZero() {
-			w = append(w, "in "+coarse(l.Ended.Sub(l.Started)))
-		}
-		g.LastWords = strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
+	if l := runWords(rv.Last); l != "" {
+		g.LastWords = "last " + l
 	}
 	if g.Held {
 		g.HeldWords = rv.Last.Note
@@ -2396,6 +2389,38 @@ func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string)
 		g.Open, g.Running = rv.Open.IssueNumber, rv.Open.Status == "running"
 	}
 	return g
+}
+
+// nextWords are routine rv's next run at now as its ghost and its drawer
+// say it: when it comes ("Mon 06:00", "after 6 more merges", "" for an
+// event's, which the schedule's words name), how soon a dated one comes
+// ("20 min", else ""), and what it files ("human card").
+func nextWords(rv factoryd.RoutineView, now time.Time) (when, in, kind string) {
+	when, kind = rv.NextWords, filesWords[rv.Routine.Files]
+	switch {
+	case !rv.Next.IsZero():
+		in = coarse(rv.Next.Sub(now))
+	case rv.MergesLeft == 0:
+		when = ""
+	}
+	return when, in, kind
+}
+
+// runWords are run l's card, outcome and the card's time once it ended
+// ("#781 done in 2 d", "held"), "" before a routine's first run.
+func runWords(l factoryd.RoutineRun) string {
+	if l.Run == 0 {
+		return ""
+	}
+	var w []string
+	if l.Issue > 0 {
+		w = append(w, fmt.Sprintf("#%d", l.Issue))
+	}
+	w = append(w, l.Outcome)
+	if l.Issue > 0 && !l.Ended.IsZero() {
+		w = append(w, "in "+coarse(l.Ended.Sub(l.Started)))
+	}
+	return strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
 }
 
 // cellWord is the routine's word in the strip's cell: its title's last
@@ -2819,6 +2844,9 @@ type drawerData struct {
 	Need *need
 	// Thread is the chat thread the card came from, nil for none.
 	Thread *threadLink
+	// RoutineLine names the routine run that filed the card, nil for a
+	// card no routine filed.
+	RoutineLine *routineProvenance
 }
 
 // threadLink is the chat thread behind a card as its drawer names it:
@@ -2961,6 +2989,15 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
 		var err error
+		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
+			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {
+				problem("routine", err)
+			}
+			// a human card's body ends in the line factoryd filed it with, which the routine line says
+			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], "filed by the factory · routine ") {
+				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
+			}
+		}
 		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
 			problem("related cards", err)
 		}
