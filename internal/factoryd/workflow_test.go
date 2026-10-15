@@ -2278,8 +2278,8 @@ func TestWorkflowRedirectResumesOnTheSameRungWithGuidance(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	second := h.sessions[1]
-	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script"}) {
-		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance as findings", second)
+	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script", "the branch holds c-wip; the gates have not judged it"}) {
+		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance and the branch as findings", second)
 	}
 }
 
@@ -2826,5 +2826,36 @@ func TestWorkflowAnswerReachesTheSessionDated(t *testing.T) {
 	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", escalationQuestion(h.escalated[0]))
 	if !slices.Equal(h.sessions[0].Answers, []string{want}) {
 		t.Fatalf("answers = %q, want %q", h.sessions[0].Answers, want)
+	}
+}
+
+// A session that ended without a push hands on its stop line, the commit its
+// branch holds with the gates' judgment of it and the agent's last message.
+func TestWorkflowUnpushedSessionHandsOnTheBranchAndTheLastMessage(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped", Commit: "c-wip", LastMessage: "tests still fail",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	want := []string{"previous session ended unfinished: stopped", "the branch holds c-wip; the gates have not judged it", "the agent's last message: tests still fail"}
+	if !slices.Equal(h.sessions[1].Findings, want) {
+		t.Fatalf("second session's findings = %q, want %q", h.sessions[1].Findings, want)
+	}
+}
+
+func TestHandoverLinesNameTheJudgmentOfTheBranch(t *testing.T) {
+	run := taskRun{judged: []string{"c1"}}
+	want := []string{"the branch holds c1; the gates have judged it", "the agent's last message: done"}
+	if got := run.handoverLines(SessionResult{Commit: "c1", LastMessage: "done"}); !slices.Equal(got, want) {
+		t.Fatalf("lines = %q, want %q", got, want)
+	}
+	if got := run.handoverLines(SessionResult{}); len(got) != 0 {
+		t.Fatalf("lines = %q, want none for a session that left no branch and no message", got)
 	}
 }

@@ -282,6 +282,9 @@ type SessionResult struct {
 	Commit    string // pushed; for a supervisor stop, the work in progress
 	Summary   string
 	Findings  []string
+	// LastMessage is the agent's last message, cut at maxHandoverMessage, ""
+	// when it said none; the next session is told it beside the stop reason.
+	LastMessage string
 	// Reason is the supervisor's escalation reason with the progress
 	// digest's summary, for the issue; Choices the answers the agent
 	// offered with its own escalation.
@@ -1495,6 +1498,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		// started has no lines of its own.
 		if !res.StartFailed {
 			own = res.Findings
+			if res.Outcome != OutcomePushed {
+				own = slices.Concat(res.Findings, t.handoverLines(res))
+			}
 		}
 		if dayCapped {
 			// it made calls before the cap refused one: an attempt
@@ -1584,6 +1590,25 @@ const podWaits = 3
 
 // podNeverStarted opens the question of a card whose pods never started.
 const podNeverStarted = "No node started the session's pod: "
+
+// handoverLines are what the next session is told beside a session's stop
+// lines when that ended without a push: the commit its branch holds and
+// whether the gates judged it, and the agent's last message. The check-in
+// agent's handover note replaces them.
+func (t *taskRun) handoverLines(res SessionResult) []string {
+	var lines []string
+	if res.Commit != "" {
+		judged := "the gates have not judged it"
+		if slices.Contains(t.judged, res.Commit) {
+			judged = "the gates have judged it"
+		}
+		lines = append(lines, fmt.Sprintf("the branch holds %s; %s", res.Commit, judged))
+	}
+	if res.LastMessage != "" {
+		lines = append(lines, "the agent's last message: "+res.LastMessage)
+	}
+	return lines
+}
 
 // notStarted takes a session whose pod never left Pending, why its
 // summary, which names what the pod waited on (versionPodWait): the next

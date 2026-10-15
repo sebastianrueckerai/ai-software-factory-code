@@ -1195,7 +1195,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running", term: make(chan struct{})}
 	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}, {ID: 51, Name: "task-t1-base"}}
 
-	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7, Findings: []string{"changed a.go"}}
+	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
 		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
@@ -1222,14 +1222,14 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 3 || findings[0] != "earlier note" || findings[1] != "changed a.go" || !strings.Contains(findings[2], "s-dead stopped after 7 events") {
-		t.Fatalf("findings = %q, want the input, the dead session's findings, the interruption", findings)
+	if len(findings) != 2 || findings[0] != "earlier note" || !strings.Contains(findings[1], "s-dead stopped after 7 events") {
+		t.Fatalf("findings = %q, want the input and the interruption, no command line of the dead session", findings)
 	}
 	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
 		t.Fatalf("session row = %+v, want parent s-dead", sess)
 	}
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
-	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","changed a.go","session s-dead stopped after 7 events`) {
+	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","session s-dead stopped after 7 events`) {
 		t.Fatalf("timeline = %s, want the session start with its parent and findings", timeline)
 	}
 }
@@ -1535,16 +1535,26 @@ func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
 	}
 }
 
-// What a session that ended without a push did reaches its result.
-func TestRunSessionResultCarriesFindings(t *testing.T) {
+// What a session that ended without a push did does not reach its result as
+// lines: its commands are in its record, and the next session gets the stop
+// reason, the branch and the agent's last message instead.
+func TestRunSessionResultCarriesNoCommandLines(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "go test ./...", "exit": 1}}) + "\n" + resultLine(false, "gave up")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") {
-		t.Fatalf("result = %+v, want the command in the findings", res)
+	if !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: gave up"}) {
+		t.Fatalf("findings = %q, want the stop line alone", res.Findings)
+	}
+}
+
+func TestSessionResultCarriesTheBranchAndTheAgentsLastMessage(t *testing.T) {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: "the worker exited without a result", commit: "c-wip", agentText: "I ran out of budget"})
+	if res.Commit != "c-wip" || res.LastMessage != "I ran out of budget" ||
+		!slices.Equal(res.Findings, []string{"previous session ended unfinished: the worker exited without a result"}) {
+		t.Fatalf("result = %+v, want the branch's commit, the last message and the stop line", res)
 	}
 }
 

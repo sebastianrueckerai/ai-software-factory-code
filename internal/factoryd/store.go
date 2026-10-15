@@ -145,6 +145,9 @@ func (t Task) Standing() string {
 // maxAgentSummary bounds the agent's last word kept on the task row.
 const maxAgentSummary = 2000
 
+// maxHandoverMessage bounds the agent's last message handed to the next session.
+const maxHandoverMessage = 2000
+
 // Final reports whether status ends a task.
 func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 

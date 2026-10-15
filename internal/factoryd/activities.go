@@ -328,9 +328,8 @@ type sessionProgress struct {
 	SessionID string
 	// Running is set once the worker pod runs: a retry after a setup or
 	// pod-create failure has no dead session to continue.
-	Running  bool
-	Events   int
-	Findings []string
+	Running bool
+	Events  int
 }
 
 // heartbeat records the latest session progress now and every
@@ -361,16 +360,16 @@ func startHeartbeat(ctx context.Context, sessionID string) *heartbeat {
 	return h
 }
 
-func (h *heartbeat) update(events int, findings []string) {
+func (h *heartbeat) update(events int) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.p.Running, h.p.Events, h.p.Findings = true, events, findings
+	h.p.Running, h.p.Events = true, events
 }
 
 func (h *heartbeat) snapshot() sessionProgress {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events, Findings: slices.Clone(h.p.Findings)}
+	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events}
 }
 
 // RecordUsage keeps what the task used of its caps on its row; agent time
@@ -655,13 +654,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		s.parent = dead.SessionID
 		if dead.Running {
-			s.findings = slices.Concat(in.Findings, dead.Findings, []string{fmt.Sprintf(
+			s.findings = slices.Concat(in.Findings, []string{fmt.Sprintf(
 				"session %s stopped after %d events without finishing; continue from the branch as it is", dead.SessionID, dead.Events)})
 		}
 	}
 	// a session the stopped factoryd detached from runs on in its pod:
 	// this retry reattaches to it; a dead pod's row goes and the attempt
-	// starts over from the branch, the heartbeat's findings included
+	// starts over from the branch
 	var live *LiveSession
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
@@ -846,19 +845,21 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	// stop raced its finish
 	if out.result != nil && out.result.Success && out.commit != "" {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, out.commit, out.result.Summary
-		res.Findings = out.findings
 		return res
 	}
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
 	if out.result != nil && out.result.Success && out.commit == "" && s.startRef != "" && s.startRef != s.base {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
-		res.Findings = out.findings
 		return res
 	}
+	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
 	if out.trip != nil {
 		res.Trip, res.Commit = string(out.trip.Kind), out.commit
-		res.Findings = append(slices.Clone(out.trip.Findings), out.stopReport()...)
+		res.Findings = out.stopReport()
+		if out.trip.Stuck != "" {
+			res.Findings = append([]string{out.trip.Stuck}, res.Findings...)
+		}
 	}
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
@@ -895,7 +896,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		}
 		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
 			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), out.commit
-			res.Findings = append(slices.Clone(out.findings), loopFinding("the model provider refused its repeated tool calls: "+res.Summary))
+			res.Findings = []string{loopFinding("the model provider refused its repeated tool calls: " + res.Summary)}
 			return res
 		}
 	default:
@@ -908,7 +909,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	if out.commit != "" {
 		ended = "previous session ended unfinished: "
 	}
-	res.Findings = append(slices.Clone(out.findings), ended+res.Summary)
+	res.Commit = out.commit
+	res.Findings = []string{ended + res.Summary}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted
 	}

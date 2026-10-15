@@ -446,7 +446,6 @@ type sessionOutcome struct {
 	start     *startFailure // the session could not start
 	pending   *podPending   // its pod never left Pending: no session ran
 	model     string        // the model the session ended on
-	findings  []string
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
 }
 
@@ -491,7 +490,7 @@ const workerTerminationGrace = 60
 // to the pod a stopped factoryd left running: the loop reads the pod's
 // log on from the lines that factoryd consumed, with the same session
 // record (roadmap 222, item 2).
-func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int, findings []string), workerStop <-chan struct{}, live *LiveSession) (out sessionOutcome, err error) {
+func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int), workerStop <-chan struct{}, live *LiveSession) (out sessionOutcome, err error) {
 	var recorder *SessionRecorder
 	if live != nil {
 		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, t.ID, s.id)
@@ -552,7 +551,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		return out, nil
 	}
-	progress(0, nil)
+	progress(0)
 
 	// the supervisor's clocks start with the pod: a slow pull is no time
 	// the agent had
@@ -565,7 +564,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.findings, out.model = sup.Findings(), s.model }()
+	defer func() { out.model = s.model }()
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried;
 	// briefed: a supervisor call of this session read the whole brief
@@ -701,7 +700,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.store.SetLiveSessionLines(context.WithoutCancel(ctx), t.ID, consumed); err != nil {
 			log.Printf("task %s: record the lines consumed of session %s: %v", t.ID, s.id, err)
 		}
-		progress(events, sup.Findings())
+		progress(events)
 		return errWorkerStop
 	}
 	// onTrip returns true when the session ends, with the session's error.
@@ -853,7 +852,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			if n := sup.TakeNudge(); n != nil && trip == nil {
 				trip = r.nudge(ctx, t, s, sup, ns, podName, s.messageToken, *n)
 			}
-			progress(events, sup.Findings())
+			progress(events)
 			if trip != nil {
 				if end, err := onTrip(trip); end {
 					return out, err
