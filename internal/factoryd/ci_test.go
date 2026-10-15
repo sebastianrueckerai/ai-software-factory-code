@@ -786,6 +786,24 @@ func TestCISpawnerBuildJobGetsBuildVM(t *testing.T) {
 	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "build-cache.forgejo.svc.cluster.local") {
 		t.Fatalf("DNS rule missing the build cache: %v", dnsRule)
 	}
+	// the store's token service: its public host resolves in-cluster to the
+	// edge gateway, which the policy admits as entity ingress on 443
+	if !strings.Contains(fmt.Sprint(dnsRule), "matchName:git.aisoftwarefactory.world") {
+		t.Fatalf("DNS rule missing the store's host: %v", dnsRule)
+	}
+	var gatewayRule map[string]any
+	for _, rule := range kube.cnps[ns+"/ci-egress"]["egress"].([]any) {
+		if r := rule.(map[string]any); r["toEntities"] != nil {
+			gatewayRule = r
+		}
+	}
+	wantGateway := map[string]any{
+		"toEntities": []any{"ingress"},
+		"toPorts":    []any{map[string]any{"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}}}},
+	}
+	if !reflect.DeepEqual(gatewayRule, wantGateway) {
+		t.Fatalf("gateway egress rule = %v, want %v", gatewayRule, wantGateway)
+	}
 	var cacheRule map[string]any
 	for _, rule := range kube.cnps[ns+"/ci-egress"]["egress"].([]any) {
 		r := rule.(map[string]any)

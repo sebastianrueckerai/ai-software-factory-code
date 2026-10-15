@@ -80,10 +80,9 @@ var fromLine = regexp.MustCompile(`^FROM\s+(\S+)`)
 
 // Every image a Dockerfile builds on and main CI's buildkitd come from the
 // store by a line of upstream-images.txt (roadmap 203): no build reaches
-// an upstream registry for an image. A pull request's build VM holds no
-// login to the store, so pr.yml alone sets UPSTREAM empty, which names the
-// same digests at their upstreams. Hand-derived from the three Dockerfiles
-// and ci.yml as they stand.
+// an upstream registry for an image, a pull request's neither: pr.yml
+// hands buildctl the job token as the store's login and leaves UPSTREAM
+// alone. Hand-derived from the three Dockerfiles and ci.yml as they stand.
 func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	listed := map[string]bool{}
 	for _, l := range readUpstreamImages(t) {
@@ -171,9 +170,11 @@ func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	builds := regexp.MustCompile(`--frontend dockerfile\.v0 [^\n]*\n[^\n]*`).FindAllString(string(pr), -1)
-	if len(builds) != 1 || !strings.Contains(builds[0], " --opt build-arg:UPSTREAM= ") {
-		t.Errorf("pr.yml: image builds %q, want the one build with --opt build-arg:UPSTREAM=", builds)
+	if strings.Contains(string(pr), "UPSTREAM=") {
+		t.Error("pr.yml overrides UPSTREAM: a pull request's build takes the outside images from their upstreams")
+	}
+	if !regexp.MustCompile(`"auths":\{"git\.aisoftwarefactory\.world":\{"auth":"%s"\}\}\}' "\$\(printf 'job:%s' "\$FORGEJO_TOKEN" \| base64 -w0\)"`).Match(pr) {
+		t.Error("pr.yml: no store login from the job token for buildctl")
 	}
 }
 

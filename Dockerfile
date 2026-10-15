@@ -1,7 +1,7 @@
 # Every outside image comes from the factory's store by the digest
-# upstream-images.txt pins (roadmap 203). A pull request's build VM holds no
-# login to the store, so pr.yml passes UPSTREAM= and the VM pulls the same
-# digests from their upstreams.
+# upstream-images.txt pins (roadmap 203). A build with no login to the
+# store (a local one) passes UPSTREAM= and pulls the same digests from
+# their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes

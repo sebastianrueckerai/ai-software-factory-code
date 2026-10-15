@@ -2,9 +2,9 @@ ARG OPENCODE_VERSION=v1.18.32
 ARG NODE_VERSION=24.21.0
 
 # Every outside image comes from the factory's store by the digest
-# upstream-images.txt pins (roadmap 203). A pull request's build VM holds no
-# login to the store, so pr.yml passes UPSTREAM= and the VM pulls the same
-# digests from their upstreams.
+# upstream-images.txt pins (roadmap 203). A build with no login to the
+# store (a local one) passes UPSTREAM= and pulls the same digests from
+# their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
 
 # The archives the image unpacks, each checked against its sha256 before

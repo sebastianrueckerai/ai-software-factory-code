@@ -230,6 +230,7 @@ func main() {
 		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
 		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
 		GitBaseURL:       gitBase,
+		RegistryHost:     env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
 		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
 		JobTimeout:       ciJobTimeout,
 		Queue:            ciQueue,

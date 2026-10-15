@@ -1875,9 +1875,12 @@ digest (roadmaps 203 and 242); the `upstream` job runs
 `scripts/upstream-copy`, which copies each line the store lacks to
 `git.aisoftwarefactory.world/upstream/<its name>` with that digest, and
 every Dockerfile, workflow and infra manifest names the copy. The
-Dockerfiles take their bases from the store through `ARG UPSTREAM`; a
-pull request's build VM holds no login to the store, so `pr.yml` sets
-it empty and the VM pulls the same digests from their upstreams. Debian
+Dockerfiles take their bases from the store through `ARG UPSTREAM` (a
+local build without a login sets it empty for the same digests at their
+upstreams). A pull request's image build pulls from the store too:
+`pr.yml` writes the job token as buildctl's login, and the build runner's
+egress policy admits the edge gateway (entity `ingress`, 443), where
+buildctl fetches the VM's registry tokens. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
 moves on its own: the roller files a human card on this repository a

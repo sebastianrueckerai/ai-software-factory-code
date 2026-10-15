@@ -37,6 +37,7 @@ type CIConfig struct {
 	RunnerImage  string // pinned digest, host-mode (Dockerfile.runner)
 	PullSecret   string // registry pull secret copied into the CI namespace
 	GitBaseURL   string // in-cluster Forgejo — same host RunnerConfig.GitBaseURL uses, not the public API host
+	RegistryHost string // the store's public host, where a build job's buildctl fetches the VM's registry tokens ("" = git.aisoftwarefactory.world)
 	PollInterval time.Duration
 	JobTimeout   time.Duration // activeDeadlineSeconds
 	// MaxConcurrent caps the live CI namespaces; jobs beyond it stay
@@ -56,6 +57,9 @@ func (c *CIConfig) setDefaults() {
 	}
 	if c.TrustedLabel == "" {
 		c.TrustedLabel = "ubuntu-latest"
+	}
+	if c.RegistryHost == "" {
+		c.RegistryHost = "git.aisoftwarefactory.world"
 	}
 	if c.Queue == nil {
 		c.Queue = NewCIQueue(telemetry.Noop())
@@ -903,8 +907,12 @@ const (
 // namespace, no LiteLLM, no gateway.
 // A build job additionally reaches its own VM's buildkitd, the read-only
 // build cache (its own policy refuses writes) and, since BuildKit fetches
-// registry tokens through the client session, Docker Hub's token service;
-// layers and release downloads are the VM's. With staging, the runner
+// registry tokens through the client session, the token services of the
+// store and of Docker Hub (a project's Dockerfile may still name it);
+// layers and release downloads are the VM's. In-cluster DNS answers the
+// store's public host with the edge gateway, whose envoy enforces this
+// policy and answers 403 to a destination the policy names by its FQDN:
+// the gateway is entity ingress, admitted on 443. With staging, the runner
 // reaches that namespace's Services: admitSmoke grants it a smoke runner
 // whose run is a push to main.
 func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[string]any {
@@ -925,7 +933,7 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[s
 	}
 	dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
 	if vm != nil {
-		dnsNames = append(dnsNames, map[string]any{"matchName": buildCacheHost})
+		dnsNames = append(dnsNames, map[string]any{"matchName": buildCacheHost}, map[string]any{"matchName": s.cfg.RegistryHost})
 	}
 	if project {
 		dnsNames = append(dnsNames, map[string]any{"matchName": factorydHost}, map[string]any{"matchName": forgejoSSHHost})
@@ -992,6 +1000,11 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[s
 	}
 	if vm != nil {
 		egress = append(egress, buildVMEgressRule(vm.IPv4), map[string]any{
+			"toEntities": []any{"ingress"},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+			}},
+		}, map[string]any{
 			"toEndpoints": []any{map[string]any{
 				"matchLabels": map[string]string{
 					"k8s:io.kubernetes.pod.namespace": "forgejo",
