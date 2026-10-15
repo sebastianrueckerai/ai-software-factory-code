@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -275,6 +276,10 @@ type Store interface {
 	// any card's workflow (roadmap 187); false means no task is linked to
 	// that pull request yet.
 	TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
+	// TasksByPR lists the tasks linked to pull request pr on repository,
+	// newest first: a webhook on a factory pull request resolves the
+	// still-open card of its number among them (roadmap 275).
+	TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error)
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
@@ -507,6 +512,29 @@ const FactoryDecider = "factoryd"
 type PGStore struct {
 	db  *sql.DB
 	bus *EventBus
+	// sealKey is the key the mirror tokens are sealed under, the console
+	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
+	// factoryd serves; nil: no mirror token may be written or read. It
+	// sits behind an atomic pointer, so SetSealKey's write never races a
+	// seal's or an open's read of it.
+	sealKey atomic.Pointer[[]byte]
+}
+
+// SetSealKey sets the key the mirror tokens are sealed at rest with:
+// the console session key (CONSOLE_SESSION_KEY), which factoryd reads
+// beside the console (roadmap 273). It runs once, before any store call,
+// and is safe beside one.
+func (s *PGStore) SetSealKey(key []byte) {
+	k := slices.Clone(key)
+	s.sealKey.Store(&k)
+}
+
+// sealKeyBytes is the seal key SetSealKey set, nil while none was set.
+func (s *PGStore) sealKeyBytes() []byte {
+	if k := s.sealKey.Load(); k != nil {
+		return *k
+	}
+	return nil
 }
 
 // SetBus wires the event bus: Record publishes every row through it so the
