@@ -961,7 +961,10 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
 // transaction raises budget_eur, and the event row is the raise's audit
 // trail — the actor, the card, the old and the new budget and the stated
 // reason. The note is the member's answer to the card's question, posted as
-// doAnswer posts it, so the raise resumes the card in one step.
+// doAnswer posts it, so the raise resumes the card in one step. When the
+// floor still refuses a session after the raise, the raise and the note
+// stand and the response is a refusal naming the floor's reason, so the
+// member learns the amount now, not on the card's next question.
 func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
@@ -995,9 +998,13 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded,
 		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
+	short := c.unfundedSession(ctx, t)
 	if err := c.answerCard(ctx, a, t, note); err != nil {
 		log.Printf("console: %s funded %s, the answer failed: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f, but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, eur, to))
+	}
+	if short != "" {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer, but a session still cannot start: %s", t.IssueNumber, eur, to, short))
 	}
 	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer; the card resumes.", t.IssueNumber, eur, to), nil
 }
