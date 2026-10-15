@@ -267,6 +267,7 @@ func newCardDeps(t *testing.T, rig *intakeRig, signozURL string) *cardDeps {
 		GitBaseURL:   "http://forgejo-http.forgejo.svc.cluster.local:3000",
 		Models:       factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
+		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
 		Supervisor: factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy:     acceptancePolicyVersion,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {

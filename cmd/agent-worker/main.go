@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -190,8 +189,12 @@ func startFailed(err error) harness.Result {
 	if len(text) > maxStartError {
 		text = fmt.Sprintf("%s (cut from %d bytes)", textutil.Truncate(text, maxStartError), len(text))
 	}
-	return harness.Result{Success: false, Summary: "start failed: " + text, Step: se.step}
+	return harness.Result{Success: false, Summary: "start failed: " + text, Step: se.step, Transient: errors.As(err, new(transient))}
 }
+
+// transient is a start failure a later start may not meet: a service the
+// sandbox needs that did not answer, as while it restarts.
+type transient struct{ error }
 
 // start runs the session's steps before the harness, in order, on the
 // workspace ws; an error is a startError. s is never nil: its closers
@@ -225,7 +228,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	err = probe(s.env).run(ctx)
 	endProbe(err)
 	if err != nil {
-		return s, startError{"egress probe", err}
+		return s, startError{factoryd.StepEgressProbe, err}
 	}
 	endBrief := s.tel.phase("brief")
 	defer func() { endBrief(err) }()
@@ -504,12 +507,8 @@ func loadEnv() (workerEnv, error) {
 	if e.home == "" {
 		e.home = "/home/worker"
 	}
-	// the canary's name is the DNS probe's too
-	if host, _, err := net.SplitHostPort(e.egressCanary); err != nil || net.ParseIP(host) != nil {
-		return e, fmt.Errorf("EGRESS_CANARY must be a name and a port, is %q", e.egressCanary)
-	}
-	if host, _, err := net.SplitHostPort(e.egressDirectIP); err != nil || net.ParseIP(host) == nil {
-		return e, fmt.Errorf("EGRESS_DIRECT_IP must be an IP and a port, is %q", e.egressDirectIP)
+	if err := factoryd.CheckEgressTargets(e.egressCanary, e.egressDirectIP); err != nil {
+		return e, fmt.Errorf("EGRESS_CANARY, EGRESS_DIRECT_IP: %w", err)
 	}
 	var err error
 	if e.messageHash, err = parseHash(messageHash); err != nil {

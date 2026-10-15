@@ -616,6 +616,8 @@ func testRunnerConfig() RunnerConfig {
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		ChecksPoll:           time.Millisecond,
+		EgressCanary:         "example.com:443",
+		EgressDirectIP:       "192.0.2.7:443",
 		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy:               testPolicyVersion,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
@@ -1598,6 +1600,7 @@ func startEscalation(step, act, summary string) string {
 // session_end says what failed.
 func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 	const pushTheImage = "push the worker image or correct its reference"
+	const openCanary = "start failed: egress probe: canary example.com:443 answered: connected to 192.0.2.7:443"
 	cloneErr := "start failed: clone: git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
 	for _, tc := range []struct {
 		name          string
@@ -1614,6 +1617,8 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 			summary: "start failed: image pull: container worker waits with ErrImagePull: " + imageNotFound, step: "image pull", act: pushTheImage},
 		{name: "worker start", log: workerStartFailed("clone", cloneErr),
 			summary: cloneErr, step: "clone", act: "fix the cause below"},
+		{name: "egress probe", log: workerStartFailed("egress probe", openCanary),
+			summary: openCanary, step: "egress probe", act: "check the task namespace's worker-egress policy, or the pod's uid, against the probe named below"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			task := Task{ID: "t4i", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
@@ -1656,6 +1661,25 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 func workerStartFailed(step, summary string) string {
 	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step}})
 	return string(b)
+}
+
+// A worker start that failed on a fault a later start may not meet, the
+// gateway restarting under its egress probe, is no escalation: the
+// session ends aborted with the worker's summary, and the activity's
+// error is retryable, so Temporal starts the session again.
+func TestRunSessionRetriesATransientStartFailure(t *testing.T) {
+	const restarting = "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable"
+	task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
+	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: restarting, Step: StepEgressProbe, Transient: true}})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
+	if err == nil || !strings.Contains(err.Error(), restarting) || isTerminal(err) || res.StartFailed || res.Reason != "" {
+		t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
+	}
+	if end := timelineStep(t, objects, "t4j", "session_end"); end["outcome"] != "aborted" || end["summary"] != restarting {
+		t.Fatalf("session_end = %v, want outcome aborted with the summary", end)
+	}
 }
 
 // startRunner is a runner on kube that reads a pod's start every 10 ms
@@ -2668,6 +2692,51 @@ func TestWorkerPodSpecCarriesTheEgressProbeTargets(t *testing.T) {
 	env := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))
 	if env["EGRESS_CANARY"] != "canary.example:443" || env["EGRESS_DIRECT_IP"] != "192.0.2.7:443" {
 		t.Fatalf("EGRESS_CANARY = %q, EGRESS_DIRECT_IP = %q; want canary.example:443 and 192.0.2.7:443", env["EGRESS_CANARY"], env["EGRESS_DIRECT_IP"])
+	}
+}
+
+// factoryd refuses at boot an egress probe target the probe cannot use:
+// a canary that is no name and a port, or one on the sandbox's DNS
+// allowlist (its probe would fail every start), and a direct IP that is
+// no IP and a port.
+func TestNewRunnerRefusesEgressProbeTargetsTheProbeCannotUse(t *testing.T) {
+	for _, tc := range []struct{ canary, directIP, want string }{
+		{"example.com", "192.0.2.7:443", `runner: the egress canary must be a name and a port, is "example.com"`},
+		{"192.0.2.8:443", "192.0.2.7:443", `runner: the egress canary must be a name and a port, is "192.0.2.8:443"`},
+		{"example.com:0", "192.0.2.7:443", `runner: the egress canary must be a name and a port, is "example.com:0"`},
+		{"", "192.0.2.7:443", `runner: the egress canary must be a name and a port, is ""`},
+		{"example.com:443", "one.one.one.one:443", `runner: the egress direct IP must be an IP and a port, is "one.one.one.one:443"`},
+		{"example.com:443", "192.0.2.7", `runner: the egress direct IP must be an IP and a port, is "192.0.2.7"`},
+		{"proxy.golang.org:443", "192.0.2.7:443", "runner: the egress canary proxy.golang.org is on the sandbox's DNS allowlist, so its probe would fail every session's start"},
+		{"Factory-Gateway.factory.svc.cluster.local.:8081", "192.0.2.7:443", "runner: the egress canary Factory-Gateway.factory.svc.cluster.local. is on the sandbox's DNS allowlist, so its probe would fail every session's start"},
+	} {
+		cfg := testRunnerConfig()
+		cfg.EgressCanary, cfg.EgressDirectIP = tc.canary, tc.directIP
+		if _, err := NewRunner(cfg, newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err == nil || err.Error() != tc.want {
+			t.Errorf("canary %q, direct IP %q: err = %v, want %s", tc.canary, tc.directIP, err, tc.want)
+		}
+	}
+	if _, err := NewRunner(testRunnerConfig(), newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err != nil {
+		t.Fatalf("example.com:443 and 192.0.2.7:443: %v", err)
+	}
+}
+
+// One uid: the sandbox pod runs as SandboxUID, which the worker's egress
+// probe holds itself to, and Dockerfile.sandbox adds and runs as its user.
+func TestSandboxUIDIsThePodsAndTheImages(t *testing.T) {
+	pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, sessionSpec{id: "s-1"})
+	sc := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["securityContext"].(map[string]any)
+	if sc["runAsUser"] != SandboxUID || sc["runAsGroup"] != SandboxUID {
+		t.Fatalf("runAsUser %v, runAsGroup %v; want %d", sc["runAsUser"], sc["runAsGroup"], SandboxUID)
+	}
+	raw, err := os.ReadFile("../../Dockerfile.sandbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{fmt.Sprintf("useradd -m -u %d ", SandboxUID), fmt.Sprintf("\nUSER %d:%d\n", SandboxUID, SandboxUID)} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("Dockerfile.sandbox lacks %q", want)
+		}
 	}
 }
 

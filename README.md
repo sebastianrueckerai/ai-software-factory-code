@@ -113,8 +113,12 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   `EGRESS_CANARY`, default `example.com:443`), the metadata address and
   a direct IP (`EGRESS_DIRECT_IP`, default `1.1.1.1:443`) take no
   connection and a lookup of the canary's name fails at once; the
-  worker runs as uid 1000. A probe that fails ends the start at step
-  `egress probe`, naming the probe and what answered.
+  worker runs as uid 1000 (`factoryd.SandboxUID`). factoryd refuses at
+  boot a canary on the sandbox's DNS allowlist. A gateway or a DNS that
+  does not answer is a transient start fault, which the session
+  activity's retry starts again; a sandbox more open than its policy, or
+  on another uid, ends the start at step `egress probe` with an
+  escalation that names the probe and what answered.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).

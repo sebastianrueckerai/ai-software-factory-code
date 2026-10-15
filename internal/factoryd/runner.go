@@ -12,6 +12,7 @@ import (
 	"log"
 	"maps"
 	"math"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -69,9 +70,10 @@ type RunnerConfig struct {
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
 	// workers send their telemetry (ruling 158); "" = none.
 	OTLPEndpoint string
-	// EgressCanary (a public name and port) and EgressDirectIP (a public
-	// IP and port) are what the worker's egress probe must not reach
-	// before a session starts (roadmap 42).
+	// EgressCanary (a public name and port, off the sandbox's DNS
+	// allowlist) and EgressDirectIP (a public IP and port) are what the
+	// worker's egress probe must not reach before a session starts
+	// (roadmap 42).
 	EgressCanary, EgressDirectIP string
 	// Gates is the worker's GateWatch: the gate supervisor acts on the
 	// attempts it watches.
@@ -275,6 +277,13 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		if u, err := url.Parse(raw); err != nil || u.Hostname() == "" {
 			return nil, fmt.Errorf("runner: %q is not an absolute URL", raw)
 		}
+	}
+	if err := CheckEgressTargets(cfg.EgressCanary, cfg.EgressDirectIP); err != nil {
+		return nil, fmt.Errorf("runner: %w", err)
+	}
+	canary, _, _ := net.SplitHostPort(cfg.EgressCanary)
+	if slices.ContainsFunc((&Runner{cfg: cfg}).sandboxNames(), func(name string) bool { return strings.EqualFold(name, strings.TrimSuffix(canary, ".")) }) {
+		return nil, fmt.Errorf("runner: the egress canary %s is on the sandbox's DNS allowlist, so its probe would fail every session's start", canary)
 	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
@@ -579,6 +588,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// read takes one log line: the result ends the session; an event is
 	// recorded and returned for supervision.
 	events := 0
+	// retry is a start that failed on a fault a later start may not meet
+	var retry error
 	read := func(line []byte) (ev *harness.Event, done bool) {
 		consumed++
 		var env harness.WorkerEnvelope
@@ -590,7 +601,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if env.Result != nil {
 			res := *env.Result
 			out.result = &res
-			if !res.Success && res.Step != "" {
+			switch {
+			case !res.Success && res.Step != "" && res.Transient:
+				// the activity's retry starts the session again, as on any
+				// other transient start fault
+				retry = errors.New(res.Summary)
+			case !res.Success && res.Step != "":
 				out.start = &startFailure{step: res.Step, text: res.Summary}
 			}
 			return nil, true
@@ -802,7 +818,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			ev, done := read(line)
 			if done {
-				return out, nil
+				return out, retry
 			}
 			if ev == nil {
 				continue
@@ -1075,6 +1091,10 @@ const (
 	stepContainerConfig = "container config"
 )
 
+// StepEgressProbe is the worker's start step that holds the sandbox to its
+// egress policy (roadmap 42).
+const StepEgressProbe = "egress probe"
+
 // startStep is the step container c waits at when no wait gets it past:
 // an image reference that does not parse, an image or manifest the
 // registry does not hold, or a configuration the kubelet will not create
@@ -1127,6 +1147,8 @@ func (f *startFailure) escalation(then string) string {
 		act = "push the worker image or correct its reference"
 	case stepContainerConfig:
 		act = "correct the sandbox pod's configuration"
+	case StepEgressProbe:
+		act = "check the task namespace's " + workerEgress + " policy, or the pod's uid, against the probe named below"
 	}
 	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
 }
@@ -1438,6 +1460,11 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	return pod
 }
 
+// SandboxUID is the sandbox's uid and gid: its pods' runAsUser and
+// runAsGroup, Dockerfile.sandbox's USER, and what the worker's egress
+// probe holds itself to.
+const SandboxUID = 1000
+
 // sandboxPodSpec is a gVisor worker pod in the task namespace; only an
 // agent session gets the gateway token, and cache names the project's
 // shared cache claim ("" none). Every sandbox pod carries the
@@ -1506,8 +1533,8 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 				"volumeMounts": mounts,
 				"securityContext": map[string]any{
 					"runAsNonRoot":             true,
-					"runAsUser":                1000,
-					"runAsGroup":               1000,
+					"runAsUser":                SandboxUID,
+					"runAsGroup":               SandboxUID,
 					"allowPrivilegeEscalation": false,
 					"capabilities":             map[string]any{"drop": []any{"ALL"}},
 					"readOnlyRootFilesystem":   true,
@@ -1538,19 +1565,12 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 // worker's message port; every other ingress is denied.
 func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 	dnsNames := []any{}
-	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
-		u, _ := url.Parse(raw) // validated in NewRunner
-		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
+	for _, name := range r.sandboxNames() {
+		dnsNames = append(dnsNames, map[string]any{"matchName": name})
 	}
 	toFQDNs := []any{}
-	// storage.googleapis.com: proxy.golang.org redirects zip downloads there.
-	for _, host := range []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org"} {
+	for _, host := range sandboxRegistries {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
-		dnsNames = append(dnsNames, map[string]any{"matchName": host})
-	}
-	if r.cfg.OTLPEndpoint != "" {
-		u, _ := url.Parse(r.cfg.OTLPEndpoint) // validated in NewRunner
-		dnsNames = append(dnsNames, map[string]any{"matchName": u.Hostname()})
 	}
 	spec := map[string]any{
 		"endpointSelector": map[string]any{
@@ -1633,6 +1653,46 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 }
 
 const workerEgress = "worker-egress"
+
+// sandboxRegistries are the public names the sandbox reaches on 443;
+// storage.googleapis.com: proxy.golang.org redirects zip downloads there.
+var sandboxRegistries = []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org"}
+
+// sandboxNames are the names the sandbox's DNS allowlist answers: the
+// gateway's, Forgejo's, the registries' and the collector's.
+func (r *Runner) sandboxNames() []string {
+	var names []string
+	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
+		u, _ := url.Parse(raw) // validated in NewRunner
+		names = append(names, u.Hostname())
+	}
+	names = append(names, sandboxRegistries...)
+	if r.cfg.OTLPEndpoint != "" {
+		u, _ := url.Parse(r.cfg.OTLPEndpoint) // validated in NewRunner
+		names = append(names, u.Hostname())
+	}
+	return names
+}
+
+// CheckEgressTargets checks the egress probe's targets: the canary is a
+// name and a port, as its name is the DNS probe's too, and the direct IP
+// an IP and a port.
+func CheckEgressTargets(canary, directIP string) error {
+	if host, ok := hostPort(canary); !ok || host == "" || net.ParseIP(host) != nil {
+		return fmt.Errorf("the egress canary must be a name and a port, is %q", canary)
+	}
+	if host, ok := hostPort(directIP); !ok || net.ParseIP(host) == nil {
+		return fmt.Errorf("the egress direct IP must be an IP and a port, is %q", directIP)
+	}
+	return nil
+}
+
+// hostPort splits s into its host and a port from 1 to 65535.
+func hostPort(s string) (string, bool) {
+	host, port, err := net.SplitHostPort(s)
+	n, perr := strconv.Atoi(port)
+	return host, err == nil && perr == nil && n > 0 && n < 1<<16
+}
 
 // leasedServerRule admits SSH to one commissioned server: toCIDR and
 // toPorts in one rule item, so the port applies to that address only.

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 const (
@@ -19,16 +21,15 @@ const (
 	probeTimeout = 2 * time.Second
 	// metadataAddr is the cloud metadata service the policy denies outright.
 	metadataAddr = "169.254.169.254:80"
-	// sandboxUID is the pod's runAsUser (factoryd's sandboxPodSpec) and the
-	// image's USER.
-	sandboxUID = 1000
 )
 
 // egressProbe holds the sandbox to its egress policy (factoryd's
 // workerEgressSpec) before any agent runs in it: the gateway, the one path
 // the policy admits, answers, and nothing else does. A refused, dropped or
 // unresolved connection passes and only an answer fails, so no service
-// outside the factory has to answer for a session to start.
+// outside the factory has to answer for a session to start. A gateway or
+// a DNS that does not answer is transient; a sandbox more open than its
+// policy, or not the sandbox's uid, is not.
 type egressProbe struct {
 	gateway  string // the gateway's base URL
 	canary   string // host:port, a public name outside the DNS allowlist
@@ -74,15 +75,20 @@ func (p egressProbe) run(ctx context.Context) error {
 	}
 	wg.Wait()
 	var failed []string
+	permanent := false
 	for _, err := range errs {
 		if err != nil {
 			failed = append(failed, err.Error())
+			permanent = permanent || !errors.As(err, new(transient))
 		}
 	}
-	if len(failed) > 0 {
+	switch {
+	case len(failed) == 0:
+		return nil
+	case permanent:
 		return errors.New(strings.Join(failed, "; "))
 	}
-	return nil
+	return transient{errors.New(strings.Join(failed, "; "))}
 }
 
 // answers is the gateway probe: without its answer the sandbox may have
@@ -97,13 +103,13 @@ func (p egressProbe) answers(ctx context.Context) error {
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("gateway: no answer from %s within %v", health, p.timeout)
+			return transient{fmt.Errorf("gateway: no answer from %s within %v", health, p.timeout)}
 		}
-		return fmt.Errorf("gateway: no answer from %s: %w", health, err)
+		return transient{fmt.Errorf("gateway: no answer from %s: %w", health, err)}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("gateway: %s answered %s", health, resp.Status)
+		return transient{fmt.Errorf("gateway: %s answered %s", health, resp.Status)}
 	}
 	return nil
 }
@@ -126,14 +132,14 @@ func (p egressProbe) refused(ctx context.Context) error {
 	case err == nil:
 		return fmt.Errorf("blocked name %s resolved to %s", p.blocked, strings.Join(addrs, ", "))
 	case ctx.Err() != nil:
-		return fmt.Errorf("blocked name %s: no answer within %v, where the allowlist refuses at once", p.blocked, p.timeout)
+		return transient{fmt.Errorf("blocked name %s: no answer within %v, where the allowlist refuses at once", p.blocked, p.timeout)}
 	}
 	return nil
 }
 
 func checkUID(uid int) error {
-	if uid != sandboxUID {
-		return fmt.Errorf("uid: runs as %d, the sandbox's is %d", uid, sandboxUID)
+	if uid != factoryd.SandboxUID {
+		return fmt.Errorf("uid: runs as %d, the sandbox's is %d", uid, factoryd.SandboxUID)
 	}
 	return nil
 }

@@ -633,6 +633,8 @@ func newHarness(t *testing.T, reg *registry) *harness {
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		ChecksPoll:           time.Millisecond,
+		EgressCanary:         "example.com:443",
+		EgressDirectIP:       "192.0.2.7:443",
 		Supervisor:           factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
 		Policy:               func() policy.Version { return v },
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {

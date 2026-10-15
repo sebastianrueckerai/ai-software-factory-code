@@ -404,23 +404,29 @@ func TestCloneModeClones(t *testing.T) {
 // failure is the text its init container left in the workspace; an error
 // too long for factoryd's 1 MiB log line is cut with its size. A sandbox
 // more open than its policy fails the egress probe, before the clone is
-// read.
+// read; a gateway that does not answer it, as while it restarts, fails it
+// as transient.
 func TestSessionStartFailureLeavesAResult(t *testing.T) {
 	const cloneErr = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
 	huge := strings.Repeat("\x01", 2<<20)
 	closed := closedSandbox(t)
 	open := closed
 	open.directIP = listening(t)
+	silent := closed
+	silent.gateway = restarting(t)
 	for name, tc := range map[string]struct {
 		initErr                         error
 		probe                           egressProbe
 		taskID, fetchFailed, step, want string
+		transient                       bool
 	}{
 		"init": {initErr: errors.New("must run as the container's init (pid 1), runs as pid 7"), taskID: "t1",
 			step: "init", want: "start failed: init: must run as the container's init (pid 1), runs as pid 7"},
 		"environment": {step: "environment", want: "start failed: environment: TASK_ID is required"},
 		"egress probe": {taskID: "t1", probe: open, fetchFailed: cloneErr, step: "egress probe",
 			want: "start failed: egress probe: direct IP " + open.directIP + " answered: connected to " + open.directIP},
+		"egress probe, the gateway restarting": {taskID: "t1", probe: silent, step: "egress probe", transient: true,
+			want: "start failed: egress probe: gateway: " + silent.gateway + "/healthz answered 503 Service Unavailable"},
 		"clone":        {taskID: "t1", probe: closed, fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
 		"prepare repo": {taskID: "t1", probe: closed, step: "prepare repo", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
 		// "clone: " and 2 MiB, cut at 16 KiB
@@ -447,7 +453,7 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 			if code := runSession(context.Background(), nolog, ws, &out, tc.initErr, func(workerEnv) egressProbe { return tc.probe }); code != 1 {
 				t.Fatalf("exit %d, want 1", code)
 			}
-			want := harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1), Step: tc.step}
+			want := harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1), Step: tc.step, Transient: tc.transient}
 			var got harness.WorkerEnvelope
 			lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 			if len(lines) != 1 || len(lines[0]) >= 1<<20 || json.Unmarshal([]byte(lines[0]), &got) != nil ||

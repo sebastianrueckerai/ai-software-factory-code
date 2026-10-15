@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 )
 
@@ -36,6 +38,17 @@ func refusing(t *testing.T) string {
 	return addr
 }
 
+// restarting is the URL of a gateway that answers 503, as while it
+// restarts.
+func restarting(t *testing.T) string {
+	t.Helper()
+	gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(gateway.Close)
+	return gateway.URL
+}
+
 func refuseLookup(_ context.Context, name string) ([]string, error) {
 	return nil, &net.DNSError{Err: "server misbehaving", Name: name}
 }
@@ -49,7 +62,7 @@ func closedSandbox(t *testing.T) egressProbe {
 	t.Cleanup(gateway.Close)
 	return egressProbe{
 		gateway: gateway.URL, canary: refusing(t), blocked: "canary.example", metadata: refusing(t), directIP: refusing(t),
-		uid: sandboxUID, timeout: time.Second, dial: (&net.Dialer{}).DialContext, lookup: refuseLookup,
+		uid: factoryd.SandboxUID, timeout: time.Second, dial: (&net.Dialer{}).DialContext, lookup: refuseLookup,
 	}
 }
 
@@ -98,12 +111,9 @@ func TestEgressProbeNamesWhatAnswered(t *testing.T) {
 			return "uid: runs as 1001, the sandbox's is 1000"
 		},
 		"gateway unhealthy": func(t *testing.T, p *egressProbe) string {
-			gateway := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				w.WriteHeader(http.StatusServiceUnavailable)
-			}))
-			t.Cleanup(gateway.Close)
-			p.gateway = gateway.URL + "/"
-			return "gateway: " + gateway.URL + "/healthz answered 503 Service Unavailable"
+			gateway := restarting(t)
+			p.gateway = gateway + "/"
+			return "gateway: " + gateway + "/healthz answered 503 Service Unavailable"
 		},
 		"three at once": func(t *testing.T, p *egressProbe) string {
 			p.canary, p.directIP, p.uid = listening(t), listening(t), 0
@@ -133,7 +143,7 @@ func TestEgressProbeBoundsEachProbe(t *testing.T) {
 	}
 	p := egressProbe{
 		gateway: "http://factory-gateway.factory.svc.cluster.local:8081", canary: "canary.example:443", blocked: "canary.example",
-		metadata: metadataAddr, directIP: "192.0.2.7:443", uid: sandboxUID, timeout: 300 * time.Millisecond,
+		metadata: metadataAddr, directIP: "192.0.2.7:443", uid: factoryd.SandboxUID, timeout: 300 * time.Millisecond,
 		dial:   func(ctx context.Context, _, _ string) (net.Conn, error) { return nil, silent(ctx) },
 		lookup: func(ctx context.Context, _ string) ([]string, error) { return nil, silent(ctx) },
 	}
@@ -143,11 +153,44 @@ func TestEgressProbeBoundsEachProbe(t *testing.T) {
 	t.Logf("the probe of a silent sandbox took %v", took)
 	want := "gateway: no answer from http://factory-gateway.factory.svc.cluster.local:8081/healthz within 300ms" +
 		"; blocked name canary.example: no answer within 300ms, where the allowlist refuses at once"
-	if err == nil || err.Error() != want {
-		t.Fatalf("err = %v\nwant %s", err, want)
+	if err == nil || err.Error() != want || !errors.As(err, new(transient)) {
+		t.Fatalf("err = %#v\nwant the transient %s", err, want)
 	}
 	if took < p.timeout || took >= 2*p.timeout {
 		t.Fatalf("the probe took %v, want one bound of %v", took, p.timeout)
+	}
+}
+
+// A service the sandbox needs that does not answer, as while it restarts,
+// fails the probe for a later start to pass; a sandbox more open than its
+// policy, or not the sandbox's uid, fails it for good, even beside one.
+func TestEgressProbeRetriesOnlyAServiceThatDidNotAnswer(t *testing.T) {
+	silent := func(ctx context.Context, _ string) ([]string, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	for name, tc := range map[string]struct {
+		open      func(t *testing.T, p *egressProbe)
+		transient bool
+	}{
+		"gateway restarting": {func(t *testing.T, p *egressProbe) { p.gateway = restarting(t) }, true},
+		"gateway down":       {func(t *testing.T, p *egressProbe) { p.gateway = "http://" + refusing(t) }, true},
+		"DNS silent":         {func(t *testing.T, p *egressProbe) { p.lookup = silent }, true},
+		"canary open":        {func(t *testing.T, p *egressProbe) { p.canary = listening(t) }, false},
+		"root":               {func(t *testing.T, p *egressProbe) { p.uid = 0 }, false},
+		"gateway restarting, direct IP open": {func(t *testing.T, p *egressProbe) {
+			p.gateway, p.directIP = restarting(t), listening(t)
+		}, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := closedSandbox(t)
+			p.timeout = 100 * time.Millisecond
+			tc.open(t, &p)
+			err := p.run(context.Background())
+			if err == nil || errors.As(err, new(transient)) != tc.transient {
+				t.Fatalf("err = %#v, want one transient %v", err, tc.transient)
+			}
+		})
 	}
 }
 
@@ -166,8 +209,8 @@ func TestLoadEnvReadsTheEgressProbeTargets(t *testing.T) {
 		t.Fatalf("probe = %+v", p)
 	}
 	for name, values := range map[string][]string{
-		"EGRESS_CANARY":    {"", "example.com", "192.0.2.7:443", "[2001:db8::7]:443"},
-		"EGRESS_DIRECT_IP": {"", "192.0.2.7", "one.one.one.one:443"},
+		"EGRESS_CANARY":    {"", "example.com", ":443", "example.com:https", "example.com:0", "example.com:65536", "192.0.2.7:443", "[2001:db8::7]:443"},
+		"EGRESS_DIRECT_IP": {"", "192.0.2.7", "192.0.2.7:x", "one.one.one.one:443"},
 	} {
 		for _, v := range values {
 			setRequiredEnv(t)
