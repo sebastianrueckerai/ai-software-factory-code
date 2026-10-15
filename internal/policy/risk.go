@@ -34,7 +34,8 @@ type Risk struct {
 type RiskClass struct {
 	// Name is the class's name; auto is allowed on class normal only.
 	Name string `yaml:"name" json:"name"`
-	// Outcome: forbidden fails the task, requires_approval waits for a
+	// Outcome: forbidden fails an agent's task (a pull request factoryd
+	// opened waits for a human instead), requires_approval waits for a
 	// human, auto merges without one where the merge rule allows it.
 	Outcome string `yaml:"outcome" json:"outcome"`
 	// Migration marks paths whose change needs the human's schema review.

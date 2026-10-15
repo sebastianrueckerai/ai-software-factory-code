@@ -168,32 +168,50 @@ func (r *Registrar) cardByPR(ctx context.Context, repo Repo, number int64) (Task
 	return cards[0], true, nil
 }
 
-// cardDue reports whether the template update pull request number on repo
-// is due a card: it has none (it came before roadmap 187), or its one card
-// failed before any gate judged it (finding 224). Such a failure is
-// factoryd's own, no verdict on the pull request, and buys one card more;
-// a second card that fails leaves it be, so the pass files again once per
-// pull request. failed is that failed card. Without a card store no card
-// is due.
-func (r *Registrar) cardDue(ctx context.Context, repo Repo, number int64) (failed *Task, due bool, err error) {
+// cardDue reports why the template update pull request number on repo is
+// due a card, "" when it is not. It is due one when it has none (it came
+// before roadmap 187), and one more when its newest card failed by
+// factoryd's own doing, no verdict on the pull request; failed is that
+// card. Either the policy gate refused it as forbidden to agents (the
+// final reason on its timeline), as it refused a factory pull request's
+// card before such a pull request was no agent's change, and the card
+// filed for it is never refused so. Or it is the pull request's one card
+// and failed before any gate judged it (finding 224): a second card that
+// fails leaves it be, so the pass files again once per pull request.
+// Without a card store no card is due.
+func (r *Registrar) cardDue(ctx context.Context, repo Repo, number int64) (failed *Task, why string, err error) {
 	if r.Cards == nil {
-		return nil, false, nil
+		return nil, "", nil
 	}
 	cards, err := r.Cards.TasksByPR(ctx, repo.String(), number)
 	switch {
 	case err != nil:
-		return nil, false, err
+		return nil, "", err
 	case len(cards) == 0:
-		return nil, true, nil
-	case len(cards) > 1 || cards[0].Status != "failed":
-		return nil, false, nil
+		return nil, "it has no card", nil
+	case cards[0].Status != "failed":
+		return nil, "", nil
+	}
+	tl, err := r.Timeline.Objects.Get(ctx, "sessions/"+cards[0].ID+"/timeline.jsonl")
+	if err != nil {
+		return nil, "", err
+	}
+	if reason, _ := lastStep(tl, "final")["reason"].(string); strings.Contains(reason, refusedToAgents) {
+		return &cards[0], "was refused as forbidden to agents, which a factory pull request is not", nil
+	}
+	if len(cards) > 1 {
+		return nil, "", nil
 	}
 	judged, err := r.Cards.ReachedReview(ctx, cards[0].ID)
 	if err != nil || judged {
-		return nil, false, err
+		return nil, "", err
 	}
-	return &cards[0], true, nil
+	return &cards[0], "failed before any gate judged it", nil
 }
+
+// refusedToAgents is in the reason of a card the policy gate refused as an
+// agent's change to a class forbidden to agents.
+const refusedToAgents = " is forbidden to agents: "
 
 // fileDueCard files the card pull request number is due (cardDue). The
 // failed card it replaces closes as factoryd's recorded close, its issue
@@ -215,9 +233,9 @@ func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, fa
 
 // leftBranch keeps the branch a closed pull request left when a person
 // closed it unmerged and it still holds want (ruling 296): the close stands
-// until the render changes. A close by its card's failure before any gate
-// judged it is factoryd's own: the pass reopens the pull request, as the
-// bot that closed it, and files its card again (cardDue). Otherwise it
+// until the render changes. A close by its card's failure of factoryd's
+// own doing (cardDue) is no person's: the pass reopens the pull request, as
+// the bot that closed it, and files its card again. Otherwise it
 // deletes the branch, and the next pass opens the new pull request: Forgejo
 // closes a deleted branch's pull requests in the background, which could
 // take a new one with them.
@@ -233,7 +251,7 @@ func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, p Project, want 
 			return "", err
 		}
 		if len(changes) == 0 {
-			failed, _, err := r.cardDue(ctx, repo, last.Number)
+			failed, why, err := r.cardDue(ctx, repo, last.Number)
 			if err != nil {
 				return "", err
 			}
@@ -246,7 +264,7 @@ func (r *Registrar) leftBranch(ctx context.Context, f *Forgejo, p Project, want 
 			if err := r.fileDueCard(ctx, p, last.Number, failed, want); err != nil {
 				return "", err
 			}
-			return Change(fmt.Sprintf("reopened pull request #%d: card %s failed before any gate judged it, filed again", last.Number, failed.ID)), nil
+			return Change(fmt.Sprintf("reopened pull request #%d: card %s %s, filed again", last.Number, failed.ID, why)), nil
 		}
 	}
 	return Change("waiting: deleted the branch " + fork.String() + ":" + TemplateUpdateBranch + " a closed pull request left; the next pass opens a new one"),
@@ -296,9 +314,9 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 			c = Change(fmt.Sprintf("updated pull request #%d: its description", pr.Number))
 		}
 	}
-	if failed, due, err := r.cardDue(ctx, repo, pr.Number); err != nil {
+	if failed, why, err := r.cardDue(ctx, repo, pr.Number); err != nil {
 		return "", err
-	} else if due {
+	} else if why != "" {
 		if err := r.fileDueCard(ctx, p, pr.Number, failed, want); err != nil {
 			return "", err
 		}

@@ -40,6 +40,10 @@ type PolicyGate struct {
 	LargeLines    int // the policy's risk.large_lines
 	PolicyVersion int64
 	MergeRule     string
+	// Factory: the class is forbidden to agents, and factoryd opened the
+	// pull request (factoryPRSources), which is no agent's change: Outcome
+	// is requires_approval, and a human approves its change to Paths.
+	Factory bool
 }
 
 // large: the pull request is class large by its lines.
@@ -300,7 +304,9 @@ func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string)
 // both names) and lines under the version the task pinned (pin; 0 is the version in
 // force), records the class on the
 // task and comments it on the pull request. A forbidden class is returned,
-// not an error: the workflow fails the task with the reason.
+// not an error: the workflow fails the task with the reason. It is
+// forbidden to agents only: on a card of a pull request factoryd opened
+// it requires a human's approval (Factory).
 func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -333,6 +339,9 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	c := v.Document.Risk.Classify(paths, lines)
 	g := PolicyGate{Class: c.Class.Name, Outcome: c.Class.Outcome, Paths: c.Paths, Migrations: c.Migrations,
 		Changed: len(paths), Lines: lines, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
+	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
+		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
+	}
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 		return PolicyGate{}, err
 	} else if ok {
@@ -343,6 +352,8 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths, %d changed lines.\n\n", v.ID, g.Class, g.Outcome, g.Changed, g.Lines)
 	switch {
+	case g.Factory:
+		msg += "factoryd opened this pull request, no agent: a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Outcome == policy.OutcomeForbidden:
 		msg += "Agents may not change these paths:\n" + listPaths(g.Paths)
 	case g.large():
@@ -1040,13 +1051,19 @@ func reviewComment(model, commit string, rv Review, read string) string {
 
 // RequestApproval opens the task's merge approval request, the console's
 // card: the pull request, its risk class, migrations, reproduction and the
-// model review. It replaces any earlier pending one of the task.
+// model review. It replaces any earlier pending one of the task. A factory
+// pull request's paths forbidden to agents come first in why a human
+// decides.
 func (r *Runner) RequestApproval(ctx context.Context, taskID string, in ApprovalInput) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
 	}
 	g := in.Gates.Policy
+	if g.Factory {
+		in.WhyHuman = append([]string{fmt.Sprintf("factoryd opened this pull request, no agent: a human approves its change to paths forbidden to agents (risk class %s): %s",
+			g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
+	}
 	spec, err := json.Marshal(MergeSpec{
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,

@@ -226,7 +226,9 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			}
 			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
-			s.comments = append(s.comments, fmt.Sprintf("#%d by %s: %s", pr().number, by, body["body"]))
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
+			s.comments = append(s.comments, fmt.Sprintf("#%d by %s: %s", n, by, body["body"]))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]int{"id": 1})
 		case r.Method == http.MethodGet && p == fk && s.branches == nil:
@@ -536,6 +538,59 @@ func TestTemplateUpdateKeepFilesTheDueCard(t *testing.T) {
 	reg.TemplateUpdates(ctx)
 	if cards := templateCards(t, tasks); len(cards) != 2 || cards[1] != first || tasks.tasks[cards[0]].Status != "queued" || fj.issues[0].state != "closed" {
 		t.Fatalf("cards %v, issues %+v: want the due card filed and the failed one closed", cards, fj.issues)
+	}
+}
+
+// A card the policy gate refused as forbidden to agents, as it refused a
+// factory pull request's before it knew one for no agent's change, failed
+// by factoryd's rule, not by a verdict on the pull request: whatever cards
+// came before it, the next pass reopens the pull request and files it
+// once more, read from the refusal on its timeline. The card filed then is
+// never refused so: when it fails, the close stands.
+func TestTemplateUpdateRefilesACardRefusedAsForbiddenToAgents(t *testing.T) {
+	fj, reg, _, tasks, wf := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	failTemplateCard(t, fj, tasks, templateCards(t, tasks)[0], false)
+	reg.TemplateUpdates(ctx)
+	refused := templateCards(t, tasks)[0]
+	failTemplateCard(t, fj, tasks, refused, true)
+	if err := reg.Timeline.Append(ctx, refused, "final", map[string]any{"state": "failed",
+		"reason": "policy: policy version 656: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml"}); err != nil {
+		t.Fatal(err)
+	}
+	writes, logs := len(fj.writes), captureLog(t)
+	reg.TemplateUpdates(ctx)
+	cards := templateCards(t, tasks)
+	if len(fj.prs) != 1 || fj.prs[0].state != "open" || len(cards) != 3 || cards[1] != refused {
+		t.Fatalf("pull requests %+v, cards %v: want #1 reopened with a third card", fj.prs, cards)
+	}
+	again := tasks.tasks[cards[0]]
+	if again.Source != SourceTemplateUpdate || again.Status != "queued" || again.IssueNumber != 3 || wf.started[len(wf.started)-1] != again.ID {
+		t.Fatalf("card %+v, started %v: want a queued card on issue #3 whose run started", again, wf.started)
+	}
+	if want := "project demo-app: template update: reopened pull request #1: card " + refused + " was refused as forbidden to agents, which a factory pull request is not, filed again\n"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("log:\n%s\nwant %q", logs, want)
+	}
+	if !slices.Contains(fj.writes[writes:], "PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by basic factory-agent") {
+		t.Fatalf("writes %q, want the bot's reopen", fj.writes[writes:])
+	}
+	if fj.issues[1].state != "closed" || !slices.Contains(fj.comments, "#2 by basic factory-agent: factoryd: Filed again as #3.") ||
+		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == refused && e.Kind == IntakeFactoryClosed }) {
+		t.Fatalf("issues %+v, comments %q, intake events %+v: want the refused card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
+	}
+	reg.TemplateUpdates(ctx)
+	if len(templateCards(t, tasks)) != 3 || len(fj.issues) != 3 || len(fj.prs) != 1 {
+		t.Fatalf("cards %v, issues %d, pull requests %d: the kept pull request has its card", templateCards(t, tasks), len(fj.issues), len(fj.prs))
+	}
+	failTemplateCard(t, fj, tasks, again.ID, true)
+	if err := reg.Timeline.Append(ctx, again.ID, "final", map[string]any{"state": "failed", "reason": "factory pull request: checks failed: the checks failed on c9"}); err != nil {
+		t.Fatal(err)
+	}
+	reg.TemplateUpdates(ctx)
+	if fj.prs[0].state != "closed" || len(templateCards(t, tasks)) != 3 || len(fj.issues) != 3 ||
+		!strings.Contains(logs.String(), "project demo-app: template update: waiting: #1 closed unmerged; the template's next change reopens it\n") {
+		t.Fatalf("pull requests %+v, cards %v\n%s: want the new card's failure to stand", fj.prs, templateCards(t, tasks), logs)
 	}
 }
 

@@ -244,6 +244,65 @@ func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
 	}
 }
 
+// A pull request factoryd opened is no agent's change (roadmap 187): its
+// paths forbidden to agents go to a human's approval instead of failing
+// the card, and the comment names them. An agent's change to them stays
+// forbidden.
+func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
+	files := []string{`{"filename":".forgejo/workflows/ci.yml"}`, `{"filename":"deploy/smoke.sh"}`}
+	for _, source := range []string{SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceRevert} {
+		t.Run(source, func(t *testing.T) {
+			fj := &gateForgejo{files: files}
+			task := gateTask
+			task.Source = source
+			r, store, _ := newGateRunner(t, task, fj)
+			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+			g := getInto[PolicyGate](t, val, err)
+			want := PolicyGate{Class: "forbidden", Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml"},
+				Factory: true, Changed: 2, PolicyVersion: 7, MergeRule: "human"}
+			if fmt.Sprint(g) != fmt.Sprint(want) {
+				t.Fatalf("gate = %+v, want %+v", g, want)
+			}
+			if got, _, _ := store.Task(context.Background(), "t1"); got.RiskClass != "forbidden" {
+				t.Fatalf("risk class = %q", got.RiskClass)
+			}
+			c := fj.comments[0]
+			if !strings.Contains(c, "risk class **forbidden**, requires_approval") || strings.Contains(c, "Agents may not change these paths:") ||
+				!strings.Contains(c, "factoryd opened this pull request, no agent: a human approves its change to these paths, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n") {
+				t.Fatalf("comment = %q", c)
+			}
+		})
+	}
+	fj := &gateForgejo{files: files}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	if g := getInto[PolicyGate](t, val, err); g.Outcome != policy.OutcomeForbidden || g.Factory {
+		t.Fatalf("an agent's card: gate = %+v, want forbidden", g)
+	}
+}
+
+// The approval card of a factory pull request whose paths are forbidden to
+// agents names them first, whatever else keeps it from the auto merge.
+func TestApprovalCardNamesAFactoryPRsForbiddenPaths(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "forbidden",
+		Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml", ".github/x.yml"}, Factory: true}},
+		WhyHuman: []string{"audit: a finding"}}
+	if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := store.ApprovalRequests(context.Background(), "pending")
+	var spec MergeSpec
+	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"factoryd opened this pull request, no agent: a human approves its change to paths forbidden to agents (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml",
+		"audit: a finding"}
+	if !slices.Equal(spec.WhyHuman, want) || spec.RiskClass != "forbidden" {
+		t.Fatalf("spec = %+v, want why a human %q", spec, want)
+	}
+}
+
 func TestGateMigrationComments(t *testing.T) {
 	fj := &gateForgejo{}
 	r, _, objects := newGateRunner(t, gateTask, fj)
