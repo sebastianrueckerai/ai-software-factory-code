@@ -386,13 +386,13 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 	return factoryd.Task{}, false, nil
 }
 
-// BoardTasks lists the open cards, as the store does, in its order: a
-// chat task is none.
-func (s *fakeTasks) BoardTasks(context.Context) ([]factoryd.BoardTask, error) {
+// BoardTasks lists repository's open cards, as the store does, in its
+// order: a chat task is none.
+func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
 	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
