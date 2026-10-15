@@ -76,7 +76,7 @@ func TestRoutineRunWorkflowRecordsAFailedRun(t *testing.T) {
 
 	filed := in
 	filed.Due = in.Due.Add(7 * 24 * time.Hour)
-	began, _, _ := store.BeginRoutineRun(context.Background(), RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: filed.Due, Trigger: "cron"})
+	began, _, _ := store.BeginRoutineRun(context.Background(), RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: filed.Due, Trigger: "cron"}, true)
 	if err := store.RoutineRunFiled(context.Background(), codeProject, "weekly-bump", began.Run, "t-71", 71); err != nil {
 		t.Fatal(err)
 	}

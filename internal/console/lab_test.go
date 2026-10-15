@@ -835,9 +835,9 @@ func labNext(v *factoryd.RoutineView, now, at, from time.Time) {
 		return
 	}
 	// soon as factoryd's views have it: under an hour away, the run after
-	// a day or more later
+	// a day or more later, 23 h across the spring's clock change
 	after, more := v.Routine.NextCron(next, time.UTC)
-	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour && (!more || after.Sub(next) >= 24*time.Hour), next.Format("Mon 15:04")
+	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour && (!more || after.Sub(next) >= 23*time.Hour), next.Format("Mon 15:04")
 	if next.Sub(at) >= 7*24*time.Hour {
 		v.NextWords = next.Format("Mon 2 Jan 15:04")
 	}

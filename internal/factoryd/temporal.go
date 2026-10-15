@@ -70,7 +70,8 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 
 // StartRoutineRun starts a routine's run. A start for a due time whose run
 // completed or still runs is refused by Temporal and is not an error here.
-// One that failed may start again.
+// One whose workflow failed starts, but the failed run's row is final: the
+// restart returns its outcome. Run now is the human's retry.
 func (w TemporalWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInput) error {
 	_, err := w.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
 		ID:                                       RoutineRunID(in),

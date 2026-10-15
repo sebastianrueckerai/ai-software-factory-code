@@ -522,6 +522,15 @@ func TestViews(t *testing.T) {
 	if len(vs) != 2 || vs[0].NextWords != "Tue 20 Oct 06:00" || vs[0].Soon || vs[1].NextWords != "on each push to main" || vs[1].Soon {
 		t.Fatalf("demo-app: %+v", vs)
 	}
+
+	// a daily run 20 minutes away is soon on the eve of the spring's
+	// clock change, the run after it 23 h later
+	*tree = withRoutines(*tree, "demo-app",
+		policy.Routine{Name: "daily", Title: "Daily", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 6 * * *"}}})
+	r.Now = func() time.Time { return time.Date(2026, 3, 28, 5, 40, 0, 0, berlin) }
+	if vs, err := r.Views(ctx, "demo-app"); err != nil || len(vs) != 1 || vs[0].NextWords != "Sat 06:00" || !vs[0].Soon {
+		t.Fatalf("the daily run before the clock change: %+v %v, want Sat 06:00 and soon", vs, err)
+	}
 }
 
 // The loop reconciles and starts the configuration-version routines at

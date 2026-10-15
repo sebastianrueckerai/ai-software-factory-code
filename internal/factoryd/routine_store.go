@@ -39,7 +39,7 @@ type RoutineRun struct {
 	Trigger          string    // cron, merges, configuration-version, push-main, run-now
 	TaskID           string
 	Issue            int64
-	Outcome          string // filed, held, skipped, no change, folded, merged, closed, failed, done
+	Outcome          string // filed, held, skipped, no change, reported, gone, merged, closed, failed, done
 	Note             string
 	CostEUR          float64
 }
@@ -54,9 +54,9 @@ type RoutineStore interface {
 	SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error
 	// BeginRoutineRun writes run Runs+1 of r's routine and returns it with
 	// began true. A run of the same due returns that run with began false.
-	// A pending Skip once is consumed by any run but a Run now: the new
-	// run's outcome is "skipped" with the note "skipped once by <SkipBy>".
-	BeginRoutineRun(ctx context.Context, r RoutineRun) (run RoutineRun, began bool, err error)
+	// With skip a pending Skip once is consumed: the new run's outcome is
+	// "skipped" with the note "skipped once by <SkipBy>".
+	BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (run RoutineRun, began bool, err error)
 	// RoutineRunFiled records the card a run filed and leaves the run open
 	// until EndRoutineRun. ErrNotFound for a run that never began or ended.
 	RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error
@@ -152,7 +152,7 @@ func scanRoutineRun(scan func(dest ...any) error) (RoutineRun, error) {
 	return r, err
 }
 
-func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun, bool, error) {
+func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (RoutineRun, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return RoutineRun{}, false, err
@@ -163,7 +163,7 @@ func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun
 		return RoutineRun{}, false, err
 	}
 	outcome, note := "", ""
-	if st.SkipNext && r.Trigger != TriggerRunNow {
+	if skip && st.SkipNext {
 		outcome, note = "skipped", "skipped once by "+st.SkipBy
 		st.SkipNext, st.SkipBy = false, ""
 	}
@@ -229,8 +229,7 @@ func (s *PGStore) RoutineRuns(ctx context.Context, project, routine string, limi
 	return out, rows.Err()
 }
 
-// RoutineRunOfTask is the first run that names the task: the later runs
-// held or folded into its open card name it too.
+// RoutineRunOfTask is the run that filed the task.
 func (s *PGStore) RoutineRunOfTask(ctx context.Context, taskID string) (RoutineRun, bool, error) {
 	r, err := scanRoutineRun(s.db.QueryRowContext(ctx, `SELECT `+routineRunColumns+` FROM routine_runs
 		WHERE task_id = $1 AND task_id <> '' ORDER BY run LIMIT 1`, taskID).Scan)

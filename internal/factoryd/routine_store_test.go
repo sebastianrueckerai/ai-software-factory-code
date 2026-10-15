@@ -45,7 +45,7 @@ func TestPGStoreRoutineRunsBeginConcurrently(t *testing.T) {
 		for i := range 2 {
 			wg.Go(func() {
 				<-start
-				runs[i], began[i], errs[i] = s.BeginRoutineRun(t.Context(), RoutineRun{Project: "linkshort", Routine: tc.routine, Due: tc.dues[i], Trigger: "cron"})
+				runs[i], began[i], errs[i] = s.BeginRoutineRun(t.Context(), RoutineRun{Project: "linkshort", Routine: tc.routine, Due: tc.dues[i], Trigger: "cron"}, true)
 			})
 		}
 		close(start)
@@ -160,7 +160,7 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 	week := 7 * 24 * time.Hour
 	begin := func(due time.Time) (RoutineRun, bool) {
 		t.Helper()
-		r, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Project: "linkshort", Routine: "weekly-bump", Due: due, Trigger: "cron"})
+		r, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Project: "linkshort", Routine: "weekly-bump", Due: due, Trigger: "cron"}, true)
 		if err != nil {
 			t.Fatalf("BeginRoutineRun %s: %v", due, err)
 		}
@@ -302,18 +302,19 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 		t.Fatalf("an undone skip: %+v", st)
 	}
 
-	// a Run now begins unskipped and leaves the mark to the run it was set for
+	// a run that takes no skip begins unskipped and leaves the mark to the
+	// next run that does
 	if err := s.SetRoutineSkip(ctx, "", "drift", true, "anna"); err != nil {
 		t.Fatal(err)
 	}
-	now, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due, Trigger: TriggerRunNow})
+	now, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due, Trigger: TriggerRunNow}, false)
 	if err != nil || !ok || now.Run != 1 || now.Outcome != "" || now.Note != "" {
 		t.Fatalf("the Run now: %+v %v %v", now, ok, err)
 	}
 	if st := state("", "drift"); !st.SkipNext || st.SkipBy != "anna" || st.Runs != 1 {
 		t.Fatalf("the mark after a Run now: %+v", st)
 	}
-	next, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due.Add(time.Hour), Trigger: "cron"})
+	next, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due.Add(time.Hour), Trigger: "cron"}, true)
 	if err != nil || !ok || next.Run != 2 || next.Outcome != "skipped" || next.Note != "skipped once by anna" {
 		t.Fatalf("the cron run after the Run now: %+v %v %v", next, ok, err)
 	}

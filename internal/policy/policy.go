@@ -89,7 +89,8 @@ type ChatConfig struct {
 	// absent or 0: the policy's.
 	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
 	// Confirm are the tools a member must OK: a call proposes, and the
-	// member's Do it runs it. An empty list runs every tool at once.
+	// member's Do it runs it. The always-confirm set is confirmed at every
+	// autonomy level, so an empty list confirms that set only.
 	Confirm []string `yaml:"confirm,omitempty" json:"confirm"`
 	// DocRepo is the owner/name of the repository write_doc commits
 	// documents to (the project's document repository, the factory's own

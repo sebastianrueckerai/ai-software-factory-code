@@ -2390,7 +2390,10 @@ func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string)
 	default:
 		g.NextWords = kind
 	}
-	if g.Skipped {
+	switch {
+	case g.Skipped && when == "":
+		g.NextWords = "skipped once · " + kind
+	case g.Skipped:
 		g.NextWords = "skipped once · next " + g.NextWords
 	}
 	if l := runWords(rv.Last); l != "" {

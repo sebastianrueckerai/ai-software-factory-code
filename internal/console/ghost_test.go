@@ -337,3 +337,14 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 		t.Fatalf("the undo = %d, skips %v:\n%s", rec.Code, r.routines.skips, g)
 	}
 }
+
+// An event's routine has no next time, so its pending skip names only
+// what the next run files.
+func TestGhostShowsAnEventRoutinesPendingSkip(t *testing.T) {
+	rv := factoryd.RoutineView{Project: "ai-software-factory-code",
+		Routine: policy.Routine{Name: "on-push", Title: "On push", Files: policy.FilesHuman, Schedule: []policy.Trigger{{On: "push-main"}}},
+		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "on-push", SkipNext: true}}
+	if g := ghostOf(rv, time.Now(), boardFilter{}, ""); g.NextWords != "skipped once · human card" {
+		t.Fatalf("next words = %q", g.NextWords)
+	}
+}

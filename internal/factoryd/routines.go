@@ -389,9 +389,10 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 				}
 			}
 			// a run under an hour away is soon when the next comes a day
-			// or more after it: an hourly pass is always under an hour away
+			// or more after it, 23 h across the spring's clock change: an
+			// hourly pass is always under an hour away
 			after, more := rt.NextCron(next, loc)
-			view.Next, view.Soon = next, next.Sub(now) < time.Hour && (!more || after.Sub(next) >= 24*time.Hour)
+			view.Next, view.Soon = next, next.Sub(now) < time.Hour && (!more || after.Sub(next) >= 23*time.Hour)
 			view.NextWords = next.Format("Mon 15:04")
 			if next.Sub(now) >= 7*24*time.Hour {
 				view.NextWords = next.Format("Mon 2 Jan 15:04")

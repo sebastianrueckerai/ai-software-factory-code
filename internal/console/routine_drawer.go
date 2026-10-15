@@ -100,13 +100,13 @@ type routineRun struct {
 
 // filedNothing are the outcomes of a run that filed nothing, whose row
 // shows no duration.
-var filedNothing = []string{"held", "skipped", "folded", "gone", "no change", "reported"}
+var filedNothing = []string{"held", "skipped", "gone", "no change", "reported"}
 
 // outcomeClasses are the hues of a run's outcomes, an outcome-less run's
 // "running" among them.
 var outcomeClasses = map[string]string{
 	"merged": "st-done", "done": "st-done",
-	"no change": "st-closed", "closed": "st-closed", "skipped": "st-closed", "folded": "st-closed", "gone": "st-closed",
+	"no change": "st-closed", "closed": "st-closed", "skipped": "st-closed", "gone": "st-closed",
 	"held": "st-waiting", "findings": "st-waiting",
 	"failed": "st-failed",
 	"filed":  "st-running", "reported": "st-running", "running": "st-running",
@@ -115,7 +115,7 @@ var outcomeClasses = map[string]string{
 // The words after a routine's rules in its drawer's top block.
 var (
 	whileOpenWords = map[string]string{policy.WhileOpenHold: "a run skips while the last card is open, and says so",
-		policy.WhileOpenFold: "a run adds to the open card", policy.WhileOpenFile: "a run files another card"}
+		policy.WhileOpenFold: "the pass adds to its open pull request", policy.WhileOpenFile: "a run files another card"}
 	tellWords   = map[string]string{policy.TellInbox: "a filing pokes the inbox", policy.TellQuiet: "only a human card pokes the inbox"}
 	missedWords = map[string]string{policy.MissedFileOnce: "a missed run files once when the factory is back", policy.MissedSkip: "a missed run is skipped"}
 )

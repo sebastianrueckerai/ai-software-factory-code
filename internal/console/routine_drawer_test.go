@@ -216,13 +216,18 @@ func TestRoutineDrawerTabs(t *testing.T) {
 		}
 	}
 
-	// policy.yaml's template pass, the factory's: its Config says so, and
-	// what its acts reach
+	// policy.yaml's template pass, the factory's: its fold adds to its
+	// pull request, its Config says it is the factory's, and what its acts
+	// reach
 	pass := factoryd.RoutineView{Project: "ai-software-factory-code", Lane: "queued",
 		Routine: policy.Routine{Name: "template-pass", Title: "Template update", Files: policy.FilesPullRequest, Pass: policy.PassTemplate,
-			Schedule: []policy.Trigger{{On: policy.OnConfigurationVersion}}},
+			Schedule: []policy.Trigger{{On: policy.OnConfigurationVersion}}, WhileOpen: policy.WhileOpenFold},
 		State: factoryd.RoutineState{Routine: "template-pass"}}
 	r.routines.views = []factoryd.RoutineView{bump, audit(), pass}
+	d = getPage(r, ck, "/routines/ai-software-factory-code/template-pass/drawer").Body.String()
+	if want := "<dt>While open</dt><dd>fold <span class=\"why\">· the pass adds to its open pull request</span></dd>\n"; !strings.Contains(d, want) {
+		t.Fatalf("the template pass's overview lacks\n%s\n%s", want, d)
+	}
 	d = getPage(r, ck, "/routines/ai-software-factory-code/template-pass/drawer?tab=config").Body.String()
 	if want := `<p class="quiet">A change of schedule is a configuration change. This routine is the factory's, in policy.yaml. ` +
 		`Skip once and Run now act for every project with a template.</p>`; !strings.Contains(d, want) || strings.Contains(d, "Ask the project agent") {

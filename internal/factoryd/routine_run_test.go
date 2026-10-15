@@ -247,7 +247,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
 			issues.older = map[int64]string{781: "Weekly bump of the pinned outside inputs"}
 			store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine}
-			last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"})
+			last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
 			if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", last.Run, "t-781", 781); err != nil {
 				t.Fatal(err)
 			}
@@ -284,7 +284,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	r, store, issues, _ := routineRunner(t, routineTree(t))
 	store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine,
 		FinishedAt: &onTime}
-	last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"})
+	last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
 	if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", last.Run, "t-781", 781); err != nil {
 		t.Fatal(err)
 	}
@@ -413,14 +413,16 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 // policy.yaml's template pass runs the registrar's pass over every
 // project: the cards it filed are the run's note, a pass that filed none
 // ends no change, and the factory's routine pokes no inbox, even under
-// tell inbox. A failed pass fails the attempt and leaves the run open,
-// so the retry runs the pass again.
+// tell inbox; its log line names it without a project. A failed pass
+// fails the attempt and leaves the run open, so the retry runs the pass
+// again.
 func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 	ctx := context.Background()
 	tree := routineTree(t)
 	tree.Document.Routines = slices.Clone(tree.Document.Routines)
 	tree.Document.Routines[0].Tell = policy.TellInbox
 	r, store, _, _ := routineRunner(t, tree)
+	logs := captureLog(t)
 	var cards int
 	var passErr error
 	passes := 0
@@ -451,6 +453,9 @@ func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 	}
 	if pokes := routinePokes(t, r, store); passes != 3 || len(pokes) != 0 || len(recordedEvents(r, EventRoutineRan)) != 0 {
 		t.Fatalf("passes %d, pokes %+v: want 3 and none, and no event", passes, pokes)
+	}
+	if l := logs.String(); !strings.Contains(l, "routines: template-pass run 1 filed 2 cards\n") || strings.Contains(l, "/template-pass") {
+		t.Fatalf("log %q, want the pass named without a project", l)
 	}
 
 	in := RoutineRunInput{Routine: "template-pass", Trigger: "cron", Due: onTime.Add(3 * time.Hour)}
@@ -571,11 +576,11 @@ func TestTaskEndedFinishesTheRun(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	due := time.Now().Truncate(time.Minute)
-	filed, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: due.Add(-7 * 24 * time.Hour), Trigger: "cron"})
+	filed, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: due.Add(-7 * 24 * time.Hour), Trigger: "cron"}, true)
 	if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", filed.Run, "t-781", 781); err != nil {
 		t.Fatal(err)
 	}
-	held, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: due, Trigger: "cron"})
+	held, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: due, Trigger: "cron"}, true)
 	if err := store.EndRoutineRun(ctx, codeProject, "weekly-bump", held.Run, "held", "held: #781 is still open", "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -589,5 +594,68 @@ func TestTaskEndedFinishesTheRun(t *testing.T) {
 	}
 	if r := runs[1]; r.Outcome != "held" || r.Note != "held: #781 is still open" || r.TaskID != "" || r.CostEUR != 0 {
 		t.Fatalf("the held run %+v", r)
+	}
+}
+
+// A Run now leaves a pending Skip once to the run it was set for: it
+// files, and the cron run after it is the one skipped.
+func TestRoutineRunNowLeavesTheSkip(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, _ := routineRunner(t, routineTree(t))
+	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	due := time.Now().Truncate(time.Minute)
+	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: TriggerRunNow, Due: due}); err != nil ||
+		res.Outcome != "filed" || len(issues.issues) != 1 {
+		t.Fatalf("the Run now: %+v %v, issues %d", res, err, len(issues.issues))
+	}
+	if st, _ := store.RoutineState(ctx, codeProject, "weekly-bump"); !st.SkipNext || st.SkipBy != "sebastian" {
+		t.Fatalf("state %+v: the Run now took the mark", st)
+	}
+	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: due.Add(time.Hour)}); err != nil ||
+		res.Outcome != "skipped" || res.Note != "skipped once by sebastian" {
+		t.Fatalf("the cron run after: %+v %v", res, err)
+	}
+}
+
+// A run that failed for good after it began skipped ends skipped with its
+// note; one that failed before it began ends failed and leaves a pending
+// Skip once to the next run.
+func TestRoutineRunFailedKeepsTheSkip(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := routineRunner(t, routineTree(t))
+	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)}
+	if began, ok, err := store.BeginRoutineRun(ctx, RoutineRun{Project: in.Project, Routine: in.Routine, Due: in.Due, Trigger: in.Trigger}, true); err != nil ||
+		!ok || began.Outcome != "skipped" {
+		t.Fatalf("the begun run: %+v %v %v", began, ok, err)
+	}
+	if err := r.RoutineRunFailed(ctx, in, "events: connection refused"); err != nil {
+		t.Fatal(err)
+	}
+	if run := store.routineRuns[codeProject+"/weekly-bump"][0]; run.Outcome != "skipped" || run.Note != "skipped once by sebastian" || run.Ended.IsZero() {
+		t.Fatalf("the skipped run %+v, want it ended skipped", run)
+	}
+	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Detail["outcome"] != "skipped" || ran[0].Detail["note"] != "skipped once by sebastian" {
+		t.Fatalf("routine_ran %+v, want one skipped", ran)
+	}
+
+	if err := store.SetRoutineSkip(ctx, codeProject, "weekly-bump", true, "anna"); err != nil {
+		t.Fatal(err)
+	}
+	next := in
+	next.Due = in.Due.Add(7 * 24 * time.Hour)
+	if err := r.RoutineRunFailed(ctx, next, "routine ai-software-factory-code/weekly-bump: no project ai-software-factory-code in the store"); err != nil {
+		t.Fatal(err)
+	}
+	if run := store.routineRuns[codeProject+"/weekly-bump"][1]; run.Run != 2 || run.Outcome != "failed" || run.Ended.IsZero() ||
+		run.Note != "routine ai-software-factory-code/weekly-bump: no project ai-software-factory-code in the store" {
+		t.Fatalf("the run that failed before it began %+v, want run 2 failed", run)
+	}
+	if st, _ := store.RoutineState(ctx, codeProject, "weekly-bump"); !st.SkipNext || st.SkipBy != "anna" {
+		t.Fatalf("state %+v: the failure took the mark", st)
 	}
 }

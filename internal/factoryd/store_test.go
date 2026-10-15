@@ -870,7 +870,7 @@ func (s *fakeStore) SetRoutineSkip(ctx context.Context, project, routine string,
 	return nil
 }
 
-func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun, bool, error) {
+func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (RoutineRun, bool, error) {
 	k := r.Project + "/" + r.Routine
 	for _, have := range s.routineRuns[k] {
 		if have.Due.Equal(r.Due) {
@@ -880,7 +880,7 @@ func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineR
 	st, _ := s.RoutineState(ctx, r.Project, r.Routine)
 	st.Runs++
 	run := RoutineRun{Project: r.Project, Routine: r.Routine, Run: st.Runs, Due: r.Due, Started: time.Now(), Trigger: r.Trigger}
-	if st.SkipNext && r.Trigger != TriggerRunNow {
+	if skip && st.SkipNext {
 		run.Outcome, run.Note = "skipped", "skipped once by "+st.SkipBy
 		st.SkipNext, st.SkipBy = false, ""
 	}

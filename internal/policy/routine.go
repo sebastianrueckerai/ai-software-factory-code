@@ -48,14 +48,16 @@ type Routine struct {
 	// Pass names the pass a pull-request routine runs: template.
 	Pass string `yaml:"pass,omitempty" json:"pass,omitempty"`
 	// WhileOpen says what a run does while the last card is open: hold
-	// (the default) skips the run, fold adds to the open card, file opens
-	// another.
+	// (the default) skips the run, file opens another, and fold, a
+	// pull-request routine's only, has the pass add to its open pull
+	// request.
 	WhileOpen string `yaml:"while_open,omitempty" json:"while_open,omitempty"`
 	// Missed says what a run does when its time passed while the factory
 	// was down: file-once (the default) or skip.
 	Missed string `yaml:"missed,omitempty" json:"missed,omitempty"`
 	// Tell says whether a filing pokes the inbox: inbox (the default) or
-	// quiet. A human card pokes in any case.
+	// quiet. A human card pokes in any case, and a report must use inbox:
+	// its report is the poke.
 	Tell string `yaml:"tell,omitempty" json:"tell,omitempty"`
 }
 
