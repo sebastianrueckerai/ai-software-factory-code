@@ -1872,6 +1872,43 @@ func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
+// A planner session whose model call crossed its cost hold names the
+// call's state in its finding (roadmap 241): the tokens, the cost, the
+// hold and the fitting action reach the next planner session.
+func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
+	const said = `the agent's last model step finished on "length" after 24576 output and 0 reasoning tokens, not on "stop"`
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	store.overHolds = map[string]OverHoldCall{"t-plan": {Alias: "coding-frontier", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576,
+		OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745}}
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(false, said))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := []string{"plan: the session ended without filing a plan through the file_plan tool",
+		"plan: the session ended without a last message: " + said + "; a model call on coding-frontier crossed its cost hold: " +
+			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
+			"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
 var planRefused = PlanResult{Refused: ProviderWait{Status: 429, Reason: refusedSession.Reason}}
 
 // A planner session the provider refused is no attempt (roadmap 155): the

@@ -356,6 +356,33 @@ func TestWaitingPosterMovesToAHumanOrToReview(t *testing.T) {
 	}
 }
 
+// A report session whose model call crossed its cost hold fails naming the
+// call's state (roadmap 241): the prompt, cached and output tokens, the
+// cost, the hold and the fitting action.
+func TestRunReportNamesACostHoldCrossing(t *testing.T) {
+	const said = "the agent ended without a last message"
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), parentTask())
+	store.overHolds = map[string]OverHoldCall{"t1": {Alias: "coding-cheap", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576,
+		HoldEUR: 0.131, CostEUR: 0.1392}}
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(false, said))
+	want := "the report session ended without a report: " + said + "; a model call on coding-cheap crossed its cost hold: " +
+		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
+		"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
+	if err := <-done; err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("RunReport = %v, want %q", err, want)
+	}
+}
+
 // A report session the provider refused at its first call answers the
 // refusal, with no comment (roadmap 155); the factory's own budget 402 is
 // no provider's: the session ends without a report as before.

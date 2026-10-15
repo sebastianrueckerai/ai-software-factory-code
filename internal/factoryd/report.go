@@ -156,8 +156,8 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
 		return reportEnd{}, err
 	}
-	deadline := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime)
-	began := rfc3339(time.Now())
+	deadline, startedAt := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
+	began := rfc3339(startedAt)
 	r.record(ctx, t.ID, "session_start", map[string]any{"session": s.id, "model": s.model, "mode": "report", "start_ref": s.startRef, "findings": s.findings})
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), nil)
 	if err != nil {
@@ -179,6 +179,15 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		end.why = out.result.Summary
 	default:
 		end.why = cmp.Or(out.noResult, "no last message")
+	}
+	if end.report == "" && end.start == nil {
+		over, err := r.store.OverHoldCall(ctx, t.ID, startedAt)
+		if err != nil {
+			return reportEnd{}, err
+		}
+		if over != nil {
+			end.why = strings.TrimPrefix(end.why+"; "+over.state(), "; ")
+		}
 	}
 	outcome := "reported"
 	if end.report == "" {
