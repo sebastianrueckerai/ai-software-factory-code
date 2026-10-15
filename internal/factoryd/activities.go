@@ -403,8 +403,9 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 }
 
 // funded is the attempt floors' read. The gateway's hold math itself
-// decides — policy.Fit at the free task, day, month and project headroom
-// the gateway grants against (outstanding holds netted, roadmap 243)
+// decides — what the holds take (policy.Fit, policy.Opening.Hold) against
+// the free task, day, month and project headroom the gateway grants
+// against (policy.FitResource; outstanding holds netted, roadmap 243)
 // under the caps of the version in force — so the floor is read here,
 // never restated. A model that cannot be priced refuses the attempt:
 // nothing could bound its calls.
@@ -430,41 +431,50 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	project, projectEUR := v.ProjectCap(t.Repository)
 	req := policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Price: price,
 		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
-	call, measure, then := "the cheapest call on "+model, fmt.Sprintf("%d output tokens at the hold machinery's minimum", policy.MinCallTokens),
+	// the cheapest call: no prompt and policy.MinCallTokens output tokens
+	inf, cheapest := math.Inf(1), req
+	cheapest.WantOut = policy.MinCallTokens
+	h, _ := policy.Fit(policy.Free{Task: inf, Day: inf, Month: inf, Project: inf}, cheapest)
+	need, call, measure, then := h.EUR, "the cheapest call on "+model, fmt.Sprintf("%d output tokens at the hold machinery's minimum", policy.MinCallTokens),
 		"an answer would start an attempt whose first call cannot run"
 	if opening {
 		o, err := r.store.Opening(ctx, taskID, alias)
 		if err != nil {
 			return "", err
 		}
-		req.Bytes, req.Earlier, req.CacheFloor = o.Bytes, o.Earlier, o.CacheFloor
-		call, then = "a session's first call on "+model, "a session started now could not make its first call"
-		measure = fmt.Sprintf("no session's first call is recorded: no prompt and %d output tokens", policy.MinCallTokens)
-		if o.Sessions > 0 {
+		call, then = "a session's opening on "+model, "a session started now could not make its opening calls"
+		measure = "no session's opening is recorded: " + measure
+		if eur, calls := o.Hold(req); calls != nil {
 			on := "it"
 			if o.AnyRef {
 				on = "any model, none on it being recorded"
 			}
-			measure = fmt.Sprintf("a request of %d bytes, the largest of the newest %d sessions' first calls on %s, and %d output tokens, as the gateway's hold prices them",
-				o.Bytes, o.Sessions, on, policy.MinCallTokens)
+			asked := make([]string, len(calls))
+			for i, c := range calls {
+				asked[i] = fmt.Sprintf("%d bytes asking %d output tokens", c.Bytes, c.WantOut)
+				if c.WantOut == 0 {
+					asked[i] = fmt.Sprintf("%d bytes asking no output limit", c.Bytes)
+				}
+			}
+			what := asked[0]
+			if len(calls) > 1 {
+				what = fmt.Sprintf("%d calls at once: %s", len(calls), strings.Join(asked, ", "))
+			}
+			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
 		}
 	}
 	own, free, err := r.store.Free(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	if _, err = policy.Fit(free, req); err == nil {
+	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Project: project, EUR: need})
+	if err == nil {
 		return "", nil
 	}
 	var refused *policy.Refusal
 	if !errors.As(err, &refused) {
 		return "", err
 	}
-	// what the call needs: its prompt as the hold prices it and
-	// policy.MinCallTokens output tokens
-	inf, cheapest := math.Inf(1), req
-	cheapest.WantOut = policy.MinCallTokens
-	need, _ := policy.Fit(policy.Free{Task: inf, Day: inf, Month: inf, Project: inf}, cheapest)
 
 	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", own.Headroom, t.BudgetEUR)
 	act := "Raise the budget (Fund on the board) and answer, or close the card."
@@ -491,7 +501,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	}
 	// the first line is the card's question row (escalationQuestion), cut
 	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need.EUR, measure, then), nil
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need, measure, then), nil
 }
 
 // startFits says free headroom f fits the cheapest call of model, a

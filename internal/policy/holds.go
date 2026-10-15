@@ -58,7 +58,7 @@ type HoldRequest struct {
 }
 
 // Hold is headroom taken for one call: EUR at the request's prompt as Fit
-// prices it and MaxOut output tokens.
+// prices it and MaxOut output tokens, of the WantOut the call asked for.
 type Hold struct {
 	ID      int64
 	TaskID  string
@@ -67,6 +67,7 @@ type Hold struct {
 	Session string
 	EUR     float64
 	MaxOut  int
+	WantOut int
 }
 
 // HeadroomBound is the smallest of the task's, the day's, the month's and
@@ -168,7 +169,7 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
 			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens))
 	}
-	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, MaxOut: maxOut,
+	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, MaxOut: maxOut, WantOut: r.WantOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
 }
 
@@ -285,49 +286,99 @@ func cacheFloor(ctx context.Context, q rowQuerier, ref string) (float64, error) 
 	return floor, err
 }
 
-// firstCallSessions is how many of the newest sessions' first calls
-// measure a session's opening, and their largest is the opening: the
-// harness opens a session with a small call beside the agent's first
-// prompt, the two booked in either order, and a brief grows with an
-// attempt's findings, so a median or a mean would price the small call
-// or an early attempt's brief. A floor too high only lets a human fund a
-// card that might have started; one too low funds an attempt that dies on
-// its first call.
-const firstCallSessions = 20
+// openingSessions is how many of the newest sessions measure a session's
+// opening, and the largest of their openings is the one priced: a brief
+// grows with an attempt's findings, so a median or a mean would price an
+// early attempt's. A floor too high only lets a human fund a card that
+// might have started; one too low funds an attempt that dies on its
+// opening calls.
+const openingSessions = 20
 
-// Opening is the request a session is expected to open with on a ref, as
-// the gateway's hold prices it for a task: Bytes is the largest request
-// body of the newest firstCallSessions sessions' first calls on the ref,
-// Sessions how many of them measured it, and Earlier and CacheFloor are
-// what TakeHold prices the task's call on the ref from. A session's first
-// call is its first booked model call, so a call after a climb or a
-// subagent's on a cheaper alias opens none. With no first call on the ref
-// recorded, AnyRef: every ref's measure Bytes, since a session opens with
-// the harness's same prompt and tools whatever its model; with none at
-// all, Bytes is 0, a call of no prompt.
+// OpeningCall is a call of a session's opening: its request's bytes and
+// the output limit it asked for, 0 for none.
+type OpeningCall struct{ Bytes, WantOut int }
+
+// Opening is how a session opens on a ref, read for a task. A session's
+// opening is every model call that started before its first one ended,
+// the first the one whose hold was taken first: the harness opens with
+// calls at once, a small one beside the agent's first prompt, so their
+// holds are taken together. Sessions are the openings of the newest
+// openingSessions sessions whose first call was on the ref, newest first,
+// each in the order its holds were taken; a session whose first call has
+// no measure (a swept hold) counts none. With none on the ref, AnyRef:
+// every ref's count, since a session opens with the harness's same calls
+// whatever its model. Earlier and CacheFloor are what TakeHold prices the
+// task's call on the ref from.
 type Opening struct {
-	Bytes, Sessions int
-	AnyRef          bool
-	Earlier         Usage
-	CacheFloor      float64
+	Sessions   [][]OpeningCall
+	AnyRef     bool
+	Earlier    Usage
+	CacheFloor float64
+}
+
+// Hold is what the holds of the largest opening take for a session of r's
+// task on r's ref at r's price, and that opening: each call's hold as Fit
+// prices it with the headroom unbounded, its prompt and the output it
+// asked for (the price's MaxOutput when it asked none, MinCallTokens when
+// neither bounds it), summed. 0 and nil without a session.
+func (o Opening) Hold(r HoldRequest) (float64, []OpeningCall) {
+	inf := math.Inf(1)
+	r.Earlier, r.CacheFloor = o.Earlier, o.CacheFloor
+	var most float64
+	var largest []OpeningCall
+	for _, calls := range o.Sessions {
+		var eur float64
+		for _, c := range calls {
+			r.Bytes, r.WantOut = c.Bytes, c.WantOut
+			if r.WantOut == 0 && r.Price.MaxOutput == 0 {
+				r.WantOut = MinCallTokens
+			}
+			h, _ := Fit(Free{Task: inf, Day: inf, Month: inf, Project: inf}, r)
+			eur += h.EUR
+		}
+		if largest == nil || eur > most {
+			most, largest = eur, calls
+		}
+	}
+	return most, largest
 }
 
 // ReadOpening reads the opening of a session of taskID on ref.
-func ReadOpening(ctx context.Context, q rowQuerier, taskID, ref string) (Opening, error) {
+func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, error) {
 	var o Opening
 	for _, on := range []string{ref, ""} {
-		// newest first, a row is a session's first call when no earlier
-		// model row of its session exists: the scan ends at the window
-		if err := q.QueryRowContext(ctx,
-			`SELECT COALESCE(max(body_bytes), 0), count(*) FROM (SELECT body_bytes FROM ledger l
-			 WHERE kind = 'model' AND session <> '' AND (ref = $1 OR $1 = '') AND body_bytes > 0
-			   AND NOT EXISTS (SELECT 1 FROM ledger e WHERE e.kind = 'model' AND e.session = l.session AND e.id < l.id)
-			 ORDER BY id DESC LIMIT $2) f`,
-			on, firstCallSessions).Scan(&o.Bytes, &o.Sessions); err != nil {
+		// newest first, a call is its session's first when no call of the
+		// session started earlier: the scan ends at the window
+		rows, err := q.QueryContext(ctx,
+			`WITH first AS (SELECT l.id, l.session, l.created_at AS ended FROM ledger l
+			      WHERE l.kind = 'model' AND l.session <> '' AND l.held_at IS NOT NULL AND l.body_bytes > 0 AND (l.ref = $1 OR $1 = '')
+			        AND NOT EXISTS (SELECT 1 FROM ledger e WHERE e.kind = 'model' AND e.session = l.session
+			                        AND (e.held_at < l.held_at OR e.held_at = l.held_at AND e.id < l.id))
+			      ORDER BY l.id DESC LIMIT $2)
+			 SELECT f.id, o.body_bytes, o.want_out FROM first f
+			 JOIN ledger o ON o.kind = 'model' AND o.session = f.session AND o.held_at < f.ended
+			 ORDER BY f.id DESC, o.held_at, o.id`, on, openingSessions)
+		if err != nil {
+			return Opening{}, err
+		}
+		var session int64
+		for rows.Next() {
+			var id int64
+			var c OpeningCall
+			if err := rows.Scan(&id, &c.Bytes, &c.WantOut); err != nil {
+				rows.Close()
+				return Opening{}, err
+			}
+			if id != session {
+				o.Sessions, session = append(o.Sessions, nil), id
+			}
+			o.Sessions[len(o.Sessions)-1] = append(o.Sessions[len(o.Sessions)-1], c)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 			return Opening{}, err
 		}
 		o.AnyRef = on == ""
-		if o.Sessions > 0 {
+		if len(o.Sessions) > 0 {
 			break
 		}
 	}
@@ -481,8 +532,8 @@ func readTaskFree(ctx context.Context, q rowQuerier, taskID string) (TaskFree, e
 func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int64, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx,
-		`INSERT INTO holds (task_id, kind, ref, session, eur, expires_at) VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
-		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.Session, h.EUR, ttl.Seconds()).Scan(&id)
+		`INSERT INTO holds (task_id, kind, ref, session, want_out, eur, expires_at) VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7))
+		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.Session, h.WantOut, h.EUR, ttl.Seconds()).Scan(&id)
 	return id, err
 }
 
@@ -497,7 +548,8 @@ type Booking struct {
 
 // ReleaseHold turns a hold into spend: the call's cost when known, else the
 // hold's full amount (a worst case, and settlement only ever raises), on a
-// ledger row with the call's usage (a model call's; zero else). A
+// ledger row with the call's usage (a model call's; zero else), its
+// session, when its hold was taken and the output it asked for. A
 // cost that is not a finite non-negative number counts as unknown. It books
 // the task's spent_eur and the ledger row in the transaction that deletes
 // the hold, and returns the task's spend. A tool call's row is written even
@@ -512,7 +564,8 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64, u Usage
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var held float64
-	err = tx.QueryRowContext(ctx, `DELETE FROM holds WHERE id = $1 RETURNING eur::float8`, h.ID).Scan(&held)
+	var heldAt sql.NullTime
+	err = tx.QueryRowContext(ctx, `DELETE FROM holds WHERE id = $1 RETURNING eur::float8, created_at`, h.ID).Scan(&held, &heldAt)
 	amount := held
 	if cost != nil {
 		amount = *cost
@@ -533,8 +586,9 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64, u Usage
 		return Booking{}, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
 	}
 	if amount > 0 || found && h.Kind == KindTool {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, h.TaskID, h.Kind, h.Ref, h.Session, amount, u.PromptTokens, u.CachedTokens, u.OutputTokens, u.BodyBytes); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, want_out, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`, h.TaskID, h.Kind, h.Ref, h.Session, heldAt, h.WantOut, amount,
+			u.PromptTokens, u.CachedTokens, u.OutputTokens, u.BodyBytes); err != nil {
 			return Booking{}, err
 		}
 	}
@@ -587,10 +641,11 @@ func AuditAuthorSQL(taskID string) string {
 func SweepHolds(ctx context.Context, db *sql.DB) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
-		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING id, task_id, kind, ref, session, eur),
+		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING id, task_id, kind, ref, session, want_out, created_at, eur),
 		      t AS (UPDATE tasks SET spent_eur = spent_eur + g.eur
 		            FROM (SELECT task_id, sum(eur) AS eur FROM gone GROUP BY task_id) g WHERE tasks.id = g.task_id),
-		      l AS (INSERT INTO ledger (task_id, kind, ref, session, eur) SELECT task_id, kind, ref, session, eur FROM gone WHERE eur > 0),
+		      l AS (INSERT INTO ledger (task_id, kind, ref, session, held_at, want_out, eur)
+		            SELECT task_id, kind, ref, session, created_at, want_out, eur FROM gone WHERE eur > 0),
 		      a AS (INSERT INTO audit (task_id, decision, reason, kind, model_alias, tool, spend_eur, hold_eur, author)
 		            SELECT task_id, 'swept', 'hold ' || id || ' expired unreleased; booked at its full amount',
 		                   CASE WHEN kind = 'model' AND strpos(ref, '/') > 0 THEN split_part(ref, '/', 1) ELSE 'agent' END,

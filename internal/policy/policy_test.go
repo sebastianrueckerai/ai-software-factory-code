@@ -283,6 +283,31 @@ func TestFitResource(t *testing.T) {
 
 var inf = math.Inf(1)
 
+// An opening's hold sums its calls' holds as Fit prices them with the
+// headroom unbounded, at 3e-6 in and 1.5e-5 out: s1's 44,342 × 3e-6 +
+// 24,576 × 1.5e-5 = 0.501666 and 7,031 × 3e-6 + 0.36864 = 0.389733 make
+// 0.891399, more than s2's 43,683 × 3e-6 + 0.36864 = 0.499689. A call
+// asking no limit takes the price's MaxOutput: 1,000 × 3e-6 + 8,192 ×
+// 1.5e-5 = 0.12588; without one, MinCallTokens: 0.003 + 0.01536 = 0.01836.
+func TestOpeningHoldSumsWhatTheHoldsTake(t *testing.T) {
+	s1, s2 := []OpeningCall{{Bytes: 44342, WantOut: 24576}, {Bytes: 7031, WantOut: 24576}}, []OpeningCall{{Bytes: 43683, WantOut: 24576}}
+	r := HoldRequest{Kind: KindModel, Price: Price{In: 3e-6, Out: 1.5e-5}}
+	if eur, calls := (Opening{Sessions: [][]OpeningCall{s2, s1}}).Hold(r); !near(eur, 0.891399) || !reflect.DeepEqual(calls, s1) {
+		t.Fatalf("hold = (%v, %v), want s1's 0.891399", eur, calls)
+	}
+	unbounded := Opening{Sessions: [][]OpeningCall{{{Bytes: 1000}}}}
+	if eur, _ := unbounded.Hold(r); !near(eur, 0.01836) {
+		t.Fatalf("hold without a limit = %v, want 0.01836", eur)
+	}
+	r.Price.MaxOutput = 8192
+	if eur, _ := unbounded.Hold(r); !near(eur, 0.12588) {
+		t.Fatalf("hold under MaxOutput = %v, want 0.12588", eur)
+	}
+	if eur, calls := (Opening{}).Hold(r); eur != 0 || calls != nil {
+		t.Fatalf("hold without a session = (%v, %v), want none", eur, calls)
+	}
+}
+
 func TestHeadroomBound(t *testing.T) {
 	for _, tc := range []struct {
 		task, day, month, project float64

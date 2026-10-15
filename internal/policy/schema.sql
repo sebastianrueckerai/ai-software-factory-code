@@ -73,11 +73,14 @@ DO $$ BEGIN
 END $$;
 
 -- the session a sandbox's model or tool call belongs to, which the
--- gateway reads from its token's pod; '' on every other row
+-- gateway reads from its token's pod ('' on every other row); when the
+-- call's hold was taken, its start (NULL for a row of no hold); and the
+-- output limit it asked for (0 for none)
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'ledger' AND column_name = 'session' AND table_schema = current_schema()) THEN
-        ALTER TABLE ledger ADD COLUMN session text NOT NULL DEFAULT '';
+                   WHERE table_name = 'ledger' AND column_name = 'want_out' AND table_schema = current_schema()) THEN
+        ALTER TABLE ledger ADD COLUMN IF NOT EXISTS session text NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS held_at timestamptz,
+            ADD COLUMN IF NOT EXISTS want_out integer NOT NULL DEFAULT 0;
     END IF;
 END $$;
 
@@ -85,9 +88,8 @@ CREATE INDEX IF NOT EXISTS ledger_day ON ledger (day);
 CREATE INDEX IF NOT EXISTS ledger_task ON ledger (task_id);
 -- a ref's newest model calls, which measure its cache floor
 CREATE INDEX IF NOT EXISTS ledger_model_ref ON ledger (ref, id) WHERE kind = 'model';
--- whether a model call is its session's first, which measures a
--- session's opening
-CREATE INDEX IF NOT EXISTS ledger_model_session ON ledger (session, id) WHERE kind = 'model';
+-- a session's model calls by their start, which measure its opening
+CREATE INDEX IF NOT EXISTS ledger_model_session_start ON ledger (session, held_at) WHERE kind = 'model';
 
 -- Holds are costs a call or resource may still incur: they count against
 -- the task and day headroom until released into the ledger.
@@ -101,12 +103,12 @@ CREATE TABLE IF NOT EXISTS holds (
     expires_at timestamptz NOT NULL
 );
 
--- the session of a call's hold, booked onto its ledger row by a release or
--- the sweep
+-- the session of a call's hold and the output limit it asked for,
+-- booked onto its ledger row by a release or the sweep
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name = 'holds' AND column_name = 'session' AND table_schema = current_schema()) THEN
-        ALTER TABLE holds ADD COLUMN session text NOT NULL DEFAULT '';
+                   WHERE table_name = 'holds' AND column_name = 'want_out' AND table_schema = current_schema()) THEN
+        ALTER TABLE holds ADD COLUMN IF NOT EXISTS session text NOT NULL DEFAULT '', ADD COLUMN IF NOT EXISTS want_out integer NOT NULL DEFAULT 0;
     END IF;
 END $$;
 

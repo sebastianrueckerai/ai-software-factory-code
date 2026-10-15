@@ -949,16 +949,19 @@ A sandbox's model and tool calls are held and booked under their
 session (`holds.session`, `ledger.session`): the gateway reads it from
 the pod the call's projected token is bound to, `worker-<session id>`,
 which the API server signs into the token; factoryd's calls and every
-other row have none. Two floors read this math before an attempt, at the
-free task, day, month and project headroom (ruling 322, roadmap 243).
-The answer path's (`AttemptFunded`: every attempt the workflow grants,
-the console's answer) needs a call of no prompt and 1024 output tokens.
-The fund's (`SessionFunded`: the console's Fund action) needs a
-session's first call: the largest request body of the newest 20
-sessions' first booked calls on the alias (on any alias when none is
-recorded on it, no prompt on a ledger without one), priced as the hold
-prices it for the task. A refusal names the budget or the cap that
-bounds it; only the budget's offers Fund.
+other row have none. A model call's row also keeps when its hold was
+taken (`held_at`, its start) and the output it asked for (`want_out`).
+Two floors read this math before an attempt, at the free task, day,
+month and project headroom (ruling 322, roadmap 243). The answer path's
+(`AttemptFunded`: every attempt the workflow grants, the console's
+answer) needs a call of no prompt and 1024 output tokens. The fund's
+(`SessionFunded`: the console's Fund action) needs a session's opening:
+every call that started before its first one ended, each priced as the
+hold prices it for the task with its asked output, summed, the largest
+of the newest 20 sessions' openings on the alias (on any alias when none
+is recorded on it, the answer path's call on a ledger without one). A
+refusal names the budget or the cap that bounds it; only the budget's
+offers Fund.
 Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking

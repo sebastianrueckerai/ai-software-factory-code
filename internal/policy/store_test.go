@@ -417,18 +417,18 @@ func TestModelHoldCalibrates(t *testing.T) {
 	}
 }
 
-// A call's ledger row keeps the session of its hold, and a session's
-// opening is the largest of the newest sessions' first calls on the ref
-// (roadmap 243): a session's first booked model call, so s-c's call after
-// its climb to coding-frontier and s-d, opened by a swept hold without a
-// measure, count none on it, and neither do factoryd's calls and rows
-// from before the session. Without a first call on the ref every ref's
-// count; on a ledger without one the opening has no prompt. The task's
-// newest call on the ref and the ref's cache floor price it as TakeHold
-// would: a2's 1,554 prompt tokens in 7,031 bytes, and no cached prefix.
-// Of the newest firstCallSessions sessions alone: s-old's 90,000 bytes
-// count until a twentieth newer session opens.
-func TestOpeningIsASessionsFirstCall(t *testing.T) {
+// A session's opening is every model call that started before its first
+// one ended (roadmap 243): s-a's two calls, not a3, started after a1
+// ended; s-b's one. s-c's first call was on coding-cheap, so its call after
+// the climb opens nothing on coding-frontier; s-d's first call, a swept
+// hold, has no measure, so s-d counts none; factoryd's calls, rows from
+// before the session and a late release without a hold count none either.
+// Newest first, by the first call. Without an opening on the ref every
+// ref's count; on a ledger without one there is none. Of the newest
+// openingSessions sessions alone: s-old counts until a twentieth newer
+// session opens. A released call's row keeps its hold's session, start and
+// asked output.
+func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('o', 5, 'running'), ('x', 5, 'running')`); err != nil {
@@ -442,44 +442,58 @@ func TestOpeningIsASessionsFirstCall(t *testing.T) {
 	}
 	opening("coding-frontier", Opening{AnyRef: true})
 
-	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "coding-frontier", Session: "s-a", Bytes: 44342,
-		Price: Price{In: 3e-6, Out: 1.5e-5}, WantOut: 1024, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
-	if err != nil || h.Session != "s-a" {
-		t.Fatalf("hold = (%+v, %v), want s-a's", h, err)
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, body_bytes) VALUES
+		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
+		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
+		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
+		('x', 'model', 'coding-frontier', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
+		('x', 'model', 'coding-cheap', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
+		('x', 'model', 'coding-frontier', 's-c', '2026-10-15T10:00:40Z', '2026-10-15T10:01:40Z', 24576, 0.30, 97021, 368195),
+		('x', 'model', 'coding-frontier', 's-d', '2026-10-15T10:00:50Z', '2026-10-15T11:00:50Z', 24576, 0.15, 0, 0),
+		('x', 'model', 'coding-frontier', 's-d', '2026-10-15T10:00:51Z', '2026-10-15T10:00:55Z', 24576, 0.02, 2000, 90000),
+		('x', 'model', 'review/coding-frontier', '', '2026-10-15T10:01:00Z', '2026-10-15T10:01:05Z', 4096, 0.02, 20000, 95000),
+		('x', 'model', 'coding-frontier', '', NULL, '2026-10-15T09:00:00Z', 0, 0.40, 140000, 600000),
+		('x', 'model', 'coding-frontier', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	a, b := []OpeningCall{{Bytes: 7031, WantOut: 24576}, {Bytes: 44342, WantOut: 24576}}, []OpeningCall{{Bytes: 43683, WantOut: 24576}}
+	opening("coding-frontier", Opening{Sessions: [][]OpeningCall{b, a}})
+	opening("coding-strong", Opening{Sessions: [][]OpeningCall{{{Bytes: 50000, WantOut: 24576}}, b, a}, AnyRef: true})
+
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes) VALUES
+		('x', 'model', 'coding-window', 's-old', '2026-10-15T11:00:00Z', '2026-10-15T11:00:05Z', 0.01, 20000, 90000);
+		INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes)
+		SELECT 'x', 'model', 'coding-window', 's-w' || g, '2026-10-15T12:00:00Z'::timestamptz + g * interval '1 minute',
+		       '2026-10-15T12:00:30Z'::timestamptz + g * interval '1 minute', 0.01, 300, 1000 FROM generate_series(1, 19) g`); err != nil {
+		t.Fatal(err)
+	}
+	o, err := ReadOpening(ctx, db, "o", "coding-window")
+	if err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Bytes: 90000}}) {
+		t.Fatalf("window = (%+v, %v), want 20 openings, s-old's the oldest", o, err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes)
+		VALUES ('x', 'model', 'coding-window', 's-w20', '2026-10-15T13:00:00Z', '2026-10-15T13:00:30Z', 0.01, 300, 1000)`); err != nil {
+		t.Fatal(err)
+	}
+	if o, err := ReadOpening(ctx, db, "o", "coding-window"); err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Bytes: 1000}}) {
+		t.Fatalf("window = (%+v, %v), want 20 openings without s-old's", o, err)
+	}
+
+	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "coding-held", Session: "s-h", Bytes: 44342,
+		Price: Price{In: 3e-6, Out: 1.5e-5}, WantOut: 24576, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
+	if err != nil || h.Session != "s-h" || h.WantOut != 24576 {
+		t.Fatalf("hold = (%+v, %v), want s-h's asking 24576", h, err)
 	}
 	cost := 0.05
 	if _, err := ReleaseHold(ctx, db, h, &cost, Usage{PromptTokens: 10144, OutputTokens: 50, BodyBytes: 44342}); err != nil {
 		t.Fatal(err)
 	}
-	var session string
-	if err := db.QueryRowContext(ctx, `SELECT session FROM ledger`).Scan(&session); err != nil || session != "s-a" {
-		t.Fatalf("the booked row's session = (%q, %v), want s-a", session, err)
+	var booked string
+	if err := db.QueryRowContext(ctx, `SELECT session || ' ' || (held_at < created_at)::text || ' ' || want_out FROM ledger WHERE ref = 'coding-held'`).Scan(&booked); err != nil ||
+		booked != "s-h true 24576" {
+		t.Fatalf("the booked row = (%q, %v), want s-h's, held before it ended, asking 24576", booked, err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
-		('o', 'model', 'coding-frontier', 's-a', 0.01, 1554, 0, 283, 7031),
-		('x', 'model', 'coding-frontier', 's-b', 0.01, 1607, 0, 598, 7283),
-		('x', 'model', 'coding-frontier', 's-b', 0.03, 9948, 0, 661, 43699),
-		('x', 'model', 'coding-cheap', 's-c', 0.01, 11000, 0, 100, 50000),
-		('x', 'model', 'coding-frontier', 's-c', 0.30, 97021, 0, 3343, 368195),
-		('x', 'model', 'coding-frontier', 's-d', 0.15, 0, 0, 0, 0),
-		('x', 'model', 'coding-frontier', 's-d', 0.02, 2000, 0, 10, 90000),
-		('x', 'model', 'review/coding-frontier', '', 0.02, 20000, 0, 10, 95000),
-		('x', 'model', 'coding-frontier', '', 0.40, 140000, 0, 10, 600000)`); err != nil {
-		t.Fatal(err)
-	}
-	opening("coding-frontier", Opening{Bytes: 44342, Sessions: 2, Earlier: Usage{PromptTokens: 1554, BodyBytes: 7031}})
-	opening("coding-strong", Opening{Bytes: 50000, Sessions: 3, AnyRef: true})
-
-	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes) VALUES ('x', 'model', 'coding-window', 's-old', 0.01, 20000, 90000);
-		INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes)
-		SELECT 'x', 'model', 'coding-window', 's-w' || g, 0.01, 300, 1000 FROM generate_series(1, 19) g`); err != nil {
-		t.Fatal(err)
-	}
-	opening("coding-window", Opening{Bytes: 90000, Sessions: 20})
-	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes) VALUES ('x', 'model', 'coding-window', 's-w20', 0.01, 300, 1000)`); err != nil {
-		t.Fatal(err)
-	}
-	opening("coding-window", Opening{Bytes: 1000, Sessions: 20})
+	opening("coding-held", Opening{Sessions: [][]OpeningCall{{{Bytes: 44342, WantOut: 24576}}}, Earlier: Usage{PromptTokens: 10144, BodyBytes: 44342}})
 }
 
 // Tool holds count the tool's requests and euros per task, holds and
@@ -870,8 +884,8 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 // had none). Kind and alias come from the hold's ref: purpose/alias for a
 // factoryd call, the alias for an agent's, the tool's name for a tool call;
 // the author is the task's issue author (roadmap 41). Each booked row
-// keeps its hold's session: the agent's model and tool calls theirs,
-// factoryd's none.
+// keeps its hold's session, the agent's model and tool calls theirs,
+// factoryd's none, and its start.
 func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -912,9 +926,9 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 		t.Fatalf("audit rows = %q, want %q", got, want)
 	}
 	var booked string
-	if err := db.QueryRowContext(ctx, `SELECT string_agg(ref || '@' || session, ' ' ORDER BY eur) FROM ledger WHERE task_id = 's'`).Scan(&booked); err != nil ||
-		booked != "coding-cheap@s-1 web_scrape@s-1 audit/coding-frontier@" {
-		t.Fatalf("ledger = (%q, %v), want each swept hold's session", booked, err)
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(ref || '@' || session || '@' || (held_at IS NOT NULL)::text, ' ' ORDER BY eur) FROM ledger WHERE task_id = 's'`).Scan(&booked); err != nil ||
+		booked != "coding-cheap@s-1@true web_scrape@s-1@true audit/coding-frontier@@true" {
+		t.Fatalf("ledger = (%q, %v), want each swept hold's session and start", booked, err)
 	}
 	var spent float64
 	if err := db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 's'`).Scan(&spent); err != nil || !near(spent, 0.170422) {
