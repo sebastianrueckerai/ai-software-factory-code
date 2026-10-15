@@ -618,8 +618,12 @@ func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.Model
 	return policy.ModelCalls(ctx, s.db, taskID)
 }
 
-func (s *PGStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error) {
-	return policy.ReadTaskFree(ctx, s.db, taskID)
+func (s *PGStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
+	return policy.ReadFree(ctx, s.db, r)
+}
+
+func (s *PGStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
+	return policy.ReadOpening(ctx, s.db, taskID, ref)
 }
 
 func (s *PGStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {

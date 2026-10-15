@@ -939,6 +939,9 @@ func dropScratchReproTests(own string, env []string, e workerEnv) error {
 	return nil
 }
 
+// commitMessage is the worker's commit's message: the task and the
+// issue's title, sanitised, and the trailers that attribute the commit,
+// written here from the session's env and never by the agent.
 func commitMessage(e workerEnv) string {
 	subject := e.objective
 	if i := strings.IndexAny(subject, "\r\n"); i >= 0 {
@@ -947,7 +950,7 @@ func commitMessage(e workerEnv) string {
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}
-	return fmt.Sprintf("factory task %s: %s", e.taskID, sanitize.Outbound(subject, nil))
+	return fmt.Sprintf("factory task %s: %s\n\n%s", e.taskID, sanitize.Outbound(subject, nil), factoryd.Attribution(e.taskID, e.sessionID, e.author, ""))
 }
 
 type diffStat struct{ Files, Insertions, Deletions int }

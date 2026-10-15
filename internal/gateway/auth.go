@@ -26,7 +26,15 @@ type Identity struct {
 	// SAUID is the service account's UID. A requeued task runs under a
 	// recreated account, so the UID tells its runs apart.
 	SAUID string
+	// Session is the session whose worker pod the token is bound to, the
+	// pod's name past SessionPod; "" for a token of any other pod.
+	Session string
 }
+
+// SessionPod prefixes the name of a session's worker pod, which factoryd
+// names SessionPod+<session id>: the API server signs the pod a projected
+// token is bound to into it, so no agent names its session.
+const SessionPod = "worker-"
 
 type saClaims struct {
 	jwt.RegisteredClaims
@@ -34,6 +42,9 @@ type saClaims struct {
 		ServiceAccount struct {
 			UID string `json:"uid"`
 		} `json:"serviceaccount"`
+		Pod struct {
+			Name string `json:"name"`
+		} `json:"pod"`
 	} `json:"kubernetes.io"`
 }
 
@@ -178,6 +189,9 @@ func (a *Auth) Verify(ctx context.Context, raw string) (Identity, error) {
 		return Identity{}, errors.New("token has no service account uid")
 	}
 	id.SAUID = claims.K8s.ServiceAccount.UID
+	if session, ok := strings.CutPrefix(claims.K8s.Pod.Name, SessionPod); ok {
+		id.Session = session
+	}
 	return id, nil
 }
 

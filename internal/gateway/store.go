@@ -128,11 +128,13 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, true, nil
 }
 
+// InsertAudit writes row with its task's issue author
+// (policy.AuditAuthorSQL).
 func (s *PGStore) InsertAudit(ctx context.Context, row AuditRow) error {
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO audit (task_id, decision, reason, model_alias, tool, spend_eur, policy_version_id, output_limit, hold_eur, over_hold, kind, deployment,
-		 prompt_tokens, cached_tokens, output_tokens, call_cost_eur, duration_ms, status, thread)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)`,
+		 prompt_tokens, cached_tokens, output_tokens, call_cost_eur, duration_ms, status, thread, author)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, `+policy.AuditAuthorSQL("$1")+`)`, // #nosec G202 -- the author clause is policy's constant SQL around the task's placeholder
 		row.TaskID, row.Decision, row.Reason, row.ModelAlias, row.Tool, row.SpendEUR, row.PolicyVersion, row.OutputLimit, row.HoldEUR, row.OverHold, row.kind(), row.Deployment,
 		row.PromptTokens, row.CachedTokens, row.OutputTokens, row.CallCostEUR, row.DurationMS, row.Status, row.Thread)
 	return err

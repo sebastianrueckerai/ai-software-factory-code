@@ -885,10 +885,22 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 // with no session yet (no model to price) and a failed read answer as
 // before: the workflow's grant refuses the attempt anyway.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
-	if c.cfg.AttemptFunded == nil || t.ModelAlias == "" {
+	return c.unfunded(ctx, t, c.cfg.AttemptFunded)
+}
+
+// unfundedSession is the fund's floor (roadmap 243): the refusal a card's
+// remaining budget owes a session's first call, "" when one can run.
+func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
+	return c.unfunded(ctx, t, c.cfg.SessionFunded)
+}
+
+// unfunded is floor's refusal of card t, "" when it funds the card or
+// cannot judge it.
+func (c *Console) unfunded(ctx context.Context, t factoryd.Task, floor func(ctx context.Context, taskID, model string) (string, error)) string {
+	if floor == nil || t.ModelAlias == "" {
 		return ""
 	}
-	why, err := c.cfg.AttemptFunded(ctx, t.ID, t.ModelAlias)
+	why, err := floor(ctx, t.ID, t.ModelAlias)
 	if err != nil {
 		log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		return ""
@@ -917,9 +929,9 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, r
 	if t.Kind != "agent" || t.Status != "waiting-human" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
 	}
-	switch why := c.unfundedAnswer(ctx, t); {
+	switch why := c.unfundedSession(ctx, t); {
 	case why == "":
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a call: it needs no raise; answer it (answer).", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's first call: it needs no raise; answer it (answer).", t.IssueNumber))
 	case !factoryd.BudgetRefusal(why):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
 	}

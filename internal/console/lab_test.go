@@ -55,10 +55,11 @@ func TestLab(t *testing.T) {
 	r.c.cfg.ForgejoURL = forgejo.URL
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
-	// the capped card of the fire scene is below the answer path's floor, so its approvers get the Fund action (roadmap 210)
-	r.c.cfg.AttemptFunded = func(_ context.Context, id, _ string) (string, error) {
+	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
+	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
-			return "the remaining budget cannot fund a call: 0.520 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card.", nil
+			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/coding-frontier needs 0.600000 EUR", nil
 		}
 		return "", nil
 	}

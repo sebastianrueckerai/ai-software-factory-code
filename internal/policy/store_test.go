@@ -34,16 +34,17 @@ func testDB(t *testing.T) *sql.DB {
 		}
 	}
 	// the tasks table belongs to the binaries; these columns are all the
-	// headroom queries read
+	// headroom queries and the sweep's audit rows read
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tasks (
-		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL, repository text NOT NULL DEFAULT '')`); err != nil {
+		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL, repository text NOT NULL DEFAULT '',
+		author text NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
 	// the gateway's audit table, the columns the sweep writes
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS audit (
 		id bigserial PRIMARY KEY, ts timestamptz NOT NULL DEFAULT now(), task_id text NOT NULL, decision text NOT NULL,
 		reason text NOT NULL, model_alias text NOT NULL DEFAULT '', tool text NOT NULL DEFAULT '', spend_eur numeric,
-		hold_eur numeric, kind text NOT NULL DEFAULT 'agent')`); err != nil {
+		hold_eur numeric, kind text NOT NULL DEFAULT 'agent', author text NOT NULL DEFAULT '')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `TRUNCATE policy_activations, policy_versions, ledger, holds, tasks, audit CASCADE`); err != nil {
@@ -414,6 +415,71 @@ func TestModelHoldCalibrates(t *testing.T) {
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("model calls = %+v, want %+v", calls, want)
 	}
+}
+
+// A call's ledger row keeps the session of its hold, and a session's
+// opening is the largest of the newest sessions' first calls on the ref
+// (roadmap 243): a session's first booked model call, so s-c's call after
+// its climb to coding-frontier and s-d, opened by a swept hold without a
+// measure, count none on it, and neither do factoryd's calls and rows
+// from before the session. Without a first call on the ref every ref's
+// count; on a ledger without one the opening has no prompt. The task's
+// newest call on the ref and the ref's cache floor price it as TakeHold
+// would: a2's 1,554 prompt tokens in 7,031 bytes, and no cached prefix.
+// Of the newest firstCallSessions sessions alone: s-old's 90,000 bytes
+// count until a twentieth newer session opens.
+func TestOpeningIsASessionsFirstCall(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('o', 5, 'running'), ('x', 5, 'running')`); err != nil {
+		t.Fatal(err)
+	}
+	opening := func(ref string, want Opening) {
+		t.Helper()
+		if o, err := ReadOpening(ctx, db, "o", ref); err != nil || !reflect.DeepEqual(o, want) {
+			t.Fatalf("opening on %s = (%+v, %v), want %+v", ref, o, err, want)
+		}
+	}
+	opening("coding-frontier", Opening{AnyRef: true})
+
+	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "coding-frontier", Session: "s-a", Bytes: 44342,
+		Price: Price{In: 3e-6, Out: 1.5e-5}, WantOut: 1024, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
+	if err != nil || h.Session != "s-a" {
+		t.Fatalf("hold = (%+v, %v), want s-a's", h, err)
+	}
+	cost := 0.05
+	if _, err := ReleaseHold(ctx, db, h, &cost, Usage{PromptTokens: 10144, OutputTokens: 50, BodyBytes: 44342}); err != nil {
+		t.Fatal(err)
+	}
+	var session string
+	if err := db.QueryRowContext(ctx, `SELECT session FROM ledger`).Scan(&session); err != nil || session != "s-a" {
+		t.Fatalf("the booked row's session = (%q, %v), want s-a", session, err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('o', 'model', 'coding-frontier', 's-a', 0.01, 1554, 0, 283, 7031),
+		('x', 'model', 'coding-frontier', 's-b', 0.01, 1607, 0, 598, 7283),
+		('x', 'model', 'coding-frontier', 's-b', 0.03, 9948, 0, 661, 43699),
+		('x', 'model', 'coding-cheap', 's-c', 0.01, 11000, 0, 100, 50000),
+		('x', 'model', 'coding-frontier', 's-c', 0.30, 97021, 0, 3343, 368195),
+		('x', 'model', 'coding-frontier', 's-d', 0.15, 0, 0, 0, 0),
+		('x', 'model', 'coding-frontier', 's-d', 0.02, 2000, 0, 10, 90000),
+		('x', 'model', 'review/coding-frontier', '', 0.02, 20000, 0, 10, 95000),
+		('x', 'model', 'coding-frontier', '', 0.40, 140000, 0, 10, 600000)`); err != nil {
+		t.Fatal(err)
+	}
+	opening("coding-frontier", Opening{Bytes: 44342, Sessions: 2, Earlier: Usage{PromptTokens: 1554, BodyBytes: 7031}})
+	opening("coding-strong", Opening{Bytes: 50000, Sessions: 3, AnyRef: true})
+
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes) VALUES ('x', 'model', 'coding-window', 's-old', 0.01, 20000, 90000);
+		INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes)
+		SELECT 'x', 'model', 'coding-window', 's-w' || g, 0.01, 300, 1000 FROM generate_series(1, 19) g`); err != nil {
+		t.Fatal(err)
+	}
+	opening("coding-window", Opening{Bytes: 90000, Sessions: 20})
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, body_bytes) VALUES ('x', 'model', 'coding-window', 's-w20', 0.01, 300, 1000)`); err != nil {
+		t.Fatal(err)
+	}
+	opening("coding-window", Opening{Bytes: 1000, Sessions: 20})
 }
 
 // Tool holds count the tool's requests and euros per task, holds and
@@ -801,19 +867,22 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 // writes the call's audit row, decision swept, so every booked call has
 // one (#276's security-audit call, cut by the roll of 28afe1f at 23:18:15Z,
 // had none). Kind and alias come from the hold's ref: purpose/alias for a
-// factoryd call, the alias for an agent's, the tool's name for a tool call.
+// factoryd call, the alias for an agent's, the tool's name for a tool call;
+// the author is the task's issue author (roadmap 41). Each booked row
+// keeps its hold's session: the agent's model and tool calls theirs,
+// factoryd's none.
 func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('s', 5, 'failed')`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status, author) VALUES ('s', 5, 'failed', 'alice')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES
-		('s', 'model', 'audit/coding-frontier', 0.146422, now() - interval '1 second'),
-		('s', 'model', 'coding-cheap', 0.004, now() - interval '1 second'),
-		('s', 'tool', 'web_scrape', 0.02, now() - interval '1 second'),
-		('s', 'model', 'coding-cheap', 0.5, now() + interval '1 hour'),
-		('s', 'resource', 'cx23', 0.0096, now() - interval '1 second')`); err != nil {
+	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, session, eur, expires_at) VALUES
+		('s', 'model', 'audit/coding-frontier', '', 0.146422, now() - interval '1 second'),
+		('s', 'model', 'coding-cheap', 's-1', 0.004, now() - interval '1 second'),
+		('s', 'tool', 'web_scrape', 's-1', 0.02, now() - interval '1 second'),
+		('s', 'model', 'coding-cheap', 's-1', 0.5, now() + interval '1 hour'),
+		('s', 'resource', 'cx23', '', 0.0096, now() - interval '1 second')`); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := SweepHolds(ctx, db); err != nil || n != 3 {
@@ -821,7 +890,7 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 	}
 	var got []string
 	rows, err := db.QueryContext(ctx, `SELECT kind || ' ' || decision || ' ' || model_alias || ' ' || tool || ' ' || spend_eur::text || ' ' || hold_eur::text || ' ' || (reason <> '')::text
-		FROM audit WHERE task_id = 's' ORDER BY spend_eur`)
+		|| ' ' || author FROM audit WHERE task_id = 's' ORDER BY spend_eur`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -834,12 +903,17 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 		got = append(got, l)
 	}
 	want := []string{
-		"agent swept coding-cheap  0.004 0.004 true",
-		"agent swept  web_scrape 0.02 0.02 true",
-		"audit swept coding-frontier  0.146422 0.146422 true",
+		"agent swept coding-cheap  0.004 0.004 true alice",
+		"agent swept  web_scrape 0.02 0.02 true alice",
+		"audit swept coding-frontier  0.146422 0.146422 true alice",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("audit rows = %q, want %q", got, want)
+	}
+	var booked string
+	if err := db.QueryRowContext(ctx, `SELECT string_agg(ref || '@' || session, ' ' ORDER BY eur) FROM ledger WHERE task_id = 's'`).Scan(&booked); err != nil ||
+		booked != "coding-cheap@s-1 web_scrape@s-1 audit/coding-frontier@" {
+		t.Fatalf("ledger = (%q, %v), want each swept hold's session", booked, err)
 	}
 	var spent float64
 	if err := db.QueryRowContext(ctx, `SELECT spent_eur::float8 FROM tasks WHERE id = 's'`).Scan(&spent); err != nil || !near(spent, 0.170422) {

@@ -176,7 +176,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	filer := &fakePlanFiler{}
 	delegator := &fakeDelegator{}
 	s := NewServer(ServerOptions{
-		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
+		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
@@ -379,6 +379,18 @@ func TestWebScrapeBooksCredits(t *testing.T) {
 	}
 	if e.store.openHolds() != 0 {
 		t.Fatal("hold left open")
+	}
+}
+
+// A tool call's hold, booked onto its ledger row, carries the session of
+// the call's token (roadmap 243).
+func TestToolHoldCarriesTheSession(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	if text, isErr := e.call(t, policy.ToolWebScrape, map[string]any{"url": "https://example.com"}); isErr {
+		t.Fatalf("scrape = %q", text)
+	}
+	if len(e.store.reqs) != 1 || e.store.reqs[0].Session != "s-1" {
+		t.Fatalf("hold requests = %+v, want the scrape's under session s-1", e.store.reqs)
 	}
 }
 

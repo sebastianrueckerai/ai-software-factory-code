@@ -175,11 +175,13 @@ func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled
 	return res, err
 }
 
-// toolCaller is who an MCP request is for: the task, read per request, and
-// the policy version it is decided under.
+// toolCaller is who an MCP request is for: the task, read per request,
+// its session (Identity.Session) and the policy version it is decided
+// under.
 type toolCaller struct {
-	pv   *policy.Version
-	task Task
+	pv      *policy.Version
+	task    Task
+	session string
 }
 
 type callerKey struct{}
@@ -218,7 +220,7 @@ func (s *Server) mcpHandler() http.Handler {
 			s.refuse(w, pid, id.TaskID, "", "refused_task_unknown", "no task row for "+id.TaskID, "", http.StatusNotFound, "invalid_request_error")
 			return
 		}
-		h.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerKey{}, &toolCaller{pv: pv, task: task})))
+		h.ServeHTTP(w, r.WithContext(context.WithValue(ctx, callerKey{}, &toolCaller{pv: pv, task: task, session: id.Session})))
 	})
 }
 
@@ -383,7 +385,7 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	}
 	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
-		TaskID: c.task.ID, Kind: policy.KindTool, Ref: tool, EUR: worst, Cap: toolCap,
+		TaskID: c.task.ID, Kind: policy.KindTool, Ref: tool, Session: c.session, EUR: worst, Cap: toolCap,
 		DayEUR:   c.pv.Document.Budget.DayEUR,
 		MonthEUR: c.pv.Document.Budget.MonthEUR,
 		Project:  project, ProjectEUR: projectEUR,

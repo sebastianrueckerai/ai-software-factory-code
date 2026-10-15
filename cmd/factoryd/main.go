@@ -461,6 +461,7 @@ func main() {
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
 		AttemptFunded:  runner.AttemptFunded,
+		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		Notes:          store,
 		Escalate: func(ctx context.Context, repository, question string, choices []string, by string) (int64, error) {

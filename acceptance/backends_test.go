@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -393,11 +394,17 @@ func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (s
 	return "", false, nil
 }
 
-func (s *acceptanceStore) TaskFree(_ context.Context, id string) (policy.TaskFree, error) {
+func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	t := s.tasks[id]
-	return policy.TaskFree{Status: t.Status, Headroom: t.BudgetEUR - t.SpentEUR}, nil
+	t := s.tasks[r.TaskID]
+	headroom, inf := t.BudgetEUR-t.SpentEUR, math.Inf(1)
+	return policy.TaskFree{Status: t.Status, Headroom: headroom},
+		policy.Free{TaskHeadroom: headroom, DayHeadroom: inf, MonthHeadroom: inf, ProjectHeadroom: inf, Task: headroom, Day: inf, Month: inf, Project: inf}, nil
+}
+
+func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Opening, error) {
+	return policy.Opening{}, nil
 }
 
 func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.Time) error {

@@ -53,7 +53,8 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   was capped at (`refused_budget`, `refused_day_cap`, `refused_month_cap` or `refused_project_cap`);
   LiteLLM's proxy-wide `max_budget` (its message names no entity) is
   `refused_month_cap`. Every decision has an audit row
-  naming the policy version; an admitted call's row also carries its
+  naming the policy version and the task's issue author (`audit.author`,
+  roadmap 41); an admitted call's row also carries its
   output limit and hold. factoryd's own model calls (the session
   supervisor, the gate supervisor, the model review, the audit) take the same route:
   the `gateway-factoryd` token (the gateway's `FACTORYD_TOKEN`) with the
@@ -88,7 +89,10 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   the fixture `TestRecordOpencodeFixture` records from the pinned binary
   with `OPENCODE_RECORD_BIN` set, on every version bump), kills
   and reaps every other process when the agent is done, then fetches
-  the agent's commits into a clean repository, commits there, and asks
+  the agent's commits into a clean repository, commits there (one commit
+  whose trailers `Factory-Task`, `Factory-Session` and `Issue-Author`
+  the worker writes; a merge commit's carry the task, the issue author
+  and `Approved-by`, roadmap 41), and asks
   for the push token on stdout (`{"type":"push"}`). factoryd mints the
   write token on the fork then and posts it to the worker's
   `POST /push {token}` on port 8091 (same bearer; 409 until the worker
@@ -940,6 +944,20 @@ empty within the hold). A hold whose caller
 died expires after an hour and factoryd's sweep books it in full and
 writes its audit row (decision `swept`, kind and alias from the hold's
 ref); a late release books only what the real cost exceeds it by.
+A sandbox's model and tool calls are held and booked under their
+session (`holds.session`, `ledger.session`): the gateway reads it from
+the pod the call's projected token is bound to, `worker-<session id>`,
+which the API server signs into the token; factoryd's calls and every
+other row have none. Two floors read this math before an attempt, at the
+free task, day, month and project headroom (ruling 322, roadmap 243).
+The answer path's (`AttemptFunded`: every attempt the workflow grants,
+the console's answer) needs a call of no prompt and 1024 output tokens.
+The fund's (`SessionFunded`: the console's Fund action) needs a
+session's first call: the largest request body of the newest 20
+sessions' first booked calls on the alias (on any alias when none is
+recorded on it, no prompt on a ledger without one), priced as the hold
+prices it for the task. A refusal names the budget or the cap that
+bounds it; only the budget's offers Fund.
 Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking

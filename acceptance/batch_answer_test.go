@@ -437,7 +437,10 @@ func (s *accBatchStore) CapRefusal(ctx context.Context, taskID string, since tim
 func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error) {
 	panic("unused")
 }
-func (s *accBatchStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error) {
+func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
+	panic("unused")
+}
+func (s *accBatchStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	panic("unused")
 }
 func (s *accBatchStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {

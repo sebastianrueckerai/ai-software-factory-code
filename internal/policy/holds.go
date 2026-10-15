@@ -30,6 +30,10 @@ type HoldRequest struct {
 	TaskID string
 	Kind   string // KindModel, KindTool or KindResource
 	Ref    string // the alias of a model call, the name of a tool call
+	// Session is the session a sandbox's call belongs to, as the gateway
+	// read it from the call's token; "" for factoryd's calls and a
+	// resource's reservation.
+	Session string
 	// Bytes is a model call's request body length. Earlier is the task's
 	// newest settled call on the same ref with usage, which calibrates the
 	// prompt tokens Bytes carries; without one, a token covers at least
@@ -64,6 +68,7 @@ type Hold struct {
 	TaskID   string
 	Kind     string
 	Ref      string
+	Session  string
 	EUR      float64
 	MaxOut   int
 	Headroom float64
@@ -169,7 +174,7 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
 			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens))
 	}
-	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, MaxOut: maxOut,
+	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, MaxOut: maxOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
 }
 
@@ -197,7 +202,7 @@ func FitResource(f Free, r HoldRequest) (Hold, error) {
 		return Hold{}, refusal(decision, r.Kind, r.Project, fmt.Sprintf(
 			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (%s)", r.Ref, r.EUR, free, f.figures()))
 	}
-	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, EUR: r.EUR}, nil
+	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, EUR: r.EUR}, nil
 }
 
 // TakeHold fits the call into the headroom left after spend and every
@@ -233,13 +238,7 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	case KindResource:
 		h, err = FitResource(free, r)
 	default:
-		err = tx.QueryRowContext(ctx,
-			`SELECT prompt_tokens, body_bytes FROM ledger WHERE task_id = $1 AND kind = 'model' AND ref = $2 AND prompt_tokens > 0 AND body_bytes > 0
-			 ORDER BY id DESC LIMIT 1`, r.TaskID, r.Ref).Scan(&r.Earlier.PromptTokens, &r.Earlier.BodyBytes)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return Hold{}, err
-		}
-		if r.CacheFloor, err = cacheFloor(ctx, tx, r.Ref); err != nil {
+		if err := calibrate(ctx, tx, &r); err != nil {
 			return Hold{}, err
 		}
 		h, err = Fit(free, r)
@@ -254,6 +253,24 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	return h, tx.Commit()
 }
 
+// rowQuerier is a pool or a transaction.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// calibrate reads what Fit prices model call r from: r's task's newest
+// settled call on r.Ref with usage (Earlier) and the ref's cache floor.
+func calibrate(ctx context.Context, q rowQuerier, r *HoldRequest) error {
+	err := q.QueryRowContext(ctx,
+		`SELECT prompt_tokens, body_bytes FROM ledger WHERE task_id = $1 AND kind = 'model' AND ref = $2 AND prompt_tokens > 0 AND body_bytes > 0
+		 ORDER BY id DESC LIMIT 1`, r.TaskID, r.Ref).Scan(&r.Earlier.PromptTokens, &r.Earlier.BodyBytes)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	r.CacheFloor, err = cacheFloor(ctx, q, r.Ref)
+	return err
+}
+
 // cacheFloorCalls is how many of a ref's newest settled calls measure its
 // cache floor.
 const cacheFloorCalls = 100
@@ -262,9 +279,9 @@ const cacheFloorCalls = 100
 // Fit prices) the provider served from its cache, over those of the newest
 // cacheFloorCalls settled calls on ref that followed an earlier call of
 // their task on ref, Earlier as TakeHold reads it; 0 when none did.
-func cacheFloor(ctx context.Context, tx *sql.Tx, ref string) (float64, error) {
+func cacheFloor(ctx context.Context, q rowQuerier, ref string) (float64, error) {
 	var floor float64
-	err := tx.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT COALESCE(min(c.cached_tokens::float8 / LEAST(c.prompt_tokens, e.prompt_tokens)), 0)::float8
 		 FROM (SELECT id, task_id, prompt_tokens, cached_tokens FROM ledger
 		       WHERE kind = 'model' AND ref = $1 AND prompt_tokens > 0 AND body_bytes > 0
@@ -273,6 +290,60 @@ func cacheFloor(ctx context.Context, tx *sql.Tx, ref string) (float64, error) {
 		       WHERE task_id = c.task_id AND kind = 'model' AND ref = $1 AND prompt_tokens > 0 AND body_bytes > 0 AND id < c.id
 		       ORDER BY id DESC LIMIT 1) e`, ref, cacheFloorCalls).Scan(&floor)
 	return floor, err
+}
+
+// firstCallSessions is how many of the newest sessions' first calls
+// measure a session's opening, and their largest is the opening: the
+// harness opens a session with a small call beside the agent's first
+// prompt, the two booked in either order, and a brief grows with an
+// attempt's findings, so a median or a mean would price the small call
+// or an early attempt's brief. A floor too high only lets a human fund a
+// card that might have started; one too low funds an attempt that dies on
+// its first call.
+const firstCallSessions = 20
+
+// Opening is the request a session is expected to open with on a ref, as
+// the gateway's hold prices it for a task: Bytes is the largest request
+// body of the newest firstCallSessions sessions' first calls on the ref,
+// Sessions how many of them measured it, and Earlier and CacheFloor are
+// what TakeHold prices the task's call on the ref from. A session's first
+// call is its first booked model call, so a call after a climb or a
+// subagent's on a cheaper alias opens none. With no first call on the ref
+// recorded, AnyRef: every ref's measure Bytes, since a session opens with
+// the harness's same prompt and tools whatever its model; with none at
+// all, Bytes is 0, a call of no prompt.
+type Opening struct {
+	Bytes, Sessions int
+	AnyRef          bool
+	Earlier         Usage
+	CacheFloor      float64
+}
+
+// ReadOpening reads the opening of a session of taskID on ref.
+func ReadOpening(ctx context.Context, q rowQuerier, taskID, ref string) (Opening, error) {
+	var o Opening
+	for _, on := range []string{ref, ""} {
+		// newest first, a row is a session's first call when no earlier
+		// model row of its session exists: the scan ends at the window
+		if err := q.QueryRowContext(ctx,
+			`SELECT COALESCE(max(body_bytes), 0), count(*) FROM (SELECT body_bytes FROM ledger l
+			 WHERE kind = 'model' AND session <> '' AND (ref = $1 OR $1 = '') AND body_bytes > 0
+			   AND NOT EXISTS (SELECT 1 FROM ledger e WHERE e.kind = 'model' AND e.session = l.session AND e.id < l.id)
+			 ORDER BY id DESC LIMIT $2) f`,
+			on, firstCallSessions).Scan(&o.Bytes, &o.Sessions); err != nil {
+			return Opening{}, err
+		}
+		o.AnyRef = on == ""
+		if o.Sessions > 0 {
+			break
+		}
+	}
+	r := HoldRequest{TaskID: taskID, Ref: ref}
+	if err := calibrate(ctx, q, &r); err != nil {
+		return Opening{}, err
+	}
+	o.Earlier, o.CacheFloor = r.Earlier, r.CacheFloor
+	return o, nil
 }
 
 // LockHeadroom serializes everything that takes headroom, until tx ends.
@@ -328,48 +399,61 @@ func DayFree(ctx context.Context, db *sql.DB, dayEUR float64, at time.Time) (flo
 var now = time.Now
 
 // FreeHeadroom reads r's task's, the UTC day's, the UTC calendar month's
-// and the task's project's month headroom inside tx (under LockHeadroom).
-// The project's is r.ProjectEUR less the month's ledger rows and the
-// outstanding holds of every task of the task's repository, read only
-// under a cap (+Inf otherwise). Every outstanding hold counts against the
-// day and the month. A task that is neither running nor in review is
+// and the task's project's month headroom inside tx (under LockHeadroom),
+// as ReadFree does. A task that is neither running nor in review is
 // refused: settlement relies on a finished task taking no new hold.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
-	taskID, at := r.TaskID, now()
-	t, err := ReadTaskFree(ctx, tx, taskID)
+	t, f, err := ReadFree(ctx, tx, r)
 	if err != nil {
 		return Free{}, err
 	}
 	if !slices.Contains(holdStatuses, t.Status) {
-		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", taskID, t.Status)}
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", r.TaskID, t.Status)}
+	}
+	return f, nil
+}
+
+// ReadFree reads r's task's own headroom and outstanding holds, and the
+// task's, the UTC day's, the UTC calendar month's and the task's
+// project's month headroom: FreeHeadroom's figures, and the attempt
+// floors' (factoryd's AttemptFunded and SessionFunded) on the pool. The
+// project's is r.ProjectEUR less the month's ledger rows and the
+// outstanding holds of every task of the task's repository, read only
+// under a cap (+Inf otherwise). Every outstanding hold counts against the
+// day and the month.
+func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free, error) {
+	taskID, at := r.TaskID, now()
+	t, err := readTaskFree(ctx, q, taskID)
+	if err != nil {
+		return TaskFree{}, Free{}, err
 	}
 	var f Free
 	var allHeld float64
-	if err := tx.QueryRowContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		`SELECT ($1 - `+daySpentSQL("$3::timestamptz")+`)::float8,
 		        ($2 - `+MonthSpentSQL("$3::timestamptz")+`)::float8,
 		        `+heldSQL+`::float8`, r.DayEUR, r.MonthEUR, at,
 	).Scan(&f.DayHeadroom, &f.MonthHeadroom, &allHeld); err != nil {
-		return Free{}, err
+		return TaskFree{}, Free{}, err
 	}
 	f.TaskHeadroom, f.Task = t.Headroom, t.Free()
 	f.Day, f.Month = f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
 	f.ProjectHeadroom, f.Project = math.Inf(1), math.Inf(1)
 	if math.IsInf(r.ProjectEUR, 1) {
-		return f, nil
+		return t, f, nil
 	}
 	// a standing line's task id is standing:<repository>: it joins no task
 	var spent, held float64
-	if err := tx.QueryRowContext(ctx,
+	if err := q.QueryRowContext(ctx,
 		`SELECT COALESCE((SELECT sum(l.eur) FROM ledger l JOIN tasks p ON p.id = l.task_id
 		                  WHERE p.repository = t.repository AND l.day >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC')::date), 0)::float8,
 		        COALESCE((SELECT sum(h.eur) FROM holds h JOIN tasks p ON p.id = h.task_id WHERE p.repository = t.repository), 0)::float8
 		 FROM tasks t WHERE t.id = $1`, taskID, at).Scan(&spent, &held); err != nil {
-		return Free{}, err
+		return TaskFree{}, Free{}, err
 	}
 	f.ProjectHeadroom = r.ProjectEUR - spent
 	f.Project = f.ProjectHeadroom - held
-	return f, nil
+	return t, f, nil
 }
 
 // TaskFree is a task's own headroom: its budget less its spend before any
@@ -388,12 +472,9 @@ type TaskFree struct {
 // outstanding hold.
 func (t TaskFree) Free() float64 { return t.Headroom - t.Held }
 
-// ReadTaskFree reads taskID's own headroom and outstanding holds in one
-// statement: FreeHeadroom's task figures inside its transaction, and the
-// attempt floor's (factoryd's AttemptFunded) on the pool.
-func ReadTaskFree(ctx context.Context, q interface {
-	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
-}, taskID string) (TaskFree, error) {
+// readTaskFree reads taskID's own headroom and outstanding holds in one
+// statement: ReadFree's task figures.
+func readTaskFree(ctx context.Context, q rowQuerier, taskID string) (TaskFree, error) {
 	var t TaskFree
 	var expires sql.NullTime
 	err := q.QueryRowContext(ctx,
@@ -411,8 +492,8 @@ func ReadTaskFree(ctx context.Context, q interface {
 func InsertHold(ctx context.Context, tx *sql.Tx, h Hold, ttl time.Duration) (int64, error) {
 	var id int64
 	err := tx.QueryRowContext(ctx,
-		`INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))
-		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.EUR, ttl.Seconds()).Scan(&id)
+		`INSERT INTO holds (task_id, kind, ref, session, eur, expires_at) VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))
+		 RETURNING id`, h.TaskID, h.Kind, h.Ref, h.Session, h.EUR, ttl.Seconds()).Scan(&id)
 	return id, err
 }
 
@@ -463,8 +544,8 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64, u Usage
 		return Booking{}, fmt.Errorf("release hold %d: task %s: %w", h.ID, h.TaskID, err)
 	}
 	if amount > 0 || found && h.Kind == KindTool {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, h.TaskID, h.Kind, h.Ref, amount, u.PromptTokens, u.CachedTokens, u.OutputTokens, u.BodyBytes); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, h.TaskID, h.Kind, h.Ref, h.Session, amount, u.PromptTokens, u.CachedTokens, u.OutputTokens, u.BodyBytes); err != nil {
 			return Booking{}, err
 		}
 	}
@@ -499,26 +580,34 @@ func KnownCost(cost *float64) *float64 {
 	return cost
 }
 
+// AuditAuthorSQL is the author of an audit row of the task taskID names,
+// an SQL expression: the task's issue author, the human behind its calls
+// (roadmap 41); empty for a call of no known task.
+func AuditAuthorSQL(taskID string) string {
+	return `COALESCE((SELECT author FROM tasks WHERE tasks.id = ` + taskID + `), '')`
+}
+
 // SweepHolds books every expired model and tool hold at its full amount,
-// writes each one's audit row (decision swept: the call's caller, cut by a
-// restart, never wrote one) and returns how many it booked. The row's kind
-// and alias come from the ref: purpose/alias for a factoryd call, the alias
-// for an agent's, the tool's name for a tool call. A resource reservation
-// is never swept: accrual books its resource's hours and drops it, so a
-// sweep would book the same hours twice.
+// with its session, writes each one's audit row (decision swept: the
+// call's caller, cut by a restart, never wrote one) and returns how many it
+// booked. The row's kind and alias come from the ref: purpose/alias for a
+// factoryd call, the alias for an agent's, the tool's name for a tool
+// call; its author is the task's, as on the gateway's rows. A resource
+// reservation is never swept: accrual books its resource's hours and drops
+// it, so a sweep would book the same hours twice.
 func SweepHolds(ctx context.Context, db *sql.DB) (int, error) {
 	var n int
 	err := db.QueryRowContext(ctx,
-		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING id, task_id, kind, ref, eur),
+		`WITH gone AS (DELETE FROM holds WHERE expires_at < now() AND kind <> 'resource' RETURNING id, task_id, kind, ref, session, eur),
 		      t AS (UPDATE tasks SET spent_eur = spent_eur + g.eur
 		            FROM (SELECT task_id, sum(eur) AS eur FROM gone GROUP BY task_id) g WHERE tasks.id = g.task_id),
-		      l AS (INSERT INTO ledger (task_id, kind, ref, eur) SELECT task_id, kind, ref, eur FROM gone WHERE eur > 0),
-		      a AS (INSERT INTO audit (task_id, decision, reason, kind, model_alias, tool, spend_eur, hold_eur)
+		      l AS (INSERT INTO ledger (task_id, kind, ref, session, eur) SELECT task_id, kind, ref, session, eur FROM gone WHERE eur > 0),
+		      a AS (INSERT INTO audit (task_id, decision, reason, kind, model_alias, tool, spend_eur, hold_eur, author)
 		            SELECT task_id, 'swept', 'hold ' || id || ' expired unreleased; booked at its full amount',
 		                   CASE WHEN kind = 'model' AND strpos(ref, '/') > 0 THEN split_part(ref, '/', 1) ELSE 'agent' END,
 		                   CASE WHEN kind = 'model' THEN substr(ref, strpos(ref, '/') + 1) ELSE '' END,
 		                   CASE WHEN kind = 'tool' THEN ref ELSE '' END,
-		                   eur, eur FROM gone)
+		                   eur, eur, `+AuditAuthorSQL("gone.task_id")+` FROM gone)
 		 SELECT count(*) FROM gone`).Scan(&n)
 	return n, err
 }

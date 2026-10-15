@@ -50,6 +50,7 @@ type tokenOpts struct {
 	aud   any // string or []string
 	sub   string
 	saUID string // "" = claim absent
+	pod   string // the pod the token is bound to; "" = claim absent
 	exp   time.Time
 	noExp bool
 	alg   jwt.SigningMethod
@@ -148,10 +149,14 @@ func mintToken(t *testing.T, o tokenOpts) string {
 		claims["aud"] = o.aud
 	}
 	if o.saUID != "" {
-		claims["kubernetes.io"] = map[string]any{
+		k8s := map[string]any{
 			"namespace":      "factory",
 			"serviceaccount": map[string]any{"name": "task-42", "uid": o.saUID},
 		}
+		if o.pod != "" {
+			k8s["pod"] = map[string]any{"name": o.pod, "uid": "pod-uid-1"}
+		}
+		claims["kubernetes.io"] = k8s
 	}
 	if !o.noExp {
 		claims["exp"] = o.exp.Unix()
@@ -210,6 +215,29 @@ func TestAuthenticate(t *testing.T) {
 			req: bearerRequest(f.mint(t, func(o *tokenOpts) {
 				o.aud = []string{"other-svc", testAudience}
 			})),
+			wantID: Identity{
+				Subject:   "system:serviceaccount:factory:task-42",
+				Namespace: "factory",
+				TaskID:    "42",
+				SAUID:     "sa-uid-1",
+			},
+		},
+		{
+			// the API server signs the pod a projected token is bound to:
+			// a session's worker pod names the session (roadmap 243)
+			name: "bound to a session's worker pod",
+			req:  bearerRequest(f.mint(t, func(o *tokenOpts) { o.pod = "worker-s-965ff579e0e1" })),
+			wantID: Identity{
+				Subject:   "system:serviceaccount:factory:task-42",
+				Namespace: "factory",
+				TaskID:    "42",
+				SAUID:     "sa-uid-1",
+				Session:   "s-965ff579e0e1",
+			},
+		},
+		{
+			name: "bound to a pod of no session",
+			req:  bearerRequest(f.mint(t, func(o *tokenOpts) { o.pod = "repro-965ff579e0e1" })),
 			wantID: Identity{
 				Subject:   "system:serviceaccount:factory:task-42",
 				Namespace: "factory",

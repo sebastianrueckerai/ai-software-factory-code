@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -485,7 +486,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// stopAt is when workerStop closed: the whole stop, an in-flight
 	// supervisor call included, ends within r.stopWait of it
 	var stopAt time.Time
-	podName := "worker-" + s.id
+	podName := gateway.SessionPod + s.id
 	// consumed is how many of the pod's log lines the loop took: the row
 	// keeps it for the reattach
 	consumed := 0

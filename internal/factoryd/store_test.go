@@ -65,8 +65,12 @@ type fakeStore struct {
 	daySpent    float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
-	// held are TaskFree's outstanding holds by task (Held, Holds, Expires)
+	// held are Free's outstanding holds by task (Held, Holds, Expires);
+	// capsFree is Free's free day, month and project headroom, all
+	// unbounded when nil; openings are Opening's answers by ref
 	held      map[string]policy.TaskFree
+	capsFree  *policy.Free
+	openings  map[string]policy.Opening
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
 	createFails int
@@ -762,14 +766,24 @@ func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since ti
 	return r, ok, nil
 }
 
-func (s *fakeStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error) {
-	t, ok := s.tasks[taskID]
+func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
+	t, ok := s.tasks[r.TaskID]
 	if !ok {
-		return policy.TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)
+		return policy.TaskFree{}, policy.Free{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
 	}
-	f := s.held[taskID]
-	f.Status, f.Headroom = t.Status, t.BudgetEUR-t.SpentEUR
-	return f, nil
+	tf := s.held[r.TaskID]
+	tf.Status, tf.Headroom = t.Status, t.BudgetEUR-t.SpentEUR
+	inf := math.Inf(1)
+	f := policy.Free{DayHeadroom: inf, MonthHeadroom: inf, ProjectHeadroom: inf, Day: inf, Month: inf, Project: inf}
+	if s.capsFree != nil {
+		f = *s.capsFree
+	}
+	f.TaskHeadroom, f.Task = tf.Headroom, tf.Free()
+	return tf, f, nil
+}
+
+func (s *fakeStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
+	return s.openings[ref], nil
 }
 
 func (s *fakeStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {

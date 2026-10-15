@@ -553,7 +553,9 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 // the agent's work, committed or not, is its tree; the agent's own commits
 // and their messages never reach the branch, and the subject, the issue's
 // title, is sanitised. A resumed session's start is the work in progress
-// an earlier session pushed, which stays the parent.
+// an earlier session pushed, which stays the parent. The commit's trailers
+// name the task, the session and the issue author (roadmap 41), as git
+// reads them back; an author the agent wrote into its own commit is gone.
 func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -587,7 +589,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		run("-C", dir, "-c", "user.name=mallory", "-c", "user.email=m@m", "commit", "-q", "-m", "fixes #3 @admin")
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("b\n"), 0o644)
 		run("-C", dir, "add", "b.txt")
-		run("-C", dir, "-c", "user.name=mallory", "-c", "user.email=m@m", "commit", "-q", "-m", "closes #4")
+		run("-C", dir, "-c", "user.name=mallory", "-c", "user.email=m@m", "commit", "-q", "-m", "closes #4", "-m", "Issue-Author: mallory")
 	}
 	for _, tc := range []struct {
 		name, start string
@@ -610,7 +612,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
+			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)
@@ -642,8 +644,12 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			if parent := run("-C", fork, "rev-parse", commit+"^"); parent != tc.start {
 				t.Fatalf("parent = %s, want the session's start %s", parent, tc.start)
 			}
-			if got := run("-C", fork, "log", "--format=%an <%ae>|%B", tc.start+".."+commit); got != "factory-agent <factory-agent@factory.local>|factory task t1: (Fixes) #3 for ＠admin" {
-				t.Fatalf("pushed history = %q, want one factory-agent commit with the sanitised subject", got)
+			if got := run("-C", fork, "log", "--format=%an <%ae>|%B", tc.start+".."+commit); got != "factory-agent <factory-agent@factory.local>|factory task t1: (Fixes) #3 for ＠admin\n\n"+
+				"Factory-Task: t1\nFactory-Session: s-1\nIssue-Author: alice" {
+				t.Fatalf("pushed history = %q, want one factory-agent commit with the sanitised subject and the trailers", got)
+			}
+			if got := run("-C", fork, "log", "-1", "--format=%(trailers)", commit); got != "Factory-Task: t1\nFactory-Session: s-1\nIssue-Author: alice" {
+				t.Fatalf("trailers = %q, want the task, the session and the issue author", got)
 			}
 			if got := run("-C", fork, "ls-tree", "--name-only", commit); got != tc.files {
 				t.Fatalf("pushed files = %q, want %q", got, tc.files)

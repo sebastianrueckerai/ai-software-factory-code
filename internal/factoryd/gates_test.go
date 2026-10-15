@@ -690,16 +690,21 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 	}
 }
 
+// The merge commit's message names the approver, and its trailers the
+// task, the issue author and the approver (roadmap 41).
 func TestMergeAsFactoryMerge(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
-	r, store, objects := newGateRunner(t, gateTask, fj)
+	task := gateTask
+	task.Author = "alice"
+	r, store, objects := newGateRunner(t, task, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	from := time.Now()
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged {
 		t.Fatalf("result = %+v", res)
 	}
-	if fj.merges[0]["head_commit_id"] != "c1" || !strings.Contains(fj.merges[0]["MergeMessageField"].(string), "approved by sebastian") {
+	if fj.merges[0]["head_commit_id"] != "c1" || fj.merges[0]["MergeMessageField"] != "factoryd task t1 (issue #4): approved by sebastian, merged by factory-merge\n\n"+
+		"Factory-Task: t1\nIssue-Author: alice\nApproved-by: sebastian\n" {
 		t.Fatalf("merge = %v", fj.merges[0])
 	}
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" {

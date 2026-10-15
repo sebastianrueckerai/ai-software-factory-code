@@ -303,10 +303,13 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
-	// TaskFree is the task's own headroom and its outstanding holds, the
-	// figures the gateway fits the task's next call into
-	// (policy.ReadTaskFree).
-	TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error)
+	// Free is the task's own headroom and its outstanding holds, and the
+	// free task, day, month and project headroom under r's caps: the
+	// figures the gateway fits the task's next call into (policy.ReadFree).
+	Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error)
+	// Opening is the request a session of the task is expected to open
+	// with on ref (policy.ReadOpening).
+	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
 	// DayFree is the UTC day's free headroom under dayEUR now, every
 	// outstanding hold netted (policy.DayFree).
 	DayFree(ctx context.Context, dayEUR float64) (float64, error)

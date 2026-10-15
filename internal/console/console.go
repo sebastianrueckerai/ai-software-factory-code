@@ -203,6 +203,10 @@ type Config struct {
 	// the answer carries (factoryd's Runner.AttemptFunded); nil checks
 	// nothing.
 	AttemptFunded func(ctx context.Context, taskID, model string) (string, error)
+	// SessionFunded is the fund's floor (roadmap 243): "" when the task's
+	// free headroom can fund a session's first call on model, else the
+	// refusal (factoryd's Runner.SessionFunded); nil offers no fund.
+	SessionFunded func(ctx context.Context, taskID, model string) (string, error)
 	// Chat keeps the project agent's conversations and chat tasks, and
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat

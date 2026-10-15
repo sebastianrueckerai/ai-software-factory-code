@@ -93,7 +93,7 @@ func escalationSource(reason string) string {
 		return "split_cap"
 	case strings.HasPrefix(reason, providerRefused):
 		return "provider"
-	case strings.HasPrefix(reason, budgetRefused):
+	case floorRefused(reason):
 		return "budget"
 	case strings.HasPrefix(reason, leftQueue):
 		return "queue"

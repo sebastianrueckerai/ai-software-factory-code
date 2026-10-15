@@ -197,3 +197,51 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 		t.Fatalf("ledger row = %q (%v), want 0.007818 EUR, 140000 prompt, 131600 cached, 900 output tokens and the upstream body's bytes", row, err)
 	}
 }
+
+// A sandbox's call books its ledger row under the session its token's pod
+// names (roadmap 243), and every audit row names its task's issue author,
+// the human behind the call (roadmap 41): the allowed call's and a
+// refusal's, and nobody for a task no row knows.
+func TestRowsCarryTheSessionAndTheAuthor(t *testing.T) {
+	dsn := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("GATEWAY_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, author)
+		VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'coding-cheap', 'alice')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {
+		t.Fatal(err)
+	}
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, headers: map[string]string{"Content-Type": "text/event-stream"},
+		body: "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":10,\"cost\":0.0004}}\n\ndata: [DONE]\n\n"})
+	srv := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "sa", Session: "s-1"}}, Store: s, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
+		Prices: fakePrices{"coding-cheap": {In: 0.30e-6, Out: 1.50e-6, MaxOutput: 32768}}})
+	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
+	}
+	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-frontier","messages":[]}`); rr.Code != http.StatusForbidden {
+		t.Fatalf("another model's call = %d (%s), want the capability refusal", rr.Code, rr.Body.String())
+	}
+	if err := s.InsertAudit(ctx, AuditRow{TaskID: "t-gone", Decision: "refused_task_unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	var session string
+	if err := s.db.QueryRowContext(ctx, `SELECT session FROM ledger WHERE task_id = 't1'`).Scan(&session); err != nil || session != "s-1" {
+		t.Fatalf("ledger session = (%q, %v), want s-1", session, err)
+	}
+	var authors string
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(decision || '=' || author, ';' ORDER BY id) FROM audit`).Scan(&authors); err != nil ||
+		authors != "allowed=alice;refused_capability=alice;refused_task_unknown=" {
+		t.Fatalf("audit authors = (%q, %v)", authors, err)
+	}
+}

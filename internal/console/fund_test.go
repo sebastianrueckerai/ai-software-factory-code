@@ -17,17 +17,47 @@ import (
 // and lands in the event spine as its own row. The answer box is
 // unchanged: the card resumes on the next answer, now with headroom.
 
-// budgetRefusal is what AttemptFunded answers for a card whose remaining
-// budget cannot fund a call (factoryd's Runner.AttemptFunded).
+// budgetRefusal is what the floors answer for a card whose remaining
+// budget cannot fund a call (factoryd's Runner.AttemptFunded and
+// Runner.SessionFunded).
 const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget cannot
-// fund a call, with the floor refusing it.
+// fund a call, with both floors refusing it.
 func cappedCard(r *rig, t *testing.T) {
 	t.Helper()
 	r.tasks.set(budgetRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
 	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
+	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
+}
+
+// Card #704 (roadmap 243): its remaining budget funds the answer path's
+// cheapest call but not a session's first call, so the answer box stays
+// and the Fund action is offered beside it, and a raise goes through.
+func TestFundOpensWhereASessionCannotStart(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	var asked string
+	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return "", nil }
+	r.c.cfg.SessionFunded = func(_ context.Context, taskID, model string) (string, error) {
+		asked = taskID + " " + model
+		return budgetRefusal, nil
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`action="/tasks/t-e/answer"`, `action="/tasks/t-e/fund"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card's escalation lacks %s", want)
+		}
+	}
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"a session cannot start"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.5 || asked != "t-e factory/coding-cheap" {
+		t.Fatalf("budget_eur = %v, the fund's floor read %q; want 2.5 on t-e factory/coding-cheap", task.BudgetEUR, asked)
+	}
 }
 
 // An approver's raise increases budget_eur by exactly the stated amount,
@@ -68,6 +98,7 @@ func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
 	cappedCard(r, t)
 	const unpriced = "the attempt's floor on factory/coding-cheap cannot be read: no price for coding-cheap"
 	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
+	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
 		t.Error("the board offers Fund for a card no budget lets start, or lost its answer box")
@@ -103,7 +134,8 @@ func TestFundIsAnApproversAction(t *testing.T) {
 }
 
 // A raise on a card that is not capped is refused: one whose remaining
-// budget can fund a call, and one the floor cannot judge (no session yet).
+// budget can fund a session's first call, and one the floor cannot judge
+// (no session yet).
 func TestFundRefusesACardThatIsNotCapped(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -112,10 +144,10 @@ func TestFundRefusesACardThatIsNotCapped(t *testing.T) {
 			IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"},
 		factoryd.Task{ID: "t-new", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 			IssueNumber: 15, Objective: "Start.", BudgetEUR: 2})
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return "", nil }
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
 	for _, id := range []string{"t-e", "t-new"} {
 		rec := r.do(post("/tasks/"+id+"/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck)
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "can fund a call") {
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "can fund a session's first call") {
 			t.Fatalf("fund of %s = %d: %s", id, rec.Code, rec.Body)
 		}
 		task, _, _ := r.tasks.Task(t.Context(), id)
@@ -168,7 +200,7 @@ func TestFundRefusesACardThatIsNotWaiting(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Repository: "sf/code",
 		IssueNumber: 14, Objective: "Speed up the board.", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
 	rec := r.do(post("/tasks/t-r/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Card #14 runs an agent session, not a card waiting on a human") {
 		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)

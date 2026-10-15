@@ -306,7 +306,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
-		TaskID: task.ID, Kind: policy.KindModel, Ref: ref,
+		TaskID: task.ID, Kind: policy.KindModel, Ref: ref, Session: id.Session,
 		Bytes: len(body) + bodySlack, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
