@@ -270,7 +270,7 @@ func TestBootLabelsCoverPriorityAndSeverityAcrossPages(t *testing.T) {
 		t.Fatal(err)
 	}
 	sort.Strings(created)
-	want := []string{"bug", "human", "improvement", "noise", "priority/p1", "priority/p2", "priority/p3", "real", "severity/critical", "severity/high", "severity/low", "severity/medium",
+	want := []string{"bug", "human", "improvement", "noise", "priority/p1", "priority/p2", "priority/p3", "real", "routine", "severity/critical", "severity/high", "severity/low", "severity/medium",
 		"state/backlog", "state/closed", "state/done", "state/failed", "state/in-review", "state/queued", "state/running", "state/waiting-deps", "state/waiting-human", "state/waiting-poster"}
 	if !slices.Equal(created, want) {
 		t.Fatalf("created %v, want %v", created, want)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -24,6 +25,8 @@ type codeIssues struct {
 	issues []string // "title\n\nbody", the first numbered 71
 	closed []int64
 	labels map[int64][]string
+	// older are open issues the bot filed before, by number: their titles
+	older map[int64]string
 }
 
 func (c *codeIssues) srv(t *testing.T) *Forgejo {
@@ -35,6 +38,11 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 		switch {
 		case r.Method == http.MethodGet && path == "issues":
 			open := []map[string]any{}
+			for n, title := range c.older {
+				if r.URL.Query().Get("page") == "1" {
+					open = append(open, map[string]any{"number": n, "title": title, "user": map[string]string{"login": "factory-agent"}})
+				}
+			}
 			for i, is := range c.issues {
 				if n := int64(71 + i); r.URL.Query().Get("page") == "1" && !slices.Contains(c.closed, n) {
 					title, _, _ := strings.Cut(is, "\n\n")
@@ -96,7 +104,7 @@ func onlyTask(t *testing.T, store *fakeStore) Task {
 
 // The weekly bump at its due: a human card on the code repository, the
 // brief's text as its body with the run's provenance, waiting on a
-// person; the run stays open with its card, and the inbox of the
+// person. The run stays open with its card, and the inbox of the
 // project's approvers hears of it once, with the routine, the run and
 // the schedule as the decider line. A human card pokes under tell quiet
 // too. Hand-derived: the first issue is #71, the fixture's approver
@@ -162,10 +170,12 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 
 // While the last run's card #781 is open, a routine that holds files
 // nothing: the run ends held, names the card in its note and keeps no
-// task of its own, so the card's end finds the run that filed it; under
-// tell inbox the inbox hears why, about that card. Quiet holds in
-// silence, fold ends folded into the card, and file files a second card
-// beside it. Once #781 ends, the next run files.
+// task of its own, so the card's end finds the run that filed it. Under
+// tell inbox the inbox hears why, about that card, with the run's number,
+// so each held run pokes once. Quiet holds in silence, fold ends folded
+// into the card, and file files a second card beside it: a new issue,
+// since #781, the bot's open issue of the same title, is the open card's.
+// Once #781 ends, the next run files.
 func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	ctx := context.Background()
 	onTime := time.Now().Truncate(time.Minute)
@@ -175,7 +185,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 		poke                  string
 	}{
 		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"},
-			"Weekly bump of the pinned outside inputs is held: #781 from the last run is still open."},
+			"Weekly bump of the pinned outside inputs is held, run 2: #781 from the last run is still open."},
 		{"hold quietly", policy.WhileOpenHold, policy.TellQuiet, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
 		{"fold", policy.WhileOpenFold, policy.TellInbox, RoutineRunResult{Outcome: "folded", Note: "folded into #781"}, ""},
 		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, "#71 needs you: Weekly bump of the pinned outside inputs."},
@@ -184,6 +194,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
 			bump.WhileOpen, bump.Tell = tt.whileOpen, tt.tell
 			r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+			issues.older = map[int64]string{781: "Weekly bump of the pinned outside inputs"}
 			store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine}
 			last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"})
 			if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", last.Run, "t-781", 781); err != nil {
@@ -195,8 +206,8 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			}
 			pokedAbout := "t-781"
 			if tt.whileOpen == policy.WhileOpenFile {
-				if len(store.tasks) != 2 || store.tasks[res.TaskID].IssueNumber != 71 {
-					t.Fatalf("tasks %+v, result %+v: want a second card, #71", store.tasks, res)
+				if len(store.tasks) != 2 || len(issues.issues) != 1 || store.tasks[res.TaskID].IssueNumber != 71 {
+					t.Fatalf("tasks %+v, issues %q, result %+v: want a second card on a new issue, #71", store.tasks, issues.issues, res)
 				}
 				tt.want.TaskID, pokedAbout = res.TaskID, res.TaskID
 			} else if len(issues.issues) != 0 || len(store.tasks) != 1 {
@@ -298,13 +309,18 @@ func TestRoutineRunMissed(t *testing.T) {
 
 // The audit at its twentieth merge: an agent card through the intake
 // every agent card the factory files takes, in the project's ready lane,
-// queued and started, labelled routine; its objective is the routine's
-// title and the skill to run, its budget the policy's default (2 EUR in
-// the fixture), and its issue names the run. Tell inbox pokes the
-// filing.
+// queued and started, labelled routine, a label every repository carries.
+// Its objective is the routine's title, the skill to run and the brief,
+// its budget the policy's default (2 EUR in the fixture), and its issue
+// names the run. Tell inbox pokes the filing.
 func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, wf := routineRunner(t, routineTree(t))
+	tree := routineTree(t)
+	audit, _ := tree.Routine(codeProject, "audit")
+	audit.Brief = "routines/audit.md"
+	tree.Briefs = maps.Clone(tree.Briefs)
+	tree.Briefs[audit.Brief] = "Hunt bugs in the code changed since the last audit.\n"
+	r, store, issues, wf := routineRunner(t, withRoutines(tree, codeProject, audit))
 	res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "audit", Trigger: "merges", Due: time.Now()})
 	if err != nil {
 		t.Fatal(err)
@@ -312,14 +328,20 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	card := onlyTask(t, store)
 	if card.Kind != "agent" || card.Status != "queued" || card.Lane != policy.LaneReady || card.Process != "maintenance" || card.Source != SourceRoutine ||
 		card.BudgetEUR != 2 || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "" ||
-		card.Objective != "Audit: bug hunt and architecture review\n\nRun the skill audit." {
+		card.Objective != "Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nHunt bugs in the code changed since the last audit." {
 		t.Fatalf("card %+v", card)
 	}
-	if want := []string{"Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nfiled by the factory · routine audit · run 1"}; !slices.Equal(issues.issues, want) {
+	if want := []string{"Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nHunt bugs in the code changed since the last audit.\n\n" +
+		"filed by the factory · routine audit · run 1"}; !slices.Equal(issues.issues, want) {
 		t.Fatalf("issues %q, want %q", issues.issues, want)
 	}
 	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "state/queued"}) {
 		t.Errorf("labels = %v", got)
+	}
+	for _, l := range issues.labels[71] {
+		if _, ok := BootLabels[l]; !ok {
+			t.Errorf("the label %s is no boot label: Forgejo drops it", l)
+		}
 	}
 	if !slices.Equal(wf.started, []string{card.ID}) {
 		t.Errorf("started %v, want the card's run", wf.started)
@@ -362,7 +384,7 @@ func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 	}{
 		{2, RoutineRunResult{Outcome: "filed", Note: "2 cards"}},
 		{1, RoutineRunResult{Outcome: "filed", Note: "1 card"}},
-		{0, RoutineRunResult{Outcome: "no change", Note: "no change"}},
+		{0, RoutineRunResult{Outcome: "no change"}},
 	} {
 		cards = tt.cards
 		res, err := r.RoutineRun(ctx, RoutineRunInput{Routine: "template-pass", Trigger: "cron", Due: onTime.Add(time.Duration(i) * time.Hour)})
@@ -391,6 +413,40 @@ func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 	cards, passErr = 3, nil
 	if res, err := r.RoutineRun(ctx, in); err != nil || res != (RoutineRunResult{Outcome: "filed", Note: "3 cards"}) || passes != 5 || len(store.routineRuns["/template-pass"]) != 4 {
 		t.Fatalf("the retry: %+v, %v, passes %d, runs %d", res, err, passes, len(store.routineRuns["/template-pass"]))
+	}
+}
+
+// A report routine files no card: the run ends reported, and under tell
+// inbox the inbox hears the title and the brief. Under tell quiet only the
+// run's row says it ran.
+func TestRoutineRunReports(t *testing.T) {
+	ctx := context.Background()
+	tree := routineTree(t)
+	tree.Briefs = maps.Clone(tree.Briefs)
+	tree.Briefs["routines/drift.md"] = "The reverts and the drift of the week.\n"
+	drift := policy.Routine{Name: "drift", Title: "Revert and drift report", Schedule: []policy.Trigger{{Cron: "0 7 * * 1"}},
+		Files: policy.FilesReport, Brief: "routines/drift.md"}
+	for _, tell := range []string{policy.TellInbox, policy.TellQuiet} {
+		drift.Tell = tell
+		r, store, issues, wf := routineRunner(t, withRoutines(tree, codeProject, drift))
+		res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "drift", Trigger: "cron", Due: time.Now().Truncate(time.Minute)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res != (RoutineRunResult{Outcome: "reported"}) || len(issues.issues) != 0 || len(store.tasks) != 0 || len(wf.started) != 0 {
+			t.Fatalf("%s: result %+v, issues %d, tasks %d, started %v: want reported and no card", tell, res, len(issues.issues), len(store.tasks), wf.started)
+		}
+		if run := store.routineRuns[codeProject+"/drift"][0]; run.Outcome != "reported" || run.Ended.IsZero() {
+			t.Fatalf("%s: run %+v", tell, run)
+		}
+		var pokes []fakePoke
+		if tell == policy.TellInbox {
+			pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
+				Content: "Revert and drift report\n\nThe reverts and the drift of the week.", Decider: "routine drift · run 1 · every Monday 07:00"}}}
+		}
+		if !reflect.DeepEqual(store.pokes, pokes) {
+			t.Fatalf("%s: pokes %+v,\nwant %+v", tell, store.pokes, pokes)
+		}
 	}
 }
 

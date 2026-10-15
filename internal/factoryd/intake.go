@@ -270,13 +270,15 @@ const (
 // BootLabels are the labels factoryd creates on every project's repository
 // at each reconcile (boot included), before anything files
 // an issue or mirrors state onto one (Forgejo drops an unknown label name
-// silently, an issue template's too): the lanes, the task states, and the
-// priority and severity labels intake reads (colours are #RRGGBB).
+// silently, an issue template's too): the lanes, the task states, the
+// label of a routine's card, and the priority and severity labels intake
+// reads (colours are #RRGGBB).
 var BootLabels = map[string]string{
 	"agent":                "#ededed",
 	"human":                "#c2e0c6",
 	"bug":                  "#cf222e",
 	"improvement":          "#0e8a16",
+	"routine":              "#006b75",
 	LabelNoise:             "#bfbfbf",
 	LabelReal:              "#d93f0b",
 	"state/backlog":        "#c5def5",

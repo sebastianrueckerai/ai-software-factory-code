@@ -296,7 +296,7 @@ type Roller struct {
 	Poll      time.Duration
 }
 
-// Run polls until ctx ends; a failed poll logs once until it recovers.
+// Run polls until ctx ends. A failed poll logs once until it recovers.
 func (r *Roller) Run(ctx context.Context) {
 	var last string
 	for {

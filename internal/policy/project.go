@@ -510,6 +510,12 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	for i, r := range p.Routines {
 		errs = append(errs, r.Validate("project "+name))
+		switch {
+		case r.Files == FilesPullRequest:
+			bad("routine %q: files pull-request, a pass over every project, which policy.yaml holds", r.Name)
+		case r.Files == FilesAgent && p.Agents == AgentsNone:
+			bad("routine %q: files agent, and the project's agents are none, so its card would never start", r.Name)
+		}
 		if slices.ContainsFunc(p.Routines[:i], func(o Routine) bool { return o.Name == r.Name }) {
 			bad("routine %q: given twice", r.Name)
 		}

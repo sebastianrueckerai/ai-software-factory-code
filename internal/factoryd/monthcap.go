@@ -133,6 +133,7 @@ type MonthSpend struct {
 // MonthBook is what the month alarm reads and keeps.
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -246,11 +247,13 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo through FileTask, labelled
-// human, unless the bot's open issue of the same title is there: an issue
-// filed by a check whose task row then failed is taken on, not filed
-// again. number is the issue's.
+// human, unless the bot's open issue of the same title that no task row
+// holds is there: an issue filed by a check whose task row then failed is
+// taken on, not filed again. An issue a task holds is that card's, such
+// as an earlier routine run's still open. number is the issue's.
 func fileHumanTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, repo Repo, title, body string, t Task) (Task, int64, error) {
 	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
 	if err != nil {
@@ -258,7 +261,12 @@ func fileHumanTask(ctx context.Context, store interface {
 	}
 	var number int64
 	for _, is := range open {
-		if is.Title == title && is.Poster.UserName == forgejo.BotUser {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return Task{}, 0, err
+		} else if !held {
 			number = is.Index
 		}
 	}

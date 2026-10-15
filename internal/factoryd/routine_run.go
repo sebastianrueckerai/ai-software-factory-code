@@ -15,9 +15,12 @@ import (
 // counts as missed: the factory was down at its time.
 const routineLate = 10 * time.Minute
 
-// RoutineRun is a routine's one activity (roadmap 267). It begins the run, applies a pending Skip once, the missed rule and
-// the hold rule, files what the routine's kind asks for, records the outcome and pokes the inbox. A run that began earlier
-// and has its outcome returns it. One an attempt left without its outcome goes on, so a retry files what that attempt did not.
+// RoutineRun is a routine's one activity (roadmap 267). It begins the
+// run, applies a pending Skip once, the missed rule and the hold rule,
+// files what the routine's kind asks for, records the outcome and pokes
+// the inbox. A run that began earlier and has its outcome returns it. One
+// an attempt left without its outcome goes on, so a retry files what that
+// attempt did not.
 func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRunResult, error) {
 	v := r.cfg.Policy()
 	rt, ok := v.Routine(in.Project, in.Routine)
@@ -72,7 +75,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case ok && rt.WhileOpenRule() == policy.WhileOpenHold:
 		res, err := end("held", fmt.Sprintf("held: #%d is still open", open.IssueNumber))
 		if err == nil && tell {
-			poke(open.ID, fmt.Sprintf("%s is held: #%d from the last run is still open.", rt.Title, open.IssueNumber))
+			poke(open.ID, fmt.Sprintf("%s is held, run %d: #%d from the last run is still open.", rt.Title, run.Run, open.IssueNumber))
 		}
 		return res, err
 	case ok && rt.WhileOpenRule() == policy.WhileOpenFold:
@@ -116,7 +119,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 			return RoutineRunResult{}, err
 		}
 		if cards == 0 {
-			return end("no change", "no change")
+			return end("no change", "")
 		}
 		note := fmt.Sprintf("%d cards", cards)
 		if cards == 1 {
