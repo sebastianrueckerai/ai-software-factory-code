@@ -89,7 +89,7 @@ func TestPGStoreChatMessages(t *testing.T) {
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", ToolCalls: calls}},
 		{"linkshort/linkshort", "anna", ChatMessage{Role: "assistant", Content: "One card, #4."}},
 	} {
-		if err := s.AddChatMessage(ctx, m.repo, m.login, m.m); err != nil {
+		if _, err := s.AddChatMessage(ctx, m.repo, m.login, m.m); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -302,7 +302,7 @@ func TestPGStoreChatConversations(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	add := func(repo, login, content string) {
 		t.Helper()
-		if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: content}); err != nil {
+		if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: content}); err != nil {
 			t.Fatal(err)
 		}
 	}

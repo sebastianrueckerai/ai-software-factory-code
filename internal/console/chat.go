@@ -149,7 +149,7 @@ func (t *turn) fail(msg string) {
 func (t *turn) save(m factoryd.ChatMessage) bool {
 	ctx := context.WithoutCancel(t.r.Context())
 	m.Conversation = t.conv
-	if err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
+	if _, err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
 		return false
@@ -275,12 +275,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		t.compactByHand(task.ID)
 		return
 	}
-	var queued int64
-	if pos == 0 {
-		err = c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv})
-	} else {
-		queued, err = c.cfg.Chat.QueueChatMessage(ctx, t.p.Repository, t.a.s.user, t.conv, text)
-	}
+	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv, Queued: pos > 0})
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
@@ -289,8 +284,8 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	t.detach()
 	t.open(w)
 	t.takeTurn(pos, wait)
-	if queued > 0 {
-		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.a.s.user, queued); err != nil {
+	if pos > 0 {
+		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.a.s.user, id); err != nil {
 			log.Printf("console: start the queued turn of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 			t.fail("The queued message could not start its turn; send it again.")
 			return

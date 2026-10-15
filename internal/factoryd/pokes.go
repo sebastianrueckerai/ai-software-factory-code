@@ -16,9 +16,10 @@ import (
 // more, its question withdrawn), a card stopped by its budget, a terminal
 // failure, a card or plan done, the agent's own starts and filings at
 // assisted and autonomous, and a change of the level. A poke
-// is a row written through the message path: no model turn and no queue,
-// one per state change. A repeat of the newest poke about the same card
-// counts on that row (74's rule).
+// is a row written through the message path: no model turn, one per state
+// change, behind a turn in flight in the inbox as every writer's rows
+// (roadmap 263). A repeat of the newest poke about the same card counts on
+// that row (74's rule).
 
 const (
 	// MessagePoke is a poke's kind; MessageEscalation a poke about a card
@@ -44,15 +45,27 @@ type PokeStore interface {
 	// PokeEvents are the poke events after the poke cursor, oldest first,
 	// at most limit.
 	PokeEvents(ctx context.Context, limit int) ([]Event, error)
-	// Poke writes m into the inbox thread of each of logins on repository
-	// and moves the cursor past event id, in one transaction.
-	Poke(ctx context.Context, id int64, repository string, logins []string, m ChatMessage) error
+	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	// Poke writes m into the inbox thread of each of logins on repository,
+	// queued where queued says so, and moves the cursor past event id, in
+	// one transaction; it answers each login's new row, 0 for a repeat.
+	Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error)
+}
+
+// Line is the chat's one line of writers on each thread (roadmap 263), the
+// console's: Behind takes a place behind thread n's turn in flight and
+// those waiting before it. queued says one is ahead, so the writer stores
+// its rows queued; land, called once with their ids, starts them in their
+// order when the place comes and leaves it.
+type Line interface {
+	Behind(repository, login string, n int64) (queued bool, land func(ids ...int64))
 }
 
 // Poker writes the pokes.
 type Poker struct {
 	Store   PokeStore
 	Current func() policy.Version
+	Line    Line
 }
 
 // pokeBatch bounds the events one read takes.
@@ -98,7 +111,7 @@ func (p *Poker) Pass(ctx context.Context) error {
 					to = c.Notify
 				}
 			}
-			if err := p.Store.Poke(ctx, e.ID, e.Repository, to, m); err != nil {
+			if err := p.poke(ctx, e, to, m); err != nil {
 				return err
 			}
 		}
@@ -106,6 +119,33 @@ func (p *Poker) Pass(ctx context.Context) error {
 			return nil
 		}
 	}
+}
+
+// poke writes m into the inbox of each of logins behind a turn in flight
+// there and moves the cursor past event e.
+func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessage) error {
+	queued, ids := make([]bool, len(logins)), make([]int64, len(logins))
+	var lands []func(...int64)
+	defer func() {
+		for i, land := range lands {
+			land(ids[i])
+		}
+	}()
+	for i, login := range logins {
+		n, err := p.Store.EnsureInbox(ctx, e.Repository, login)
+		if err != nil {
+			return err
+		}
+		var land func(...int64)
+		queued[i], land = p.Line.Behind(e.Repository, login, n)
+		lands = append(lands, land)
+	}
+	got, err := p.Store.Poke(ctx, e.ID, e.Repository, logins, queued, m)
+	if err != nil {
+		return err
+	}
+	copy(ids, got)
+	return nil
 }
 
 // pokeOf is event e's poke, t the card it names, false for an event that
@@ -222,18 +262,19 @@ func (s *PGStore) PokeEvents(ctx context.Context, limit int) ([]Event, error) {
 		AND kind = ANY($1) ORDER BY id LIMIT $2`, pokeKinds, limit)
 }
 
-func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins []string, m ChatMessage) error {
+func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	for _, login := range logins {
+	ids := make([]int64, len(logins))
+	for i, login := range logins {
 		n, err := ensureInbox(ctx, tx, repository, login)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		m.Conversation = n
+		m.Conversation, m.Queued = n, queued[i]
 		if m.TaskID != "" {
 			// a repeat: the newest poke about the card says the same
 			res, err := tx.ExecContext(ctx, `UPDATE chat_messages SET repeats = repeats + 1, at = now()
@@ -241,21 +282,21 @@ func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins 
 					AND task_id = $4 AND kind IN ($5, $6) ORDER BY id DESC LIMIT 1)
 				AND kind = $7 AND content = $8`, repository, login, n, m.TaskID, MessagePoke, MessageEscalation, m.Kind, m.Content)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if repeated, err := res.RowsAffected(); err != nil || repeated > 0 {
 				if err != nil {
-					return err
+					return nil, err
 				}
 				continue
 			}
 		}
-		if _, err := insertChatMessage(ctx, tx, repository, login, m); err != nil {
-			return err
+		if ids[i], err = insertChatMessage(ctx, tx, repository, login, m); err != nil {
+			return nil, err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_poke_cursor SET event_id = greatest(event_id, $1)`, id); err != nil {
-		return err
+		return nil, err
 	}
-	return tx.Commit()
+	return ids, tx.Commit()
 }

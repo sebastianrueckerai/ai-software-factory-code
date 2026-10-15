@@ -3,10 +3,12 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,7 +29,7 @@ func TestChatAnswerRow(t *testing.T) {
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	escalation := func(task, text string, choices ...string) string {
 		t.Helper()
-		if err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 			Content: text, Choices: choices, TaskID: task, Conversation: inbox}); err != nil {
 			t.Fatal(err)
 		}
@@ -124,7 +126,7 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 		{"t-e", "Merge PR #9 of #13 waits for you: risk class low.", "Approve"},
 		{"t-p", "Plan #20 waits for your acceptance: revision 1, 3 cards.", "Accept"},
 	} {
-		if err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox}); err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +158,7 @@ func TestChatAnswerRowOfAWithdrawnQuestion(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
-	if err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 		Content: "#13 needs you: Use a replica?", Choices: []string{"Yes", "No"}, TaskID: "t-e", Conversation: inbox}); err != nil {
 		t.Fatal(err)
 	}
@@ -178,5 +180,70 @@ func TestChatAnswerRowOfAWithdrawnQuestion(t *testing.T) {
 	rows, _ = chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
 	if last := rows[len(rows)-1]; last.Content != "#13 needs no answer: its question is withdrawn because the checks failed." {
 		t.Fatalf("the factory's row = %q", last.Content)
+	}
+}
+
+// An answer while a turn runs in its thread waits behind the turn as a
+// second message does (roadmap 263): its rows are stored queued at once,
+// the turn's retry after a forced compaction does not read them as its
+// own, and they land after the turn's rows when it ends.
+func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	seedTurns(t, chat, "a", "b")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#11 needs you: rebase?", Choices: []string{"Yes", "No"}, TaskID: "t-r", Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	escalation := strconv.FormatInt(chat.next, 10)
+	said := func() []string {
+		t.Helper()
+		rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", 1, 50)
+		var out []string
+		for _, m := range rows {
+			out = append(out, fmt.Sprintf("%s %s: %s (queued %t)", m.Role, m.Kind, m.Content, m.Queued))
+		}
+		return out
+	}
+
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	g.replies = [][]string{{say("Let me look."), call(1, "board", `{}`)}, {refuseContext}, {say("done")}}
+	turn := make(chan error, 1)
+	go func() {
+		_, _, _, err := postStream(r, ck, s, chatPath, url.Values{"conversation": {"1"}, "message": {"c1"}})
+		turn <- err
+	}()
+	<-g.arrived
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {escalation}, "choice": {"Yes"}})
+	during := said()
+	close(g.hold)
+	if err := <-turn; err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the answer", code, http.StatusNoContent)
+	equal(t, "the thread while the turn runs "+body[0], during, []string{
+		"user : a1 (queued false)", "assistant : a2 (queued false)", "user : b1 (queued false)", "assistant : b2 (queued false)",
+		"assistant escalation: #11 needs you: rebase? (queued false)",
+		"user : c1 (queued false)",
+		"user : Yes (queued true)",
+		"assistant poke: #11 waits no more: it was answered or moved on elsewhere. (queued true)",
+	})
+	calls := g.calls()
+	if len(calls) != 3 {
+		t.Fatalf("%d model calls, want 3", len(calls))
+	}
+	equal(t, "the retry", contents(t, calls[2]), []string{"user b1", "assistant " + earlier("b2"), "assistant " + earlier("#11 needs you: rebase?"),
+		"user c1", "assistant Let me look.", "tool " + boardText})
+	waitUntil(t, "the answer's rows landed", func() bool { return !strings.Contains(strings.Join(said(), "\n"), "queued true") })
+	equal(t, "the thread", said()[5:], []string{
+		"user : c1 (queued false)",
+		"assistant : Let me look. (queued false)",
+		"assistant : done (queued false)",
+		"user : Yes (queued false)",
+		"assistant poke: #11 waits no more: it was answered or moved on elsewhere. (queued false)",
+	})
+	if r.c.turns.working(threadKey("sf/code", "sebastian", 1)) {
+		t.Fatal("the thread still shows a writer in its line after the answer landed")
 	}
 }

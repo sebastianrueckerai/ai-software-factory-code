@@ -19,8 +19,8 @@ import (
 // escalation row of the member's thread, which decides its card as the
 // board's buttons do, with no model turn (roadmap 239, C14's answer row):
 // the member's row with the choice and the factory's row with what came
-// of it land in the thread, then 204. A card that waits no more says so:
-// the first answer wins.
+// of it land in the thread behind a turn in flight there (roadmap 263),
+// then 204. A card that waits no more says so: the first answer wins.
 func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -56,13 +56,18 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
+	queued, land := c.Behind(t.p.Repository, t.a.s.user, t.conv)
+	var ids []int64
+	defer func() { land(ids...) }()
 	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: choice}, {Role: "assistant", Kind: factoryd.MessagePoke, Content: note, TaskID: rows[i].TaskID}} {
-		m.Conversation = t.conv
-		if err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
+		m.Conversation, m.Queued = t.conv, queued
+		id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m)
+		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 			http.Error(w, "cannot store the answer", http.StatusInternalServerError)
 			return
 		}
+		ids = append(ids, id)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }

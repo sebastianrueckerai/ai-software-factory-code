@@ -20,8 +20,10 @@ import (
 // one turn at a time on each. A second message while a turn runs is
 // stored at once as queued and answers queued with its place; when the
 // turn ends the next starts, in the server, so one tab, two tabs and a
-// reload behave alike. Threads run in parallel, under the project's bound
-// on model turns.
+// reload behave alike. Every other writer of a thread's rows, an answer's
+// and factoryd's pokes, takes the same line (Behind, roadmap 263), so no
+// row lands inside a turn. Threads run in parallel, under the project's
+// bound on model turns.
 
 // turnGate serialises the turns of each thread and bounds the model turns
 // of each project; what it holds is also the threads' working marks.
@@ -104,6 +106,30 @@ func (g *turnGate) slot(repository string, limit int) func() {
 		g.running[repository]--
 		g.cond.Broadcast()
 		g.mu.Unlock()
+	}
+}
+
+// Behind takes a writer's place in thread n's line behind its turn in
+// flight and those waiting before it (factoryd.Line): queued says one is
+// ahead, so the writer stores its rows queued; land, called once with
+// their ids, starts them in their order when the place comes and leaves
+// it.
+func (c *Console) Behind(repository, login string, n int64) (queued bool, land func(ids ...int64)) {
+	key := threadKey(repository, login, n)
+	pos, wait := c.turns.enter(key)
+	if pos == 0 {
+		return false, func(...int64) { c.turns.leave(key) }
+	}
+	return true, func(ids ...int64) {
+		go func() {
+			defer c.turns.leave(key)
+			<-wait
+			for _, id := range ids {
+				if err := c.cfg.Chat.StartQueued(context.Background(), repository, login, id); err != nil {
+					log.Printf("console: land queued row %d of %s's thread %d on %s: %v", id, login, n, repository, err)
+				}
+			}
+		}()
 	}
 }
 

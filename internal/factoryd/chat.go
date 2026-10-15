@@ -37,9 +37,13 @@ type ChatMessage struct {
 	ToolCalls    []ChatToolCall `json:"tool_calls,omitempty"`
 	At           time.Time      `json:"at"`
 	Conversation int64          `json:"conversation"`
-	// Kind names a row factoryd wrote or holds itself: a deterministic
-	// poke, an escalation's face, a queued message; "" for a turn's row.
+	// Kind names a row factoryd wrote itself: a deterministic poke, an
+	// escalation's face; "" for a member's or a turn's row.
 	Kind string `json:"kind,omitempty"`
+	// Queued: the row waits for the turn before it to end (roadmap 263):
+	// stored at once, it moves to the end of its thread when its place
+	// comes, so no writer's rows land inside a turn.
+	Queued bool `json:"queued,omitempty"`
 	// Choices are a poke's or an escalation's answers, offered as buttons.
 	Choices []string `json:"choices,omitempty"`
 	// Decider names who acted on a poke's action, the level and the agent,
@@ -184,8 +188,8 @@ type ChatConversation struct {
 
 // unreadTurn is a row that ends a turn of the agent the member may not have
 // read: an agent row of text or with a proposal, a poke, never a queued
-// message.
-const unreadTurn = `m.role = 'assistant' AND m.kind <> 'queued' AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
+// row.
+const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
 
 const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
@@ -411,15 +415,10 @@ func threadTitle(content string) string {
 }
 
 // AddChatMessage appends m to login's thread m.Conversation on
-// repository, their current one for 0; the thread's row is made with its
-// first message's title when it has none, the member's current one when
-// they have none.
-func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) error {
-	_, err := s.addChatMessage(ctx, repository, login, m)
-	return err
-}
-
-func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, m ChatMessage) (int64, error) {
+// repository, their current one for 0, and answers its id; the thread's
+// row is made with its first message's title when it has none, the
+// member's current one when they have none.
+func (s *PGStore) AddChatMessage(ctx context.Context, repository, login string, m ChatMessage) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -432,7 +431,7 @@ func (s *PGStore) addChatMessage(ctx context.Context, repository, login string, 
 	return id, tx.Commit()
 }
 
-// insertChatMessage inserts m through tx as addChatMessage stores it.
+// insertChatMessage inserts m through tx as AddChatMessage stores it.
 func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login string, m ChatMessage) (int64, error) {
 	calls := any(nil)
 	if len(m.ToolCalls) > 0 {
@@ -468,35 +467,24 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued).Scan(&id)
 	return id, err
 }
 
-// MessageQueued is the kind of a member's message that waits for the
-// turn before it to end (roadmap 239): stored at once, it moves to the
-// end of its thread when its turn starts, so turns never interleave.
-const MessageQueued = "queued"
-
-// QueueChatMessage stores the member's text in thread n as a queued
-// message and answers its id.
-func (s *PGStore) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
-	return s.addChatMessage(ctx, repository, login, ChatMessage{Role: "user", Content: text, Kind: MessageQueued, Conversation: n})
-}
-
-// StartQueued starts queued message id's turn: the row takes the next
+// StartQueued lands queued row id in its place: the row takes the next
 // id, after every row of the turns before it, and is queued no longer.
 func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), kind = '', at = now()
-		WHERE id = $1 AND repository = $2 AND login = $3 AND kind = $4`, id, repository, login, MessageQueued)
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
+		WHERE id = $1 AND repository = $2 AND login = $3 AND queued`, id, repository, login)
 	return err
 }
 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -508,7 +496,7 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {

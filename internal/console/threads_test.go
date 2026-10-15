@@ -52,7 +52,7 @@ func TestChatTurnsSerialise(t *testing.T) {
 		defer chat.mu.Unlock()
 		n := 0
 		for _, m := range chat.msgs["sf/code sebastian"] {
-			if m.Kind == factoryd.MessageQueued {
+			if m.Queued {
 				n++
 			}
 		}
@@ -104,7 +104,7 @@ func TestQueuedTurnReadsWhenItStarts(t *testing.T) {
 	waitUntil(t, "the second message stored as queued", func() bool {
 		chat.mu.Lock()
 		defer chat.mu.Unlock()
-		return slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageQueued })
+		return slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued })
 	})
 	released := time.Now()
 	close(g.hold)
@@ -266,7 +266,7 @@ func TestChatInboxBadge(t *testing.T) {
 		t.Fatalf("the list = %+v, want the inbox 2 first, then thread 1", first)
 	}
 	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#7 failed: Feed page.", Conversation: 2}
-	if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", poke); err != nil {
+	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", poke); err != nil {
 		t.Fatal(err)
 	}
 	equal(t, "the unread turns after the poke", unread(list()), map[int64]int64{1: 1, 2: 1})

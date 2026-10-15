@@ -89,7 +89,7 @@ type Events interface {
 // project's month spend.
 type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
-	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) error
+	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
@@ -100,12 +100,11 @@ type Chat interface {
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
 	// the threads (roadmap 239): one thread's row, the switch, the title,
-	// the seen marker, and a message that waits for its thread's turn
+	// the seen marker, and a queued row's landing in its place (263)
 	Conversation(ctx context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error)
 	OpenConversation(ctx context.Context, repository, login string, n int64) error
 	RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error)
 	MarkSeen(ctx context.Context, repository, login string, n int64) error
-	QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error)
 	StartQueued(ctx context.Context, repository, login string, id int64) error
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took

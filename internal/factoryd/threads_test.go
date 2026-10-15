@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -26,7 +27,7 @@ func TestPGStoreChatThreads(t *testing.T) {
 
 	// the first message lands in conversation 1 and marks it current
 	for _, text := range []string{"What is stuck?", "Nothing: two cards run."} {
-		if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: text}); err != nil {
+		if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: text}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -45,14 +46,14 @@ func TestPGStoreChatThreads(t *testing.T) {
 	if n, err := s.NewConversation(ctx, repo, login); err != nil || n != 2 {
 		t.Fatalf("NewConversation = %d, %v, want 2", n, err)
 	}
-	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "Fresh start."}); err != nil {
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "Fresh start."}); err != nil {
 		t.Fatal(err)
 	}
 	// seen: the member read thread 1; a late answer there marks it unread
 	if err := s.MarkSeen(ctx, repo, login, 1); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "Late answer.", Conversation: 1}); err != nil {
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "Late answer.", Conversation: 1}); err != nil {
 		t.Fatal(err)
 	}
 	threads, _ = s.Conversations(ctx, repo, login)
@@ -75,28 +76,44 @@ func TestPGStoreChatThreads(t *testing.T) {
 		t.Errorf("thread 1 after it was read = %+v, %v, %v, want no unread", th, ok, err)
 	}
 
-	// a queued message waits as queued and moves after the rows of the
-	// turn before it once its own turn starts
-	q, err := s.QueueChatMessage(ctx, repo, login, 2, "And the second?")
+	// a queued message and a queued poke wait as queued, the poke keeping
+	// its kind, and move after the rows of the turn before them, in their
+	// order, once their place comes
+	q, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "And the second?", Conversation: 2, Queued: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "The first answer.", Conversation: 2}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.StartQueued(ctx, repo, login, q); err != nil {
-		t.Fatal(err)
-	}
-	msgs, err := s.ChatMessages(ctx, repo, login, 2, 10)
+	qp, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Kind: MessagePoke, Content: "Filed #4.", Conversation: 2, Queued: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var order []string
-	for _, m := range msgs {
-		order = append(order, m.Kind+":"+m.Content)
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "The first answer.", Conversation: 2}); err != nil {
+		t.Fatal(err)
 	}
-	if want := []string{":Fresh start.", ":The first answer.", ":And the second?"}; !slices.Equal(order, want) {
-		t.Errorf("thread 2 = %q, want %q", order, want)
+	order := func() []string {
+		t.Helper()
+		msgs, err := s.ChatMessages(ctx, repo, login, 2, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, m := range msgs {
+			out = append(out, fmt.Sprintf("%s:%s queued %t", m.Kind, m.Content, m.Queued))
+		}
+		return out
+	}
+	if got, want := order(), []string{":Fresh start. queued false", ":And the second? queued true", "poke:Filed #4. queued true",
+		":The first answer. queued false"}; !slices.Equal(got, want) {
+		t.Errorf("thread 2 while the turn runs = %q, want %q", got, want)
+	}
+	for _, id := range []int64{q, qp} {
+		if err := s.StartQueued(ctx, repo, login, id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := order(), []string{":Fresh start. queued false", ":The first answer. queued false", ":And the second? queued false",
+		"poke:Filed #4. queued false"}; !slices.Equal(got, want) {
+		t.Errorf("thread 2 = %q, want %q", got, want)
 	}
 
 	// rename, archive, restore
@@ -141,10 +158,10 @@ func TestPGStoreChatThreads(t *testing.T) {
 		t.Fatalf("bob's current thread = %d, %v, want 1", n, err)
 	}
 	poke := ChatMessage{Role: "assistant", Kind: "poke", Content: "Card #9 waits on you.", Choices: []string{"Answer it", "Skip"}, Conversation: n}
-	if err := s.AddChatMessage(ctx, repo, login, poke); err != nil {
+	if _, err := s.AddChatMessage(ctx, repo, login, poke); err != nil {
 		t.Fatal(err)
 	}
-	msgs, err = s.ChatMessages(ctx, repo, login, n, 10)
+	msgs, err := s.ChatMessages(ctx, repo, login, n, 10)
 	if err != nil || len(msgs) != 1 {
 		t.Fatalf("the inbox rows = %v, %v, want one", msgs, err)
 	}
@@ -197,7 +214,7 @@ func TestPGStoreThreadSummaryAndTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
-	if err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "user", Content: "hello"}); err != nil {
+	if _, err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "user", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SaveSummary(ctx, "sf/code", "anna", 1, ThreadSummary{Text: "the summary", Model: "pulse", Upto: 1, Before: 900, After: 120}); err != nil {

@@ -68,7 +68,7 @@ func (t *turn) weight(summary string, rows []factoryd.ChatMessage) int {
 func liveRows(th factoryd.ChatConversation, rows []factoryd.ChatMessage) []factoryd.ChatMessage {
 	var out []factoryd.ChatMessage
 	for _, m := range rows {
-		if m.ID > th.SummaryUpto && m.Kind != factoryd.MessageQueued {
+		if m.ID > th.SummaryUpto && !m.Queued {
 			out = append(out, m)
 		}
 	}

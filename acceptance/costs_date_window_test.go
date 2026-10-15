@@ -575,7 +575,7 @@ func (f *acceptChat) current(repository, login string) int64 {
 	return 1
 }
 
-func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
+func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
@@ -585,7 +585,7 @@ func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string,
 	if m.Conversation > f.convs[k] {
 		f.convs[k] = m.Conversation
 	}
-	return nil
+	return m.ID, nil
 }
 
 func (f *acceptChat) Conversation(_ context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error) {
@@ -623,27 +623,18 @@ func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) 
 	return 0, nil
 }
 
-func (f *acceptChat) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
-	if err := f.AddChatMessage(ctx, repository, login, factoryd.ChatMessage{Role: "user", Content: text, Kind: factoryd.MessageQueued, Conversation: n}); err != nil {
-		return 0, err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.next, nil
-}
-
 func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
-	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
 		return nil
 	}
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
-	m.ID, m.At, m.Kind = f.next, f.at.Add(time.Duration(f.next)*time.Second), ""
+	m.ID, m.At, m.Queued = f.next, f.at.Add(time.Duration(f.next)*time.Second), false
 	f.msgs[k] = append(f.msgs[k], m)
 	return nil
 }

@@ -90,7 +90,7 @@ func (f *fakeChat) current(repository, login string) int64 {
 	return cmp.Or(f.started[repository+" "+login], 1)
 }
 
-func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
+func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
@@ -99,7 +99,7 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
 	f.msgs[repository+" "+login] = append(f.msgs[repository+" "+login], m)
-	return nil
+	return m.ID, nil
 }
 
 func (f *fakeChat) CurrentConversation(_ context.Context, repository, login string) (int64, error) {
@@ -227,7 +227,7 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		}
 		out[i].LastAt = m.At
 		out[i].Messages++
-		turnEnd := m.Role == "assistant" && m.Kind != factoryd.MessageQueued &&
+		turnEnd := m.Role == "assistant" && !m.Queued &&
 			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
 			out[i].Unread++
@@ -322,27 +322,18 @@ func (f *fakeChat) MarkSeen(_ context.Context, repository, login string, n int64
 	return nil
 }
 
-func (f *fakeChat) QueueChatMessage(ctx context.Context, repository, login string, n int64, text string) (int64, error) {
-	if err := f.AddChatMessage(ctx, repository, login, factoryd.ChatMessage{Role: "user", Content: text, Kind: factoryd.MessageQueued, Conversation: n}); err != nil {
-		return 0, err
-	}
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.next, nil
-}
-
 func (f *fakeChat) StartQueued(_ context.Context, repository, login string, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
-	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
 		return nil
 	}
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
-	m.ID, m.At, m.Kind = f.next, at.Add(time.Duration(f.next)*time.Second), ""
+	m.ID, m.At, m.Queued = f.next, at.Add(time.Duration(f.next)*time.Second), false
 	f.msgs[k] = append(f.msgs[k], m)
 	return nil
 }
@@ -1665,7 +1656,7 @@ func TestChatSteerAndComment(t *testing.T) {
 func TestChatProposalDescriptionAndMalformedCalls(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant",
+	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant",
 		ToolCalls: []factoryd.ChatToolCall{{ID: "call_0", Name: "card", Arguments: `{"task_id":`, Result: "earlier"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -1829,7 +1820,7 @@ func TestChatReplayDropsClaims(t *testing.T) {
 		{Role: "assistant", Content: "The board has 3 cards"},
 		{Role: "assistant", Content: "Reading the proposal's card.", ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card", Arguments: `{"task_id":"t-m"}`, Result: "#5", ReadAt: read}}},
 	} {
-		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
 			t.Fatal(err)
 		}
 	}

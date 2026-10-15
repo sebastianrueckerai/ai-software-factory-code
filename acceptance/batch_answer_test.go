@@ -622,14 +622,14 @@ func (f *accBatchChat) EnsureChatTask(ctx context.Context, name, repository stri
 	return t, nil
 }
 
-func (f *accBatchChat) AddChatMessage(_ context.Context, _, _ string, m factoryd.ChatMessage) error {
+func (f *accBatchChat) AddChatMessage(_ context.Context, _, _ string, m factoryd.ChatMessage) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	m.ID = f.nextID()
 	m.At = time.Now()
 	m.Conversation = 1
 	f.msgs = append(f.msgs, m)
-	return nil
+	return m.ID, nil
 }
 
 // nextID is one past the highest message id; f.mu held.
@@ -663,24 +663,16 @@ func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64
 	return 0, nil
 }
 
-func (f *accBatchChat) QueueChatMessage(_ context.Context, _, _ string, _ int64, text string) (int64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	m := factoryd.ChatMessage{ID: f.nextID(), Role: "user", Content: text, Kind: factoryd.MessageQueued, At: time.Now(), Conversation: 1}
-	f.msgs = append(f.msgs, m)
-	return m.ID, nil
-}
-
 func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
 		return nil
 	}
 	m := f.msgs[i]
 	f.msgs = slices.Delete(f.msgs, i, i+1)
-	m.ID, m.Kind, m.At = f.nextID(), "", time.Now()
+	m.ID, m.Queued, m.At = f.nextID(), false, time.Now()
 	f.msgs = append(f.msgs, m)
 	return nil
 }

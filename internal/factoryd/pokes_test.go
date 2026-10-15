@@ -116,7 +116,8 @@ func TestPGStorePokes(t *testing.T) {
 	}
 	tree := policy.Tree{Document: policy.Document{Approvers: []string{"anna"}},
 		Projects: map[string]policy.ProjectConfig{"code": {Repository: "sf/code", Notify: []string{"sebastian", "bob"}}}}
-	p := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }}
+	line := &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}
+	p := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: line}
 	asked := Event{Repository: "sf/code", TaskID: "t-1", Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: map[string]any{"question": "Which store?", "choices": []string{"Postgres", "SQLite"}}}
 
@@ -184,5 +185,38 @@ func TestPGStorePokes(t *testing.T) {
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
 	if len(rows) != 3 || rows[2].Kind != MessagePoke || rows[2].Content != "#603 needs you no more: its question is withdrawn because the checks failed." {
 		t.Fatalf("bob's inbox = %+v, want the withdrawal as its newest row", rows)
+	}
+
+	// a turn runs in bob's inbox: his poke waits queued behind it and goes
+	// to the line to land; sebastian's lands at once (roadmap 263)
+	line.busy["bob"] = true
+	record(Event{Repository: "sf/code", TaskID: "t-1", Kind: EventTaskEnded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"state": "done"}})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
+	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 is done: Session store. €0.00 in all." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
+		t.Fatalf("bob's inbox = %+v, landed %v: want the poke queued as its newest row and its id handed to the line", rows, line.landed["bob"])
+	}
+	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
+	rows, _ = s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10)
+	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 is done: Session store. €0.00 in all." || line.landed["sebastian"] != nil {
+		t.Fatalf("sebastian's newest row = %+v, landed %v: want the poke at once", last, line.landed["sebastian"])
+	}
+}
+
+// busyLine is the chat's line as the poker sees it: a turn runs in the
+// inbox of each login busy marks, and landed holds the queued rows handed
+// to land there.
+type busyLine struct {
+	busy   map[string]bool
+	landed map[string][]int64
+}
+
+func (l *busyLine) Behind(_, login string, _ int64) (bool, func(...int64)) {
+	return l.busy[login], func(ids ...int64) {
+		if l.busy[login] {
+			l.landed[login] = append(l.landed[login], ids...)
+		}
 	}
 }

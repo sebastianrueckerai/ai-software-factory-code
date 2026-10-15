@@ -19,7 +19,7 @@ func seedTurns(t *testing.T, chat *fakeChat, names ...string) {
 	for _, n := range names {
 		for _, m := range []factoryd.ChatMessage{{Role: "user", Content: n + "1"}, {Role: "assistant", Content: n + "2"}} {
 			m.Conversation = 1
-			if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -165,7 +165,7 @@ func TestChatCompactionLeavesReadsOut(t *testing.T) {
 			{ID: "call_2", Name: "set_accent", Arguments: `{"task_id":"t-m","accent":"red"}`, Result: "The accent of #5 is set."}}},
 		{Role: "assistant", Content: "a2"}} {
 		m.Conversation = 1
-		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
 			t.Fatal(err)
 		}
 	}

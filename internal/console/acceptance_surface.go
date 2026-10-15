@@ -622,14 +622,14 @@ func (a *AcceptanceRig) EnsureChatTask(ctx context.Context, name, repository str
 	return t, nil
 }
 
-func (a *AcceptanceRig) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) error {
+func (a *AcceptanceRig) AddChatMessage(_ context.Context, repository, login string, m factoryd.ChatMessage) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	m.ID = a.nextID()
 	m.At = time.Now()
 	m.Conversation = 1
 	a.msgs = append(a.msgs, accMessage{ChatMessage: m, Repository: repository, Login: login})
-	return nil
+	return m.ID, nil
 }
 
 // nextID is one past the highest message id; a.mu held.
@@ -833,24 +833,16 @@ func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int6
 	return 0, nil
 }
 
-func (a *AcceptanceRig) QueueChatMessage(_ context.Context, repository, login string, _ int64, text string) (int64, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	m := factoryd.ChatMessage{ID: a.nextID(), Role: "user", Content: text, Kind: factoryd.MessageQueued, At: time.Now(), Conversation: 1}
-	a.msgs = append(a.msgs, accMessage{ChatMessage: m, Repository: repository, Login: login})
-	return m.ID, nil
-}
-
 func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Kind == factoryd.MessageQueued })
+	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
 		return nil
 	}
 	m := a.msgs[i]
 	a.msgs = slices.Delete(a.msgs, i, i+1)
-	m.ID, m.Kind, m.At = a.nextID(), "", time.Now()
+	m.ID, m.Queued, m.At = a.nextID(), false, time.Now()
 	a.msgs = append(a.msgs, m)
 	return nil
 }

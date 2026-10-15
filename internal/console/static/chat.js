@@ -119,7 +119,7 @@ var chatView = (function () {
     msgs.forEach(function (m) {
       if (m.role === "user") {
         close();
-        out.push(userHTML(login, m.content, m.at, m.kind === "queued"));
+        out.push(userHTML(login, m.content, m.at, m.queued));
         return;
       }
       if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
