@@ -275,6 +275,29 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	}
 }
 
+// The strip's cell names a routine by the last segment of its name,
+// whatever its title: the weekly bump's real title ends in "inputs", the
+// audit's in "review".
+func TestStripCellWordIsTheNamesLastSegment(t *testing.T) {
+	r := newRig(t)
+	bump := soonBump()
+	bump.Routine.Title = "Weekly bump of the pinned outside inputs"
+	r.routines.views = []factoryd.RoutineView{bump}
+	ck, _ := r.loggedIn(t)
+	if body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(); !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {
+		t.Fatalf("the cell does not name the bump by its name:\n%s", body)
+	}
+	a := audit()
+	a.Routine.Title = "Audit: bug hunt and architecture review"
+	a.Open, a.Held = &factoryd.Task{ID: "t-792", Status: "queued", IssueNumber: 792}, true
+	a.Last = factoryd.RoutineRun{Project: a.Project, Routine: "audit", Run: 5, Started: time.Now(), Ended: time.Now(), Trigger: "merges",
+		Outcome: "held", Note: "held: #792 is still open"}
+	r.routines.views = []factoryd.RoutineView{a}
+	if body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(); !strings.Contains(body, `<span class="cell routine warn">↻ audit held</span>`) {
+		t.Fatalf("the cell does not name the held audit by its name:\n%s", body)
+	}
+}
+
 // The time-driven faces carry each ghost's next words, so the stream
 // re-renders "in 20 min" as it counts down.
 func TestFacesCarryTheGhostsNextWords(t *testing.T) {

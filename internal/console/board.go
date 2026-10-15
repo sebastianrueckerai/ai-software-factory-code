@@ -2336,9 +2336,9 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	})
 	now := time.Now()
 	if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Held }); i >= 0 {
-		d.Status.RoutineCell, d.Status.RoutineHeld = "↻ "+cellWord(views[i].Routine)+" held", true
+		d.Status.RoutineCell, d.Status.RoutineHeld = "↻ "+cellWord(views[i].Routine.Name)+" held", true
 	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
-		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine) + " in " + coarse(views[i].Next.Sub(now))
+		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine.Name) + " in " + coarse(views[i].Next.Sub(now))
 	}
 	if d.wide() || len(views) == 0 {
 		return
@@ -2428,15 +2428,10 @@ func runWords(l factoryd.RoutineRun) string {
 	return strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
 }
 
-// cellWord is the routine's word in the strip's cell: its title's last
-// word in lower case, "bump" for Weekly bump.
-func cellWord(rt policy.Routine) string {
-	w := strings.Fields(rt.Title)
-	if len(w) == 0 {
-		return rt.Name
-	}
-	return strings.ToLower(w[len(w)-1])
-}
+// cellWord is routine name's word in the strip's cell: the name's last
+// segment, "bump" for weekly-bump. A name is a slug ending in a letter or
+// a digit, so the segment is a plain word.
+func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:] }
 
 // monthCap is repository's month cap: its project file's budget.month_eur,
 // else the policy's month_eur.
