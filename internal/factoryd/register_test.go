@@ -107,14 +107,19 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
-		// refuseDelete answers 500 for a delete whose path holds
-		// s.failDelete, the removal's partial-failure rehearsal.
+		// refuseDelete answers 500 for every delete whose path holds
+		// s.failDelete, whichever of the removal's objects it names —
+		// a push mirror or a token like a fork — the partial-failure
+		// rehearsal.
 		refuseDelete := func() bool {
 			if r.Method == http.MethodDelete && s.failDelete != "" && strings.Contains(r.URL.Path, s.failDelete) {
 				w.WriteHeader(http.StatusInternalServerError)
 				return true
 			}
 			return false
+		}
+		if refuseDelete() {
+			return
 		}
 		list := func(v any) {
 			if p := r.URL.Query().Get("page"); p != "" && p != "1" {
@@ -436,9 +441,6 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case admin && r.Method == http.MethodGet && p == "/api/v1/packages/demo-app":
 			list(nonNil(s.packages))
 		case admin && r.Method == http.MethodDelete && strings.HasPrefix(p, "/api/v1/packages/demo-app/"):
-			if refuseDelete() {
-				return
-			}
 			parts := strings.Split(strings.TrimPrefix(p, "/api/v1/packages/demo-app/"), "/")
 			s.packages = slices.DeleteFunc(s.packages, func(m map[string]string) bool {
 				return m["type"] == parts[0] && m["name"] == parts[1] && m["version"] == parts[2]
@@ -449,15 +451,9 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			if refuseDelete() {
-				return
-			}
 			s.repo, s.created = false, time.Time{}
 			w.WriteHeader(http.StatusNoContent)
 		case admin && r.Method == http.MethodDelete && (p == "/api/v1/repos/factory-agent/demo-app" || p == "/api/v1/repos/factory-projects/demo-app"):
-			if refuseDelete() {
-				return
-			}
 			owner := strings.Split(p, "/")[4]
 			if !s.forks[owner] {
 				http.NotFound(w, r)
@@ -473,17 +469,11 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
-			if refuseDelete() {
-				return
-			}
 			s.orgGone = true
 			w.WriteHeader(http.StatusNoContent)
 		case admin && r.Method == http.MethodDelete && p == "/api/v1/admin/users/ci-demo-app":
 			if !s.users["ci-demo-app"] || s.ciUserGone {
 				http.NotFound(w, r)
-				return
-			}
-			if refuseDelete() {
 				return
 			}
 			s.ciUserGone = true

@@ -307,6 +307,55 @@ func TestRemoveFinishesAfterAStep4Failure(t *testing.T) {
 	}
 }
 
+// The fake's failDelete answers 500 for every delete the removal makes,
+// not only the five objects of step 4: a push mirror (step 2) and a token
+// (step 4's tail) fail their step, the steps after them stay, and a second
+// run finishes the rest.
+func TestRemoveFinishesAfterEarlierDeleteFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fail    string // the path whose delete answers 500
+		object  string // the step the failure stops
+		cluster int    // the cluster deletes the first run made
+	}{
+		{name: "a push mirror delete", fail: "/push_mirrors/", object: "github export https://github.com/example/demo-app.git", cluster: 0},
+		{name: "a token delete", fail: "/users/factory-projects/tokens/", object: "tokens of factory-projects", cluster: 6},
+	} {
+		rig := newRemovalRig(t)
+		ctx := context.Background()
+		rig.fj.failDelete = tc.fail
+		lines, err := rig.rem.Remove(ctx, "demo-app", false)
+		if err == nil || !strings.Contains(err.Error(), tc.object) {
+			t.Fatalf("%s: err = %v\n%s", tc.name, err, strings.Join(lines, "\n"))
+		}
+		if n := len(rig.kube.deletes); n != tc.cluster {
+			t.Errorf("%s: the first run made %d cluster deletes, want %d", tc.name, n, tc.cluster)
+		}
+		if _, ok, _ := rig.store.Project(ctx, "demo-app"); !ok {
+			t.Errorf("%s: the row went though the run failed", tc.name)
+		}
+		if !rig.litellm.holds("sk-done-1") {
+			t.Errorf("%s: the LiteLLM keys went though the run failed", tc.name)
+		}
+
+		rig.fj.failDelete = ""
+		lines, err = rig.rem.Remove(ctx, "demo-app", false)
+		if err != nil {
+			t.Fatalf("%s: second run: %v\n%s", tc.name, err, strings.Join(lines, "\n"))
+		}
+		if _, ok, _ := rig.store.Project(ctx, "demo-app"); ok {
+			t.Errorf("%s: the row lives after the second run", tc.name)
+		}
+		if rig.litellm.holds("sk-done-1") || rig.litellm.holds("sk-done-2") || !rig.litellm.holds("sk-other") {
+			t.Errorf("%s: the second run deleted the wrong keys", tc.name)
+		}
+		if rig.fj.repo || !rig.fj.orgGone || !rig.fj.ciUserGone || len(rig.fj.mirrors) != 0 || len(rig.fj.packages) != 0 {
+			t.Errorf("%s: forgejo state after the second run: repo %v orgGone %v ciUserGone %v mirrors %v packages %v",
+				tc.name, rig.fj.repo, rig.fj.orgGone, rig.fj.ciUserGone, rig.fj.mirrors, rig.fj.packages)
+		}
+	}
+}
+
 // The removal keeps the project's history: its tasks, events, ledger,
 // audit and chat rows stay, only the projects row and the mirror rows go.
 func TestRemoveKeepsTheHistory(t *testing.T) {
