@@ -2712,8 +2712,9 @@ const escalateFailed = "escalate: "
 const healedReason = "factoryd restarted while the task waited for a human; the question above still stands."
 
 // MaxAnswer bounds an answer's body, in bytes, in the list every later
-// session gets as the ANSWERS or POSTER_INFO env var (envList bounds the
-// list); the issue keeps it whole, and the console refuses a longer one.
+// session gets as the ANSWERS or POSTER_INFO env var (envFit and
+// maxCarriedAnswers bound the list); the issue keeps it whole, and the
+// console refuses a longer one.
 const MaxAnswer = 4000
 
 // escalationQuestion is an escalation reason's first line, an agent's

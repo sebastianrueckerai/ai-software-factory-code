@@ -1063,23 +1063,30 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 
 // A writer's hand-filed card: the last line "Directories: <dir>, <dir>" of
 // its issue body, key in any case, names the directories of its brief's
-// map (the pod's DIRECTORIES); the title is no line of the body. An outside
-// account's or an alert's line, or a card without one, names none.
+// map (the pod's DIRECTORIES), and the map lists them, so the brief's
+// objective (OBJECTIVE) holds no Directories line (roadmap 201); the
+// title is no line of the body. An outside account's or an alert's line,
+// or a card without one, names none, and its objective keeps every line.
+// Every objective leaves out the intake's Size, Budget and Rung lines.
 func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 	line := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy\n"
+	kept := "Fix the drawer\n\nIt breaks.\nDirectories: internal/console, internal/policy"
 	for _, tc := range []struct {
 		objective, source string
 		writer            bool
-		want              string
+		want, brief       string
 	}{
-		{line, "webhook", true, `["internal/console","internal/policy"]`},
-		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`},
-		{"Fix the drawer\n\nThe directories: internal/x are no line of their own", "webhook", true, ""},
-		{"Directories: internal/console", "webhook", true, ""},
-		{"Directories: internal/console\n\nIt breaks.", "webhook", true, ""},
-		{line, "webhook", false, ""},
-		{line, SourceAlert, true, ""},
-		{"fix it", "webhook", true, ""},
+		{line, "webhook", true, `["internal/console","internal/policy"]`, "Fix the drawer\n\nIt breaks."},
+		{"Fix the drawer\n\nDirectories: a\nDIRECTORIES:  internal/console ,, internal/gone", "webhook", true, `["internal/console","internal/gone"]`, "Fix the drawer"},
+		{"Fix the drawer\n\nThe directories: internal/x are no line of their own", "webhook", true, "", "Fix the drawer\n\nThe directories: internal/x are no line of their own"},
+		{"Directories: internal/console", "webhook", true, "", "Directories: internal/console"},
+		{"Directories: internal/console\n\nIt breaks.", "webhook", true, "", "Directories: internal/console\n\nIt breaks."},
+		{line, "webhook", false, "", kept},
+		{line, SourceAlert, true, "", kept},
+		{"fix it", "webhook", true, "", "fix it"},
+		{"Fix the drawer\n\nSize: medium\nDirectories: internal/console\n\nIt breaks.\nBudget: 3 EUR\n\nSize: small\nRung: cheap, a one-line fix", "webhook", true,
+			`["internal/console"]`, "Fix the drawer\n\nIt breaks."},
+		{"Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon", "webhook", false, "", "Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon"},
 	} {
 		task := Task{ID: "t1", Status: "running", Objective: tc.objective, Repository: "sf/repo", SHA: "base", Source: tc.source,
 			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}}
@@ -1089,8 +1096,12 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 			t.Fatal(err)
 		}
-		if got, ok := podEnv(kube.podAt(0))["DIRECTORIES"]; got != tc.want || ok != (tc.want != "") {
+		env := podEnv(kube.podAt(0))
+		if got, ok := env["DIRECTORIES"]; got != tc.want || ok != (tc.want != "") {
 			t.Errorf("%q from %s (writer %v): DIRECTORIES = %q (set %v), want %q", tc.objective, tc.source, tc.writer, got, ok, tc.want)
+		}
+		if env["OBJECTIVE"] != tc.brief {
+			t.Errorf("%q from %s (writer %v): OBJECTIVE = %q, want %q", tc.objective, tc.source, tc.writer, env["OBJECTIVE"], tc.brief)
 		}
 	}
 }
@@ -2747,9 +2758,14 @@ func TestSandboxUIDIsThePodsAndTheImages(t *testing.T) {
 // list of 32 items of 4000 bytes and one of m is m + 128100 bytes of JSON
 // (the bodies, 3 bytes per item for its quotes and comma, 1 for the
 // brackets less one comma). With its "=" and NUL, FINDINGS (8 bytes) holds
-// m = 2962, ANSWERS (7) 2963, POSTER_INFO and DIRECTORIES (11) 2959; one
-// byte more leaves out the item at the list's oldest end (the last
-// directory). A text over its room is cut on a character with "…" (3
+// m = 2962 and DIRECTORIES (11) 2959; one byte more leaves out the item at
+// the list's oldest end (the last directory). Roadmap 201: FINDINGS keeps
+// at most 60 items, ANSWERS and POSTER_INFO 20, the oldest left out
+// first; 19 items of 4000 bytes and one of m are m + 76061 bytes, so
+// ANSWERS (7) holds m = 55002 and POSTER_INFO (11) 54998. 21 answers, the
+// newest of 55003 bytes before 19 of 4000 and an old one, leave out the
+// old one by the cap and the oldest of 4000 by the bytes, in one note. A
+// text over its room is cut on a character with "…" (3
 // bytes) to fill the room: OBJECTIVE's is 131061 bytes, so "a" and 65531
 // two-byte "ä" (131063) keep 131057; REPORT_GUIDE's 131058, SPEC's 131066.
 func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
@@ -2764,6 +2780,13 @@ func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 	z := func(n int) []string { return []string{strings.Repeat("z", n)} }
 	full := slices.Repeat([]string{strings.Repeat("a", 4000)}, 32)
 	a := strings.Repeat
+	short := func(n int) []string {
+		var l []string
+		for i := range n {
+			l = append(l, fmt.Sprint("s", i))
+		}
+		return l
+	}
 	for _, tc := range []struct {
 		name    string
 		task    Task
@@ -2773,12 +2796,17 @@ func TestWorkerPodSpecFitsTheEnv(t *testing.T) {
 	}{
 		{"FINDINGS whole", Task{}, sessionSpec{findings: slices.Concat(z(2962), full)}, "FINDINGS", jsonOf(slices.Concat(z(2962), full)), nil},
 		{"FINDINGS one byte over", Task{}, sessionSpec{findings: slices.Concat(z(2963), full)}, "FINDINGS", jsonOf(full), []string{"1 of the 33 findings, the oldest"}},
-		{"ANSWERS whole", Task{}, sessionSpec{answers: slices.Concat(full, z(2963))}, "ANSWERS", jsonOf(slices.Concat(full, z(2963))), nil},
-		{"ANSWERS one byte over", Task{}, sessionSpec{answers: slices.Concat(full, z(2964))}, "ANSWERS", jsonOf(full),
-			[]string{"1 of the 33 answers to the escalations, the oldest"}},
-		{"POSTER_INFO whole", Task{}, sessionSpec{posterInfo: slices.Concat(z(2959), full)}, "POSTER_INFO", jsonOf(slices.Concat(z(2959), full)), nil},
-		{"POSTER_INFO one byte over", Task{}, sessionSpec{posterInfo: slices.Concat(z(2960), full)}, "POSTER_INFO", jsonOf(full),
-			[]string{"1 of the 33 answers of the issue's author, the oldest"}},
+		{"FINDINGS past the cap", Task{}, sessionSpec{findings: short(70)}, "FINDINGS", jsonOf(short(70)[10:]), []string{"10 of the 70 findings, the oldest"}},
+		{"ANSWERS whole", Task{}, sessionSpec{answers: slices.Concat(full[:19], z(55002))}, "ANSWERS", jsonOf(slices.Concat(full[:19], z(55002))), nil},
+		{"ANSWERS one byte over", Task{}, sessionSpec{answers: slices.Concat(full[:19], z(55003))}, "ANSWERS", jsonOf(full[:19]),
+			[]string{"1 of the 20 answers to the escalations, the oldest"}},
+		{"ANSWERS past the cap", Task{}, sessionSpec{answers: short(25)}, "ANSWERS", jsonOf(short(25)[:20]), []string{"5 of the 25 answers to the escalations, the oldest"}},
+		{"ANSWERS past the cap and the bytes", Task{}, sessionSpec{answers: slices.Concat(z(55003), full[:19], []string{"old"})}, "ANSWERS",
+			jsonOf(slices.Concat(z(55003), full[:18])), []string{"2 of the 21 answers to the escalations, the oldest"}},
+		{"POSTER_INFO whole", Task{}, sessionSpec{posterInfo: slices.Concat(z(54998), full[:19])}, "POSTER_INFO", jsonOf(slices.Concat(z(54998), full[:19])), nil},
+		{"POSTER_INFO one byte over", Task{}, sessionSpec{posterInfo: slices.Concat(z(54999), full[:19])}, "POSTER_INFO", jsonOf(full[:19]),
+			[]string{"1 of the 20 answers of the issue's author, the oldest"}},
+		{"POSTER_INFO past the cap", Task{}, sessionSpec{posterInfo: short(25)}, "POSTER_INFO", jsonOf(short(25)[5:]), []string{"5 of the 25 answers of the issue's author, the oldest"}},
 		{"DIRECTORIES whole", Task{}, sessionSpec{directories: slices.Concat(full, z(2959))}, "DIRECTORIES", jsonOf(slices.Concat(full, z(2959))), nil},
 		{"DIRECTORIES one byte over", Task{}, sessionSpec{directories: slices.Concat(full, z(2960))}, "DIRECTORIES", jsonOf(full),
 			[]string{"1 of the 33 directories, the last"}},

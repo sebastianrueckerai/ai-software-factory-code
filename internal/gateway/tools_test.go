@@ -286,6 +286,26 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 	}
 }
 
+// Ruling 263, roadmap 201: when to call request_info and
+// escalate_to_human is their descriptions' alone; factoryd's guides no
+// longer say it.
+func TestAskToolsSayWhenToCallThem(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for tool, want := range map[string]string{
+		policy.ToolRequestInfo: "Ask the issue's author for information, instead of guessing, when you could not reproduce the problem and found no fault",
+		policy.ToolEscalate:    "Ask a human when the task cannot be completed without a decision, access or information only a human has.",
+	} {
+		i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == tool })
+		if i < 0 || !strings.HasPrefix(res.Tools[i].Description, want) {
+			t.Errorf("%s: description does not open with %q", tool, want)
+		}
+	}
+}
+
 // tools/list shows only what the task's classes may call, from the same
 // check that decides a call: a hidden tool called anyway is refused and
 // audited like any tool the class lacks.

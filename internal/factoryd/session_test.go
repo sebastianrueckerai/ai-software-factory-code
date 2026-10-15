@@ -113,3 +113,46 @@ func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 		t.Fatalf("session after snapshot = %+v", sess)
 	}
 }
+
+// Roadmap 201: the supervisor's tail of the record holds each fact once
+// beside its digest and messages: no supervisor event, no command output
+// and no checkpoint patch, whole lines within n bytes, the newest last.
+// The record itself keeps them.
+func TestSupervisorTailLeavesTheDigestsFactsOut(t *testing.T) {
+	objects := &fakeObjectStore{}
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/coding-cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []harness.Event{
+		{Time: time.Unix(1000, 0).UTC(), Kind: harness.EventModelCall, Detail: map[string]any{"text": "run the test"}},
+		{Time: time.Unix(1001, 0).UTC(), Kind: harness.EventCommand, Detail: map[string]any{"command": "go test ./...", "exit": 1, "output": "FAIL x"}},
+		{Time: time.Unix(1002, 0).UTC(), Kind: harness.EventSupervisor, Detail: map[string]any{"decision": "message", "guidance": "read x"}},
+		{Time: time.Unix(1003, 0).UTC(), Kind: harness.EventCheckpoint, Detail: map[string]any{"diff": map[string]any{"files": 1, "insertions": 2, "deletions": 0}, "patch": "+x"}},
+		{Time: time.Unix(1004, 0).UTC(), Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go"}},
+	} {
+		if err := r.Record(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lines := []string{
+		`{"time":"1970-01-01T00:16:40Z","kind":"model_call","detail":{"text":"run the test"}}` + "\n",
+		`{"time":"1970-01-01T00:16:41Z","kind":"command","detail":{"command":"go test ./...","exit":1}}` + "\n",
+		`{"time":"1970-01-01T00:16:43Z","kind":"checkpoint","detail":{"diff":{"deletions":0,"files":1,"insertions":2}}}` + "\n",
+		`{"time":"1970-01-01T00:16:44Z","kind":"file_change","detail":{"path":"a.go"}}` + "\n",
+	}
+	if got := r.SupervisorTail(maxRecordTail); got != strings.Join(lines, "") {
+		t.Fatalf("tail =\n%s\nwant\n%s", got, strings.Join(lines, ""))
+	}
+	n := len(lines[2]) + len(lines[3])
+	if got := r.SupervisorTail(n); got != lines[2]+lines[3] {
+		t.Fatalf("tail of %d bytes = %q, want the last two lines", n, got)
+	}
+	if got := r.SupervisorTail(n - 1); got != lines[3] {
+		t.Fatalf("tail of %d bytes = %q, want the last line", n-1, got)
+	}
+	if record := string(objects.puts[len(objects.puts)-1].body); !strings.Contains(record, `"output":"FAIL x"`) || !strings.Contains(record, `"patch":"+x"`) ||
+		!strings.Contains(record, `"kind":"supervisor"`) {
+		t.Fatalf("record = %s, want it whole", record)
+	}
+}

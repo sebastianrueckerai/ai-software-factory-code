@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -124,14 +125,18 @@ type DigestDiff struct {
 	Patch      string `json:"patch,omitempty"`
 }
 
+// The digest keeps the last digestCommands commands, the last digestErrors
+// error signatures and the digestFiles files edited last.
 const (
 	digestCommands = 40
 	digestErrors   = 5
+	digestFiles    = 40
 )
 
 type digestBuilder struct {
 	start time.Time
 	g     ProgressDigest
+	files []string // g.Files' paths, the one edited last last
 }
 
 func newDigestBuilder(start time.Time) *digestBuilder {
@@ -155,7 +160,13 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.g.Commands = b.g.Commands[len(b.g.Commands)-digestCommands:]
 		}
 	case harness.EventFileChange:
-		b.g.Files[detailString(ev, "path")]++
+		path := detailString(ev, "path")
+		b.g.Files[path]++
+		b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
+		if len(b.files) > digestFiles {
+			delete(b.g.Files, b.files[0])
+			b.files = b.files[1:]
+		}
 	case harness.EventToolCall:
 		b.g.ToolCalls++
 	case harness.EventCheckpoint:
@@ -224,12 +235,12 @@ type TripReport struct {
 }
 
 // SupervisorInput is everything the supervisor reads: the brief, the trip,
-// the digest and the tail of the session record.
+// the digest and the tail of the session record, each fact in one of them.
 type SupervisorInput struct {
 	Brief  harness.TaskBrief `json:"brief"`
 	Trip   TripReport        `json:"trip"`
 	Digest ProgressDigest    `json:"digest"`
-	Record string            `json:"record"` // the session record's last events, JSONL
+	Record string            `json:"record"` // the session record's last events, JSONL (SessionRecorder.SupervisorTail)
 	Model  string            `json:"model"`
 	Calls  int               `json:"supervisor_call"`
 	// Messages: the guidance this session's earlier messages delivered
@@ -240,7 +251,7 @@ type SupervisorInput struct {
 // maxRecordTail bounds the session record the supervisor reads.
 const maxRecordTail = 24 << 10
 
-const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. You are asked when a cheap detector tripped (the session may be going in circles) or at a scheduled check-in (detector "check_in": no detector tripped; judge whether the session is on track). Read the brief, the trip, the progress digest (commands with outcomes over time, files with edit counts, the last error signatures, the diff against the base so far) and the tail of the session record, then choose exactly one action:
+const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. You are asked when a cheap detector tripped (the session may be going in circles) or at a scheduled check-in (detector "check_in": no detector tripped; judge whether the session is on track). Read the brief, the trip, the progress digest (commands with outcomes over time, the files edited last with edit counts, the last error signatures with their output, the diff against the base so far) and the tail of the session record (its last events without outputs and patches: the digest holds the failures' outputs and the diff), then choose exactly one action:
 - "continue": the agent makes real progress; the trip is a false alarm or the check-in finds the session on track. The session runs on untouched.
 - "message": the agent is off track: circling, stuck on a wrong approach, or missing something the brief or the record shows. Your guidance goes into the running session as a message the agent reads next; it keeps its context and its work. Give concrete guidance: what to stop doing and what to do instead. If the agent writes no file after your message before a detector trips again, or writes in circles, the session ends and a new session resumes from the work in progress. Your earlier messages in this session are in messages: do not repeat one that did not work.
 - "escalate": the task cannot be completed as specified (contradictory, impossible, needs a human decision or access the agent does not have). A human is asked. Give the reason.

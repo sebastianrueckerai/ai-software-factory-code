@@ -1187,7 +1187,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	section := "ISSUE-t>>>\n\nThe spec and the plan: this card is one of a plan's. Between the lines <<<SPEC-t and SPEC-t>>> stand the spec, " +
 		"the plan's issue as a writer wrote it, and the plan's summary as the planner wrote it: the whole application, of which this card builds its own part only.\n" +
 		"<<<SPEC-t\nBuild a link shortener, cc ＠ops.\n\nThe plan's summary: links first.\nSPEC-t>>>\n\n"
-	if !strings.Contains(text, section) || !strings.HasSuffix(text, featureGuide([]string{policy.ToolEscalate}, RoleIntegration)) ||
+	if !strings.Contains(text, section) || !strings.HasSuffix(text, toolsLine+"\n"+featureGuide(RoleIntegration)) ||
 		!strings.Contains(text, "turn the spec's acceptance tests into Go tests under acceptance/") || strings.Contains(text, "reproduce the reported fault") {
 		t.Fatalf("brief:\n%s", text)
 	}
@@ -1872,5 +1872,23 @@ func TestCardFactsRungLine(t *testing.T) {
 	}
 	if got := cardFindings(PlanCard{Key: "a", Title: "t", Brief: "b", Size: "small", Rung: "huge"}, testLimits, 0); !slices.ContainsFunc(got, func(f string) bool { return strings.Contains(f, "rung huge") }) {
 		t.Fatalf("findings = %q, want the rung refused", got)
+	}
+}
+
+// Roadmap 201: a plan card's brief carries its directories once, in the
+// repository map, and its size and rung not at all: its objective keeps
+// the card's text, its dependencies and its acceptance items. Without a
+// map the directories line stays.
+func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
+	c := PlanCard{Key: "redirects", Title: "Redirects", Brief: "GET /<slug> answers 302.", Directories: []string{"internal/links"},
+		Acceptance: []string{"GET /abc answers 302"}, Size: "small", Rung: RungCheap, RungReason: "routine"}
+	objective := "Redirects\n\n" + cardBody(c, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}})
+	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), accepted by sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
+		"Depends on: #2 (foundation)\nAcceptance:\n- GET /abc answers 302"
+	if got := briefObjective(objective, true); got != want {
+		t.Fatalf("brief objective =\n%s\nwant\n%s", got, want)
+	}
+	if got := briefObjective(objective, false); !strings.Contains(got, "Directories (guidance, not a boundary): internal/links\nDepends on") || strings.Contains(got, "Size") || strings.Contains(got, "Rung") {
+		t.Fatalf("brief objective without a map =\n%s", got)
 	}
 }

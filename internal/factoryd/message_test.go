@@ -424,6 +424,49 @@ func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
 	}
 }
 
+// Roadmap 201: a session's first supervisor call reads the whole brief,
+// its carried findings the newest 60; a later call the issue's text and
+// the answers that amend it, without the findings, and the guidance it
+// gave in messages only, not again as a supervisor event of the record.
+// The objective comes without the intake's Size line.
+func TestSupervisorReadsTheBriefOncePerSession(t *testing.T) {
+	task := supervisedTask("t2")
+	task.Objective = "make loopcheck pass\n\nIt loops.\n\nSize: small"
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	var findings []string
+	for i := range 70 {
+		findings = append(findings, fmt.Sprint("ran x", i))
+	}
+	answers := []string{`sebastian, to "Which store?": the default one`}
+	logs := commands(0, 24) +
+		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", Findings: findings, Answers: answers}, nil, logs); err != nil || len(f.chats) != 2 {
+		t.Fatalf("session: %v after %d calls, want 2", err, len(f.chats))
+	}
+	in := make([]SupervisorInput, 2)
+	for i := range in {
+		if err := json.Unmarshal([]byte(f.chats[i]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in[i]); err != nil {
+			t.Fatal(err)
+		}
+		if in[i].Brief.Objective != "make loopcheck pass\n\nIt loops." || !slices.Equal(in[i].Brief.Answers, answers) {
+			t.Errorf("call %d: brief = %+v, want the objective without its Size line and the answer", i+1, in[i].Brief)
+		}
+		if strings.Contains(in[i].Record, `"kind":"supervisor"`) {
+			t.Errorf("call %d: record holds a supervisor event: %s", i+1, in[i].Record)
+		}
+	}
+	if !slices.Equal(in[0].Brief.Findings, findings[10:]) || in[1].Brief.Findings != nil {
+		t.Fatalf("findings: first call %d (want the newest 60), second %d (want none)", len(in[0].Brief.Findings), len(in[1].Brief.Findings))
+	}
+	if in[0].Messages != nil || !slices.Equal(in[1].Messages, []string{"use the store's New"}) {
+		t.Fatalf("messages = %q, then %q; want none, then the first call's guidance", in[0].Messages, in[1].Messages)
+	}
+}
+
 func pushRequestLine(commit string) string {
 	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "push", Push: &harness.PushRequest{Commit: commit}})
 	return string(b)

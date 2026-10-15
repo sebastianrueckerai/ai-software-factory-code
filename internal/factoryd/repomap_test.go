@@ -81,10 +81,10 @@ func TestRepoMapListsEachFileWithItsFirstDocLine(t *testing.T) {
 }
 
 // The section stops at 4 KiB with a tail counting the lines left out. The
-// heading is 114 bytes and each of 500 name-only lines "d/fNNN.md" 9 bytes
+// heading is 142 bytes and each of 500 name-only lines "d/fNNN.md" 9 bytes
 // plus its newline: k lines and the tail "... and N more files" (22 bytes
-// for a three-digit N, plus its newline) take 114 + 10k + 23 bytes, at
-// most 4096 for k = 395 (4087 bytes); k = 396 would take 4097.
+// for a three-digit N, plus its newline) take 142 + 10k + 23 bytes, at
+// most 4096 for k = 393 (4095 bytes); k = 394 would take 4105.
 func TestRepoMapStopsAt4KiB(t *testing.T) {
 	files := map[string]string{}
 	for i := range 500 {
@@ -93,26 +93,26 @@ func TestRepoMapStopsAt4KiB(t *testing.T) {
 	root := repoFixture(t, files)
 	got := RepoMap(root.FS(), []string{"d"})
 	lines := []string{mapHeading}
-	for i := range 395 {
+	for i := range 393 {
 		lines = append(lines, fmt.Sprintf("d/f%03d.md", i))
 	}
-	want := strings.Join(append(lines, "... and 105 more files"), "\n")
-	if len(mapHeading) != 114 || got != want || len(got) != 4087 {
+	want := strings.Join(append(lines, "... and 107 more files"), "\n")
+	if len(mapHeading) != 142 || got != want || len(got) != 4095 {
 		t.Fatalf("map (%d bytes) ends %q, want %d bytes ending %q", len(got), got[max(0, len(got)-60):], len(want), want[len(want)-60:])
 	}
-	// a map within the cap comes back whole: 397 such lines and "d/zz"
-	// take 114 + 397*10 + 5 = 4089 bytes
+	// a map within the cap comes back whole: 394 such lines and "d/zz"
+	// take 142 + 394*10 + 5 = 4087 bytes
 	files = map[string]string{"d/zz": "no heading\n"}
-	for i := range 397 {
+	for i := range 394 {
 		files[fmt.Sprintf("d/f%03d.md", i)] = "no heading\n"
 	}
 	root = repoFixture(t, files)
 	lines = []string{mapHeading}
-	for i := range 397 {
+	for i := range 394 {
 		lines = append(lines, fmt.Sprintf("d/f%03d.md", i))
 	}
 	want = strings.Join(append(lines, "d/zz"), "\n")
-	if got := RepoMap(root.FS(), []string{"d"}); got != want || len(got) != 4089 {
+	if got := RepoMap(root.FS(), []string{"d"}); got != want || len(got) != 4087 {
 		t.Fatalf("map (%d bytes) ends %q, want it whole, %d bytes", len(got), got[max(0, len(got)-60):], len(want))
 	}
 }

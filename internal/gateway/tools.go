@@ -314,7 +314,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestInfo, Description: "Ask the issue's author for information when you could not reproduce the problem and found no fault: " +
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestInfo, Description: "Ask the issue's author for information, instead of guessing, when you could not reproduce the problem and found no fault: " +
 		"what you tried and what you need. This session ends; the task resumes with the author's answer, or the issue closes as not reproducible after 14 days. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
 			return s.requestInfo(ctx, c, in), nil, nil

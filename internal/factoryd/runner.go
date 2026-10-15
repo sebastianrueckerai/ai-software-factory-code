@@ -545,10 +545,14 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	defer func() { out.findings, out.model = sup.Findings(), s.model }()
 	digest := newDigestBuilder(time.Now())
-	// messages: the guidance this session's delivered messages carried
+	// messages: the guidance this session's delivered messages carried;
+	// briefed: a supervisor call of this session read the whole brief
 	var messages []string
+	briefed := false
 	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
-		return r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages))
+		d := r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages), !briefed)
+		briefed = true
+		return d
 	}}
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
@@ -913,14 +917,22 @@ func factoryModel(d policy.Document, t Task, purpose string) string {
 }
 
 // askSupervisor builds the supervisor's input and calls it through the
-// gateway on the task's account.
-func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int, messages []string) Decision {
+// gateway on the task's account. The session's first call reads the whole
+// brief, a later one (whole false) the issue's text and the answers that
+// amend it: the findings the session started from are judged once
+// (roadmap 201).
+func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int, messages []string, whole bool) Decision {
+	brief := harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: s.startRef,
+		Answers: newest(s.answers, maxCarriedAnswers, false), PosterInfo: newest(s.posterInfo, maxCarriedAnswers, true),
+		Author: t.Author, AuthorStanding: cmp.Or(s.standing, t.Standing())}
+	if whole {
+		brief.Findings = newest(s.findings, maxCarriedFindings, true)
+	}
 	return r.supervisor.Decide(ctx, t.ID, factoryModel(s.policy, t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
-		Brief: InboundBrief(harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: s.startRef, Findings: s.findings, Answers: s.answers,
-			PosterInfo: s.posterInfo, Author: t.Author, AuthorStanding: t.Standing()}),
+		Brief:    InboundBrief(brief),
 		Trip:     TripReport{Detector: trip.Kind, Detail: trip.Detail},
 		Digest:   digest.digest(),
-		Record:   recorder.Tail(maxRecordTail),
+		Record:   recorder.SupervisorTail(maxRecordTail),
 		Model:    s.model,
 		Calls:    call,
 		MaxCall:  maxCalls,
@@ -1351,17 +1363,41 @@ const maxEnvString = 128 << 10
 // envRoom is how many bytes env var name's value may take.
 func envRoom(name string) int { return maxEnvString - len(name) - len("=") - len("\x00") }
 
+// The carried caps (roadmap 201): the most of each list a card's sessions
+// build up that a session's models read, the oldest left out first, as a
+// session keeps its own last 20 findings (noteFinding): room for a
+// review's findings and two sessions' own lines, and for 20 answers of
+// each kind. They bound the context, envFit the bytes exec carries: it
+// trims a capped list only when its entries are long (20 answers of
+// MaxAnswer take about 90 KiB, a finding has no bound of its own), and
+// one note counts what both left out.
+const (
+	maxCarriedFindings = 60
+	maxCarriedAnswers  = 20
+)
+
+// newest is items' newest n, items oldest first when oldestFirst.
+func newest(items []string, n int, oldestFirst bool) []string {
+	switch {
+	case len(items) <= n:
+		return items
+	case oldestFirst:
+		return items[len(items)-n:]
+	}
+	return items[:n]
+}
+
 // envFit fits the worker env's values that grow with their input within
 // envRoom, and keeps factoryd's note on each it shortened: the worker gets
 // them as LEFT_OUT and the brief says them in factoryd's own words,
 // outside every quoted block.
 type envFit struct{ notes []string }
 
-// list is items' JSON for env var name, its whole items left out from the
-// front (dropFront) or the back until it fits; which names the end they
-// leave from in the note, what the items.
-func (f *envFit) list(name string, items []string, dropFront bool, which, what string) string {
-	for n := 0; ; n++ {
+// list is items' JSON for env var name, at most most of them: its whole
+// items left out from the front (dropFront) or the back until it fits;
+// which names the end they leave from in the note, what the items.
+func (f *envFit) list(name string, items []string, most int, dropFront bool, which, what string) string {
+	for n := max(len(items)-most, 0); ; n++ {
 		keep := items[:len(items)-n]
 		if dropFront {
 			keep = items[n:]
@@ -1392,7 +1428,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "SESSION_ID", "value": s.id},
-		{"name": "OBJECTIVE", "value": fit.text("OBJECTIVE", t.Objective, "the issue's text")},
+		{"name": "OBJECTIVE", "value": fit.text("OBJECTIVE", briefObjective(t.Objective, len(s.directories) > 0), "the issue's text")},
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": taskBranch(t)},
@@ -1404,9 +1440,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
-		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, true, "oldest", "findings")},
-		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, false, "oldest", "answers to the escalations")},
-		{"name": "POSTER_INFO", "value": fit.list("POSTER_INFO", s.posterInfo, true, "oldest", "answers of the issue's author")},
+		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, maxCarriedFindings, true, "oldest", "findings")},
+		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, maxCarriedAnswers, false, "oldest", "answers to the escalations")},
+		{"name": "POSTER_INFO", "value": fit.list("POSTER_INFO", s.posterInfo, maxCarriedAnswers, true, "oldest", "answers of the issue's author")},
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
@@ -1439,7 +1475,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
 	}
 	if len(s.directories) > 0 {
-		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, false, "last", "directories")})
+		env = append(env, map[string]any{"name": "DIRECTORIES", "value": fit.list("DIRECTORIES", s.directories, len(s.directories), false, "last", "directories")})
 	}
 	// the worker's migration-name guard reads these (roadmap 186), where
 	// the guide's naming sentence used to be

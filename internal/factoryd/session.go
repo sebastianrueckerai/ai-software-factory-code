@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -55,15 +56,35 @@ func (r *SessionRecorder) Snapshot(ctx context.Context, findings []string, resta
 	return r.store.UpdateSession(ctx, r.id, findings, restartState)
 }
 
-// Tail is the history's last n bytes, from a line start.
-func (r *SessionRecorder) Tail(n int) string {
+// SupervisorTail is the history's last events within n bytes, whole
+// lines, as the supervisor reads them beside its digest and messages
+// (roadmap 201): no supervisor event, whose guidance the messages carry,
+// no command's output and no checkpoint's patch, the digest carrying the
+// failures' outputs and the diff so far.
+func (r *SessionRecorder) SupervisorTail(n int) string {
 	b := r.history.Bytes()
-	if len(b) <= n {
-		return string(b)
+	var lines [][]byte
+	size := 0
+	for end := len(b); end > 0; {
+		start := bytes.LastIndexByte(b[:end-1], '\n') + 1
+		var ev harness.Event
+		err := json.Unmarshal(b[start:end], &ev)
+		end = start
+		if err != nil || ev.Kind == harness.EventSupervisor {
+			continue
+		}
+		switch ev.Kind {
+		case harness.EventCommand:
+			delete(ev.Detail, "output")
+		case harness.EventCheckpoint:
+			delete(ev.Detail, "patch")
+		}
+		line, _ := json.Marshal(ev)
+		if size += len(line) + 1; size > n {
+			break
+		}
+		lines = append(lines, append(line, '\n'))
 	}
-	b = b[len(b)-n:]
-	if i := bytes.IndexByte(b, '\n'); i >= 0 {
-		b = b[i+1:]
-	}
-	return string(b)
+	slices.Reverse(lines)
+	return string(bytes.Join(lines, nil))
 }

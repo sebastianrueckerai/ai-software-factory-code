@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,31 @@ func TestDigestKeepsTheLastCommandsAndErrors(t *testing.T) {
 	}
 	if last := g.Errors[len(g.Errors)-1]; last.Output != strings.Repeat("e", digestCommands+10) {
 		t.Fatalf("last error = %q, want the newest", last.Output)
+	}
+}
+
+// Roadmap 201: files_edited keeps the digestFiles paths edited last, as
+// the digest keeps the last commands: of 50 paths f0 to f49 the last 40,
+// f10 to f49; f10 edited again is the newest, so g pushes out f11.
+func TestDigestKeepsTheFilesEditedLast(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	d := newDigestBuilder(t0)
+	for i := range digestFiles + 10 {
+		d.add(fileEvent(fmt.Sprint("f", i), "h"), t0)
+	}
+	want := map[string]int{}
+	for i := 10; i < digestFiles+10; i++ {
+		want[fmt.Sprint("f", i)] = 1
+	}
+	if g := d.digest(); !reflect.DeepEqual(g.Files, want) {
+		t.Fatalf("files = %v, want f10 to f49 once each", g.Files)
+	}
+	d.add(fileEvent("f10", "h2"), t0)
+	d.add(fileEvent("g", "h"), t0)
+	delete(want, "f11")
+	want["f10"], want["g"] = 2, 1
+	if g := d.digest(); !reflect.DeepEqual(g.Files, want) {
+		t.Fatalf("files = %v, want f11 gone, f10 twice and g", g.Files)
 	}
 }
 

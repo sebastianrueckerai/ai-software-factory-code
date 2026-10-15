@@ -596,11 +596,14 @@ func QuestionLine(n int, q PlanQuestion) string {
 	return fmt.Sprintf("%d. %s (choices: %s)", n, q.Text, strings.Join(q.Choices, " / "))
 }
 
+// cardDirectories keys a plan card's directories line.
+const cardDirectories = "Directories (guidance, not a boundary)"
+
 // cardFacts are a card's directories, acceptance tests and size as its
 // issue and the plan comment list them.
 func cardFacts(c PlanCard) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Directories (guidance, not a boundary): %s\n", cmp.Or(strings.Join(c.Directories, ", "), "none"))
+	fmt.Fprintf(&b, "%s: %s\n", cardDirectories, cmp.Or(strings.Join(c.Directories, ", "), "none"))
 	b.WriteString("Acceptance:\n")
 	for _, a := range c.Acceptance {
 		fmt.Fprintf(&b, "- %s\n", a)

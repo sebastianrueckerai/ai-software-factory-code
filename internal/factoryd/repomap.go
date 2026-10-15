@@ -17,7 +17,7 @@ import (
 )
 
 // mapHeading opens a card's repository map.
-const mapHeading = "Repository map (the card's directories at the commit this session starts from, each file with its first doc line):"
+const mapHeading = "Repository map of the card's directories (guidance, not a boundary) at the commit this session starts from, each file with its first doc line:"
 
 const (
 	mapMax     = 4 << 10

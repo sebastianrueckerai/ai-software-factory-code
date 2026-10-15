@@ -129,7 +129,7 @@ func TestCardMapReadsTheClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := cardMap(repo, e.directories)
-	want := "Repository map (the card's directories at the commit this session starts from, each file with its first doc line):\n" +
+	want := "Repository map of the card's directories (guidance, not a boundary) at the commit this session starts from, each file with its first doc line:\n" +
 		"internal/console/chat.go: Package console serves the board.\ninternal/policy/: not in the repository"
 	if err != nil || got != want {
 		t.Fatalf("map = %q, %v; want %q", got, err, want)
