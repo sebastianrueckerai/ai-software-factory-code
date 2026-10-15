@@ -88,7 +88,7 @@ type gateBundle struct {
 	Elapsed   string             `json:"elapsed"`
 	Objective string             `json:"objective"`
 	Input     string             `json:"input"`    // the activity's input as JSON, its head
-	Timeline  string             `json:"timeline"` // the task's timeline so far, JSONL, its tail
+	Timeline  json.RawMessage    `json:"timeline"` // the task's timeline so far, its last steps as a JSON array, or why it is unreadable
 	LastError string             `json:"last_error,omitempty"`
 	State     map[string]any     `json:"state,omitempty"`
 	Allowed   []SupervisorAction `json:"allowed_actions"`
@@ -191,15 +191,15 @@ func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) err
 // error in the bundle instead.
 func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in GateSupervision, pinned policy.Document) (gateBundle, []string) {
 	input, _ := json.Marshal(in.Input) // #nosec G104 -- the workflow's decoded arguments re-encode
-	objective := InboundBrief(harness.TaskBrief{Objective: t.Objective, AuthorStanding: t.Standing()}).Objective
+	objective := InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), AuthorStanding: t.Standing()}).Objective
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
 		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
 	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
-		b.Timeline = "unreadable: " + err.Error()
+		b.Timeline, _ = json.Marshal("unreadable: " + err.Error())
 	} else {
-		b.Timeline = textutil.Tail(string(tl), bundleTimeline)
+		b.Timeline = jsonlTail(tl, bundleTimeline, func(line []byte) []byte { return line })
 	}
 	if last, err := r.cfg.LastFailure(ctx, workflowID, in.Trip.ActivityID); err != nil {
 		b.LastError = "unreadable: " + err.Error()
@@ -213,7 +213,7 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 		tokens, err := r.kube.GetSecretData(ctx, ns, "task-git")
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			b.State = map[string]any{"withheld": "the task's tokens are unreadable to scrub the bundle: " + err.Error()}
-			b.Timeline, b.LastError, b.Input = "", "", ""
+			b.Timeline, b.LastError, b.Input = nil, "", ""
 			return b, nil
 		}
 		secrets = slices.Collect(maps.Values(tokens))
@@ -254,14 +254,16 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 }
 
 // lastResult is a model gate's state: its model, and the timeline's last
-// step named step unless tail, the bundle's tail of the timeline, holds
-// that step whole.
-func lastResult(model string, timeline []byte, tail, step string) map[string]any {
+// step named step unless tail, the bundle's timeline lines, holds that
+// step.
+func lastResult(model string, timeline []byte, tail json.RawMessage, step string) map[string]any {
 	state := map[string]any{"model": model}
+	var lines []map[string]any
+	_ = json.Unmarshal(tail, &lines) // an unreadable timeline is a string: no line
 	switch last := lastStep(timeline, step); {
 	case last == nil:
 		state["last_result"] = "none on this task's timeline"
-	case lastStep([]byte(tail), step) == nil:
+	case !slices.ContainsFunc(lines, func(m map[string]any) bool { return m["step"] == step }):
 		state["last_result"] = last
 	}
 	return state

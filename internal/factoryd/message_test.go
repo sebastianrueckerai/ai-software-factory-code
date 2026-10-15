@@ -455,7 +455,7 @@ func TestSupervisorReadsTheBriefOncePerSession(t *testing.T) {
 		if in[i].Brief.Objective != "make loopcheck pass\n\nIt loops." || !slices.Equal(in[i].Brief.Answers, answers) {
 			t.Errorf("call %d: brief = %+v, want the objective without its Size line and the answer", i+1, in[i].Brief)
 		}
-		if strings.Contains(in[i].Record, `"kind":"supervisor"`) {
+		if strings.Contains(string(in[i].Record), `"kind":"supervisor"`) {
 			t.Errorf("call %d: record holds a supervisor event: %s", i+1, in[i].Record)
 		}
 	}

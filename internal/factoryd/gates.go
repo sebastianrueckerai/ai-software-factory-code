@@ -970,7 +970,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	} else {
 		last, lastFindings := lastReview(earlier, parts)
 		first := reviewInput{
-			Brief: InboundBrief(harness.TaskBrief{Objective: t.Objective, Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
+			Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
 			PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files)),
 			Gates: reviewGates{Policy: gates.Policy, Reproduction: gates.Reproduction, Audit: gates.Audit}, LastReview: last,
 		}

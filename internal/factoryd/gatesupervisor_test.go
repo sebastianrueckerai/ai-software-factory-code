@@ -162,7 +162,7 @@ func TestSuperviseGateWaitChecks(t *testing.T) {
 	elapsed, _ := time.ParseDuration(fmt.Sprint(bundle["elapsed"]))
 	if bundle["activity"] != ActivityWaitChecks || bundle["bound"] != "30s" || elapsed < 45*time.Second || elapsed > 50*time.Second ||
 		bundle["objective"] != "fix the short link" || bundle["input"] != `["t1","c1"]` ||
-		!strings.Contains(fmt.Sprint(bundle["timeline"]), `"step":"intake"`) ||
+		jsonOf(bundle["timeline"]) != `[{"step":"intake","time":"2026-09-28T10:00:00Z"}]` ||
 		jsonOf(bundle["allowed_actions"]) != `["wait","retry","cancel","escalate"]` {
 		t.Fatalf("bundle = %s", jsonOf(bundle))
 	}
@@ -460,7 +460,7 @@ func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
 			t.Errorf("bundle keeps %q: %s", gone, all)
 		}
 	}
-	if !strings.Contains(fmt.Sprint(bundle["timeline"]), "push [redacted] refused") || bundle["input"] != `["t1",9,"c1","[redacted]"]` {
+	if jsonOf(bundle["timeline"]) != `[{"error":"push [redacted] refused","step":"x"}]` || bundle["input"] != `["t1",9,"c1","[redacted]"]` {
 		t.Fatalf("bundle = %s", all)
 	}
 }
@@ -481,6 +481,21 @@ func TestSuperviseGateSanitisesAnOutsidersObjective(t *testing.T) {
 		t.Fatalf("bundle objective keeps the hidden comment: %q", objective)
 	} else if objective != "fix it  please" {
 		t.Fatalf("bundle objective = %q, want the sanitised text", objective)
+	}
+}
+
+// Roadmap 201: the bundle's objective comes without the intake's Size and
+// Rung lines, the card's fields, as every model brief does.
+func TestSuperviseGateObjectiveWithoutIntakeFields(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
+	task := c.store.tasks["t1"]
+	task.Objective = "fix the short link\n\nIt 404s.\n\nSize: small\nRung: cheap, routine"
+	c.store.tasks["t1"] = task
+	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
+	if _, bundle := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true); bundle["objective"] != "fix the short link\n\nIt 404s." {
+		t.Fatalf("bundle objective = %q, want it without the Size and Rung lines", bundle["objective"])
 	}
 }
 

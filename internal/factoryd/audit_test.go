@@ -241,8 +241,8 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 		part, prompt string
 		keys         []string
 	}{
-		{`"part": "file 1 of 2, part 1 of 2"`, auditPrompt, []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
-		{`"part": "file 2 of 2, part 2 of 2"`, auditPartPrompt, []string{"diff", "part"}},
+		{`"part":"file 1 of 2, part 1 of 2"`, auditPrompt, []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
+		{`"part":"file 2 of 2, part 2 of 2"`, auditPartPrompt, []string{"diff", "part"}},
 	} {
 		if user := userMessage(ll.chats[i]); !strings.Contains(user, want.part) {
 			t.Fatalf("call %d lacks its part", i+1)
@@ -251,7 +251,7 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 			t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(ll.chats[i]) == want.prompt, want.keys)
 		}
 	}
-	if user := userMessage(ll.chats[0]); !strings.Contains(user, `"concurrency": "`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
+	if user := userMessage(ll.chats[0]); !strings.Contains(user, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
 		t.Fatal("the first call lacks the whole diff's concurrency summary")
 	}
 }

@@ -933,7 +933,8 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harnes
 	}
 	switch part.Tool {
 	case "bash":
-		detail := map[string]any{"command": part.State.Input["command"], "status": "completed", "output": outputTail(part.State.Output),
+		cmd, _ := part.State.Input["command"].(string)
+		detail := map[string]any{"command": commandLine(cmd), "status": "completed", "output": outputTail(part.State.Output),
 			"duration_ms": duration, "bytes": len(part.State.Output)}
 		if part.State.Metadata.Exit != nil {
 			detail["exit"] = *part.State.Metadata.Exit
@@ -979,6 +980,18 @@ func outputTail(out string) string {
 		out = out[i+1:]
 	}
 	return out
+}
+
+// commandLine is a bash command as its event carries it: like a tool's
+// string argument its first maxArgString bytes, and when cut a note of its
+// size and hash, so the detectors keyed on the line still tell two long
+// commands with one start apart.
+func commandLine(cmd string) string {
+	if len(cmd) <= maxArgString {
+		return cmd
+	}
+	sum := sha256.Sum256([]byte(cmd))
+	return fmt.Sprintf("%s (%d bytes, sha256 %x)", textutil.Truncate(cmd, maxArgString), len(cmd), sum[:8])
 }
 
 // capArgs copies a tool's arguments with long strings cut; args_sha256

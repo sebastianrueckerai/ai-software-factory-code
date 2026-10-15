@@ -634,8 +634,8 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 // ValidatePlan's findings, not this prose (roadmap 186).
 func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	g := "You are the planner. " +
-		"The issue's text is the spec of an application to build in this repository. Read it, and the repository, its AGENTS.md first: " +
-		"every card follows its conventions. Split the work into the cards of a plan. " +
+		"The issue's text is the spec of an application to build in this repository. Read it and the repository: " +
+		"every card follows the repository's conventions. Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +

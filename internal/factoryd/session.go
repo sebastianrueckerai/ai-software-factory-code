@@ -56,35 +56,54 @@ func (r *SessionRecorder) Snapshot(ctx context.Context, findings []string, resta
 	return r.store.UpdateSession(ctx, r.id, findings, restartState)
 }
 
-// SupervisorTail is the history's last events within n bytes, whole
-// lines, as the supervisor reads them beside its digest and messages
-// (roadmap 201): no supervisor event, whose guidance the messages carry,
-// no command's output and no checkpoint's patch, the digest carrying the
-// failures' outputs and the diff so far.
-func (r *SessionRecorder) SupervisorTail(n int) string {
-	b := r.history.Bytes()
-	var lines [][]byte
-	size := 0
-	for end := len(b); end > 0; {
-		start := bytes.LastIndexByte(b[:end-1], '\n') + 1
+// SupervisorTail is the history's last events within n bytes as the
+// supervisor reads them beside its digest and messages (roadmap 201): no
+// supervisor event, whose guidance the messages carry; no command's
+// output and no checkpoint's patch, the digest carrying the failures'
+// outputs and the diff so far; no model call's tokens and cost, which no
+// decision reads.
+func (r *SessionRecorder) SupervisorTail(n int) json.RawMessage {
+	return jsonlTail(r.history.Bytes(), n, func(line []byte) []byte {
 		var ev harness.Event
-		err := json.Unmarshal(b[start:end], &ev)
-		end = start
-		if err != nil || ev.Kind == harness.EventSupervisor {
-			continue
+		if json.Unmarshal(line, &ev) != nil || ev.Kind == harness.EventSupervisor {
+			return nil
 		}
 		switch ev.Kind {
 		case harness.EventCommand:
 			delete(ev.Detail, "output")
 		case harness.EventCheckpoint:
 			delete(ev.Detail, "patch")
+		case harness.EventModelCall:
+			delete(ev.Detail, "tokens")
+			delete(ev.Detail, "cost")
 		}
-		line, _ := json.Marshal(ev)
-		if size += len(line) + 1; size > n {
+		out, _ := json.Marshal(ev)
+		return out
+	})
+}
+
+// jsonlTail is JSONL b's last lines as one JSON array of at most n bytes,
+// so a model reads them as JSON, not escaped into a string: each line
+// whole and as keep makes it, nil leaving it out; a line that is no JSON
+// value is left out.
+func jsonlTail(b []byte, n int, keep func(line []byte) []byte) json.RawMessage {
+	var lines [][]byte
+	size := len("[")
+	for end := len(b); end > 0; {
+		start := bytes.LastIndexByte(b[:end-1], '\n') + 1
+		line := bytes.TrimSpace(b[start:end])
+		end = start
+		if !json.Valid(line) {
+			continue
+		}
+		if line = keep(line); line == nil {
+			continue
+		}
+		if size += len(line) + len(","); size > n {
 			break
 		}
-		lines = append(lines, append(line, '\n'))
+		lines = append(lines, line)
 	}
 	slices.Reverse(lines)
-	return string(bytes.Join(lines, nil))
+	return json.RawMessage("[" + string(bytes.Join(lines, []byte(","))) + "]")
 }

@@ -962,7 +962,10 @@ func (t *taskRun) lifecycle() (string, error) {
 	if t.cfg.Task.Stronger {
 		model = t.cfg.Models.Stronger
 	}
-	var findings []string
+	// findings come from outside the sessions (a verification, a human, the
+	// issue's author); own are the newest unpushed session's own lines,
+	// which replace an earlier session's
+	var findings, own []string
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
@@ -976,7 +979,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
-		findings, reason = v.findings, v.reason
+		findings, own, reason = v.findings, nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
 			t.grant(&u)
@@ -1013,7 +1016,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached, nil)
+		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), capReached, nil)
 		if final != "" {
 			return final, why
 		}
@@ -1182,7 +1185,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, findings), capReached, nil)
+				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), capReached, nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
@@ -1225,7 +1228,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Model: model,
-			Findings: findings, Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
+			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
@@ -1290,27 +1293,29 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.finish("done", acceptanceReason(res.Acceptance))
 		}
 		// a session that ends without a push hands on the findings it was
-		// given with its own: the next one may be the first to act on them
-		carried := slices.Concat(findings, res.Findings)
+		// given with its own lines: the next one may be the first to act on
+		// them, and an earlier session's lines are stale. One that never
+		// started has no lines of its own.
+		if !res.StartFailed {
+			own = res.Findings
+		}
 		switch res.Outcome {
 		case OutcomeWallClock:
 			if t.keepWork < versionKeepWork {
 				return t.finish("failed", "wall-clock cap reached")
 			}
-			findings = carried
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
 			continue
 		case OutcomeRetryStronger:
 			// at the top rung this is a redirect: Stronger stays Stronger
-			model, findings = t.cfg.Models.Stronger, carried
+			model = t.cfg.Models.Stronger
 			if t.v18 >= versionSessionCap {
 				t.sessionReturn(res, attempt, last)
 			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused:
-			findings = carried
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
@@ -1323,7 +1328,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				if final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(carried, answer...)
+				findings = append(findings, answer...)
 				t.grantPoster(&u)
 				continue
 			}
@@ -1335,7 +1340,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(carried, answer...)
+			findings = append(findings, answer...)
 			t.grant(&u)
 			continue
 		}

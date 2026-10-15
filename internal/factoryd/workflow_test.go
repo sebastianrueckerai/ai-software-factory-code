@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -485,7 +486,8 @@ func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 
 // Ruling 177: sessions that run out of attempts without a pushed commit
 // open the card with every finding so far; the answer buys one more
-// session, which starts with every finding the sessions handed on.
+// session, which starts with the last session's own findings, the
+// earlier ones' being stale (roadmap 201).
 func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
@@ -512,7 +514,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	}
 	fourth := h.sessions[3]
 	if fourth.Attempt != 4 || fourth.Model != "factory/coding-frontier" || fourth.ParentSessionID != "s3" ||
-		!slices.Equal(fourth.Findings, []string{"f1", "f2", "f3"}) ||
+		!slices.Equal(fourth.Findings, []string{"f3"}) ||
 		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReached + `": the key is blocked, use the other one`}) {
 		t.Fatalf("fourth attempt = %+v", fourth)
 	}
@@ -1718,10 +1720,11 @@ func TestWorkflowSessionThatCannotStartTakesNoAgentTime(t *testing.T) {
 	}
 }
 
-// A session that ends without a push hands on the findings it was given:
-// the red checks a session was sent to fix reach the next session with
-// the line that says how the first one ended, and after a supervisor's
-// climb and a human's answer they are still there.
+// A session that ends without a push hands on the findings it was given
+// from outside the sessions, with its own lines in place of an earlier
+// session's (roadmap 201): the red checks a session was sent to fix reach
+// every next session, after a supervisor's climb and a human's answer
+// too, and a session's own lines reach the next one only.
 func TestWorkflowUnpushedSessionHandsOnItsFindings(t *testing.T) {
 	cfg := testWorkflowConfig
 	cfg.MaxSessions = 6
@@ -1740,11 +1743,83 @@ func TestWorkflowUnpushedSessionHandsOnItsFindings(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.sessions) != 5 {
 		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
 	}
-	want := [][]string{nil, red, {red[0], died}, {red[0], died, "supervisor: looped on go test"}, {red[0], died, "supervisor: looped on go test"}}
+	want := [][]string{nil, red, {red[0], died}, {red[0], "supervisor: looped on go test"}, red}
 	for i, w := range want {
 		if !slices.Equal(h.sessions[i].Findings, w) {
 			t.Errorf("session %d findings = %q, want %q", i+1, h.sessions[i].Findings, w)
 		}
+	}
+}
+
+// Roadmap 201: a review's findings outlast any run of unpushed sessions,
+// which hand on only the newest one's own lines: after three unpushed
+// sessions of 25 lines each the fifth session gets the review's 10 and
+// the fourth's 25, and its FINDINGS, at most 60, holds every review line.
+// Carrying every session's lines (85) would leave out the 25 oldest, the
+// review's first.
+func TestWorkflowReviewFindingsOutlastUnpushedSessions(t *testing.T) {
+	cfg := testWorkflowConfig
+	cfg.MaxSessions = 6
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	var review []string
+	for i := range 10 {
+		review = append(review, fmt.Sprintf("main.go: finding %d", i))
+	}
+	lines := func(session int) []string {
+		var l []string
+		for i := range 25 {
+			l = append(l, fmt.Sprintf("s%d: ran x%d", session, i))
+		}
+		return l
+	}
+	h.onSessions(pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Findings: lines(2)},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Findings: lines(3)},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s4", Findings: lines(4)},
+		pushed("s5", "c5"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "three faults", Findings: review}, nil
+			}
+			return Review{}, nil
+		})
+	h.signalAfter(8*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 5 {
+		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
+	}
+	if got, want := h.sessions[4].Findings, slices.Concat(review, lines(4)); !slices.Equal(got, want) {
+		t.Fatalf("fifth session's findings = %q, want %q", got, want)
+	}
+	pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, sessionSpec{id: "s-5", findings: h.sessions[4].Findings})
+	var carried []string
+	if err := json.Unmarshal([]byte(containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["FINDINGS"]), &carried); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range review {
+		if !slices.Contains(carried, r) {
+			t.Errorf("FINDINGS lacks the review's %q: %q", r, carried)
+		}
+	}
+}
+
+// A session that never started has no lines of its own: the next session
+// gets the lines of the last one that ran (roadmap 201).
+func TestWorkflowSessionThatCannotStartKeepsTheLastLines(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Findings: []string{"ran x"}},
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: startEscalation("image pull", "push the worker image", "not found"), StartFailed: true},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the image is pushed", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
+	}
+	if got := h.sessions[2].Findings; !slices.Equal(got, []string{"ran x"}) {
+		t.Fatalf("third session's findings = %q, want the first's lines", got)
 	}
 }
 
@@ -1904,8 +1979,8 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 // Ruling 118: every human answer of the task travels with every later
 // session as its own list, newest first, not as a finding, each with the
 // question it answers (the escalation's first line): after two
-// escalations the third session carries both answers, and the findings
-// both sessions handed on.
+// escalations the third session carries both answers, and the second
+// session's own findings.
 func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(
@@ -1923,13 +1998,13 @@ func TestWorkflowKeepsEveryHumanAnswer(t *testing.T) {
 	if s := h.sessions[1]; !slices.Equal(s.Answers, []string{`sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran x"}) {
 		t.Fatalf("second session = %+v", s)
 	}
-	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{`sebastian, to "which text?": write ok`, `sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran x", "ran y"}) {
+	if s := h.sessions[2]; !slices.Equal(s.Answers, []string{`sebastian, to "which text?": write ok`, `sebastian, to "which file?": docs/a.txt`}) || !slices.Equal(s.Findings, []string{"ran y"}) {
 		t.Fatalf("third session = %+v", s)
 	}
 }
 
 // Workflows started before versionAnswers keep an answer as a finding,
-// handed on with the sessions' own findings.
+// handed on before the last session's own findings.
 func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnGetVersion("answers", workflow.DefaultVersion, versionAnswers).Return(workflow.DefaultVersion)
@@ -1945,8 +2020,8 @@ func TestWorkflowDefaultVersionAnswersAsFindings(t *testing.T) {
 	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
 		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
 	}
-	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"ran x", "human sebastian answered the escalation: docs/a.txt",
-		"ran y", "human sebastian answered the escalation: write ok"}) {
+	if s := h.sessions[2]; s.Answers != nil || !slices.Equal(s.Findings, []string{"human sebastian answered the escalation: docs/a.txt",
+		"human sebastian answered the escalation: write ok", "ran y"}) {
 		t.Fatalf("third session = %+v", s)
 	}
 }

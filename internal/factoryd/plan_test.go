@@ -217,6 +217,16 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 	}
 }
 
+// Roadmap 201: the harness reads AGENTS.md into every session itself, so
+// the planner's guide does not ask for it.
+func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
+	for _, shape := range []policy.PlanShape{testShape, {MaxCards: 12}} {
+		if got := planGuide(shape, testLimits); strings.Contains(got, "AGENTS.md") {
+			t.Fatalf("planGuide = %q, want no AGENTS.md", got)
+		}
+	}
+}
+
 // The route-file rule stays in the prose: round2-design section 8 planned
 // the template's AGENTS.md line, but no template's AGENTS.md carries it,
 // so this sentence is the rule's only carrier.

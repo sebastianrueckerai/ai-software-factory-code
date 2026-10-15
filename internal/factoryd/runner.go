@@ -1365,12 +1365,13 @@ func envRoom(name string) int { return maxEnvString - len(name) - len("=") - len
 
 // The carried caps (roadmap 201): the most of each list a card's sessions
 // build up that a session's models read, the oldest left out first, as a
-// session keeps its own last 20 findings (noteFinding): room for a
-// review's findings and two sessions' own lines, and for 20 answers of
-// each kind. They bound the context, envFit the bytes exec carries: it
-// trims a capped list only when its entries are long (20 answers of
-// MaxAnswer take about 90 KiB, a finding has no bound of its own), and
-// one note counts what both left out.
+// session keeps its own last 20 findings (noteFinding): room for the
+// findings from outside the sessions and the one session's own lines the
+// workflow carries, and for 20 answers of each kind. They bound the
+// context, envFit the bytes exec carries: it trims a capped list only
+// when its entries are long (20 answers of MaxAnswer take about 90 KiB, a
+// finding has no bound of its own), and one note counts what both left
+// out.
 const (
 	maxCarriedFindings = 60
 	maxCarriedAnswers  = 20

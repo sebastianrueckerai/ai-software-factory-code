@@ -240,7 +240,7 @@ type SupervisorInput struct {
 	Brief  harness.TaskBrief `json:"brief"`
 	Trip   TripReport        `json:"trip"`
 	Digest ProgressDigest    `json:"digest"`
-	Record string            `json:"record"` // the session record's last events, JSONL (SessionRecorder.SupervisorTail)
+	Record json.RawMessage   `json:"record"` // the session record's last events, a JSON array (SessionRecorder.SupervisorTail)
 	Model  string            `json:"model"`
 	Calls  int               `json:"supervisor_call"`
 	// Messages: the guidance this session's earlier messages delivered
@@ -296,7 +296,7 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 
 // Chat is one JSON-mode call of alias through the gateway on the task's
 // account for purpose, with system as the system prompt and input,
-// indented JSON, as the user message, cut after timeout (the task's
+// compact JSON, as the user message, cut after timeout (the task's
 // limits.supervisor_timeout: a reasoning model thinks before it answers);
 // deployment is the one that answered, as the gateway names it. A gateway
 // refusal is a *policy.Refusal in the chain; alias "" (the policy names
@@ -309,7 +309,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 	if err != nil {
 		return "", "", err
 	}
-	user, err := json.MarshalIndent(input, "", " ")
+	user, err := json.Marshal(input)
 	if err != nil {
 		return "", "", err
 	}

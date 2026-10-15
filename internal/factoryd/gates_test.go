@@ -321,7 +321,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	for _, want := range []string{"Add a make check target", "+check:", `"Class": "normal"`} {
+	for _, want := range []string{"Add a make check target", "+check:", `"Class":"normal"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %q: %s", want, user)
 		}
@@ -381,6 +381,26 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 	if !strings.Contains(user, "a  b") {
 		t.Fatalf("review input lost the visible objective: %s", user)
+	}
+}
+
+// Roadmap 201: the review reads the objective without the intake's Size
+// and Rung lines, the card's fields, as every model brief does.
+func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
+	task := gateTask
+	task.Objective = "Add a make check target\n\nCI needs it.\n\nSize: small\nRung: cheap, routine"
+	r, _, _ := newGateRunner(t, task, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Brief.Objective != "Add a make check target\n\nCI needs it." {
+		t.Fatalf("review objective = %q, want it without the Size and Rung lines", in.Brief.Objective)
 	}
 }
 
@@ -526,24 +546,24 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				part, file, other, prompt string
 				keys                      []string
 			}{
-				{`"part": "file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
+				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
 					[]string{"brief", "concurrency", "diff", "files", "gates", "head", "part", "pull_request"}},
-				{`"part": "file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
+				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
 				user := userMessage(ll.chats[i])
 				if !strings.Contains(user, want.part) || !strings.Contains(user, want.file) || strings.Contains(user, want.other) ||
-					!strings.Contains(user, `"files": "a.go +2 -0 (part 1)\nb.go +1 -0 (part 2)"`) {
+					!strings.Contains(user, `"files":"a.go +2 -0 (part 1)\nb.go +1 -0 (part 2)"`) {
 					t.Fatalf("call %d lacks its part, its file or the file list, or carries the other file's diff: %s", i+1, user[:min(len(user), 2000)])
 				}
 				if keys := inputKeys(t, ll.chats[i]); !slices.Equal(keys, want.keys) || systemMessage(ll.chats[i]) != want.prompt {
 					t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(ll.chats[i]) == want.prompt, want.keys)
 				}
 			}
-			if first := userMessage(ll.chats[0]); !strings.Contains(first, `"concurrency": "`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
+			if first := userMessage(ll.chats[0]); !strings.Contains(first, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
 				t.Fatalf("the first call lacks the whole diff's concurrency summary: %s", first[:min(len(first), 2000)])
 			}
-			if second := userMessage(ll.chats[1]); !strings.Contains(second, `"objective": "Add a make check target"`) {
+			if second := userMessage(ll.chats[1]); !strings.Contains(second, `"objective":"Add a make check target"`) {
 				t.Fatalf("the second call lacks the objective: %s", second[:min(len(second), 2000)])
 			}
 			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Read in 2 parts, 2 files, 60 KiB.") || !strings.Contains(fj.comments[0], "Verdict: **"+tc.verdict+"**") {
@@ -564,7 +584,7 @@ func TestModelReviewOfOnePartHasNoLabel(t *testing.T) {
 	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || rv.Summary != "ok" || rv.StrictImprovement != nil {
 		t.Fatalf("review = %+v", rv)
 	}
-	if user := userMessage(ll.chats[0]); len(ll.chats) != 1 || strings.Contains(user, `"part"`) || strings.Contains(user, `"files"`) || !strings.Contains(user, `"concurrency": "none"`) {
+	if user := userMessage(ll.chats[0]); len(ll.chats) != 1 || strings.Contains(user, `"part"`) || strings.Contains(user, `"files"`) || !strings.Contains(user, `"concurrency":"none"`) {
 		t.Fatalf("calls %d, user %s", len(ll.chats), user)
 	}
 	if !strings.Contains(fj.comments[0], "Read in 1 part, 1 file, 2 KiB.") {

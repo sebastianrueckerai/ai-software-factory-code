@@ -233,7 +233,7 @@ func testInput() SupervisorInput {
 		Brief:   harness.TaskBrief{Objective: "make loopcheck pass", Repository: "sf/r", SHA: "abc"},
 		Trip:    TripReport{Detector: TripSameFailure, Detail: "`sh loop.sh` failed 3 times"},
 		Digest:  ProgressDigest{Files: map[string]int{}},
-		Record:  `{"kind":"command"}`,
+		Record:  json.RawMessage(`[{"kind":"command"}]`),
 		Model:   "factory/coding-cheap",
 		Calls:   1,
 		MaxCall: 3,
@@ -263,10 +263,14 @@ func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
 		t.Fatalf("messages = %v", msgs)
 	}
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	for _, want := range []string{"make loopcheck pass", "same_failure", "failed 3 times", `"record"`} {
+	for _, want := range []string{"make loopcheck pass", "same_failure", "failed 3 times", `"record":[{"kind":"command"}]`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("user message lacks %q: %s", want, user)
 		}
+	}
+	// roadmap 201: compact JSON, the record's lines JSON of their own
+	if want := jsonOf(testInput()); user != want {
+		t.Fatalf("user message = %s, want the compact %s", user, want)
 	}
 }
 
