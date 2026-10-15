@@ -81,6 +81,8 @@ func escalationSource(reason string) string {
 		return "project_cap"
 	case strings.HasPrefix(reason, dayCapReached):
 		return "day_cap"
+	case strings.HasPrefix(reason, splitCapped):
+		return "split_cap"
 	case strings.HasPrefix(reason, providerRefused):
 		return "provider"
 	case strings.HasPrefix(reason, budgetRefused):
@@ -181,6 +183,13 @@ func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
 		 WHERE task_id = $1 AND kind = $4 AND verdict IS NULL`, taskID, verdict, by, kind)
+	return err
+}
+
+func (s *PGStore) JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE alerts SET verdict = $3, resolved_by = $4, resolved_at = now()
+		 WHERE task_id = $1 AND kind = $5 AND source = $2 AND verdict IS NULL`, taskID, source, verdict, by, AlertEscalation)
 	return err
 }
 

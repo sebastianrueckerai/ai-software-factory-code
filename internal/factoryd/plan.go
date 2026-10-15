@@ -127,6 +127,9 @@ type PlanResult struct {
 	// StartFailed: the session could not start (Escalate says why). No
 	// planner ran, so it took no agent time and is no attempt.
 	StartFailed bool `json:",omitempty"`
+	// Capped: the gateway refused a model call of the session at a cap
+	// (versionDayCap); Findings say it as a run from before reads them.
+	Capped *CapRefusal `json:",omitempty"`
 }
 
 // maxPlanEcho bounds the last message a planner answered without a plan,
@@ -1038,6 +1041,11 @@ func (t *taskRun) planLoop() (string, error) {
 	var carried []string
 	reason := "no session answered a plan"
 	refusals := 0 // refused sessions in a row (versionSessionRefusals)
+	// day is the wait on the day cap the next ask holds (versionDayCap)
+	var day *dayWait
+	if healed && t.dayCap >= versionDayCap && st.DayCap != "" && workflow.Now(t.ctx).Before(st.DayCapUntil) {
+		ask, day = st.DayCap, &dayWait{until: st.DayCapUntil, model: t.cfg.Models.Stronger}
+	}
 	// the comment the running or next session answers: writers' comments
 	// newer than it ask for changes
 	floor := t.escalation
@@ -1056,14 +1064,16 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		healed = false
 		if wait {
-			final, why, next := t.awaitPlan(&ref, floor)
+			final, why, next := t.awaitPlan(&ref, floor, day)
 			if final != "" {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
-			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
+			// a writer's comment at the cap buys a session, the day's turn none
+			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts && !day.over() {
 				t.grant(&u)
 			}
+			day = nil
 			continue
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
@@ -1094,7 +1104,9 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 			continue
 		}
-		if !res.StartFailed {
+		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil
+		// a session the day cap refused at its first call is no attempt
+		if !res.StartFailed && !(capped && res.Capped.Decision == policy.RefusedDayCap && !res.Capped.Allowed) {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 			u.Attempts++
@@ -1122,6 +1134,17 @@ func (t *taskRun) planLoop() (string, error) {
 			continue
 		case res.StartFailed:
 			reason, ask, carried = "the planner session could not start", res.Escalate, findings
+			continue
+		case capped:
+			// the next session starts with the same findings, once a human
+			// answers or, at the day cap, the wait ends on its own
+			reason = "the gateway refused the planner session at a cap"
+			if until := res.Capped.until(); until.IsZero() || workflow.Now(t.ctx).Before(until) {
+				ask, carried = res.Capped.reason(), findings
+				if !until.IsZero() {
+					day = &dayWait{until: until, model: t.cfg.Models.Stronger}
+				}
+			}
 			continue
 		case res.Escalate != "":
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
@@ -1229,8 +1252,11 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // files its cards and ends the task done; a refused acceptance, a
 // writer's comment and the rest of its burst (versionPlanBurst), or the
 // answer that leaves no question of the revision open
-// (versionPlanAnswers) goes back to the planner.
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findings []string) {
+// (versionPlanAnswers) goes back to the planner, as does the end of day, a
+// wait on the day cap, on its own (versionDayCap).
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string) {
+	day.start(t)
+	defer day.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
@@ -1260,6 +1286,7 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 		for _, n := range wake {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
+		day.add(sel)
 		sel.Select(t.ctx)
 		heard, stop := pass()
 		if stop || len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
@@ -1268,7 +1295,7 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 			}
 			return "", "", findings
 		}
-		if answered || len(findings) > 0 {
+		if answered || len(findings) > 0 || day.over() {
 			return "", "", findings
 		}
 	}
@@ -1436,7 +1463,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
-	return PlanResult{Findings: found}, nil
+	return PlanResult{Findings: found, Capped: end.capped}, nil
 }
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of

@@ -731,6 +731,40 @@ func TestHeadroomIsUTC(t *testing.T) {
 	}
 }
 
+// DayFree is the day's figure FreeHeadroom fits a hold into: the cap less
+// the UTC day's ledger, standing lines left out, less every outstanding
+// hold, whoever holds it. Hand-derived at 2026-10-01 05:00 UTC: a cap of 1
+// less 0.04 spent and 0.005 + 0.01 held is 0.945; 30 on 2026-09-30 and a
+// standing 10 do not count.
+func TestDayFree(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	at := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
+	defer func(was func() time.Time) { now = was }(now)
+	now = func() time.Time { return at }
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES ('z', 5, 0, 'running'), ('w', 5, 0, 'waiting-human');
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('sep', '2026-09-30', 'model', 'x', 30), ('oct', '2026-10-01', 'model', 'x', 0.04),
+			('standing:sf/app', '2026-10-01', 'standing', 'resource/1', 10);
+		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('z', 'model', 'x', 0.005, now() + interval '1 hour'),
+			('w', 'model', 'x', 0.01, now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	free, err := DayFree(ctx, db, 1, at)
+	if err != nil || !near(free, 0.945) {
+		t.Fatalf("DayFree = (%v, %v), want 0.945", free, err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	f, err := FreeHeadroom(ctx, tx, HoldRequest{TaskID: "z", DayEUR: 1, MonthEUR: 50, ProjectEUR: inf})
+	if err != nil || !near(f.Day, free) {
+		t.Fatalf("FreeHeadroom's day = (%v, %v), want DayFree's %v", f.Day, err, free)
+	}
+}
+
 func near(a, b float64) bool { return a-b < 1e-12 && b-a < 1e-12 }
 
 // A task that is not working (queued, waiting-human, closing, done, failed)

@@ -2109,6 +2109,70 @@ type stubPrices struct {
 
 func (p stubPrices) Price(context.Context, string) (policy.Price, error) { return p.price, p.err }
 
+// A wait on the day cap ends at the day's turn, or once the day's free
+// headroom, every hold netted, fits a session's start: 1024 output tokens
+// at 1.5e-5 EUR, 0.01536 EUR. The end resolves the task's open day-cap
+// escalations, real and the factory's, and leaves its other ones open.
+// Hand-derived for a day cap of 40: 39.99 spent leaves 0.01, which fits
+// 666 tokens, too few; 39.98 leaves 0.02, 1333 tokens.
+func TestDayResume(t *testing.T) {
+	store := newFakeStore()
+	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "agent", TaskID: "t1"},
+		{ID: 3, Kind: AlertEscalation, Source: "day_cap", TaskID: "t2"}}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}}}}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5}}, Policy: func() policy.Version { return v }}}
+	ctx := context.Background()
+	verdicts := func() []string {
+		var out []string
+		for _, a := range store.alertRows() {
+			out = append(out, a.Verdict+"/"+a.ResolvedBy)
+		}
+		return out
+	}
+	store.daySpent = 39.99
+	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || ok || !slices.Equal(verdicts(), []string{"/", "/", "/"}) {
+		t.Fatalf("0.01 EUR free: (%v, %v), alerts %q; want the wait on, no alert judged", ok, err, verdicts())
+	}
+	store.daySpent = 39.98
+	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "/"}) {
+		t.Fatalf("0.02 EUR free: (%v, %v), alerts %q; want the wait's end and t1's day-cap alert judged", ok, err, verdicts())
+	}
+	store.daySpent = 63.44
+	if ok, err := r.DayResume(ctx, "t2", "factory/coding-frontier", true); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "real/factoryd"}) {
+		t.Fatalf("the turn: (%v, %v), alerts %q; want the wait's end however spent the old day", ok, err, verdicts())
+	}
+	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
+	store.daySpent = 0
+	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || ok {
+		t.Fatalf("unpriced: (%v, %v), want the wait on to the turn", ok, err)
+	}
+}
+
+// A healed run reads the day cap's wait from the task's last escalation:
+// its reason, and the turn of the escalation's UTC day; any later
+// escalation, or a split's at the day cap, asks otherwise.
+func TestDayCapWait(t *testing.T) {
+	reason := dayCapRefused(policy.Refusal{Reason: "spent"}, oct(15, 0, 0))
+	esc := func(body string, at time.Time) IntakeEvent {
+		return IntakeEvent{Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}
+	}
+	comment := IntakeEvent{Kind: "issue_comment", Body: "hm", CreatedAt: oct(14, 21, 0)}
+	for name, tc := range map[string]struct {
+		events []IntakeEvent
+		reason string
+		until  time.Time
+	}{
+		"the day cap's":     {[]IntakeEvent{esc("The agent asks: x", oct(14, 18, 0)), esc(reason, oct(14, 20, 43)), comment}, reason, oct(15, 0, 0)},
+		"a later question":  {[]IntakeEvent{esc(reason, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
+		"a split's":         {[]IntakeEvent{esc(splitCap(dayRefusal), oct(14, 20, 43))}, "", time.Time{}},
+		"no escalation yet": {[]IntakeEvent{comment}, "", time.Time{}},
+	} {
+		if got, until := dayCapWait(tc.events); got != tc.reason || !until.Equal(tc.until) {
+			t.Errorf("%s: (%q, %v), want (%q, %v)", name, got, until, tc.reason, tc.until)
+		}
+	}
+}
+
 // askedPrices records the aliases asked.
 type askedPrices struct {
 	price   policy.Price

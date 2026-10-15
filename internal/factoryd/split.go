@@ -177,7 +177,7 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 	}
 	if len(found) > 0 {
 		r.record(ctx, taskID, "split_invalid", map[string]any{"findings": found})
-		return PlanResult{Findings: found}, nil
+		return PlanResult{Findings: found, Capped: end.capped}, nil
 	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
@@ -288,6 +288,9 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 		case res.StartFailed:
 			// a second session could not start either
 			ask = res.Escalate
+		case res.Capped != nil && t.dayCap >= versionDayCap:
+			// nor could a second spend
+			ask = splitCap(*res.Capped)
 		case len(res.Findings) > 0:
 			findings = res.Findings
 		default:

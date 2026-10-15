@@ -430,6 +430,27 @@ func TestSplitThatCannotStartAsksAHumanAtOnce(t *testing.T) {
 	}
 }
 
+// A split whose session the gateway refused at a cap asks a human at once
+// with the refusal and when the day cap lets a split run again, instead of
+// a second session no cap would let spend; the approval wait goes on.
+func TestSplitAtACapAsksAHumanAtOnce(t *testing.T) {
+	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: "free headroom -1.000000 EUR"}, At: time.Date(2026, 10, 14, 20, 43, 0, 0, time.UTC)}
+	g, calls := newSplitHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &capped})
+	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})
+	g.signalAfter(3*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v", final, g.finals)
+	}
+	ask := "the gateway refused the split's session at a cap (refused_day_cap): split the pull request again once the day's free headroom funds a session, " +
+		"at the latest when the UTC day turns at 2026-10-15T00:00:00Z, or approve or deny it.\nfree headroom -1.000000 EUR"
+	if !slices.Equal(*calls, []string{"run factory/coding-frontier 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
+		t.Fatalf("calls %q, escalated %q; want one session and the cap asked", *calls, g.escalated)
+	}
+	if got := escalationSource(ask); got != "split_cap" {
+		t.Fatalf("escalation source = %q, want split_cap", got)
+	}
+}
+
 // A split that arrives with a change request is dropped with the stale
 // approvals: the change request sends the card back to its agent, and the
 // next approval request, for the new head, splits nothing on its own.

@@ -622,6 +622,10 @@ func (s *PGStore) TaskFree(ctx context.Context, taskID string) (policy.TaskFree,
 	return policy.ReadTaskFree(ctx, s.db, taskID)
 }
 
+func (s *PGStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
+	return policy.DayFree(ctx, s.db, dayEUR, time.Now())
+}
+
 // CallTotals sums the tasks' audit call rows — their tokens and modeled
 // pay-as-you-go cost to date, and the credits the GLM Coding Plan derives
 // from the tokens of each deployment that answered — in one query, with

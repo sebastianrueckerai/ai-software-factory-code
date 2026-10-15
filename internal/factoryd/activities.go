@@ -128,6 +128,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityProviderWait:                r.ProviderWait,
 		ActivityAlertPreCheck:               r.AlertPreCheck,
 		ActivityAttemptFunded:               r.AttemptFunded,
+		ActivityDayResume:                   r.DayResume,
 		ActivityRunSplit:                    r.RunSplit,
 		ActivityFileSplit:                   r.FileSplit,
 	} {
@@ -392,9 +393,7 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 	if err != nil {
 		return "", err
 	}
-	if _, err := policy.Fit(policy.Free{Task: free.Free(),
-		Day: math.Inf(1), Month: math.Inf(1), Project: math.Inf(1)},
-		policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: model, Price: price}); err == nil {
+	if startFits(policy.Free{Task: free.Free(), Day: math.Inf(1), Month: math.Inf(1), Project: math.Inf(1)}, taskID, model, price) {
 		return "", nil
 	}
 	state := fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", free.Headroom, t.BudgetEUR)
@@ -408,6 +407,45 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 	// at 300 characters: it carries the actions, the state follows
 	return fmt.Sprintf("%s: %s\n%s, and the cheapest call on %s needs %.6f EUR (%d output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run.",
 		budgetRefused, act, state, model, float64(policy.MinCallTokens)*price.Out, policy.MinCallTokens), nil
+}
+
+// startFits says free headroom f fits the cheapest call of model, a
+// session's start as the attempt's floor prices it.
+func startFits(f policy.Free, taskID, model string, price policy.Price) bool {
+	_, err := policy.Fit(f, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: model, Price: price})
+	return err == nil
+}
+
+// DayResume reports whether a wait on the day cap ends (versionDayCap): at
+// the UTC day's turn (turned), or once the day's free headroom under the
+// budget.day_eur in force, every outstanding hold netted as the gateway
+// nets it, fits a session's start on model (startFits). An unpriced model
+// waits for the turn. An end resolves the task's open day-cap escalation
+// alerts, real and the factory's, and is on the timeline.
+func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
+	why := "the UTC day turned"
+	if !turned {
+		if r.cfg.Prices == nil {
+			return false, nil
+		}
+		price, err := r.cfg.Prices.Price(ctx, aliasOf(model))
+		if err != nil {
+			return false, nil
+		}
+		free, err := r.store.DayFree(ctx, r.cfg.Policy().Document.Budget.DayEUR)
+		if err != nil {
+			return false, err
+		}
+		if !startFits(policy.Free{Task: math.Inf(1), Day: free, Month: math.Inf(1), Project: math.Inf(1)}, taskID, model, price) {
+			return false, nil
+		}
+		why = fmt.Sprintf("the day's free headroom of %.6f EUR funds a session", free)
+	}
+	if err := r.store.JudgeEscalations(ctx, taskID, "day_cap", VerdictReal, FactoryDecider); err != nil {
+		return false, err
+	}
+	r.record(ctx, taskID, "day_cap_resumed", map[string]any{"why": why})
+	return true, nil
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -542,7 +580,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if res.Outcome != OutcomePushed {
 		// no later session could spend: at a month cap a human raises it
 		// or waits for the month to end; at the day cap the card waits for
-		// the day to turn
+		// the day's headroom
 		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
@@ -550,10 +588,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		switch {
 		case refused == nil:
 		case refused.Decision == policy.RefusedDayCap:
-			res.Outcome, res.Until = OutcomeDayCap, dayTurn(refused.At)
-			res.Reason = dayCapRefused(refused.Refusal, res.Until)
+			res.Outcome, res.Capped = OutcomeDayCap, refused
 		default:
-			res.Outcome, res.Reason = OutcomeEscalate, capRefused(refused.Refusal)
+			res.Outcome, res.Reason = OutcomeEscalate, refused.reason()
 		}
 	}
 	if res.Outcome == OutcomeNoPush {
@@ -764,7 +801,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
-	if strings.HasPrefix(reason, splitFailed) {
+	if strings.HasPrefix(reason, splitFailed) || strings.HasPrefix(reason, splitCapped) {
 		// the approval card answers it; the approval wait reads no reply
 		next = "Approve, deny or split it on the board."
 	}
@@ -772,8 +809,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		// no answer can run (ruling 322): the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
 	}
-	if strings.HasPrefix(reason, dayCapReached) {
-		next = "The task resumes on its own when the day turns, as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to fail the task."
+	if strings.HasPrefix(reason, dayCapResumes) {
+		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to fail the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
 		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
@@ -1260,6 +1297,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 	}
 	st.Answers, st.Question, st.Choices = answersFrom(events)
+	st.DayCap, st.DayCapUntil = dayCapWait(events)
 	st.Screening = waitsOnScreening(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,

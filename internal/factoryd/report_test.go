@@ -383,6 +383,34 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	}
 }
 
+// A report session the gateway refused at a cap answers the refusal
+// instead of failing the report task (roadmap 240): its model call's row,
+// not a tool call's, and whether a call of it was allowed before.
+func TestRunReportNamesACap(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), parentTask())
+	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}, At: oct(14, 20, 43), Allowed: true}
+	store.capRefusals = map[string]CapRefusal{"t1": month}
+	var res ReportResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(false, "the model call failed: refused_month_cap"))
+	if err := <-done; err != nil || res.Capped == nil || res.Capped.Refusal != month.Refusal || !res.Capped.At.Equal(month.At) || !res.Capped.Allowed ||
+		res.Comment != 0 || len(hub.comments) != 0 {
+		t.Fatalf("RunReport = %+v, %v, comments %q; want the month cap's refusal, no comment", res, err, hub.comments)
+	}
+}
+
 // A report session the provider refused at its first call answers the
 // refusal, with no comment (roadmap 155); the factory's own budget 402 is
 // no provider's: the session ends without a report as before.

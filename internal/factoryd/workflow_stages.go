@@ -35,6 +35,9 @@ type ReportResult struct {
 	// Refused: the provider refused the session's first call (Status 0:
 	// it did not).
 	Refused ProviderWait
+	// Capped: the gateway refused a model call of the session at a cap,
+	// and it left no report (versionDayCap).
+	Capped *CapRefusal `json:",omitempty"`
 }
 
 // screenedLine is all the issue of a suspect screening shows: its reasons
@@ -915,6 +918,13 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish(v.final, v.reason)
 	case err != nil:
 		return t.finish("failed", "report session: "+errMessage(err))
+	case res.Capped != nil && t.dayCap < versionDayCap:
+		return t.finish("failed", "report session: the report session ended without a report: "+res.Capped.reason())
+	case res.Capped != nil:
+		if final, why, _ := t.awaitCap(*res.Capped, model); final != "" {
+			return t.finish(final, why)
+		}
+		return t.report(stronger, refusals)
 	case res.Refused.Status != 0 && t.sessionRefusals < versionSessionRefusals:
 		return t.finish("failed", "report session: the report session ended without a report: "+res.Refused.Reason)
 	case res.Refused.Status != 0:

@@ -1872,6 +1872,38 @@ func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 	}
 }
 
+// A planner session the gateway refused at a cap answers the refusal
+// beside the findings a run from before the change reads (roadmap 240).
+func TestRunPlanNamesACap(t *testing.T) {
+	const said = "the model call failed: refused_day_cap"
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	store.capRefusals = map[string]CapRefusal{"t-plan": dayRefusal}
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(false, said))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "plan: the session ended without a last message: " + said}
+	if res.Capped == nil || res.Capped.Refusal != dayRefusal.Refusal || !res.Capped.At.Equal(dayRefusal.At) || !slices.Equal(res.Findings, want) {
+		t.Fatalf("result %+v, want the day cap's refusal and the findings %q", res, want)
+	}
+}
+
 // A planner session whose model call crossed its cost hold names the
 // call's state in its finding (roadmap 241): the tokens, the cost, the
 // hold and the fitting action reach the next planner session.
@@ -1906,6 +1938,47 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 			"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
 	if !slices.Equal(res.Findings, want) {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
+// A planner session the day cap refused at its first call is no attempt
+// (roadmap 240): the plan escalates with the refusal, waits for the day's
+// turn on its own and runs the planner again with the same findings; no
+// "no plan" round. A month's cap waits on a writer, whose comment the
+// planner gets, and the refused session counts.
+func TestPlanLoopWaitsOnACap(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &dayRefusal},
+		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.SetStartTime(oct(14, 20, 43))
+	var turns []time.Time
+	h.env.OnActivity(ActivityDayResume, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, model string, turned bool) (bool, error) {
+			if turned {
+				turns = append(turns, h.env.Now())
+			}
+			return turned, nil
+		})
+	h.signalAfter(6*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(turns, []time.Time{oct(15, 0, 0)}) {
+		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, turns)
+	}
+	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
+		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
+	}
+	if u := h.usage[len(h.usage)-1]; h.usage[0].Attempts != 0 || u.Attempts != 1 || u.AgentTime != planSession {
+		t.Fatalf("usage %+v, want the refused session no attempt, the second one", h.usage)
+	}
+
+	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
+	h = newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &month},
+		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
+	h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: go on"}) || h.usage[0].Attempts != 1 {
+		t.Fatalf("plans %q, usage %+v; want the writer's comment for the second session, the first counted", h.plans, h.usage)
 	}
 }
 

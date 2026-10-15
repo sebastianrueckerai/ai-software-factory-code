@@ -58,9 +58,11 @@ type fakeStore struct {
 	rolls        []RollRequest
 	liveSessions map[string]LiveSession
 	pauses       map[string]QueuePause
-	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task
+	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task;
+	// DayFree answers the day's cap less daySpent
 	monthSpend  MonthSpend
 	capRefusals map[string]CapRefusal
+	daySpent    float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	// held are TaskFree's outstanding holds by task (Held, Holds, Expires)
@@ -914,6 +916,23 @@ func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, 
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Source == source && a.Verdict == "" {
+			now := time.Now()
+			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
+			s.alerts[i] = a
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
+	return dayEUR - s.daySpent, nil
 }
 
 func (s *fakeStore) alertRows() []Alert {
@@ -1945,8 +1964,10 @@ func TestPGStoreMonthCap(t *testing.T) {
 	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 45, 0, 0, time.UTC)); err != nil || r != nil {
 		t.Fatalf("t's refusal since 00:45 = %+v, %v, want none", r, err)
 	}
-	if r, err := s.CapRefusal(ctx, "r", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r == nil || !strings.Contains(r.Reason, "reservation") {
-		t.Fatalf("r's refusal = (%+v, %v), want the reservation's", r, err)
+	// a reservation's worst case is refused while model calls still fit:
+	// no session is capped by it
+	if r, err := s.CapRefusal(ctx, "r", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r != nil {
+		t.Fatalf("r's refusal = (%+v, %v), want none: a tool call's", r, err)
 	}
 	if r, err := s.CapRefusal(ctx, "v", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r != nil {
 		t.Fatalf("v's refusal = %+v, %v, want none", r, err)
@@ -1969,11 +1990,33 @@ func TestPGStoreMonthCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, err := s.CapRefusal(ctx, "d", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
-	if err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedDayCap, Reason: "second"}) || !r.At.Equal(time.Date(2026, 10, 1, 23, 20, 0, 0, time.UTC)) {
-		t.Fatalf("d's refusal = (%+v, %v), want the day cap's second at 23:20 UTC", r, err)
+	if err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedDayCap, Reason: "second"}) || !r.At.Equal(time.Date(2026, 10, 1, 23, 20, 0, 0, time.UTC)) || r.Allowed {
+		t.Fatalf("d's refusal = (%+v, %v), want the day cap's second at 23:20 UTC, no call allowed", r, err)
 	}
 	if got := dayTurn(r.At); !got.Equal(time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)) {
 		t.Fatalf("the day of %v turns at %v, want 2026-10-02 00:00 UTC", r.At, got)
+	}
+	// an agent's call allowed before the refusal: the session made calls;
+	// a supervisor's allowed call is no session's
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, kind, ts) VALUES
+		('e', 'allowed', '', 'supervisor', '2026-10-01 22:00:00Z'), ('e', 'refused_day_cap', 'the day', 'agent', '2026-10-01 22:10:00Z'),
+		('f', 'allowed', '', 'agent', '2026-10-01 22:00:00Z'), ('f', 'refused_day_cap', 'the day', 'agent', '2026-10-01 22:10:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	for id, allowed := range map[string]bool{"e": false, "f": true} {
+		if r, err := s.CapRefusal(ctx, id, time.Date(2026, 10, 1, 21, 0, 0, 0, time.UTC)); err != nil || r == nil || r.Allowed != allowed {
+			t.Fatalf("%s's refusal = (%+v, %v), want allowed %v", id, r, err, allowed)
+		}
+	}
+	// a tool call refused at the day cap beside model calls that fit is no
+	// cap of the session's
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, tool, ts) VALUES
+		('g', 'allowed', '', '', '2026-10-01 22:00:00Z'), ('g', 'refused_day_cap', 'web search worst case', 'web_search', '2026-10-01 22:05:00Z'),
+		('g', 'allowed', '', '', '2026-10-01 22:10:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if r, err := s.CapRefusal(ctx, "g", time.Date(2026, 10, 1, 21, 0, 0, 0, time.UTC)); err != nil || r != nil {
+		t.Fatalf("g's refusal = (%+v, %v), want none: only a tool call was refused", r, err)
 	}
 	month := m.Month
 	// one alert per month and percent

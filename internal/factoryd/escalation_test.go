@@ -397,28 +397,33 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 }
 
 // A session the gateway refused at the day cap (card #784, 2026-10-14
-// 20:43Z) ends day_cap: its card names the refusal and waits for the UTC
-// day to turn, the next 00:00 UTC after the refusal, when the cap resets.
+// 20:43Z) ends day_cap with the refusal and whether the gateway allowed a
+// call of it before: its card names the refusal and resumes on its own,
+// once the day's headroom funds a session or at the next 00:00 UTC.
 func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
-	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal},
-		At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC)}}
+	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal}, At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC), Allowed: true}
+	store.capRefusals = map[string]CapRefusal{"t1": capped}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
 		resultLine(false, "the model call failed: 402 refused_day_cap"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	question := "the day cap is reached: the gateway refused this task's spend (refused_day_cap): the card waits for the UTC day to turn " +
-		"and resumes on its own at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml and answer to resume it sooner, or close the card."
-	if res.Outcome != OutcomeDayCap || !res.Until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) || res.Reason != question+"\n"+refusal {
-		t.Fatalf("result = %+v, want day_cap until 2026-10-15 00:00 UTC with the refusal", res)
+	if res.Outcome != OutcomeDayCap || res.Capped == nil || res.Capped.Refusal != capped.Refusal || !res.Capped.At.Equal(capped.At) || !res.Capped.Allowed {
+		t.Fatalf("result = %+v, want day_cap with the refusal", res)
 	}
-	if got := escalationQuestion(res.Reason); got != question {
+	question := "the day cap is reached: the gateway refused this task's spend (refused_day_cap): the card resumes on its own once the day's free headroom " +
+		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
+	reason := res.Capped.reason()
+	if reason != question+"\n"+refusal || !res.Capped.until().Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, res.Capped.until(), question+"\n"+refusal)
+	}
+	if got := escalationQuestion(reason); got != question {
 		t.Fatalf("question row = %q, want %q", got, question)
 	}
-	if got := escalationSource(res.Reason); got != "day_cap" {
+	if got := escalationSource(reason); got != "day_cap" {
 		t.Fatalf("escalation source = %q, want day_cap", got)
 	}
 }

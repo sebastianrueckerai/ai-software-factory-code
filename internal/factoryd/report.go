@@ -73,6 +73,9 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			return ReportResult{}, err
 		}
 		if text = end.report; text == "" {
+			if end.capped != nil {
+				return ReportResult{Capped: end.capped}, nil
+			}
 			if refused, err := r.providerRefusal(ctx, t.ID, began, end.why); err != nil || refused.Status != 0 {
 				return ReportResult{Refused: refused}, err
 			}
@@ -116,11 +119,13 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 
 // reportEnd is how a report-mode session ended. report is the agent's
 // last message, or why a stop ended it; with none, why says why the
-// session ended without one. escalate is a stop for a human; start, a
-// session that could not start, which leaves no report.
+// session ended without one, and capped is the gateway's refusal of its
+// model call at a cap. escalate is a stop for a human; start, a session
+// that could not start, which leaves no report.
 type reportEnd struct {
 	report, why, escalate string
 	start                 *startFailure
+	capped                *CapRefusal
 }
 
 // reportSession runs one worker in report mode, with guide, findings and
@@ -187,6 +192,9 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		}
 		if over != nil {
 			end.why = strings.TrimPrefix(end.why+"; "+over.state(), "; ")
+		}
+		if end.capped, err = r.store.CapRefusal(ctx, t.ID, startedAt); err != nil {
+			return reportEnd{}, err
 		}
 	}
 	outcome := "reported"

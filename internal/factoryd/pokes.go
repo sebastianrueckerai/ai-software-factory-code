@@ -31,7 +31,7 @@ var pokeKinds = []string{EventQuestionAsked, EventApprovalRequested, EventTaskEn
 	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted}
 
 // budgetSources are the escalation sources of a card stopped by money.
-var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap"}
+var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
 var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardMoved: "moved", EventPlanStarted: "started",

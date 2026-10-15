@@ -290,9 +290,11 @@ type Store interface {
 	// SetAgentSummary records the agent's last message of its latest
 	// pushed session.
 	SetAgentSummary(ctx context.Context, id, summary string) error
-	// CapRefusal is the task's newest refused_month_cap or
-	// refused_project_cap audit row since since, else its newest
-	// refused_day_cap, nil for none.
+	// CapRefusal is the task's newest model call since since the gateway
+	// refused at the month's or the project's cap, else at the day's, and
+	// whether a model call of the task's agent since was allowed; nil for
+	// none. A tool call's worst case is refused while smaller model calls
+	// still fit, so it stops no session.
 	CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error)
 	// ProviderRefusal is the reason of the task's agent's first model call
 	// since since when the gateway audited it error_upstream and no model
@@ -302,6 +304,9 @@ type Store interface {
 	// figures the gateway fits the task's next call into
 	// (policy.ReadTaskFree).
 	TaskFree(ctx context.Context, taskID string) (policy.TaskFree, error)
+	// DayFree is the UTC day's free headroom under dayEUR now, every
+	// outstanding hold netted (policy.DayFree).
+	DayFree(ctx context.Context, dayEUR float64) (float64, error)
 	// OverHoldCall is the task's agent's newest model call since since
 	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
 	// none.
@@ -389,6 +394,9 @@ type Store interface {
 	// JudgeTaskAlerts sets verdict on the task's alert rows of kind that
 	// have none.
 	JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by string) error
+	// JudgeEscalations sets verdict on the task's escalation alerts from
+	// source that have none.
+	JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error
 	// OpenReportTask creates report task t unless its parent has one of
 	// its source, and returns the parent's report task of that source.
 	OpenReportTask(ctx context.Context, t Task) (Task, error)
@@ -741,9 +749,11 @@ func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 func (s *PGStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error) {
 	var r CapRefusal
 	err := s.db.QueryRowContext(ctx,
-		`SELECT decision, reason, ts FROM audit WHERE task_id = $1 AND decision IN ($2, $3, $4) AND ts >= $5
+		`SELECT decision, reason, ts,
+		        EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $6 AND tool = '' AND decision = 'allowed' AND ts >= $5)
+		 FROM audit WHERE task_id = $1 AND tool = '' AND decision IN ($2, $3, $4) AND ts >= $5
 		 ORDER BY decision = $4, ts DESC, id DESC LIMIT 1`,
-		taskID, policy.RefusedMonthCap, policy.RefusedProjectCap, policy.RefusedDayCap, since).Scan(&r.Decision, &r.Reason, &r.At)
+		taskID, policy.RefusedMonthCap, policy.RefusedProjectCap, policy.RefusedDayCap, since, gateway.AuditKindAgent).Scan(&r.Decision, &r.Reason, &r.At, &r.Allowed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

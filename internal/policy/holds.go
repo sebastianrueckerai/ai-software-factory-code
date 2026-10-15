@@ -306,6 +306,24 @@ func MonthSpentSQL(at string) string {
 	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
 }
 
+// daySpentSQL is the spend over the ledger on the UTC day of at, a
+// timestamptz expression, standing lines left out; heldSQL is every
+// outstanding hold, which counts against the day and the month.
+func daySpentSQL(at string) string {
+	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day = (` + at + ` AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0)`
+}
+
+const heldSQL = `COALESCE((SELECT sum(eur) FROM holds), 0)`
+
+// DayFree is the UTC day's free headroom under dayEUR at at, the day's
+// figure FreeHeadroom fits a hold into: dayEUR less the day's spend and
+// every outstanding hold.
+func DayFree(ctx context.Context, db *sql.DB, dayEUR float64, at time.Time) (float64, error) {
+	var free float64
+	err := db.QueryRowContext(ctx, `SELECT ($1 - `+daySpentSQL("$2::timestamptz")+` - `+heldSQL+`)::float8`, dayEUR, at).Scan(&free)
+	return free, err
+}
+
 // now is the clock of the day's and the month's headroom.
 var now = time.Now
 
@@ -328,9 +346,9 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 	var f Free
 	var allHeld float64
 	if err := tx.QueryRowContext(ctx,
-		`SELECT ($1 - COALESCE((SELECT sum(eur) FROM ledger WHERE day = ($3::timestamptz AT TIME ZONE 'UTC')::date AND kind <> 'standing'), 0))::float8,
+		`SELECT ($1 - `+daySpentSQL("$3::timestamptz")+`)::float8,
 		        ($2 - `+MonthSpentSQL("$3::timestamptz")+`)::float8,
-		        COALESCE((SELECT sum(eur) FROM holds), 0)::float8`, r.DayEUR, r.MonthEUR, at,
+		        `+heldSQL+`::float8`, r.DayEUR, r.MonthEUR, at,
 	).Scan(&f.DayHeadroom, &f.MonthHeadroom, &allHeld); err != nil {
 		return Free{}, err
 	}

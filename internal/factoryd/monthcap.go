@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -31,11 +32,32 @@ func capRefused(r policy.Refusal) string {
 	return monthCapReached + r.Reason
 }
 
-// CapRefusal is the gateway's refusal of a task's spend at the day's, the
-// month's or the project's cap, and when its audit row was written.
+// CapRefusal is the gateway's refusal of a model call of a task's session
+// at the day's, the month's or the project's cap, when its audit row was
+// written, and whether the gateway allowed a model call of the session's
+// agent before.
 type CapRefusal struct {
 	policy.Refusal
-	At time.Time
+	At      time.Time
+	Allowed bool `json:",omitempty"`
+}
+
+// until is when the refusal's cap resets on its own: the day cap's at the
+// UTC day's turn; zero for a month's cap, which only a human raises.
+func (c CapRefusal) until() time.Time {
+	if c.Decision != policy.RefusedDayCap {
+		return time.Time{}
+	}
+	return dayTurn(c.At)
+}
+
+// reason is the card's escalation: a month's cap waits for a human, the
+// day's resumes on its own (dayCapRefused).
+func (c CapRefusal) reason() string {
+	if c.Decision != policy.RefusedDayCap {
+		return capRefused(c.Refusal)
+	}
+	return dayCapRefused(c.Refusal, c.until())
 }
 
 // dayCapReached opens the reason of a session the gateway refused at the
@@ -49,12 +71,45 @@ func dayTurn(at time.Time) time.Time {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 }
 
+// dayCapResumes opens the reason of a card the day cap stopped, whose
+// wait ends on its own (dayWait).
+const dayCapResumes = dayCapReached + ": the card resumes on its own"
+
 // dayCapRefused is the reason of a session the gateway refused at the day
 // cap, which resets at until: its first line is the card's question row
 // (escalationQuestion), with the actions.
 func dayCapRefused(r policy.Refusal, until time.Time) string {
-	return fmt.Sprintf("%s: the card waits for the UTC day to turn and resumes on its own at %s. "+
-		"Raise budget.day_eur in policy.yaml and answer to resume it sooner, or close the card.\n%s", dayCapReached, stamp(until), r.Reason)
+	return fmt.Sprintf("%s once the day's free headroom funds a session, at the latest when the UTC day turns at %s. "+
+		"Raise budget.day_eur in policy.yaml to resume it sooner, or close the card.\n%s", dayCapResumes, stamp(until), r.Reason)
+}
+
+// dayCapWait is the wait on the day cap the task's last escalation holds:
+// its reason and the turn of its UTC day; "" when it asks otherwise.
+func dayCapWait(events []IntakeEvent) (reason string, until time.Time) {
+	for _, e := range slices.Backward(events) {
+		if e.Kind != IntakeEscalation {
+			continue
+		}
+		if strings.HasPrefix(e.Body, dayCapResumes) {
+			return e.Body, dayTurn(e.CreatedAt)
+		}
+		break
+	}
+	return "", time.Time{}
+}
+
+// splitCapped opens the escalation of a split whose session the gateway
+// refused at a cap: no second session could spend.
+const splitCapped = "the gateway refused the split's session at a cap"
+
+// splitCap is splitCapped's escalation of refusal c: the member splits
+// again once the cap allows.
+func splitCap(c CapRefusal) string {
+	when := "once a human raises the cap"
+	if until := c.until(); !until.IsZero() {
+		when = "once the day's free headroom funds a session, at the latest when the UTC day turns at " + stamp(until)
+	}
+	return fmt.Sprintf("%s (%s): split the pull request again %s, or approve or deny it.\n%s", splitCapped, c.Decision, when, c.Reason)
 }
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
