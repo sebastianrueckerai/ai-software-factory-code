@@ -25,6 +25,7 @@ func TestRoutineWords(t *testing.T) {
 		{Routine{Schedule: []Trigger{{Cron: "0 6 */2 * *"}}}, "0 6 */2 * *"},
 		{Routine{Schedule: []Trigger{{Cron: "0 6 * * 1-5"}}}, "0 6 * * 1-5"},
 		{Routine{Schedule: []Trigger{{Merges: 20}}}, "every 20 merges"},
+		{Routine{Schedule: []Trigger{{Merges: 1}}}, "every merge"},
 		{Routine{Schedule: []Trigger{{On: OnConfigurationVersion}}}, "on each configuration version"},
 		{Routine{Schedule: []Trigger{{On: OnPushMain}}}, "on each push to main"},
 		{Routine{Schedule: []Trigger{{Cron: "0 * * * *"}, {On: OnConfigurationVersion}}}, "hourly · on each configuration version"},
@@ -37,7 +38,7 @@ func TestRoutineWords(t *testing.T) {
 }
 
 func TestRoutineRefusesBadCron(t *testing.T) {
-	for _, cron := range []string{"0 6 * * 8", "every monday", "0 6 * *", "", "TZ=UTC 0 6 * * 1", "@daily"} {
+	for _, cron := range []string{"0 6 * * 8", "every monday", "0 6 * *", "", "TZ=UTC 0 6 * * 1", "@daily", "0 0 30 2 *"} {
 		r := Routine{Name: "weekly-bump", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: cron}}}
 		err := r.Validate("projects/x.yaml")
 		if err == nil || !strings.Contains(err.Error(), "weekly-bump") || !strings.Contains(err.Error(), "cron") {
@@ -51,27 +52,37 @@ func TestRoutineValidate(t *testing.T) {
 	if err := ok.Validate("p"); err != nil {
 		t.Fatal(err)
 	}
-	bad := []Routine{
-		{Name: "Bad Name", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}},             // name not a slug
-		{Name: "a", Title: "t", Files: "weekly", Schedule: []Trigger{{Merges: 1}}},                      // kind
-		{Name: "a", Title: "t", Files: FilesAgent, Schedule: []Trigger{{Merges: 1}}},                    // agent without skill
-		{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: []Trigger{{Merges: 1}}},              // pull-request without pass
-		{Name: "a", Title: "t", Files: FilesHuman},                                                      // no schedule
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1, Cron: "0 6 * * 1"}}}, // two fields in one trigger
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{On: "full-moon"}}},              // unknown event
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, WhileOpen: "wait"},
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, Missed: "later"},
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, Tell: "everyone"},
-		{Name: "a", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}},                                                 // no title
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: -3}}},                                    // negative count
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, Skill: "audit"},                     // skill on a human card
-		{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: []Trigger{{Merges: 1}}, Pass: PassTemplate}, // pass on an agent card
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, Brief: "docs/a.md"},                 // brief outside routines/
-		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1}}, Brief: "routines/a.txt"},
+	leap := Routine{Name: "leap", Title: "Leap day", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 0 29 2 *"}}}
+	if err := leap.Validate("p"); err != nil {
+		t.Fatalf("a pattern that fires every fourth year: %v", err)
 	}
-	for i, r := range bad {
-		if r.Validate("p") == nil {
-			t.Errorf("case %d accepted", i)
+	merges := []Trigger{{Merges: 1}}
+	for _, c := range []struct {
+		r    Routine
+		want string
+	}{
+		{Routine{Name: "Bad Name", Title: "t", Files: FilesHuman, Schedule: merges}, `routine "Bad Name": the name: lowercase letters, digits and dashes`},
+		{Routine{Name: "a", Title: "t", Files: "weekly", Schedule: merges}, `files is "weekly", not one of [human agent pull-request report]`},
+		{Routine{Name: "a", Title: "t", Files: FilesAgent, Schedule: merges}, "an agent routine names its skill"},
+		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman}, "no schedule"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1, Cron: "0 6 * * 1"}}}, "a trigger is one of cron, merges or on"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{}}}, "a trigger is one of cron, merges or on"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{On: "full-moon"}}}, `on is "full-moon", not one of [configuration-version push-main]`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, WhileOpen: "wait"}, `while_open is "wait", not one of [hold fold file]`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Missed: "later"}, `missed is "later", not one of [file-once skip]`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Tell: "everyone"}, `tell is "everyone", not one of [inbox quiet]`},
+		{Routine{Name: "a", Files: FilesHuman, Schedule: merges}, "no title"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: -3}}}, "merges -3: a count of merged cards"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 20}, {Cron: "0 6 * * 1"}, {Merges: 5}}}, "merges is given twice: a schedule counts merges once"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 6 * * 1"}, {Cron: "0 0 30 2 *"}}}, `cron "0 0 30 2 *": never fires`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Skill: "audit"}, "skill is an agent routine's, this one files human"},
+		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request routine's, this one files agent"},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "routines/a.txt"}, `brief "routines/a.txt": a file routines/<name>.md`},
+	} {
+		if err := c.r.Validate("p"); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%+v: got %v, want %q", c.r, err, c.want)
 		}
 	}
 }
@@ -92,6 +103,15 @@ func TestRoutineNextCron(t *testing.T) {
 	next, ok = r.NextCron(time.Date(2026, 10, 12, 4, 10, 0, 0, time.UTC), berlin)
 	if !ok || !next.Equal(time.Date(2026, 10, 12, 7, 30, 0, 0, berlin)) {
 		t.Fatalf("two patterns: got %v %v", next, ok)
+	}
+	// a pattern that never fires leaves the others their next time
+	r = Routine{Schedule: []Trigger{{Cron: "0 6 * * 1"}, {Cron: "0 0 30 2 *"}}}
+	next, ok = r.NextCron(now, berlin)
+	if !ok || !next.Equal(time.Date(2026, 10, 12, 6, 0, 0, 0, berlin)) {
+		t.Fatalf("beside a pattern that never fires: got %v %v", next, ok)
+	}
+	if _, ok := (Routine{Schedule: []Trigger{{Cron: "0 0 30 2 *"}}}).NextCron(now, berlin); ok {
+		t.Fatal("a pattern that never fires has a next time")
 	}
 	if _, ok := (Routine{Schedule: []Trigger{{Merges: 3}}}).NextCron(now, berlin); ok {
 		t.Fatal("a merges-only routine has no next time")
@@ -245,8 +265,9 @@ func TestTreeRefusesRoutines(t *testing.T) {
 		t.Fatal(err)
 	}
 	delete(tr.Briefs, "routines/weekly-bump.md")
-	if err := tr.Validate(); err == nil || !strings.Contains(err.Error(), "brief routines/weekly-bump.md: no such file") {
-		t.Fatalf("Validate = %v, want the missing brief refused", err)
+	want := `projects/ai-software-factory-code.yaml: routine "weekly-bump": brief routines/weekly-bump.md: no such file`
+	if err := tr.Validate(); err == nil || !slices.Contains(strings.Split(err.Error(), "\n"), want) {
+		t.Fatalf("Validate = %v, want the line %q", err, want)
 	}
 }
 

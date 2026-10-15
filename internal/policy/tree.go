@@ -42,6 +42,8 @@ const (
 	FilePolicy   = "policy.yaml"
 	DirProjects  = "projects"
 	DirProcesses = "processes"
+	// DirRoutines holds the routines' briefs, routines/<name>.md.
+	DirRoutines = "routines"
 	// DirSchema holds the generated JSON Schemas; the loader reads none.
 	DirSchema = "schema"
 )
@@ -209,7 +211,7 @@ func checkOutputLimits(d Document) error {
 // the right session, naming the models the stages call; a project's
 // process; the audit a project switches on. It also judges a routine's
 // brief, and that a project's routine is named apart from policy.yaml's
-// that run for it.
+// routines that run for it.
 func (t Tree) checkLinks() error {
 	var errs []error
 	classes := slices.Sorted(maps.Keys(t.Document.Classes))
@@ -285,10 +287,13 @@ func (t Tree) checkLinks() error {
 	for _, name := range processes {
 		errs = append(errs, BuildGraph(name, t.Processes[name], t.Document).Check())
 	}
-	briefs := strings.Join(slices.Sorted(maps.Keys(t.Briefs)), ", ")
+	briefs := ""
+	if len(t.Briefs) > 0 {
+		briefs = " (briefs: " + strings.Join(slices.Sorted(maps.Keys(t.Briefs)), ", ") + ")"
+	}
 	brief := func(file string, r Routine) {
 		if _, ok := t.Briefs[r.Brief]; r.Brief != "" && !ok {
-			errs = append(errs, fmt.Errorf("%s: routine %q: brief %s: no such file (briefs: %s)", file, r.Name, r.Brief, briefs))
+			errs = append(errs, fmt.Errorf("%s: routine %q: brief %s: no such file%s", file, r.Name, r.Brief, briefs))
 		}
 	}
 	for _, r := range t.Document.Routines {

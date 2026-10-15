@@ -77,9 +77,6 @@ const (
 	MissedSkip     = "skip"
 	TellInbox      = "inbox"
 	TellQuiet      = "quiet"
-
-	// DirRoutines holds the routines' briefs, routines/<name>.md.
-	DirRoutines = "routines"
 )
 
 // The values of a routine's enumerated keys. A key's default comes first.
@@ -94,6 +91,11 @@ var (
 
 // cronParser reads a cron trigger's five fields, without descriptors.
 var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+// cronEpoch is where Validate starts a pattern's search for its next time.
+// A fixed time judges a tree the same on every day, and a pattern that
+// matches any date matches one in the five years robfig searches from it.
+var cronEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // weekdays word a cron pattern's day of the week.
 var weekdays = map[string]string{"0": "Sunday", "1": "Monday", "2": "Tuesday", "3": "Wednesday", "4": "Thursday", "5": "Friday", "6": "Saturday"}
@@ -130,7 +132,7 @@ func (r Routine) Validate(where string) error {
 	if len(r.Schedule) == 0 {
 		return fmt.Errorf("%s: no schedule", at)
 	}
-	for _, tr := range r.Schedule {
+	for i, tr := range r.Schedule {
 		set := 0
 		for _, ok := range []bool{tr.Cron != "", tr.Merges != 0, tr.On != ""} {
 			if ok {
@@ -144,12 +146,18 @@ func (r Routine) Validate(where string) error {
 			return fmt.Errorf("%s: cron %q: five fields, minute hour day-of-month month day-of-week, in policy.yaml's time_zone", at, tr.Cron)
 		case tr.Merges < 0:
 			return fmt.Errorf("%s: merges %d: a count of merged cards", at, tr.Merges)
+		case tr.Merges != 0 && slices.ContainsFunc(r.Schedule[:i], func(o Trigger) bool { return o.Merges != 0 }):
+			return fmt.Errorf("%s: merges is given twice: a schedule counts merges once", at)
 		case tr.On != "" && !slices.Contains(RoutineEvents, tr.On):
 			return fmt.Errorf("%s: on is %q, not one of %v", at, tr.On, RoutineEvents)
 		}
 		if tr.Cron != "" {
-			if _, err := cronParser.Parse(tr.Cron); err != nil {
+			s, err := cronParser.Parse(tr.Cron)
+			if err != nil {
 				return fmt.Errorf("%s: cron %q: %v", at, tr.Cron, err)
+			}
+			if s.Next(cronEpoch).IsZero() {
+				return fmt.Errorf("%s: cron %q: never fires, no date matches it", at, tr.Cron)
 			}
 		}
 	}
@@ -180,6 +188,8 @@ func (r Routine) Words() string {
 // the expression itself.
 func (t Trigger) Words() string {
 	switch {
+	case t.Merges == 1:
+		return "every merge"
 	case t.Merges > 0:
 		return fmt.Sprintf("every %d merges", t.Merges)
 	case t.On == OnConfigurationVersion:
@@ -238,7 +248,7 @@ func (r Routine) NextCron(now time.Time, loc *time.Location) (time.Time, bool) {
 		if err != nil {
 			continue
 		}
-		if n := s.Next(now.In(loc)); best.IsZero() || n.Before(best) {
+		if n := s.Next(now.In(loc)); !n.IsZero() && (best.IsZero() || n.Before(best)) {
 			best = n
 		}
 	}
@@ -300,8 +310,8 @@ func (t Tree) ProjectRoutines(project string) []Routine {
 	return rs
 }
 
-// Brief is the text of the tree's file path, a routine's brief.
-func (t Tree) Brief(path string) (string, bool) {
-	b, ok := t.Briefs[path]
+// Brief is the text of the tree's file name, a routine's brief.
+func (t Tree) Brief(name string) (string, bool) {
+	b, ok := t.Briefs[name]
 	return b, ok
 }
