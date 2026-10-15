@@ -700,13 +700,16 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 }
 
 // RollCommit writes a roll task's requests its branch does not carry yet
-// onto the branch on the bot's fork, always cut from main's head (the
+// onto the branch on the bot's fork, always based on main's head (the
 // fork synced first): the first write opens the branch, and every update
-// makes one fresh commit of all the pins on main's head again and pushes
-// it over the branch, so the pull request's base is always main's head
-// and its diff only the pins (roadmap 279). It returns the branch head,
-// the branch as it is when nothing is left to write. It is the roll's
-// only work: no session, no sandbox, no model.
+// rebases it onto main's head again — the pull request's update, style
+// rebase, an endpoint of the factory's Forgejo — and then writes the
+// pins as one fresh commit of all the task's requests on it, so the pull
+// request's base is always main's head and its diff only the pins
+// (roadmap 279). A branch whose rebase conflicts is cut from main's head
+// again and its pull request filed fresh (refile). It returns the branch
+// head, the branch as it is when nothing is left to write. It is the
+// roll's only work: no session, no sandbox, no model.
 func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -803,15 +806,26 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 	if err := r.store.SetTaskSHA(ctx, t.ID, base); err != nil {
 		return "", err
 	}
-	// an update carries every request of the task: its one fresh commit
-	// of the pins on main's head replaces the branch
-	reqs := pending
+	// an update carries every request of the task: its branch rebased
+	// onto main's head, the pins written on it as one fresh commit, each
+	// file at the blob the rebased branch holds
+	reqs, ref := pending, prBase
 	if exists {
 		if reqs, err = r.store.TaskRolls(ctx, t.ID); err != nil {
 			return "", err
 		}
+		if t.PRNumber == 0 {
+			return "", terminalError("the roll's branch %s is open with no pull request to rebase onto main's head", branch)
+		}
+		if err := r.forgejo.RebasePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+			if errors.Is(err, ErrUpdateConflict) {
+				return r.refile(ctx, t, repo, fork, branch, reqs)
+			}
+			return "", err
+		}
+		ref = branch
 	}
-	changes, err := r.rollEdits(ctx, fork, prBase, reqs)
+	changes, err := r.rollEdits(ctx, fork, ref, reqs)
 	if err != nil {
 		return "", err
 	}
@@ -823,20 +837,78 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		messages = append(messages, req.Summary)
 	}
 	attribution := Attribution{Role: "roll", Task: t.ID, Human: t.Author}
-	commit := head
-	if exists {
-		if commit, err = r.forgejo.RecutBranch(ctx, fork.Owner, fork.Name, branch, base, attribution,
-			strings.Join(messages, "\n\n"), changes); err != nil {
-			return "", err
-		}
-	} else if commit, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, prBase, branch, attribution,
-		strings.Join(messages, "\n\n"), changes); err != nil {
+	newBranch := ""
+	if !exists {
+		newBranch = branch
+	}
+	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, ref, newBranch, attribution,
+		strings.Join(messages, "\n\n"), changes)
+	if err != nil {
 		return "", err
 	}
 	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(reqs), commit); err != nil {
 		return "", err
 	}
 	r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": commit, "rolls": rollSHAs(reqs), "files": len(changes)})
+	return commit, nil
+}
+
+// refile answers a roll branch that cannot be rebased onto main's head
+// (roadmap 279) by cutting it from main's head again: the superseded pull
+// request closes with a note, the branch is deleted and written as its
+// first commit — one fresh commit of every pin of the task on main's
+// head — and a fresh pull request is filed for it, which the roll card
+// names. It returns the fresh branch head.
+func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch string, reqs []RollRequest) (string, error) {
+	changes, err := r.rollEdits(ctx, fork, prBase, reqs)
+	if err != nil {
+		return "", err
+	}
+	if len(changes) == 0 {
+		return "", terminalError("main already pins every digest of roll task %s", t.ID)
+	}
+	if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+		return "", err
+	} else if st.State == "open" {
+		note := "factoryd: closing this roll: its branch cannot be rebased onto main's head, so a fresh one is filed from main's head"
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, note); err != nil {
+			return "", err
+		}
+		if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+			return "", err
+		}
+	}
+	if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
+		return "", err
+	}
+	var messages []string
+	for _, req := range reqs {
+		messages = append(messages, req.Summary)
+	}
+	attribution := Attribution{Role: "roll", Task: t.ID, Human: t.Author}
+	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, prBase, branch, attribution,
+		strings.Join(messages, "\n\n"), changes)
+	if err != nil {
+		return "", err
+	}
+	objective := r.untrusted(t, t.Objective)
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
+	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body)
+	if err != nil {
+		return "", err
+	}
+	if err := r.store.SetTaskPR(ctx, t.ID, fresh.Number); err != nil {
+		return "", err
+	}
+	card := fmt.Sprintf("factoryd: main moved and this roll's branch could not be rebased onto its head; pull request #%d is superseded by #%d: %s",
+		t.PRNumber, fresh.Number, fresh.URL)
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, card); err != nil {
+		log.Printf("roller: task %s: name the fresh pull request on the card: %v", t.ID, err)
+	}
+	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(reqs), commit); err != nil {
+		return "", err
+	}
+	r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": commit, "rolls": rollSHAs(reqs), "files": len(changes), "refiled": true, "pr": fresh.Number})
 	return commit, nil
 }
 
