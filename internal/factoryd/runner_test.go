@@ -1712,8 +1712,8 @@ func startRunner(kube *fakeKube, grace time.Duration) *Runner {
 // in its init or its main container, and waits on through every other:
 // a registry that answers 503, a back-off that names no error (a kubelet
 // before 1.30), a container still being created, a configuration error
-// first seen, a pod no node takes. A closed stop ends the first wait at
-// once, so errWorkerStop says the start waited.
+// first seen, a pod no node takes for cpu, memory or disk. A closed stop
+// ends the first wait at once, so errWorkerStop says the start waited.
 func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 	const unavailable = `rpc error: code = Unknown desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": ` +
 		`unexpected status from HEAD request to https://reg/v2/worker/manifests/sha256:abc: 503 Service Unavailable`
@@ -1746,6 +1746,9 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "ContainerCreating"}}},
 		{name: "unschedulable",
 			conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient memory."}}},
+		// the ephemeral-storage its emptyDirs request (requestEmptyDirs)
+		{name: "unschedulable for disk",
+			conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 1 Insufficient cpu, 3 Insufficient ephemeral-storage."}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
