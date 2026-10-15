@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -509,14 +510,28 @@ type PGStore struct {
 	bus *EventBus
 	// sealKey is the key the mirror tokens are sealed under, the console
 	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
-	// factoryd serves; nil: no mirror token may be written or read.
-	sealKey []byte
+	// factoryd serves; nil: no mirror token may be written or read. It
+	// sits behind an atomic pointer, so SetSealKey's write never races a
+	// seal's or an open's read of it.
+	sealKey atomic.Pointer[[]byte]
 }
 
 // SetSealKey sets the key the mirror tokens are sealed at rest with:
 // the console session key (CONSOLE_SESSION_KEY), which factoryd reads
-// beside the console (roadmap 273). It runs once, before any store call.
-func (s *PGStore) SetSealKey(key []byte) { s.sealKey = slices.Clone(key) }
+// beside the console (roadmap 273). It runs once, before any store call,
+// and is safe beside one.
+func (s *PGStore) SetSealKey(key []byte) {
+	k := slices.Clone(key)
+	s.sealKey.Store(&k)
+}
+
+// sealKeyBytes is the seal key SetSealKey set, nil while none was set.
+func (s *PGStore) sealKeyBytes() []byte {
+	if k := s.sealKey.Load(); k != nil {
+		return *k
+	}
+	return nil
+}
 
 // SetBus wires the event bus: Record publishes every row through it so the
 // console's stream can fan out without polling the table.

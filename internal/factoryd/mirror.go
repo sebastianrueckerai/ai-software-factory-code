@@ -67,10 +67,11 @@ func (s *PGStore) sealMirrorToken(project, token string) (string, error) {
 	if token == "" {
 		return "", nil
 	}
-	if len(s.sealKey) == 0 {
+	key := s.sealKeyBytes()
+	if len(key) == 0 {
 		return "", fmt.Errorf("project %s: a mirror token cannot be stored: %w", project, errNoSealKey)
 	}
-	return sealed.Seal(s.sealKey, mirrorTokenKeyLabel, token, project)
+	return sealed.Seal(key, mirrorTokenKeyLabel, token, project)
 }
 
 // openMirrorToken opens a stored mirror token of project; a value that
@@ -80,10 +81,11 @@ func (s *PGStore) openMirrorToken(project, stored string) (string, error) {
 	if stored == "" {
 		return "", nil
 	}
-	if len(s.sealKey) == 0 {
+	key := s.sealKeyBytes()
+	if len(key) == 0 {
 		return "", fmt.Errorf("project %s: the mirror token cannot be read: %w", project, errNoSealKey)
 	}
-	tok, err := sealed.Open(s.sealKey, mirrorTokenKeyLabel, stored, project)
+	tok, err := sealed.Open(key, mirrorTokenKeyLabel, stored, project)
 	if err != nil {
 		return "", fmt.Errorf("project %s: %w", project, errMirrorToken)
 	}

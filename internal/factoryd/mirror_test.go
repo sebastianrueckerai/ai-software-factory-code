@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -77,7 +78,7 @@ func TestPGStoreSealsMirrorTokens(t *testing.T) {
 		t.Fatalf("a read under another seal key = %v, want the error naming linkshort", err)
 	}
 	// without a seal key no token is stored at all
-	s.sealKey = nil
+	s.SetSealKey(nil)
 	if err := s.PutMirror(ctx, row); err == nil || !errors.Is(err, errNoSealKey) || !strings.Contains(err.Error(), "demo-app") {
 		t.Fatalf("a put without the seal key = %v, want errNoSealKey naming demo-app", err)
 	}
@@ -85,6 +86,34 @@ func TestPGStoreSealsMirrorTokens(t *testing.T) {
 		!strings.Contains(err.Error(), "linkshort") {
 		t.Fatalf("a token set without the seal key = %v, want errNoSealKey naming linkshort", err)
 	}
+}
+
+// SetSealKey's write does not race a seal's or an open's read of the seal
+// key, which the store serves through its atomic pointer; the race
+// detector fails this test on a plain field. A key swapped between a seal
+// and its open does not open, and no key at all seals nothing: those
+// errors are not this test's subject.
+func TestSetSealKeyDoesNotRaceTheSealReads(t *testing.T) {
+	s := &PGStore{}
+	s.SetSealKey([]byte("0123456789abcdef0123456789abcdef"))
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range 50 {
+			s.SetSealKey([]byte(fmt.Sprintf("swapped-key-%02d-0123456789a", i)))
+		}
+		s.SetSealKey(nil)
+	}()
+	go func() {
+		defer wg.Done()
+		for range 50 {
+			if sealedTok, err := s.sealMirrorToken("demo-app", "ghp_t0ken"); err == nil {
+				_, _ = s.openMirrorToken("demo-app", sealedTok)
+			}
+		}
+	}()
+	wg.Wait()
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a mirror
