@@ -90,6 +90,10 @@ type turn struct {
 	// freshRead is this turn's read of the board, when it starts running
 	// after any queue, stamped on every tool result it stores.
 	freshRead time.Time
+	// upto is the thread's newest row when the turn started: a row up to
+	// it is an earlier turn's or the turn's own message, a row after it
+	// the turn stored.
+	upto int64
 	// conv is the member's thread the turn answers in (roadmap 239).
 	conv int64
 }
@@ -311,9 +315,12 @@ func scrubTokens(text string) (string, bool) {
 // budget.
 func (t *turn) run(id, notice string) {
 	ctx := t.r.Context()
-	t.freshRead = time.Now()
-	t.presetCompact(id)
-	msgs, err := t.context()
+	err := t.begin()
+	var msgs []factoryd.OperatorMessage
+	if err == nil {
+		t.presetCompact(id)
+		msgs, err = t.context()
+	}
 	if err != nil {
 		log.Printf("console: the chat context of %s: %v", t.p.Name, err)
 		t.fail("The project could not be read.")
@@ -339,9 +346,8 @@ func (t *turn) run(id, notice string) {
 			t.send("done", struct{}{})
 			return
 		}
-		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, t.threadRef(), msgs, defs, func(s string) {
-			t.send("text", map[string]string{"text": s})
-		})
+		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
+		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, t.threadRef(), msgs, defs, out.write)
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Name, err)
 			var refusal *policy.Refusal
@@ -369,6 +375,8 @@ func (t *turn) run(id, notice string) {
 			t.fail("The model could not be reached; try again.")
 			return
 		}
+		out.flush()
+		answer.Content = unstamp(answer.Content)
 		row := factoryd.ChatMessage{Role: "assistant", Content: answer.Content}
 		proposed := false
 		var results []factoryd.OperatorMessage
@@ -646,18 +654,21 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 }
 
 // replay is rows as the turn's context holds them, each tool call
-// followed by its result (replayed). An earlier turn's assistant words
-// carry when they were said and their age, so they do not read as the
-// present either. An assistant row with no tool calls whose content
-// claims an action is dropped.
+// followed by its result. A row up to upto is an earlier turn's: its
+// assistant words carry when they were said and their age, and its read
+// is left out for when it was read and the call that reads the present,
+// so neither stands as the project now; a write's result, the record of
+// an action, stays whole. An assistant row with no tool calls whose
+// content claims an action is dropped.
 func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 	var msgs []factoryd.OperatorMessage
 	for _, m := range rows {
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
 			continue
 		}
+		earlier := m.ID <= t.upto
 		om := factoryd.OperatorMessage{Role: m.Role, Content: m.Content}
-		if m.Role == "assistant" && m.Content != "" && m.At.Before(t.freshRead) {
+		if earlier && m.Role == "assistant" && m.Content != "" {
 			om.Content = "[said at " + t.since(m.At) + "] " + m.Content
 		}
 		for _, call := range m.ToolCalls {
@@ -665,29 +676,77 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		}
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
-			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: t.replayed(call)})
+			result := call.Result
+			if earlier && isRead(call.Name) {
+				result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
+					call.Name + " again for the present]"
+			}
+			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 	}
 	return msgs
-}
-
-// replayed is a stored tool result as the turn's context holds it: a
-// write's whole, the record of an action, and a read's whole within its
-// own turn. An earlier turn's read is left out for when it was read and
-// the call that reads the present, so no old read stands as the project
-// now.
-func (t *turn) replayed(call factoryd.ChatToolCall) string {
-	if !isRead(call.Name) || !call.ReadAt.Before(t.freshRead) {
-		return call.Result
-	}
-	return "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
-		call.Name + " again for the present]"
 }
 
 // since is at as a replayed row shows it: its time and its age at the
 // turn's start.
 func (t *turn) since(at time.Time) string {
 	return fmt.Sprintf("%s, %d min ago", at.UTC().Format("2006-01-02 15:04 UTC"), int(t.freshRead.Sub(at).Round(time.Minute)/time.Minute))
+}
+
+// begin starts the turn after any queue: its clock, and upto, the
+// thread's newest row.
+func (t *turn) begin() error {
+	t.freshRead = time.Now()
+	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, t.conv, 1)
+	if err != nil {
+		return err
+	}
+	t.upto = 0
+	if len(rows) > 0 {
+		t.upto = rows[0].ID
+	}
+	return nil
+}
+
+// copiedStamps are the stamps of replayed rows a model copied to the
+// start of its answer, with the space after them.
+var copiedStamps = regexp.MustCompile(`^(?:\[(?:said|read) at [^\]\n]{0,300}\]\s*)+`)
+
+// unstamp is answer without the stamps it copied at its start.
+func unstamp(answer string) string { return copiedStamps.ReplaceAllString(answer, "") }
+
+// unstamper passes an answer's streamed text to send unstamped: it holds
+// the answer's start back while that may still grow into a stamp.
+type unstamper struct {
+	send    func(string)
+	held    string
+	passing bool
+}
+
+func (u *unstamper) write(s string) {
+	if u.passing {
+		u.send(s)
+		return
+	}
+	u.held += s
+	rest := u.held[len(copiedStamps.FindString(u.held)):]
+	for _, stamp := range []string{"[said at ", "[read at "} {
+		if rest == "" || strings.HasPrefix(stamp, rest) ||
+			strings.HasPrefix(rest, stamp) && len(rest) <= len(stamp)+300 && !strings.ContainsAny(rest, "]\n") {
+			return
+		}
+	}
+	u.flush()
+}
+
+// flush sends what the stream held, unstamped, and passes the rest.
+func (u *unstamper) flush() {
+	if !u.passing {
+		u.passing = true
+		if s := unstamp(u.held); s != "" {
+			u.send(s)
+		}
+	}
 }
 
 // prompt is the agent's standing instructions.

@@ -1848,6 +1848,38 @@ func TestChatReplayDropsClaims(t *testing.T) {
 	}
 }
 
+// An answer that begins with a stamp copied from a replayed row is shown
+// and stored without it, however the stream cuts it; one that only begins
+// with a bracket is held back no further than its second character.
+func TestChatAnswerDropsACopiedStamp(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	for _, c := range []struct {
+		chunks []string
+		events []string
+		stored string
+	}{
+		{[]string{"[said at 2026-10-15 07:", "15 UTC, 151 min ago]", " Two cards", " are open."},
+			[]string{`text {"text":"Two cards"}`, `text {"text":" are open."}`, `done {}`}, "Two cards are open."},
+		{[]string{"[read at 2026-10-15 07:15 UTC, 2 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]\n\n", "#32 is done."},
+			[]string{`text {"text":"#32 is done."}`, `done {}`}, "#32 is done."},
+		{[]string{"[", "#5] waits."}, []string{`text {"text":"[#5] waits."}`, `done {}`}, "[#5] waits."},
+	} {
+		var reply []string
+		for _, chunk := range c.chunks {
+			reply = append(reply, say(chunk))
+		}
+		g.replies = [][]string{reply}
+		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how many cards are open?"}})
+		equal(t, "the stream of "+c.stored, events, c.events)
+		rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		equal(t, "the stored answer", rows[0].Content, c.stored)
+	}
+}
+
 // A claim is one of the markers as whole words, in any case: a truthful
 // line that only holds one inside a word or a longer phrase is none.
 func TestIsClaim(t *testing.T) {

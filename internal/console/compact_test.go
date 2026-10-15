@@ -201,6 +201,23 @@ func TestChatCompactionWeighsTheTurnsReads(t *testing.T) {
 	equal(t, "the kept rows' estimate", last.After, (len("summary 2"+"c1"+"board"+"{}"+boardText)+3)/4)
 }
 
+// A forced retry knows the turn's own rows by the row the turn started
+// after, not by their dates: the fake store dates the turn's words days
+// before its clock, and the retry still replays them unstamped and its
+// board read whole.
+func TestChatRetryKeepsTheTurnsOwnRows(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b")
+	g.replies = [][]string{{say("Let me look."), call(1, "board", `{}`)}, {refuseContext}, {say("done")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c1"}})
+	calls := g.calls()
+	if len(calls) != 3 {
+		t.Fatalf("%d model calls, want 3", len(calls))
+	}
+	equal(t, "the retry", contents(t, calls[2]), []string{"user b1", "assistant " + earlier("b2"), "user c1", "assistant Let me look.", "tool " + boardText})
+}
+
 // A command of the config tree's sends its message: the turn stores and
 // sends the message, not the name; any other /word is text (roadmap 239).
 func TestChatCommandSendsItsMessage(t *testing.T) {

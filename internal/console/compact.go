@@ -6,7 +6,6 @@ import (
 	"log"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -225,8 +224,10 @@ func (t *turn) presetCompact(taskID string) {
 // compactByHand is /compact: the thread's turn compacts it and answers
 // what it folded.
 func (t *turn) compactByHand(taskID string) {
-	t.freshRead = time.Now()
-	done, err := t.compact(taskID, keepTurns)
+	done, err := false, t.begin()
+	if err == nil {
+		done, err = t.compact(taskID, keepTurns)
+	}
 	switch {
 	case err != nil:
 		log.Printf("console: /compact %s: %v", t.threadRef(), err)
