@@ -449,20 +449,18 @@ type sessionOutcome struct {
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
 }
 
-// stopReport is what a stopped worker left for the next session: its
-// pushed work in progress and its last word.
+// stopReport is what a stopped worker left for the next session beside
+// the branch and the agent's last message (handoverLines): its report when
+// nothing reached the branch, a refused push's reason among them, or why no
+// report came.
 func (out sessionOutcome) stopReport() []string {
-	var lines []string
-	if out.commit != "" {
-		lines = append(lines, "the stopped session's work in progress is on the branch at "+out.commit)
-	}
 	switch {
-	case out.result != nil:
-		lines = append(lines, "the stopped worker reported: "+out.result.Summary)
-	case out.noResult != "":
-		lines = append(lines, "work in progress not pushed: "+out.noResult)
+	case out.result != nil && out.commit == "":
+		return []string{"the stopped worker reported: " + out.result.Summary}
+	case out.result == nil && out.noResult != "":
+		return []string{"work in progress not pushed: " + out.noResult}
 	}
-	return lines
+	return nil
 }
 
 // errWorkerStop ends a session because factoryd is stopping: retryable,

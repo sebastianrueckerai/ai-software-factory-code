@@ -2496,7 +2496,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/coding-frontier")
 	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/coding-frontier needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push.") {
 		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "coding-frontier"); err != nil || !BudgetRefusal(why) ||

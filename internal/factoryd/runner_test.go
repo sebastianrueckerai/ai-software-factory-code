@@ -941,6 +941,10 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("timeline lacks %s:\n%s", step, timeline)
 		}
 	}
+	// session_started is SessionAnswered's to write, never the pod's start's
+	if strings.Contains(string(timeline), `"event":"session_started"`) {
+		t.Fatalf("timeline holds a session_started no answered call wrote:\n%s", timeline)
+	}
 	// the attempt runs from its session_start to its session_end
 	start, end := timelineStep(t, objects, "t1", "session_start"), timelineStep(t, objects, "t1", "session_end")
 	began, _ := time.Parse(time.RFC3339, fmt.Sprint(start["time"]))
@@ -1351,8 +1355,9 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" || !strings.HasPrefix(res.Reason, "the check needs a file the agent never created") {
 		t.Fatalf("result = %+v, want escalate with the reason and the work in progress", res)
 	}
-	if joined := strings.Join(res.Findings, "\n"); !strings.Contains(joined, "c-wip") {
-		t.Fatalf("findings = %v, want the pushed work", res.Findings)
+	// the commit reaches the next session once, by handoverLines
+	if len(res.Findings) != 0 {
+		t.Fatalf("findings = %q, want none: the pushed work is the result's commit", res.Findings)
 	}
 	if len(f.chats) != 1 || f.chats[0]["model"] != "supervisor" || f.tasks[0] != "t2" || f.purposes[0] != "supervisor" {
 		t.Fatalf("calls = %d, tasks %v, purposes %v; want one supervisor call through the gateway on t2", len(f.chats), f.tasks, f.purposes)
@@ -1516,12 +1521,13 @@ func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
 	in := SessionAnswerInput{TaskID: "t2", SessionID: "s1", Model: "factory/coding-cheap", Attempt: 2, Since: time.Now().Add(-time.Minute)}
 
+	runner.record(t.Context(), "t2", "session_start", map[string]any{"session": "s1", "attempt": 2})
 	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || ok {
 		t.Fatalf("starved session = (%v, %v), want false", ok, err)
 	}
 	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
-	if strings.Contains(string(tl), "session_started") {
-		t.Fatalf("timeline = %s, want no session_started for a starved session", tl)
+	if !strings.Contains(string(tl), `"step":"session_start"`) || strings.Contains(string(tl), `"event":"session_started"`) {
+		t.Fatalf("timeline = %s, want the pod's session_start and no session_started for a starved session", tl)
 	}
 	store.answered = map[string]bool{"t2": true}
 	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
@@ -2441,6 +2447,36 @@ func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c1" {
 		t.Fatalf("pushed during the call: %+v, want verification of c1", res)
 	}
+	// work in progress on the branch is the result's commit, which
+	// handoverLines states with the last message: no report repeats it
+	res = sessionResult(s, sessionOutcome{trip: trip, decision: redirect, commit: "c-wip", agentText: "tests still fail",
+		result: &harness.Result{Summary: "stopped; work in progress pushed to factory/t1 at c-wip"}})
+	if res.Outcome != OutcomeRedirect || res.Commit != "c-wip" || res.LastMessage != "tests still fail" ||
+		!slices.Equal(res.Findings, []string{"supervisor guidance: g"}) {
+		t.Fatalf("stop with work in progress: %+v, want the commit, the last message and the guidance alone", res)
+	}
+}
+
+// The stuck rule's line is the first finding, before the stopped worker's
+// report.
+func TestSessionResultPutsTheStuckLineFirst(t *testing.T) {
+	stuck := "stuck after the supervisor's message: same_failure: x"
+	trip := &Trip{Kind: TripSameFailure, Detail: "x", Findings: []string{"ran y", stuck}, Stuck: stuck}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{trip: trip, decision: &Decision{Action: ActionRetryStronger, Reason: stuck},
+		result: &harness.Result{Summary: "push failed: refusing to push: .forgejo/x changes .forgejo/"}})
+	want := []string{stuck, "the stopped worker reported: push failed: refusing to push: .forgejo/x changes .forgejo/"}
+	if res.Outcome != OutcomeRetryStronger || !slices.Equal(res.Findings, want) {
+		t.Fatalf("result = %+v, want findings %q", res, want)
+	}
+}
+
+// The agent's last message reaches the next session cut at
+// maxHandoverMessage bytes, marked.
+func TestSessionResultCutsTheLastMessage(t *testing.T) {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: "x", agentText: strings.Repeat("a", maxHandoverMessage) + "bc"})
+	if want := strings.Repeat("a", maxHandoverMessage) + "…"; res.LastMessage != want {
+		t.Fatalf("last message of %d bytes, want %d a's and the mark", len(res.LastMessage), maxHandoverMessage)
+	}
 }
 
 // The log stream breaks while the worker still runs (here during the
@@ -2460,9 +2496,8 @@ func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" ||
-		!slices.Contains(res.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") {
-		t.Fatalf("result = %+v, want the escalation with the pushed work in progress", res)
+	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" || len(res.Findings) != 0 {
+		t.Fatalf("result = %+v, want the escalation with the pushed work in progress as its commit alone", res)
 	}
 	record := strings.TrimSpace(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")))
 	if n := strings.Count(record, `"kind":"command"`); n != 3 || strings.Count(record, `"kind":"pushed"`) != 1 {

@@ -351,7 +351,23 @@ func TestWorkflowRollConcernsWithoutFindingsIsARemark(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.approvals) != 1 || !slices.Contains(g.approvals[0].WhyHuman, "review: remark, no finding: the pins look odd") {
-		t.Fatalf("approvals %+v; want the remark among the reasons for a human", g.approvals)
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"review: remark, no finding: the pins look odd"}) {
+		t.Fatalf("approvals %+v; want the remark the one reason for a human", g.approvals)
+	}
+}
+
+// A roll from before the remark took the same review as a finding no agent
+// answers: RollCommit leaves the head at r1, and the roll fails.
+func TestWorkflowRollBeforeReviewRemarkFailsOnConcernsWithoutFindings(t *testing.T) {
+	g, commits := newRollHarnessWith(t, func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "the pins look odd"}
+	}, "r1")
+	g.env.OnGetVersion("review-remark", workflow.DefaultVersion, versionReviewRemark).Return(workflow.DefaultVersion)
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	if final := g.run(t); final != "failed" || g.finals[0][1] != "roll: review failed: model review: the pins look odd" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(*commits) != 2 || len(g.approvals) != 0 || !slices.Equal(g.steps, []string{"policy", "repro r1", "review r1"}) {
+		t.Fatalf("RollCommit calls %v, approvals %+v, steps %v", *commits, g.approvals, g.steps)
 	}
 }

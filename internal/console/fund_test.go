@@ -14,8 +14,9 @@ import (
 // Roadmap 210: a card that outlives its budget has an operator path — an
 // approver's Fund action on the capped card (the same cards ruling 322's
 // unfunded answer refuses), which raises budget_eur by the stated amount
-// and lands in the event spine as its own row. The answer box is
-// unchanged: the card resumes on the next answer, now with headroom.
+// and lands in the event spine as its own row. The answer box stays
+// beside it: Fund posts its note as the answer, so the card resumes at
+// once, now with headroom.
 
 // budgetRefusal is what the floor answers for a card whose remaining
 // budget cannot fund a call (factoryd's Runner.SessionFunded).
@@ -246,5 +247,31 @@ func TestFundIsTheAnswer(t *testing.T) {
 	rec = r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {strings.Repeat("x", factoryd.MaxAnswer+1)}}), ck)
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); rec.Code != http.StatusBadRequest || task.BudgetEUR != 2 || len(r.fg.comments) != 0 {
 		t.Fatalf("fund with a long note = %d, budget %v, %d comments; want 400, 2, none", rec.Code, task.BudgetEUR, len(r.fg.comments))
+	}
+}
+
+// Forgejo refusing the note after the raise answers 502: the budget stays
+// raised, its one card_funded row written, and the card waits on the human
+// still, whom the refusal sends to the board's answer.
+func TestFundWhoseNoteForgejoRefusesKeepsTheRaise(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	r.fg.failAPI = true
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded"}}), ck)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "Raised #13's budget by 0.50 EUR to 2.50, but Forgejo refused the note") {
+		t.Fatalf("fund = %d: %s, want 502 naming the raise", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.5 || task.Status != "waiting-human" {
+		t.Fatalf("card = %+v, want budget 2.5 and waiting-human", task)
+	}
+	funded := 0
+	for _, e := range r.events.rows {
+		if e.Kind == factoryd.EventCardFunded {
+			funded++
+		}
+	}
+	if funded != 1 || len(r.events.rows) != 1 {
+		t.Fatalf("event rows = %+v, want the one card_funded row alone", r.events.rows)
 	}
 }

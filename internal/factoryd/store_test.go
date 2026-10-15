@@ -2362,7 +2362,7 @@ func TestPGStoreModelAnswered(t *testing.T) {
 		since time.Time
 		want  bool
 	}{
-		{"a", at(9, 0), false}, {"b", at(9, 0), false}, {"c", at(9, 0), true}, {"c", at(10, 1), false}, {"nobody", at(9, 0), false},
+		{"a", at(9, 0), false}, {"b", at(9, 0), false}, {"c", at(9, 0), true}, {"c", at(10, 0), true}, {"c", at(10, 1), false}, {"nobody", at(9, 0), false},
 	} {
 		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
 			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)

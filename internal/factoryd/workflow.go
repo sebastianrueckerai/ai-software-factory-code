@@ -1116,6 +1116,15 @@ func (t *taskRun) lifecycle() (string, error) {
 	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
 	// least is the agent time a session needs to start (versionKeepWork)
 	least := min(minSession, t.cfg.WallClockCap)
+	// capAnswer is what an answer at a cap buys: an attempt only at the
+	// session cap, else the agent time alone (versionSessionLadder)
+	capAnswer := func() {
+		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.ExtraAttempts {
+			t.grantTime(&u)
+			return
+		}
+		t.grant(&u)
+	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
 	// (versionKeepWork, ruling 225): it buys the session, answered.
@@ -1126,7 +1135,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		findings, own, reason = v.findings, nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
-			t.grant(&u)
+			capAnswer()
 			return true
 		}
 		return false
@@ -1182,7 +1191,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
-		buy()
+		capAnswer()
 		return "", ""
 	}
 	if t.v2 >= versionReconcileRace {
@@ -1612,10 +1621,14 @@ func (t *taskRun) handoverLines(res SessionResult) []string {
 		lines = append(lines, fmt.Sprintf("the branch holds %s; %s", res.Commit, judged))
 	}
 	if res.LastMessage != "" {
-		lines = append(lines, "the agent's last message: "+res.LastMessage)
+		lines = append(lines, lastMessageLine+res.LastMessage)
 	}
 	return lines
 }
+
+// lastMessageLine opens the handover line of the agent's last message,
+// which the brief fences as untrusted (briefText).
+const lastMessageLine = "the agent's last message: "
 
 // notStarted takes a session whose pod never left Pending, why its
 // summary, which names what the pod waited on (versionPodWait): the next

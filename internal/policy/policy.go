@@ -1144,5 +1144,5 @@ func CardBudget(b Budget, p *ProjectBudget, size string, strong bool, requested 
 	if eur := min(requested, ceiling, b.TaskMaxEUR); eur > 0 {
 		return eur
 	}
-	return b.TaskDefaultEUR
+	return floor(b.TaskDefaultEUR)
 }
