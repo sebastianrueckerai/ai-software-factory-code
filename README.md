@@ -1683,7 +1683,9 @@ deployed from `deploy/staging` and no hostname. factoryd judges the file with
 with the file added. The human's token then commits the file to a new
 branch `project-<name>` and opens its pull request. The status panel
 `/projects/<name>/status` polls every 3 s until its four steps are done:
-1. the pull request, read with the `forgejo-config` token;
+1. the pull request, read with the `forgejo-config` token by the number
+   the name's last `project_filed` event records, so a second filing of
+   a name shows and merges its own pull request;
 2. the merge, with a Merge button that merges as the human and shows
    Forgejo's refusal, and the version in force holding the file;
 3. the repository: no click; the reconcile that loads the new version
@@ -1698,7 +1700,11 @@ token for a private one. The console stores it as the name's
 `project_mirrors` row (direction `import`, state `pending`) before the pull
 request, and the pull request's number on the row (`pr`) once it opens;
 the file, the pull request and the `project_filed` event never hold the
-token. Registration then makes the repository with Forgejo's
+token. A pull request that does not open deletes the row with its token
+and the console reports the failure; one the row cannot record is closed
+as the human, then the row is deleted (if the close fails, the row stays
+so a merge still imports, and the console says so). Registration then
+makes the repository with Forgejo's
 migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
 mirror) in place of the empty create. The migrate runs in a goroutine of
 its own, one per project at most, so no other project's reconcile waits
@@ -1734,10 +1740,12 @@ with the template's `deploy/` when the copy has none ("Factory workflows",
 consumes it or its pull request closes unmerged, however long the review
 takes: each poll, every minute, reads with the `forgejo-config` token the
 pull request of every import row not imported whose project no file
-names. Closed unmerged, the row is deleted with its token; open or
-merged, it stays for the registration the merge's load starts. A row
-that records no pull request, or whose pull request Forgejo does not
-answer, stays and is logged at every poll. Rows put before the `pr`
+names. Closed unmerged, the row is deleted with its token; open, it
+stays. Merged, it stays for the registration the merge's load starts
+while infra's main holds `projects/<name>.yaml`, and is deleted with its
+token once main no longer does: the filing was undone. A row that
+records no pull request, or whose pull request or file Forgejo does not
+answer for, stays and is logged at every poll. Rows put before the `pr`
 column take the pull request of their project's last `project_filed`
 event that names their remote. The panel
 shows a fifth step, "Imported from GitHub", between the repository and

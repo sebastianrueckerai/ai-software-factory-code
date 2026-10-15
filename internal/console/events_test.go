@@ -62,6 +62,18 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	return e.ID, nil
 }
 
+func (f *fakeEvents) FiledPR(_ context.Context, name string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.rows) - 1; i >= 0; i-- {
+		if e := f.rows[i]; e.Repository == name+"/"+name && e.Kind == factoryd.EventProjectFiled {
+			pr, _ := e.Detail["pr"].(int64)
+			return pr, pr > 0, nil
+		}
+	}
+	return 0, false, nil
+}
+
 func (f *fakeEvents) ProjectEvents(_ context.Context, repository string, after int64, limit int) ([]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -276,6 +288,7 @@ var actions = []action{
 		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
 		setup: func(t *testing.T, r *rig) {
 			f := withInfra(t, r)
+			r.filed(t, 12)
 			f.set(map[string]any{"number": 12, "state": "open", "merged": false})
 			pause := time.Duration(0)
 			r.c.cfg.MergeRetryPause = &pause

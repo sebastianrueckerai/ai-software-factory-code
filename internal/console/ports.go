@@ -77,9 +77,11 @@ type Projects interface {
 }
 
 // Events is the event spine (factoryd.Events): one row per action,
-// whatever the input, and a project's feed.
+// whatever the input, and a project's feed. FiledPR is the infra pull
+// request of a project's last filing, its project_filed event's.
 type Events interface {
 	factoryd.Events
+	FiledPR(ctx context.Context, name string) (int64, bool, error)
 }
 
 // Chat is the project agent's store (factoryd.PGStore): each project's

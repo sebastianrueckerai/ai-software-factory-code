@@ -271,10 +271,9 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 // poll keeps, between the reconciles, what must not wait for the next:
 // each ready factory project's staging secrets, so a Secret Flux applies
 // reaches CI within the poll, and the import rows of projects no file
-// names: a row's infra pull request closed unmerged deletes the row with
-// its token; open or merged, it keeps the row for registration. A row
-// that records no pull request, or whose pull request cannot be read,
-// stays and is reported.
+// names: a row whose filing is gone (filingGone) is deleted with its
+// token, any other kept for registration. A row that records no pull
+// request, or whose filing cannot be read, stays and is reported.
 func (r *Registrar) poll(ctx context.Context) {
 	ps, err := r.Store.Projects(ctx)
 	if err != nil {
@@ -303,18 +302,42 @@ func (r *Registrar) poll(ctx context.Context) {
 				m.Project, m.Remote, r.Infra.Repo)
 			continue
 		}
-		pr, err := r.Infra.PullRequest(ctx, m.PR)
-		switch {
+		switch gone, err := r.filingGone(ctx, m); {
 		case err != nil:
-			log.Printf("project %s: import row of github.com/%s kept: %s#%d unread: %v", m.Project, m.Remote, r.Infra.Repo, m.PR, err)
-		case pr.State == "closed" && !pr.Merged:
+			log.Printf("project %s: import row of github.com/%s kept: %v", m.Project, m.Remote, err)
+		case gone != "":
 			if err := r.Mirrors.DeleteImport(ctx, m.Project, m.PR); err != nil {
 				log.Printf("project %s: import row of github.com/%s: %v", m.Project, m.Remote, err)
 			} else {
-				log.Printf("project %s: import row of github.com/%s deleted: %s#%d closed unmerged", m.Project, m.Remote, r.Infra.Repo, m.PR)
+				log.Printf("project %s: import row of github.com/%s deleted: %s", m.Project, m.Remote, gone)
 			}
 		}
 	}
+}
+
+// filingGone is why m's filing is gone, "" while its project may still
+// load: its pull request closed unmerged, or merged and undone since, the
+// infra repository's main no longer holding the project's file. A merged
+// one whose file main holds waits for the load.
+func (r *Registrar) filingGone(ctx context.Context, m Mirror) (string, error) {
+	pr, err := r.Infra.PullRequest(ctx, m.PR)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("%s#%d unread: %w", r.Infra.Repo, m.PR, err)
+	case pr.State != "closed":
+		return "", nil
+	case !pr.Merged:
+		return fmt.Sprintf("%s#%d closed unmerged", r.Infra.Repo, m.PR), nil
+	}
+	file := policy.ProjectFile(m.Project)
+	held, err := r.Infra.Holds(ctx, file)
+	switch {
+	case err != nil:
+		return "", fmt.Errorf("%s main's %s unread: %w", r.Infra.Repo, file, err)
+	case held:
+		return "", nil
+	}
+	return fmt.Sprintf("%s#%d merged, and main no longer holds %s", r.Infra.Repo, m.PR, file), nil
 }
 
 // refreshStaging writes p's staging secrets when their lines changed. A

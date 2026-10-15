@@ -243,13 +243,17 @@ func TestProjectsHaveNoEdits(t *testing.T) {
 // calls and passes every other call on.
 type infraFake struct {
 	mu          sync.Mutex
-	pull        map[string]any // GET pulls/main/project-linkshort; nil: 404
+	pull        map[string]any // GET pulls/<its number>; nil: 404
 	pullAuth    []string
 	contents    []recorded
 	pulls       []recorded
-	merges      []recorded
-	mergeStatus int
-	mergeBody   string
+	pullsStatus int // the pull request's opening; 0: 201
+	// merges and closes are the calls on a pull request, its path theirs;
+	// closeStatus answers a close, 0: 201
+	merges, closes []recorded
+	closeStatus    int
+	mergeStatus    int
+	mergeBody      string
 	// mergeStatuses answers the merge calls in order, then mergeStatus.
 	mergeStatuses []int
 	// contentsStatus answers the contents calls; 0: 201
@@ -261,8 +265,8 @@ type infraFake struct {
 }
 
 type recorded struct {
-	auth string
-	body map[string]any
+	auth, path string
+	body       map[string]any
 }
 
 func withInfra(t *testing.T, r *rig) *infraFake {
@@ -279,8 +283,10 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		rec := func() recorded {
 			var body map[string]any
 			json.NewDecoder(req.Body).Decode(&body)
-			return recorded{auth: req.Header.Get("Authorization"), body: body}
+			return recorded{auth: req.Header.Get("Authorization"), path: req.URL.Path, body: body}
 		}
+		number, merge := strings.CutSuffix(strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/pulls/"), "/merge")
+		numbered := strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/pulls/") && strings.Trim(number, "0123456789") == ""
 		switch {
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/") && f.files != nil:
 			text, ok := f.files[strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/")]
@@ -300,16 +306,28 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":
 			f.pulls = append(f.pulls, rec())
+			if f.pullsStatus != 0 {
+				w.WriteHeader(f.pullsStatus)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"number":12}`))
-		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/infra/pulls/main/project-linkshort":
+		case req.Method == http.MethodGet && numbered && !merge:
 			f.pullAuth = append(f.pullAuth, req.Header.Get("Authorization"))
-			if f.pull == nil {
+			if f.pull == nil || fmt.Sprint(f.pull["number"]) != number {
 				http.Error(w, `{"message":"pull request does not exist"}`, http.StatusNotFound)
 				return
 			}
 			json.NewEncoder(w).Encode(f.pull)
-		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls/12/merge":
+		case req.Method == http.MethodPatch && numbered && !merge:
+			f.closes = append(f.closes, rec())
+			if f.closeStatus != 0 {
+				w.WriteHeader(f.closeStatus)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		case req.Method == http.MethodPost && numbered && merge:
 			f.merges = append(f.merges, rec())
 			status := f.mergeStatus
 			if len(f.mergeStatuses) > 0 {
@@ -532,7 +550,18 @@ func newStatusRig(t *testing.T) *statusRig {
 	}
 	ck, s2 := r.loggedIn(t)
 	s.ck, s.csrf = ck, s2.csrf
+	s.filed(t, 12)
 	return s
+}
+
+// filed records linkshort's filing as pull request number, the event
+// createProject writes.
+func (r *rig) filed(t *testing.T, number int64) {
+	t.Helper()
+	if _, err := r.events.Record(context.Background(), factoryd.Event{Repository: "linkshort/linkshort", Kind: factoryd.EventProjectFiled,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"name": "linkshort", "pr": number}}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Each merge attempt waits MergeRetryPause on a 405; zero keeps tests fast.
@@ -580,7 +609,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 		{"pull request closed", func(s *statusRig) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
 		}, []string{"failed", "waiting", "waiting", "waiting"}, []string{"#12 was closed without merging."}, []string{`action="/projects/linkshort/merge"`}},
-		{"pull request unreadable", func(s *statusRig) { s.infra.set(map[string]any{"number": "twelve"}) }, []string{"failed", "waiting", "waiting", "waiting"},
+		{"pull request unreadable", func(s *statusRig) { s.infra.set(map[string]any{"number": 12, "state": 12}) }, []string{"failed", "waiting", "waiting", "waiting"},
 			[]string{"Cannot read the pull request; the factoryd log says why."}, nil},
 		{"merge refused", func(s *statusRig) {
 			s.infra.set(openPull)
@@ -681,6 +710,29 @@ func TestStatusStopsPolling(t *testing.T) {
 	s.main = true
 	if body := s.status(t); strings.Contains(body, "hx-trigger") || strings.Contains(body, "hx-get") {
 		t.Fatalf("the final panel still polls:\n%s", body)
+	}
+}
+
+// A second filing of the name merges its own pull request: the panel and
+// the Merge button read the pull request the last project_filed event
+// records, by its number, not Forgejo's answer for branch
+// project-linkshort, which may be the first filing's.
+func TestMergeActsOnTheLastFiling(t *testing.T) {
+	s := newStatusRig(t)
+	s.noMergePause()
+	s.filed(t, 13)
+	s.infra.set(map[string]any{"number": 13, "state": "open", "merged": false, "html_url": "https://git.example/sf/infra/pulls/13",
+		"user": map[string]any{"login": "sebastian"}})
+	if body := s.status(t); !strings.Contains(body, `<a href="https://git.example/sf/infra/pulls/13">#13, filed by sebastian</a>`) {
+		t.Errorf("the panel lacks #13:\n%s", body)
+	}
+	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("merge = %d: %s", rec.Code, rec.Body.String())
+	}
+	s.infra.mu.Lock()
+	defer s.infra.mu.Unlock()
+	if len(s.infra.merges) != 1 || s.infra.merges[0].path != "/api/v1/repos/sf/infra/pulls/13/merge" {
+		t.Fatalf("merges %+v, want one of #13", s.infra.merges)
 	}
 }
 

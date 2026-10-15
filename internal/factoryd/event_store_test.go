@@ -120,6 +120,29 @@ func TestPGStoreEventsNewestTaskEvents(t *testing.T) {
 	}
 }
 
+// A project's filed pull request is its last project_filed event's: a
+// later filing's replaces an earlier one's, and neither a merge event nor
+// another project's filing counts. No filing reads none.
+func TestPGStoreFiledPR(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	for _, e := range []Event{
+		{Repository: "linkshort/linkshort", Kind: EventProjectFiled, Detail: map[string]any{"name": "linkshort", "pr": 12}},
+		{Repository: "linkshort/linkshort", Kind: EventProjectFiled, Detail: map[string]any{"name": "linkshort", "pr": 13, "source": "acme/app"}},
+		{Repository: "linkshort/linkshort", Kind: EventProjectMerged, Detail: map[string]any{"name": "linkshort", "pr": 12}},
+		{Repository: "other/other", Kind: EventProjectFiled, Detail: map[string]any{"name": "other", "pr": 20}},
+	} {
+		e.Actor, e.Via = "sebastian", ViaButton
+		if _, err := s.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]int64{"linkshort": 13, "other": 20, "none": 0} {
+		if pr, ok, err := s.FiledPR(ctx, name); err != nil || pr != want || ok != (want > 0) {
+			t.Errorf("FiledPR(%s) = %d, %v, %v; want %d", name, pr, ok, err, want)
+		}
+	}
+}
+
 func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()

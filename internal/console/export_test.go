@@ -32,6 +32,7 @@ type fakeMirrors struct {
 	calls []string
 	fail  error // AddPushMirror's answer
 	put   error // PutMirror's answer
+	setPR error // SetImportPR's answer
 	// cleared are the repositories whose GitHub failures were cleared
 	cleared []string
 	// deletes are the DeleteMirror calls as "project direction"
@@ -73,6 +74,9 @@ func (f *fakeMirrors) PutMirror(_ context.Context, m factoryd.Mirror) error {
 func (f *fakeMirrors) SetImportPR(_ context.Context, project string, pr int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.setPR != nil {
+		return f.setPR
+	}
 	m, ok := f.rows[project+" import"]
 	if !ok {
 		return factoryd.ErrNotFound
@@ -425,6 +429,63 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	r.events.mu.Unlock()
 	if strings.Contains(logs.String()+string(sent)+string(events), ghToken) {
 		t.Fatalf("the token left the row:\n%s", logs.String())
+	}
+}
+
+// A filing whose pull request does not open takes its import row and
+// token with it, and the console says so. One whose pull request the row
+// cannot record closes that pull request as the human, then drops the
+// row; if the close fails too, the row stays, so a merge still imports,
+// and the console says the pull request is open. None leaves an event.
+func TestFailedFilingDropsItsImport(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	form := linkshortForm(s.csrf)
+	form.Set("source", "acme/app")
+	form.Set("token", ghToken)
+	file := func(want int, says string) {
+		t.Helper()
+		if rec := r.do(post("/projects", form), ck); rec.Code != want || !strings.Contains(rec.Body.String(), says) {
+			t.Errorf("POST /projects = %d %q, want %d saying %q", rec.Code, rec.Body.String(), want, says)
+		}
+	}
+
+	infra.mu.Lock()
+	infra.pullsStatus = http.StatusUnprocessableEntity
+	infra.mu.Unlock()
+	file(http.StatusBadGateway, "Forgejo refused to open the pull request")
+	if m, ok := r.mirrors.rows["linkshort import"]; ok || !slices.Equal(r.mirrors.deletes, []string{"linkshort import"}) {
+		t.Errorf("an unopened pull request: import row %+v (%v), deletes %q; want none, one delete", m, ok, r.mirrors.deletes)
+	}
+
+	infra.mu.Lock()
+	infra.pullsStatus = 0
+	infra.mu.Unlock()
+	r.mirrors.setPR = errors.New("db down")
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import, so it was closed")
+	infra.mu.Lock()
+	closes := infra.closes
+	infra.mu.Unlock()
+	if len(closes) != 1 || closes[0].path != "/api/v1/repos/sf/infra/pulls/12" || closes[0].auth != "Bearer access-1" ||
+		!reflect.DeepEqual(closes[0].body, map[string]any{"state": "closed"}) {
+		t.Errorf("closes %+v, want #12 closed as the human", closes)
+	}
+	if m, ok := r.mirrors.rows["linkshort import"]; ok || len(r.mirrors.deletes) != 2 {
+		t.Errorf("an unrecorded pull request: import row %+v (%v), deletes %q; want none, two deletes", m, ok, r.mirrors.deletes)
+	}
+
+	infra.mu.Lock()
+	infra.closeStatus = http.StatusForbidden
+	infra.mu.Unlock()
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import, nor close it")
+	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending"}
+	if got := r.mirrors.rows["linkshort import"]; got != want || len(r.mirrors.deletes) != 2 {
+		t.Errorf("an unclosed pull request: import row %+v, deletes %q; want %+v kept", got, r.mirrors.deletes, want)
+	}
+	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); ok || err != nil {
+		t.Errorf("FiledPR = %d, %v, %v; want no filing recorded", pr, ok, err)
 	}
 }
 

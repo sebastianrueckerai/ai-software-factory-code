@@ -795,34 +795,68 @@ func TestImportedManifests(t *testing.T) {
 	}
 }
 
-// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the poll
-// reads, with the config token, the infra pull request each import row of
-// a project no file names records, whatever the row's age. Closed
-// unmerged, it deletes the row and its token with one log line; open or
-// merged, it keeps the row. A pull request Forgejo does not answer keeps
-// its row, reported, as does a row that records none. A filed project's
-// row and an imported one are not read.
-func TestPollDeletesImportsOfClosedFilings(t *testing.T) {
-	s, ctx := chatStore(t), context.Background()
-	logs := captureLog(t)
+// infraReads answers the reads of the infra repository sf/infra, whose
+// configuration is directory factory of main, by path and query: a
+// string answer is the body, a number the status; any other path is a
+// 404. It records each read as "<path> <Authorization>".
+func infraReads(t *testing.T, answers map[string]any) (*ForgejoConfig, func() []string) {
 	var mu sync.Mutex
 	var reads []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
-		reads = append(reads, req.Method+" "+req.URL.Path+" "+req.Header.Get("Authorization"))
+		reads = append(reads, req.URL.RequestURI()+" "+req.Header.Get("Authorization"))
 		mu.Unlock()
-		switch req.URL.Path {
-		case "/api/v1/repos/sf/infra/pulls/11":
-			io.WriteString(w, `{"number":11,"state":"closed","merged":false}`)
-		case "/api/v1/repos/sf/infra/pulls/12":
-			io.WriteString(w, `{"number":12,"state":"open","merged":false}`)
-		case "/api/v1/repos/sf/infra/pulls/13":
-			io.WriteString(w, `{"number":13,"state":"closed","merged":true}`)
+		switch a := answers[req.URL.RequestURI()].(type) {
+		case string:
+			io.WriteString(w, a)
+		case int:
+			http.Error(w, "boom", a)
 		default:
-			http.Error(w, "boom", http.StatusInternalServerError)
+			http.NotFound(w, req)
 		}
 	}))
 	t.Cleanup(srv.Close)
+	return &ForgejoConfig{Forgejo: &Forgejo{BaseURL: srv.URL}, Token: "config-tok", Repo: Repo{"sf", "infra"}, Branch: "main", Dir: "factory"},
+		func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return slices.Clone(reads)
+		}
+}
+
+// putAged puts each row, deleted again at the test's end, and backdates
+// its last write by 30 days.
+func putAged(t *testing.T, s *PGStore, rows []Mirror) {
+	ctx := context.Background()
+	for _, m := range rows {
+		if err := s.PutMirror(ctx, m); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { s.DeleteMirror(ctx, m.Project, m.Direction) })
+		if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET updated_at = now() - interval '30 days' WHERE project = $1 AND direction = $2`,
+			m.Project, m.Direction); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the poll
+// reads, with the config token, the infra pull request each import row of
+// a project no file names records, whatever the row's age. Closed
+// unmerged, it deletes the row and its token with one log line; open, or
+// merged with its file on main, it keeps the row. A pull request Forgejo
+// does not answer keeps its row, reported, as does a row that records
+// none. A filed project's row and an imported one are not read.
+func TestPollDeletesImportsOfClosedFilings(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	logs := captureLog(t)
+	infra, reads := infraReads(t, map[string]any{
+		"/api/v1/repos/sf/infra/pulls/11":                                       `{"number":11,"state":"closed","merged":false}`,
+		"/api/v1/repos/sf/infra/pulls/12":                                       `{"number":12,"state":"open","merged":false}`,
+		"/api/v1/repos/sf/infra/pulls/13":                                       `{"number":13,"state":"closed","merged":true}`,
+		"/api/v1/repos/sf/infra/contents/factory/projects/merged.yaml?ref=main": `{"name":"merged.yaml"}`,
+		"/api/v1/repos/sf/infra/pulls/14":                                       http.StatusInternalServerError,
+	})
 	rows := []struct {
 		m    Mirror
 		gone bool
@@ -836,29 +870,23 @@ func TestPollDeletesImportsOfClosedFilings(t *testing.T) {
 		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending", PR: 11}, false},
 		{Mirror{Project: "done", Direction: MirrorImport, Remote: "acme/done", State: "imported 2026-10-01 10:00 UTC", PR: 11}, false},
 	}
+	var ms []Mirror
 	for _, r := range rows {
-		if err := s.PutMirror(ctx, r.m); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { s.DeleteMirror(ctx, r.m.Project, r.m.Direction) })
-		if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET updated_at = now() - interval '30 days' WHERE project = $1 AND direction = $2`,
-			r.m.Project, r.m.Direction); err != nil {
-			t.Fatal(err)
-		}
+		ms = append(ms, r.m)
 	}
-	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s,
-		Infra: &ForgejoConfig{Forgejo: &Forgejo{BaseURL: srv.URL}, Token: "config-tok", Repo: Repo{"sf", "infra"}}}
+	putAged(t, s, ms)
+	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s, Infra: infra}
 	r.poll(ctx)
 	for _, row := range rows {
 		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok == row.gone {
 			t.Errorf("%s %s row kept %v, %v; want %v", row.m.Project, row.m.Direction, ok, err, !row.gone)
 		}
 	}
-	const pulls = "GET /api/v1/repos/sf/infra/pulls/"
-	mu.Lock()
-	defer mu.Unlock()
-	if want := []string{pulls + "11 token config-tok", pulls + "13 token config-tok", pulls + "12 token config-tok", pulls + "14 token config-tok"}; !slices.Equal(reads, want) {
-		t.Errorf("Forgejo reads %q, want %q", reads, want)
+	const pulls = "/api/v1/repos/sf/infra/pulls/"
+	if want := []string{pulls + "11 token config-tok", pulls + "13 token config-tok",
+		"/api/v1/repos/sf/infra/contents/factory/projects/merged.yaml?ref=main token config-tok", pulls + "12 token config-tok",
+		pulls + "14 token config-tok"}; !slices.Equal(reads(), want) {
+		t.Errorf("Forgejo reads %q, want %q", reads(), want)
 	}
 	lines := []string{"project closed: import row of github.com/acme/closed deleted: sf/infra#11 closed unmerged\n",
 		"project unlinked: import row of github.com/acme/unlinked kept: it records no pull request on sf/infra, so none tells its filing merged or closed\n",
@@ -869,6 +897,65 @@ func TestPollDeletesImportsOfClosedFilings(t *testing.T) {
 		}
 	}
 	if strings.Count(logs.String(), "import row") != 3 || strings.Contains(logs.String(), "T0ken") || strings.Contains(logs.String(), "exp0rt") {
+		t.Fatalf("log:\n%s\nwant only the lines %q, no token", logs, lines)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a filing
+// whose pull request merged but whose file the infra repository's main no
+// longer holds was undone, so the poll deletes its import row with its
+// token, pending or left copying by a registration before the file went.
+// A merged filing whose file main holds waits for the load and keeps its
+// row; one whose file main does not answer for keeps it, reported.
+func TestPollDeletesImportsOfUndoneFilings(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	logs := captureLog(t)
+	const contents = "/api/v1/repos/sf/infra/contents/factory/projects/"
+	infra, reads := infraReads(t, map[string]any{
+		"/api/v1/repos/sf/infra/pulls/21":     `{"number":21,"state":"closed","merged":true}`,
+		"/api/v1/repos/sf/infra/pulls/22":     `{"number":22,"state":"closed","merged":true}`,
+		"/api/v1/repos/sf/infra/pulls/23":     `{"number":23,"state":"closed","merged":true}`,
+		"/api/v1/repos/sf/infra/pulls/24":     `{"number":24,"state":"closed","merged":true}`,
+		contents + "loading.yaml?ref=main":    `{"name":"loading.yaml"}`,
+		contents + "unreadable.yaml?ref=main": http.StatusInternalServerError,
+	})
+	rows := []struct {
+		m    Mirror
+		gone bool
+	}{
+		{Mirror{Project: "undone", Direction: MirrorImport, Remote: "acme/undone", Token: "ghp_und0neT0ken", State: "pending", PR: 21}, true},
+		{Mirror{Project: "cut", Direction: MirrorImport, Remote: "acme/cut", Token: "ghp_cutT0ken", State: "copying since 2026-10-01 10:00 UTC", PR: 22}, true},
+		{Mirror{Project: "loading", Direction: MirrorImport, Remote: "acme/loading", Token: "ghp_l0adingT0ken", State: "pending", PR: 23}, false},
+		{Mirror{Project: "unreadable", Direction: MirrorImport, Remote: "acme/unreadable", State: "pending", PR: 24}, false},
+	}
+	var ms []Mirror
+	for _, r := range rows {
+		ms = append(ms, r.m)
+	}
+	putAged(t, s, ms)
+	r := &Registrar{Store: &memProjects{m: map[string]Project{"cut": {Name: "cut"}}}, Mirrors: s, Infra: infra}
+	r.poll(ctx)
+	for _, row := range rows {
+		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok == row.gone {
+			t.Errorf("%s row kept %v, %v; want %v", row.m.Project, ok, err, !row.gone)
+		}
+	}
+	const pulls = "/api/v1/repos/sf/infra/pulls/"
+	if want := []string{pulls + "22 token config-tok", contents + "cut.yaml?ref=main token config-tok",
+		pulls + "23 token config-tok", contents + "loading.yaml?ref=main token config-tok",
+		pulls + "21 token config-tok", contents + "undone.yaml?ref=main token config-tok",
+		pulls + "24 token config-tok", contents + "unreadable.yaml?ref=main token config-tok"}; !slices.Equal(reads(), want) {
+		t.Errorf("Forgejo reads %q, want %q", reads(), want)
+	}
+	lines := []string{"project cut: import row of github.com/acme/cut deleted: sf/infra#22 merged, and main no longer holds projects/cut.yaml\n",
+		"project undone: import row of github.com/acme/undone deleted: sf/infra#21 merged, and main no longer holds projects/undone.yaml\n",
+		"project unreadable: import row of github.com/acme/unreadable kept: sf/infra main's projects/unreadable.yaml unread: "}
+	for _, line := range lines {
+		if !strings.Contains(logs.String(), line) {
+			t.Errorf("log lacks %q", line)
+		}
+	}
+	if strings.Count(logs.String(), "import row") != 3 || strings.Contains(logs.String(), "T0ken") {
 		t.Fatalf("log:\n%s\nwant only the lines %q, no token", logs, lines)
 	}
 }

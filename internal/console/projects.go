@@ -222,7 +222,8 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 // project-<name> off main with the one file, and its pull request. A
 // GitHub repository to start from is the name's import row, with its
 // token, put once the branch exists, before the pull request, which it
-// records once open.
+// records once open. A pull request that does not open, or that the row
+// cannot record and so is closed, takes the row and its token with it.
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
 		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
@@ -295,12 +296,24 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := c.asUser(r, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": "Project " + p.Name},
 		http.StatusCreated, &pull); err != nil {
+		c.dropImport(r.Context(), p)
 		c.forgejoFailed(w, r, "open the pull request", err)
 		return
 	}
 	if p.Source != "" {
 		if err := c.cfg.Mirrors.SetImportPR(r.Context(), p.Name, pull.Number); err != nil {
 			log.Printf("console: the GitHub import of %s: record %s#%d: %v", p.Name, c.cfg.InfraRepo, pull.Number, err)
+			msg := fmt.Sprintf("cannot record %s#%d on the GitHub import, so it was closed; see the factoryd log", c.cfg.InfraRepo, pull.Number)
+			if err := c.asUser(r, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", infra, pull.Number), map[string]string{"state": "closed"},
+				http.StatusCreated, nil); err != nil {
+				// the row stays, so a merge still imports
+				log.Printf("console: %s could not close %s#%d: %v", user, c.cfg.InfraRepo, pull.Number, err)
+				msg = fmt.Sprintf("cannot record %s#%d on the GitHub import, nor close it; see the factoryd log", c.cfg.InfraRepo, pull.Number)
+			} else {
+				c.dropImport(r.Context(), p)
+			}
+			http.Error(w, msg, http.StatusInternalServerError)
+			return
 		}
 	}
 	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
@@ -322,10 +335,27 @@ type infraPull struct {
 	} `json:"user"`
 }
 
-// pullOf reads the pull request from project-<name> into infra's main with
-// factoryd's config token; ok false when there is none.
+// dropImport deletes p's import row, with its token, when the filing
+// named a GitHub repository.
+func (c *Console) dropImport(ctx context.Context, p newProject) {
+	if p.Source == "" {
+		return
+	}
+	if err := c.cfg.Mirrors.DeleteMirror(ctx, p.Name, factoryd.MirrorImport); err != nil {
+		log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
+	}
+}
+
+// pullOf reads, with factoryd's config token, the infra pull request of
+// name's last filing: the number its project_filed event records, never
+// Forgejo's answer for branch project-<name>, which may be an earlier
+// filing's. ok false when there is none.
 func (c *Console) pullOf(ctx context.Context, name string) (pr infraPull, ok bool, err error) {
-	path := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name) + "/pulls/main/project-" + name
+	number, filed, err := c.cfg.Events.FiledPR(ctx, name)
+	if err != nil || !filed {
+		return pr, false, err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), number)
 	err = c.api(ctx, c.cfg.InfraToken, http.MethodGet, path, nil, http.StatusOK, &pr)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
 		return pr, false, nil

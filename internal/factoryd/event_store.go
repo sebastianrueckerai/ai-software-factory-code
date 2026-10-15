@@ -186,6 +186,18 @@ func (s *PGStore) ReachedReview(ctx context.Context, id string) (bool, error) {
 	return ok, err
 }
 
+// FiledPR reads project name's last project_filed event: the infra pull
+// request the console last filed the project with; false for none.
+func (s *PGStore) FiledPR(ctx context.Context, name string) (int64, bool, error) {
+	var pr int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE((detail->>'pr')::bigint, 0) FROM events WHERE repository = $1 AND kind = $2
+		ORDER BY id DESC LIMIT 1`, name+"/"+name, EventProjectFiled).Scan(&pr)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	return pr, err == nil && pr > 0, err
+}
+
 // events runs query, which returns eventColumns, and scans its rows.
 func (s *PGStore) events(ctx context.Context, query string, args ...any) ([]Event, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)

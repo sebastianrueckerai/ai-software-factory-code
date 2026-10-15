@@ -376,6 +376,15 @@ func (c *ForgejoConfig) PullRequest(ctx context.Context, number int64) (PullRequ
 	return c.Forgejo.As("", c.Token).PullRequestState(ctx, c.Repo.Owner, c.Repo.Name, number)
 }
 
+// Holds reports whether Branch's head holds file path of Dir.
+func (c *ForgejoConfig) Holds(ctx context.Context, path string) (bool, error) {
+	_, err := c.call(ctx, "contents/"+c.Dir+"/"+path+"?ref="+url.QueryEscape(c.Branch))
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 func (c *ForgejoConfig) Head(ctx context.Context) (string, error) {
 	body, err := c.call(ctx, "branches/"+url.PathEscape(c.Branch))
 	if err != nil {

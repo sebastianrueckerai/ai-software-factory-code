@@ -370,6 +370,18 @@ func (f *acceptEvents) ProjectEvents(_ context.Context, repository string, after
 	return out, nil
 }
 
+func (f *acceptEvents) FiledPR(_ context.Context, name string) (int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i := len(f.rows) - 1; i >= 0; i-- {
+		if r := f.rows[i]; r.Repository == name+"/"+name && r.Kind == factoryd.EventProjectFiled {
+			pr, _ := r.Detail["pr"].(int64)
+			return pr, pr > 0, nil
+		}
+	}
+	return 0, false, nil
+}
+
 func (f *acceptEvents) TaskEvents(_ context.Context, id string, limit int) ([]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

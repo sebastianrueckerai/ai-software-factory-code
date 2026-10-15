@@ -14,8 +14,7 @@ import (
 // waits as pending, recording the infra pull request #12 that files it;
 // the pull request closes without merging and the panel shows it failed.
 // The panel leaves the row to the registrar's poll, which reads #12 and
-// deletes it (factoryd's TestPollDeletesImportsOfClosedFilings): its read
-// of branch project-<name> may find another filing's pull request.
+// deletes it (factoryd's TestPollDeletesImportsOfClosedFilings).
 func TestImportRowRecordsFilingPR(t *testing.T) {
 	s := newStatusRig(t)
 	s.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
