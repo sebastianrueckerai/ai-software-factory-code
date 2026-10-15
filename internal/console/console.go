@@ -229,6 +229,8 @@ type Config struct {
 	Escalate func(ctx context.Context, repository, question string, choices []string, by string) (int64, error)
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
+	// Routines are the projects' routines; nil offers no routine act.
+	Routines Routines
 	// GitHubSync brings a project's GitHub default branch back as a pull
 	// request to main (factoryd's Registrar.GitHubSync); nil offers none.
 	GitHubSync func(ctx context.Context, project, by string) (string, error)
@@ -351,6 +353,7 @@ type postRoute struct {
 // holds each one's rule and New refuses a route missing from it.
 func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
+	routines := func() bool { return c.cfg.Routines != nil }
 	return []postRoute{
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
@@ -390,6 +393,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/export", http.HandlerFunc(c.githubExport), mirrors},
 		{"POST /projects/{name}/export/remove", http.HandlerFunc(c.removeGithubExport), mirrors},
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},
+		{"POST /routines/{project}/{name}/skip", http.HandlerFunc(c.routineSkip), routines},
+		{"POST /routines/{project}/{name}/run", http.HandlerFunc(c.routineRun), routines},
 	}
 }
 

@@ -40,12 +40,14 @@ type RoutineView struct {
 	Project string
 	Routine policy.Routine
 	State   RoutineState
-	// Next is the next cron run, zero for a routine without a cron
-	// trigger, and Soon says it is under an hour away.
+	// Next is the next cron run, the one after when a Skip once is
+	// pending, zero for a routine without a cron trigger, and Soon says
+	// it is under an hour away.
 	Next time.Time
 	Soon bool
 	// NextWords is "Mon 06:00" within a week, else "Mon 20 Oct 06:00",
-	// "after 6 more merges" or the event's words.
+	// "after 6 more merges" (past a pending skip's run too) or the
+	// event's words.
 	NextWords string
 	// Last is the newest run, zero before the first.
 	Last RoutineRun
@@ -289,11 +291,45 @@ func (r *Routines) startOn(ctx context.Context, key string, rs []policy.Routine,
 // RunNow starts a run of project's routine, due now. A project's template
 // pass runs the factory's.
 func (r *Routines) RunNow(ctx context.Context, project, routine string) error {
-	key, ok := routineKey(r.Current().Tree, project, routine)
-	if !ok {
-		return fmt.Errorf("routine %s of project %q: %w", routine, project, ErrNotFound)
+	key, err := r.key(project, routine)
+	if err != nil {
+		return err
 	}
 	return r.Workflows.StartRoutineRun(ctx, RoutineRunInput{Project: key, Routine: routine, Trigger: "run-now", Due: r.Now()})
+}
+
+// Skip sets project's routine's Skip once for by, or with skip false
+// clears it.
+func (r *Routines) Skip(ctx context.Context, project, routine string, skip bool, by string) error {
+	key, err := r.key(project, routine)
+	if err != nil {
+		return err
+	}
+	return r.Store.SetRoutineSkip(ctx, key, routine, skip, by)
+}
+
+// Runs are project's routine's last limit runs, newest first.
+func (r *Routines) Runs(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error) {
+	key, err := r.key(project, routine)
+	if err != nil {
+		return nil, err
+	}
+	return r.Store.RoutineRuns(ctx, key, routine, limit)
+}
+
+// RunOfTask is the routine run that filed the task.
+func (r *Routines) RunOfTask(ctx context.Context, taskID string) (RoutineRun, bool, error) {
+	return r.Store.RoutineRunOfTask(ctx, taskID)
+}
+
+// key is routineKey in the version in force, ErrNotFound when project
+// runs no such routine.
+func (r *Routines) key(project, routine string) (string, error) {
+	key, ok := routineKey(r.Current().Tree, project, routine)
+	if !ok {
+		return "", fmt.Errorf("routine %s of project %q: %w", routine, project, ErrNotFound)
+	}
+	return key, nil
 }
 
 // routineKey is the store's key of the routine name that project's board
@@ -337,14 +373,23 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			view.Lane = "needs-you"
 		}
 		if next, ok := rt.NextCron(now, loc); ok {
+			if st.SkipNext {
+				if after, ok := rt.NextCron(next, loc); ok {
+					next = after
+				}
+			}
 			view.Next, view.Soon = next, next.Sub(now) < time.Hour
 			view.NextWords = next.Format("Mon 15:04")
 			if next.Sub(now) >= 7*24*time.Hour {
 				view.NextWords = next.Format("Mon 2 Jan 15:04")
 			}
 		} else if every := rt.MergesEvery(); every > 0 {
+			n := max(every-st.Merges, 1)
+			if st.SkipNext {
+				n += every
+			}
 			view.NextWords = "after 1 more merge"
-			if n := every - st.Merges; n > 1 {
+			if n > 1 {
 				view.NextWords = fmt.Sprintf("after %d more merges", n)
 			}
 		} else {

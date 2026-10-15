@@ -42,9 +42,10 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		return 0, ""
 	}
 	// path fills pattern's {id} (a card of sf/code (t-c), its pending request,
-	// a resource, an alert, a proposal) and {name} (the leg's project).
+	// a resource, an alert, a proposal), and {project} and {name} with the
+	// leg's project.
 	path := func(pattern, name string) string {
-		p := strings.ReplaceAll(strings.TrimPrefix(pattern, "POST "), "{name}", name)
+		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
 			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
@@ -87,8 +88,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		pages++
 	}
-	if pages != 37 || !slices.Equal(skipped, []string{"POST /logout"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 37 driven and only logout skipped", pages, skipped)
+	if pages != 39 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 39 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -211,7 +212,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		return ""
 	}
 	path := func(pattern, name string) string {
-		p := strings.ReplaceAll(strings.TrimPrefix(pattern, "POST "), "{name}", name)
+		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
 			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {

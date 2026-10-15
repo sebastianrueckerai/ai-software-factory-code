@@ -53,6 +53,12 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardSplit            = "card_split"
 	EventCardFunded           = "card_funded"
+	// EventRoutineSkipped is a Skip once set or, with undo, cleared:
+	// detail {"project", "routine", "undo"}.
+	EventRoutineSkipped = "routine_skipped"
+	// EventRoutineRunNow is a Run now: detail {"project", "routine",
+	// "outcome"}, the run's outcome or "pending" when none came in time.
+	EventRoutineRunNow = "routine_run_now"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

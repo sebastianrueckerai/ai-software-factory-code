@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -25,10 +26,10 @@ const (
 )
 
 // scope is where a rule's roles are judged: no project, the factory's
-// own, the project a route's path or a chat's turn names, the project of
-// the card a route or a tool's arguments names, of an approval request,
-// or of any task an id names, a chat task's included (a chat task is a
-// card of its project).
+// own, the project a route's path ({project}, else {name}) or a chat's
+// turn names, the project of the card a route or a tool's arguments
+// names, of an approval request, or of any task an id names, a chat
+// task's included (a chat task is a card of its project).
 type scope uint8
 
 const (
@@ -134,6 +135,8 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/export":              {need: writer | approver, scope: scProject, what: "export it to GitHub"},
 	"POST /projects/{name}/export/remove":       {need: writer | approver, scope: scProject, what: "remove its GitHub export"},
 	"POST /projects/{name}/export/sync":         {need: writer | approver, scope: scProject, what: "sync it from GitHub"},
+	"POST /routines/{project}/{name}/skip":      rProject,
+	"POST /routines/{project}/{name}/run":       rProject,
 
 	// chat tools: reads
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
@@ -220,12 +223,13 @@ func (c *Console) scopeOf(sc scope, r *http.Request) (string, string, error) {
 	case scFactory:
 		return c.writersOwn(), "", nil
 	case scProject:
-		p, ok, err := c.projectOf(ctx, r.PathValue("name"))
+		name := cmp.Or(r.PathValue("project"), r.PathValue("name"))
+		p, ok, err := c.projectOf(ctx, name)
 		switch {
 		case err != nil:
 			return "", "", refuse(http.StatusInternalServerError, "cannot read the projects")
 		case !ok:
-			return "", "", refuse(http.StatusNotFound, "There is no project "+r.PathValue("name")+".")
+			return "", "", refuse(http.StatusNotFound, "There is no project "+name+".")
 		}
 		return p.Repository, p.Name, nil
 	case scCard:

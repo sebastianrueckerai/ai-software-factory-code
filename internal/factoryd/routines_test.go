@@ -335,6 +335,54 @@ func TestRunNowStartsARunDueNow(t *testing.T) {
 	}
 }
 
+// Skip and Runs reach the store under the routine's key, the project for
+// its own and "" for the factory's template pass a project's board
+// shows, and refuse a routine the project does not run without writing a
+// row; RunOfTask reads the store.
+func TestRoutineActsReachTheStoreByKey(t *testing.T) {
+	ctx := t.Context()
+	r, store, _, _, _ := routinesRig(t)
+	if err := r.Skip(ctx, "ai-software-factory-code", "weekly-bump", true, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Skip(ctx, "linkshort", "template-pass", true, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if st := store.routineStates["ai-software-factory-code/weekly-bump"]; !st.SkipNext || st.SkipBy != "sebastian" {
+		t.Fatalf("the bump's state %+v", st)
+	}
+	if st := store.routineStates["/template-pass"]; !st.SkipNext || st.SkipBy != "alice" {
+		t.Fatalf("the template pass's state %+v", st)
+	}
+	if err := r.Skip(ctx, "linkshort", "template-pass", false, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if st := store.routineStates["/template-pass"]; st.SkipNext || st.SkipBy != "" {
+		t.Fatalf("the undone skip %+v", st)
+	}
+
+	store.routineRuns["/template-pass"] = []RoutineRun{{Routine: "template-pass", Run: 1, TaskID: "t-1"}, {Routine: "template-pass", Run: 2}}
+	runs, err := r.Runs(ctx, "linkshort", "template-pass", 1)
+	if err != nil || len(runs) != 1 || runs[0].Run != 2 {
+		t.Fatalf("runs %+v %v", runs, err)
+	}
+	if run, ok, err := r.RunOfTask(ctx, "t-1"); err != nil || !ok || run.Run != 1 {
+		t.Fatalf("the run of t-1: %+v %v %v", run, ok, err)
+	}
+
+	for _, c := range [][2]string{{"demo-app", "template-pass"}, {"ai-software-factory-code", "nightly"}} {
+		if err := r.Skip(ctx, c[0], c[1], true, "sebastian"); !errors.Is(err, ErrNotFound) {
+			t.Errorf("skip %v: %v", c, err)
+		}
+		if _, err := r.Runs(ctx, c[0], c[1], 1); !errors.Is(err, ErrNotFound) {
+			t.Errorf("runs %v: %v", c, err)
+		}
+	}
+	if len(store.routineStates) != 2 {
+		t.Fatalf("states %v", store.routineStates)
+	}
+}
+
 func TestViews(t *testing.T) {
 	ctx := t.Context()
 	r, store, _, _, tree := routinesRig(t)
@@ -380,7 +428,27 @@ func TestViews(t *testing.T) {
 		}
 	}
 
-	// linkshort's board shows the factory's template pass with its state
+	// a pending Skip once moves the next run past the one it skips: the
+	// bump's to the Monday after, the audit's by another 20 merges
+	for _, rt := range []string{"weekly-bump", "audit"} {
+		if err := store.SetRoutineSkip(ctx, "ai-software-factory-code", rt, true, "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.SetRoutineMerges(ctx, "ai-software-factory-code", "audit", 14); err != nil {
+		t.Fatal(err)
+	}
+	vs, err = r.Views(ctx, "ai-software-factory-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !vs[0].Next.Equal(time.Date(2026, 10, 19, 6, 0, 0, 0, berlin)) || vs[0].NextWords != "Mon 19 Oct 06:00" || vs[0].Soon ||
+		vs[1].NextWords != "after 26 more merges" {
+		t.Fatalf("skipped: %+v", vs)
+	}
+
+	// linkshort's board shows the factory's template pass with its state,
+	// the skipped 06:03 run passed over
 	if err := store.SetRoutineSkip(ctx, "", "template-pass", true, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +457,7 @@ func TestViews(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(vs) != 1 || vs[0].Project != "linkshort" || vs[0].State.Project != "" || !vs[0].State.SkipNext ||
-		vs[0].NextWords != "Mon 06:03" || !vs[0].Soon || vs[0].Lane != "queued" {
+		vs[0].NextWords != "Mon 07:03" || vs[0].Soon || vs[0].Lane != "queued" {
 		t.Fatalf("linkshort: %+v", vs)
 	}
 	if _, ok := store.routineStates["linkshort/template-pass"]; ok {

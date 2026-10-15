@@ -786,6 +786,7 @@ type rig struct {
 	events    *fakeEvents
 	chat      *fakeChat
 	mirrors   *fakeMirrors
+	routines  *fakeRoutines
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -831,6 +832,7 @@ func newRig(t *testing.T) *rig {
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
 		events:      &fakeEvents{bus: factoryd.NewEventBus()},
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
+		routines:    &fakeRoutines{},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
@@ -842,7 +844,7 @@ func newRig(t *testing.T) *rig {
 		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors,
+		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate

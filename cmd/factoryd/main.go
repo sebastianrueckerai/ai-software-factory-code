@@ -513,6 +513,7 @@ func main() {
 			*factoryd.Forgejo
 		}{store, forgejo},
 		GitHubSync: registrar.GitHubSync,
+		Routines:   routines,
 		// the projects token registration keeps the repositories with, which
 		// may add a collaborator where the approver's own token may not
 		AddCollaborator:    forgejo.AddProjectCollaborator,
