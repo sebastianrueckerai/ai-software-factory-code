@@ -7,10 +7,11 @@ ARG COSIGN_VERSION=3.1.3
 
 FROM golang:1.26.9@sha256:37cfcca63222ec499bec5e8ad7aad52dbf7529db36d5812b8eae2f0621aa92d6 AS go-toolchain
 
-# The archives the image unpacks and cosign's binary, each checked against
-# its sha256 before a layer holds it. The image's steps mount this stage,
-# so no layer of the image keeps an archive. Node's sum is the tarball's
-# line in nodejs.org's signed SHASUMS256.txt for its version.
+# The archives the image unpacks, and cosign for the stage below, each
+# checked against its sha256 before a layer holds it. The image's steps
+# mount this stage, so no layer of the image keeps an archive. Node's sum
+# is the tarball's line in nodejs.org's signed SHASUMS256.txt for its
+# version.
 FROM scratch AS downloads
 ARG BUILDKIT_VERSION
 ARG CRANE_VERSION
@@ -23,8 +24,9 @@ ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f5
 ADD --checksum=sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
 ADD --checksum=sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 --chmod=0755 https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
 
-# cosign alone: main CI's image jobs export it from here to sign what they
-# push (roadmap 46), without building the image
+# cosign alone, which the image does not carry: main CI's image jobs export
+# it from here to sign what they push (roadmap 46), and the infra
+# repository's scripts/cosign-keygen.sh to make the key pair
 FROM scratch AS cosign
 COPY --from=downloads /cosign /cosign
 
@@ -97,9 +99,6 @@ RUN --mount=type=bind,from=downloads,source=/node.tar.xz,target=/tmp/node.tar.xz
 # govulncheck so the job's egress allowlist never needs vuln.go.dev).
 RUN --mount=type=bind,from=downloads,source=/gosec.tar.gz,target=/tmp/gosec.tar.gz \
       tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec
-
-# cosign, the tool of the factory's image signatures (roadmap 46).
-COPY --from=cosign /cosign /usr/local/bin/cosign
 
 ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
     HOME=/home/runner \

@@ -83,8 +83,8 @@ jobs:
             --output "type=image,\"name=git.aisoftwarefactory.world/sf/factory-gateway:$SHA,git.aisoftwarefactory.world/sf/factory-gateway:main\",push=true,rewrite-timestamp=true" .
       - name: sign the gateway image
         # by the digest pushed, with the factory's key (roadmap 46): the
-        # roller rolls no image without this signature. cosign is the
-        # runner image's pinned download; a signing config of no services
+        # roller rolls no image without this signature. cosign is
+        # Dockerfile.runner's pinned download; a signing config of no services
         # keeps the signature in the registry beside the image, out of any
         # transparency log. Only this job and the two below read the key.
         env:
