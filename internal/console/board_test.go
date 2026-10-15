@@ -41,8 +41,8 @@ func TestTitleClause(t *testing.T) {
 }
 
 // The routines control's choice: within reads its period, 1 to 999 days
-// or hours, a number or a unit it does not take reading as the default
-// 1 day; the period is read with within alone, and week is no choice.
+// or hours; a number it does not take reads as 1, a unit as days; the
+// period is read with within alone, and week is no choice.
 func TestReadColsReadsTheRoutinesPeriod(t *testing.T) {
 	for _, tc := range []struct {
 		query    string

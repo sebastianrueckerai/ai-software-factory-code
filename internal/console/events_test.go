@@ -1057,17 +1057,23 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 	}
 }
 
-// The board polls nothing: no hx-trigger, the footer that says when the
-// stream is down, and a board fragment that carries the status line out
-// of band. console.js under node, which the test needs: it follows the
-// stream under the board's query; a first open asks for nothing, a
-// reconnect for the board once and the drawer's Chat it shows, and no
-// timer for anything; counters set the status line and the columns'
-// counts; the agent's text and a steer reach the drawer's Chat once each,
-// and another session's text and the card's new status load the tab
-// again, a steer being typed kept; event board swaps the board, and a
-// swap the open drawer holds back runs once it closes, or once the focus
-// lands elsewhere, not while it moves on to another field.
+// The board polls nothing: no polling hx-trigger, the footer that says
+// when the stream is down, and a board fragment that carries the status
+// line out of band. console.js under node, which the test needs: it
+// follows the stream under the board's query; a first open asks for
+// nothing, a reconnect for the board once and the drawer's Chat it shows,
+// and no timer for anything; counters set the status line and the
+// columns' counts; the agent's text and a steer reach the drawer's Chat
+// once each, and another session's text and the card's new status load
+// the tab again, a steer being typed kept; event board swaps the board,
+// and a swap the open drawer holds back runs once it closes, or once the
+// focus lands elsewhere, not while it moves on to another field. The
+// find's box, focused and holding text, holds no swap; a find in flight
+// holds the board's and the cards' swaps until its answer is in; a board
+// under a new query moves the stream to it, whose first open reads the
+// board and the Chat; a board swap that took the box's focus gives it back
+// with its caret, and a card's swap after the focus moved on does not;
+// the find's URL keeps the open document and the drawer's hash.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1106,8 +1112,9 @@ var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=
   drawer: el({hidden: true}), "session-log": log, "steer-input": el({value: "half a steer"})};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
+EventSource.prototype.close = function () { this.closed = true; };
 EventSource.CLOSED = 2;
-var sandbox = {EventSource: EventSource, CSS: {escape: function (s) { return s; }}, location: {hash: ""}, history: {replaceState: function () {}},
+var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }}, location: {hash: ""}, history: {replaceState: function () {}},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
@@ -1166,7 +1173,57 @@ out.said = log.children.map(function (m) { var who = m.children[1]; return [m.cl
 out.timers = timers;
 setImmediate(function () {
   out.steer = byID["steer-input"].value;
-  console.log(JSON.stringify(out));
+  function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); }); }
+  // the find's box, focused and holding text, holds no swap of the board
+  var q = el({id: "q", type: "text", value: "exp", defaultValue: "", selectionStart: 2, selectionEnd: 3,
+    matches: function () { return true; }, focus: function () { sandbox.document.activeElement = q; },
+    setSelectionRange: function (a, b) { out.caret = [a, b]; }});
+  byID.q = q;
+  byID.board.contains = function (x) { return x === q; };
+  byID.board.querySelectorAll = function (sel) { return sel === "input, textarea" ? [q] : []; };
+  sandbox.document.activeElement = q;
+  requests = [];
+  event({id: 11, at: "2026-10-11T10:10:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+  out.typing = requests.slice();
+  // a find in flight holds the board's and the cards' swaps until its answer is in
+  requests = [];
+  fire("htmx:beforeRequest", {elt: {id: "find"}});
+  event({id: 12, at: "2026-10-11T10:11:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+  event({id: 13, at: "2026-10-11T10:11:00Z", task_id: "t-other", kind: "card_moved", actor: "sebastian", detail: {}});
+  out.finding = requests.slice();
+  fire("htmx:afterRequest", {elt: {id: "find"}});
+  out.found = requests.slice();
+  // a swap that brings the board under a new query moves the stream to it,
+  // once; the new stream's first open reads the board and the Chat again
+  requests = [];
+  fire("htmx:afterSwap", {target: byID.board});
+  byID.board = el({id: "board", dataset: {project: "code", query: "?project=code&q=exp"}});
+  fire("htmx:afterSwap", {target: byID.board});
+  fire("htmx:afterSwap", {target: byID.board});
+  out.streams = sources.map(function (s) { return s.url + (s.closed ? " closed" : ""); });
+  if (sources[1]) sources[1].onopen();
+  out.followed = requests.slice();
+  // a board swap that took the box's focus gives it back with the caret;
+  // a card's swap (no beforeSwap) after the focus moved on leaves it there
+  sandbox.document.activeElement = q;
+  fire("htmx:beforeSwap", {target: byID.board, xhr: {status: 200, responseText: ""}});
+  sandbox.document.activeElement = sandbox.document.body;
+  fire("htmx:afterSwap", {target: byID.board});
+  out.refocused = sandbox.document.activeElement === q;
+  var composer = el({id: "chat-input"});
+  sandbox.document.activeElement = composer;
+  fire("htmx:afterSwap", {});
+  out.kept = sandbox.document.activeElement === composer;
+  // the find's URL keeps the open document's doc= and the drawer's hash
+  Object.assign(sandbox.location, {href: "http://lab/?project=code&doc=docs/a.md#card=t-1", search: "?project=code&doc=docs/a.md", hash: "#card=t-1"});
+  var h = {path: "/?project=code&q=exp"};
+  fire("htmx:beforeHistoryUpdate", {history: h});
+  out.history = h.path;
+  Object.assign(sandbox.location, {href: "http://lab/?project=code", search: "?project=code", hash: ""});
+  h = {path: "/?project=code&q=exp"};
+  fire("htmx:beforeHistoryUpdate", {history: h});
+  out.plain = h.path;
+  setImmediate(function () { console.log(JSON.stringify(out)); });
 });`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
 	got, err := cmd.Output()
@@ -1177,7 +1234,11 @@ setImmediate(function () {
 		`"status":"\n<strong class=\"pname\">code</strong>\n","counts":["2","0","1"],` +
 		`"after":["GET /board?project=code","GET /cards/t-run/drawer?tab=chat","GET /cards/t-run/drawer?tab=chat","GET /board?project=code","GET /board?project=code"],` +
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
-		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer"}`
+		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
+		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
+		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
+		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +
+		`"history":"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1","plain":"/?project=code&q=exp"}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

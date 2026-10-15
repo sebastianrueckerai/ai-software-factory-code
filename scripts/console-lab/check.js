@@ -88,15 +88,17 @@ async function open(browser, viewport, folded) {
 // findAsYouType types word into the find of the busy board under query
 // without Enter and checks that after the pause the board, and nothing
 // else, shows only the cards that say word, the URL holds q=word beside
-// the board's other fields, and the box keeps its focus, its text and its
-// caret; that emptying the box makes the board whole again; that Back
-// returns to the find, the box holding word; and that the × shows while
-// the box holds text and clears the find and the URL.
+// the board's other fields in place of the board's history entry, and the
+// box keeps its focus, its text and its caret; that emptying the box makes
+// the board whole again; that Back goes to the page before the board and
+// Forward returns to the find, the box holding word; and that the × shows
+// while the box holds text and clears the find and the URL.
 async function findAsYouType(p, query, word, label, fails) {
   const page = p.page, cards = "#board [data-card]";
+  await page.goto(base + "/costs", { waitUntil: "load" });
   await page.goto(base + "/" + query, { waitUntil: "load" });
   await page.waitForTimeout(600);
-  const whole = await page.locator(cards).count(), kept = new URL(page.url()).searchParams;
+  const whole = await page.locator(cards).count(), kept = new URL(page.url()).searchParams, depth = await page.evaluate(() => history.length);
   if (await page.locator("#find .find-x").isVisible()) fails.push(label + ": the × shows while the box is empty");
   await page.evaluate(() => { window.labPage = true; window.labBox = document.getElementById("q"); });
   await page.locator("#q").click();
@@ -127,15 +129,20 @@ async function findAsYouType(p, query, word, label, fails) {
   if ((await page.locator(cards).count()) !== whole) fails.push(label + ": the emptied box shows " + (await page.locator(cards).count()) + " cards, not the whole " + whole);
   if (!b.focus || b.value !== "") fails.push(label + ": the emptied box has focus " + b.focus + ", text " + JSON.stringify(b.value));
   if (await page.locator("#find .find-x").isVisible()) fails.push(label + ": the × stays on the emptied box");
-  await page.goBack();
-  await page.waitForTimeout(1500);
-  await page.waitForLoadState("load");
+  await page.keyboard.type(word, { delay: 40 });
+  await page.waitForTimeout(1200);
+  const entries = await page.evaluate(() => history.length);
+  if (entries !== depth) fails.push(label + ": three finds leave " + entries + " history entries, want the board's " + depth);
+  await page.goBack({ waitUntil: "load" });
   await page.waitForTimeout(600);
-  const back = { q: new URL(page.url()).searchParams.get("q"), box: await page.locator("#q").inputValue(), cards: await page.locator(cards).count() };
-  if (back.q !== word || back.box !== word || back.cards !== texts.length) {
-    fails.push(label + ": Back reads q=" + back.q + ", the box " + JSON.stringify(back.box) + " and " + back.cards + " cards, want " + word + " and " + texts.length);
+  if (new URL(page.url()).pathname !== "/costs") fails.push(label + ": Back after the find goes to " + page.url() + ", not the page before the board");
+  await page.goForward({ waitUntil: "load" });
+  await page.waitForTimeout(600);
+  const fwd = { q: new URL(page.url()).searchParams.get("q"), box: await page.locator("#q").inputValue(), cards: await page.locator(cards).count() };
+  if (fwd.q !== word || fwd.box !== word || fwd.cards !== texts.length) {
+    fails.push(label + ": Forward reads q=" + fwd.q + ", the box " + JSON.stringify(fwd.box) + " and " + fwd.cards + " cards, want " + word + " and " + texts.length);
   }
-  if (!(await page.locator("#find .find-x").isVisible())) return fails.push(label + ": no × to clear the find after Back");
+  if (!(await page.locator("#find .find-x").isVisible())) return fails.push(label + ": no × to clear the find after Forward");
   await page.locator("#find .find-x").click();
   await page.waitForLoadState("load");
   await page.waitForTimeout(600);
@@ -399,6 +406,34 @@ async function text(page) {
       else await findAsYouType(nm, "", "export", "find without moveBefore", fails);
       if (nm.errors.length) fails.push("find without moveBefore: " + nm.errors.join("; "));
       await nm.ctx.close();
+      // a find keeps the open drawer's hash in the URL it writes, so the drawer's ✕ still closes it;
+      // the drawer at its Overview, as its Chat, read again when the stream moves, writes its hash anew
+      await p.page.goto(base + "/#card=" + drawer + ":overview", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.locator("#q").focus();
+      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.waitForTimeout(1200);
+      const found = new URL(p.page.url());
+      if (found.hash !== "#card=" + drawer || found.searchParams.get("q") !== "export") fails.push("find with a drawer: the find writes " + p.page.url() + ", want q=export and #card=" + drawer);
+      await p.page.locator("#drawer-close").click();
+      await p.page.waitForTimeout(400);
+      const closed = new URL(p.page.url());
+      if (await p.page.locator("#drawer").isVisible()) fails.push("find with a drawer: the ✕ does not close the drawer after a find");
+      if (closed.hash || closed.searchParams.get("q") !== "export") fails.push("find with a drawer: after the ✕ the URL is " + p.page.url() + ", want q=export and no hash");
+      // a stream swap that lands while a find is in flight leaves the find's answer on the board
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const slow = (u) => u.pathname === "/" && u.searchParams.get("q") === "export";
+      await p.page.route(slow, async (r) => { await new Promise((ok) => setTimeout(ok, 1000)); await r.continue(); });
+      await p.page.locator("#q").click();
+      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.waitForTimeout(500);
+      await p.page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
+      await p.page.waitForTimeout(2000);
+      await p.page.unroute(slow);
+      const raced = await p.page.evaluate(() => ({ query: document.getElementById("board").dataset.query,
+        off: Array.from(document.querySelectorAll("#board [data-card]")).filter((k) => !k.innerText.toLowerCase().includes("export")).length }));
+      if (raced.query.indexOf("q=export") < 0 || raced.off) fails.push("find in a race: after a stream swap landed first the board's query is " + raced.query + ", " + raced.off + " cards do not say export");
       // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
       await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -464,7 +499,8 @@ async function text(page) {
       // the period (2026-10-15): choosing within, a number or a unit applies at once; the
       // dependency update runs in 3 d 0 h 20 min, the bump and the template pass in under
       // half an hour, the audit after merges, so 1 day, 2 hours and 3 days hide the
-      // dependency update and 4 days none; a number changed under all chooses within
+      // dependency update and 4 days none; all and none send no period, and a number
+      // changed under none chooses within
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -478,7 +514,8 @@ async function text(page) {
         ["within 2 hours", async () => { await ctl.locator("input[name=within]").fill("2"); await ctl.locator("select[name=unit]").selectOption("hours"); },
           { routines: "within", within: "2", unit: "hours" }, soon, "1 routine hidden"],
         ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: "all" }, all, ""],
-        ["a number of 3 under all", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
+        ["choosing none", () => ctl.locator("input[name=routines][value=none]").check(), { routines: "none" }, "", "1 routine hidden | 3 routines hidden"],
+        ["a number of 3 under none", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
           { routines: "within", within: "3", unit: "days" }, soon, "1 routine hidden"],
       ]) {
         await ctl.locator("summary").click();
@@ -493,6 +530,8 @@ async function text(page) {
         await p.page.waitForTimeout(600);
         const got = await ghosts(), hid = (await p.page.locator("#board .ghosts-hidden").allInnerTexts()).join(" | ");
         if (got !== shown) fails.push("routines: " + what + " shows the ghosts " + got + ", want " + shown);
+        const sent = new URL(p.page.url()).searchParams;
+        if (want.routines !== "within" && (sent.has("within") || sent.has("unit"))) fails.push("routines: " + what + " sends a period (" + p.page.url() + ")");
         if (hid !== line) fails.push("routines: " + what + ' says "' + hid + '" hidden, want "' + line + '"');
       }
       const kept = await p.page.evaluate(() => {

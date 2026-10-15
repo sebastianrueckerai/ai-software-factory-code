@@ -1056,8 +1056,8 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 }
 
 // findForm is the find's form: as you type it swaps the board around
-// itself and pushes its query.
-const findForm = `<form class="find" id="find" role="search" method="get" action="/" hx-get="/" hx-trigger="input changed delay:250ms" hx-target="#board" hx-select="#board" hx-swap="outerHTML" hx-push-url="true" hx-preserve>`
+// itself and replaces the URL with its query.
+const findForm = `<form class="find" id="find" role="search" method="get" action="/" hx-get="/" hx-trigger="input changed delay:250ms" hx-target="#board" hx-select="#board" hx-swap="outerHTML" hx-replace-url="true" hx-preserve>`
 
 // The filter's query carries the find, trimmed, beside the project and
 // the view.

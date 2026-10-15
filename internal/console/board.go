@@ -1012,8 +1012,8 @@ func (f *boardFilter) setCol(name string, c colFilter) {
 
 // readCols reads the menus' choices and the routines control's with get,
 // a value the menu does not offer, and all, reading as the default, and
-// how many cards each column of finished cards shows. The control's
-// period reads as 1 day where its number or its unit is not one it takes.
+// how many cards each column of finished cards shows. A number the
+// routines control's period does not take reads as 1, a unit as days.
 func readCols(f *boardFilter, get func(string) string) {
 	switch get("routines") {
 	case "none":
