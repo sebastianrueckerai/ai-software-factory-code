@@ -19,6 +19,74 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the mirror
+// token is sealed at rest (roadmap 273): what the row holds is not the
+// token, PutMirror's or SetMirrorToken's, and opens back for its own
+// project. The project's name is the seal's additional data: the same
+// stored value under another project's name does not open, and a value
+// that does not open, under another project or another seal key, is an
+// error naming the project, never a plain-text fallback. Without a seal
+// key no token is stored.
+func TestPGStoreSealsMirrorTokens(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	const token = "ghp_s3aledAtRest"
+	row := Mirror{Project: "demo-app", Direction: MirrorExport, Remote: "acme/app", Username: "u", Token: token, State: "created"}
+	if err := s.PutMirror(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		s.DeleteMirror(ctx, "demo-app", MirrorExport)
+		s.DeleteMirror(ctx, "linkshort", MirrorExport)
+	})
+	stored := func(project string) string {
+		var v string
+		if err := s.db.QueryRowContext(ctx, `SELECT token FROM project_mirrors WHERE project = $1 AND direction = $2`,
+			project, MirrorExport).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	if v := stored("demo-app"); v == token || strings.Contains(v, token) {
+		t.Fatalf("project_mirrors.token holds the token in clear: %q", v)
+	}
+	if m, ok, err := s.MirrorToken(ctx, "demo-app", MirrorExport); err != nil || !ok || m.Token != token {
+		t.Fatalf("MirrorToken = %q, %v, %v; want the stored token back", m.Token, ok, err)
+	}
+	// the same stored value under another project's name does not open
+	if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET project = 'linkshort' WHERE project = $1 AND direction = $2`,
+		"demo-app", MirrorExport); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.MirrorToken(ctx, "linkshort", MirrorExport); err == nil || !errors.Is(err, errMirrorToken) ||
+		!strings.Contains(err.Error(), "linkshort") {
+		t.Fatalf("another project's read = %v, want the error naming linkshort", err)
+	}
+	if err := s.SetMirrorToken(ctx, "linkshort", MirrorExport, "ghp-r3placed"); err != nil {
+		t.Fatal(err)
+	}
+	if v := stored("linkshort"); v == "ghp-r3placed" || strings.Contains(v, "ghp-r3placed") {
+		t.Fatalf("SetMirrorToken stored the token in clear: %q", v)
+	}
+	if m, _, err := s.MirrorToken(ctx, "linkshort", MirrorExport); err != nil || m.Token != "ghp-r3placed" {
+		t.Fatalf("MirrorToken after SetMirrorToken = %q, %v; want the new token", m.Token, err)
+	}
+	// another seal key opens nothing: the error names the project
+	s.SetSealKey([]byte("another-session-key-0123456789ab"))
+	if _, _, err := s.MirrorToken(ctx, "linkshort", MirrorExport); err == nil || !errors.Is(err, errMirrorToken) ||
+		!strings.Contains(err.Error(), "linkshort") {
+		t.Fatalf("a read under another seal key = %v, want the error naming linkshort", err)
+	}
+	// without a seal key no token is stored at all
+	s.sealKey = nil
+	if err := s.PutMirror(ctx, row); err == nil || !errors.Is(err, errNoSealKey) || !strings.Contains(err.Error(), "demo-app") {
+		t.Fatalf("a put without the seal key = %v, want errNoSealKey naming demo-app", err)
+	}
+	if err := s.SetMirrorToken(ctx, "linkshort", MirrorExport, token); err == nil || !errors.Is(err, errNoSealKey) ||
+		!strings.Contains(err.Error(), "linkshort") {
+		t.Fatalf("a token set without the seal key = %v, want errNoSealKey naming linkshort", err)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a mirror
 // row answers its token only to the registrar's read, its mode mirror by
 // default and its time; a put of the same remote and mode keeps its since

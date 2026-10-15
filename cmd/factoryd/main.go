@@ -261,6 +261,9 @@ func main() {
 	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
 	consoleClientSecret := mustSecret("CONSOLE_CLIENT_SECRET")
 	consoleSessionKey := mustSecret("CONSOLE_SESSION_KEY")
+	// the mirror tokens are sealed under the session key, as the console's
+	// OAuth tokens are (roadmap 273)
+	store.SetSealKey([]byte(consoleSessionKey))
 	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
 	scrub := redact.New(bootSecrets...)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,

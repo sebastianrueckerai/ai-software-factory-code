@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sealed"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -35,8 +36,9 @@ const (
 // Mirror is a project's project_mirrors row: Remote is the GitHub
 // repository, owner/name; State the registrar's reading of its last sync.
 // Token is set only by MirrorToken, the registrar's and the chat export's
-// read. Mode is an export's; Since when the row was put with its remote
-// and mode; Synced the GitHub default branch's head the last GitHubSync
+// read; at rest it is sealed (sealMirrorToken), never the token itself.
+// Mode is an export's; Since when the row was put with its remote and
+// mode; Synced the GitHub default branch's head the last GitHubSync
 // brought back, SyncResult what the last one answered. PR is an import's
 // infra pull request, 0 before it opens.
 type Mirror struct {
@@ -45,18 +47,66 @@ type Mirror struct {
 	PR                                                                                      int64
 }
 
+// mirrorTokenKeyLabel derives the mirror token key from the seal key
+// (SetSealKey): its own fixed label, so the key differs from every other
+// use of the console session key, the console's OAuth tokens' included.
+const mirrorTokenKeyLabel = "project-mirror-tokens-v1"
+
+// errMirrorToken: the stored mirror token does not open.
+var errMirrorToken = errors.New("the stored mirror token does not decrypt")
+
+// errNoSealKey: the store cannot seal or open a mirror token.
+var errNoSealKey = errors.New("the mirror seal key is not set (CONSOLE_SESSION_KEY)")
+
+// sealMirrorToken seals project's mirror token for the row: AES-256-GCM
+// under the seal key with mirrorTokenKeyLabel, a fresh nonce and the
+// project's name as additional data, so the stored value is not the token
+// and one project's does not open as another's; "" seals to "" (an
+// import's public source). Without a seal key no token is stored at all.
+func (s *PGStore) sealMirrorToken(project, token string) (string, error) {
+	if token == "" {
+		return "", nil
+	}
+	if len(s.sealKey) == 0 {
+		return "", fmt.Errorf("project %s: a mirror token cannot be stored: %w", project, errNoSealKey)
+	}
+	return sealed.Seal(s.sealKey, mirrorTokenKeyLabel, token, project)
+}
+
+// openMirrorToken opens a stored mirror token of project; a value that
+// does not open is an error naming the project, never a plain-text
+// fallback.
+func (s *PGStore) openMirrorToken(project, stored string) (string, error) {
+	if stored == "" {
+		return "", nil
+	}
+	if len(s.sealKey) == 0 {
+		return "", fmt.Errorf("project %s: the mirror token cannot be read: %w", project, errNoSealKey)
+	}
+	tok, err := sealed.Open(s.sealKey, mirrorTokenKeyLabel, stored, project)
+	if err != nil {
+		return "", fmt.Errorf("project %s: %w", project, errMirrorToken)
+	}
+	return tok, nil
+}
+
 // PutMirror stores m as its project's mirror of its direction, a new
-// token, mode (default ModeMirror) and pull request with no sync yet; a
-// row of the same remote and mode keeps its since and its last GitHubSync.
+// token (sealed at rest, sealMirrorToken), mode (default ModeMirror) and
+// pull request with no sync yet; a row of the same remote and mode keeps
+// its since and its last GitHubSync.
 func (s *PGStore) PutMirror(ctx context.Context, m Mirror) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state, mode, pr)
+	token, err := s.sealMirrorToken(m.Project, m.Token)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state, mode, pr)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (project, direction) DO UPDATE SET remote = $3, username = $4, token = $5, state = $6, mode = $7, pr = $8,
 			last_error = '', last_update = NULL, updated_at = now(),
 			since = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.since ELSE now() END,
 			synced = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.synced ELSE '' END,
 			sync_result = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.sync_result ELSE '' END`,
-		m.Project, m.Direction, m.Remote, m.Username, m.Token, m.State, cmp.Or(m.Mode, ModeMirror), m.PR)
+		m.Project, m.Direction, m.Remote, m.Username, token, m.State, cmp.Or(m.Mode, ModeMirror), m.PR)
 	return err
 }
 
@@ -65,11 +115,16 @@ func (s *PGStore) Mirror(ctx context.Context, project, direction string) (Mirror
 	return s.mirror(ctx, project, direction, `''`)
 }
 
-// MirrorToken is project's mirror of direction with its token: the
-// registrar's read and the chat export's, which pushes with the token the
-// projects page's form stored; never a page's or a tool answer's.
+// MirrorToken is project's mirror of direction with its token, opened
+// from its sealed rest (openMirrorToken): the registrar's read and the
+// chat export's, which pushes with the token the projects page's form
+// stored; never a page's or a tool answer's.
 func (s *PGStore) MirrorToken(ctx context.Context, project, direction string) (Mirror, bool, error) {
-	return s.mirror(ctx, project, direction, `token`)
+	m, ok, err := s.mirror(ctx, project, direction, `token`)
+	if err == nil && ok {
+		m.Token, err = s.openMirrorToken(project, m.Token)
+	}
+	return m, ok, err
 }
 
 func (s *PGStore) mirror(ctx context.Context, project, direction, token string) (Mirror, bool, error) {
@@ -93,10 +148,15 @@ func (s *PGStore) SetMirrorState(ctx context.Context, project, direction, state,
 	return err
 }
 
-// SetMirrorToken replaces the token of project's mirror of direction.
+// SetMirrorToken replaces the token of project's mirror of direction,
+// sealed at rest; the empty token clears it.
 func (s *PGStore) SetMirrorToken(ctx context.Context, project, direction, token string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET token = $3, updated_at = now() WHERE project = $1 AND direction = $2`,
-		project, direction, token)
+	sealedTok, err := s.sealMirrorToken(project, token)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE project_mirrors SET token = $3, updated_at = now() WHERE project = $1 AND direction = $2`,
+		project, direction, sealedTok)
 	return err
 }
 
