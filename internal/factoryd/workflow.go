@@ -437,6 +437,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
 	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
 	run.auditBeside = workflow.GetVersion(ctx, "audit-beside", workflow.DefaultVersion, versionAuditBeside)
+	run.burstAccept = workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -822,6 +823,10 @@ const (
 	// change keep the sequential audit, which finds the project's switch
 	// itself.
 	versionAuditBeside workflow.Version = 1
+	// versionBurstAccept (change id "burst-accept", roadmap 237): the burst
+	// window of a planner session's end (planCommentsWhole) takes a plan
+	// acceptance, which before waited for the next plan wait.
+	versionBurstAccept workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -910,6 +915,7 @@ type taskRun struct {
 	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
 	tripRouting       workflow.Version // trips route by their run's activity id (versionTripRouting)
 	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
+	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)

@@ -1038,6 +1038,51 @@ func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
 	}
 }
 
+// Roadmap 237: an acceptance that arrives in the burst window of a planner
+// session's end with findings is taken there. Revision 1 waits; a writer's
+// comment at 1h sends the planner back at 1h0m30s; its session ends at
+// 1h5m30s with findings and takes a second comment made meanwhile, whose
+// window closes at 1h6m; the acceptance of revision 1 at 1h5m40s files
+// its cards. A run from before the change leaves the acceptance for the
+// next plan wait, where the planner's revision 2 has made it stale.
+func TestPlanLoopAcceptanceInTheBurstWindowFilesTheCards(t *testing.T) {
+	invalid := []string{"plan: no fenced json block in the last message"}
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		final   string
+		created []string
+		signals []string
+		plans   int
+	}{
+		{"current", versionBurstAccept, "done", []string{"1 sebastian 7"}, []string{"plan_accepted sebastian 1 "}, 2},
+		{"before burst-accept", workflow.DefaultVersion, "failed", nil,
+			[]string{"plan_accepted sebastian 1 the plan changed to revision 2", "plan_rejected alice 0 "}, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Findings: invalid}, PlanResult{Revision: 2, SHA256: "sha-2"})
+			h.env.OnGetVersion("burst-accept", workflow.DefaultVersion, versionBurstAccept).Return(tc.version)
+			for i, at := range []time.Duration{time.Hour, time.Hour + 5*time.Minute + 20*time.Second} {
+				h.signalAfter(at, SignalHumanComment, TaskSignal{Author: "alice", Body: fmt.Sprintf("remark %d", i+1), Comment: int64(701 + i)})
+			}
+			h.signalAfter(time.Hour+5*time.Minute+40*time.Second, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+			h.signalAfter(10*time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
+			if final := h.run(t); final != tc.final {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if tc.final == "done" && h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if !slices.Equal(h.created, tc.created) || len(h.plans) != tc.plans {
+				t.Fatalf("CreateChildren calls %v, %d planner sessions; want %v, %d", h.created, len(h.plans), tc.created, tc.plans)
+			}
+			if got := h.planSignals(); !slices.Equal(got, tc.signals) {
+				t.Fatalf("recorded %v, want %v", got, tc.signals)
+			}
+		})
+	}
+}
+
 // A planner that stops to ask a human (its own escalate_to_human, or the
 // gate supervisor's escalation) puts the question on the card; the
 // answer goes to the next session. A Reject sent while a session runs

@@ -1114,7 +1114,7 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "planner session: "+errMessage(err))
 		case err != nil:
 			reason = "planner session failed: " + errMessage(err)
-			final, why, comments := t.planCommentsWhole(floor)
+			final, why, comments := t.planCommentsWhole(&ref, floor)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1127,7 +1127,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			final, why, comments := t.planCommentsWhole(floor)
+			final, why, comments := t.planCommentsWhole(&ref, floor)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1180,16 +1180,30 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 
 // planCommentsWhole is planComments with the rest of the burst a comment
 // opens (versionPlanBurst): a writer's change request in parts reaches the
-// next planner session whole. final is the task's end meanwhile.
-func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
+// next planner session whole. final is the task's end meanwhile, an
+// acceptance of revision ref in the burst's window too
+// (versionBurstAccept), whose refusals join out.
+func (t *taskRun) planCommentsWhole(ref *PlanRef, floor int64) (final, why string, out []string) {
 	out, heard := t.planComments(floor)
 	if len(heard) == 0 || t.planBurst < versionPlanBurst {
 		return "", "", out
 	}
-	t.awaitBurst([]string{SignalIssueClosed, SignalHumanComment, SignalPlanRejected}, func() ([]int64, bool) {
+	wake := []string{SignalIssueClosed, SignalHumanComment, SignalPlanRejected}
+	accepts := t.burstAccept >= versionBurstAccept
+	if accepts {
+		wake = append(wake, SignalPlanAccepted)
+	}
+	t.awaitBurst(wake, func() ([]int64, bool) {
 		var ended bool
 		if final, why, ended = t.planEnded(); ended {
 			return nil, true
+		}
+		if accepts {
+			var refused []string
+			if final, why, refused, ended = t.planAccepted(ref); ended {
+				out = append(out, refused...)
+				return nil, true
+			}
 		}
 		more, heard := t.planComments(floor)
 		out = append(out, more...)
@@ -1226,28 +1240,9 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 		if final, why, stop = t.planEnded(); stop {
 			return nil, true
 		}
-		var sig TaskSignal
-		for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
-			if ref.Revision == 0 {
-				t.recordPlanSignal(SignalPlanAccepted, sig, "no plan waits for acceptance")
-				continue
-			}
-			if sig.Revision != ref.Revision || sig.SHA256 != ref.SHA256 {
-				t.recordPlanSignal(SignalPlanAccepted, sig, fmt.Sprintf("the plan changed to revision %d", ref.Revision))
-				continue
-			}
-			t.recordPlanSignal(SignalPlanAccepted, sig, "")
-			var res ChildrenResult
-			if err := workflow.ExecuteActivity(t.short, ActivityCreateChildren, t.taskID, ref.Revision, sig.Author, t.cfg.PolicyVersion).Get(t.ctx, &res); err != nil {
-				final, why = "failed", "create the plan's cards: "+errMessage(err)
-				return nil, true
-			}
-			if len(res.Refused) > 0 {
-				*ref = PlanRef{}
-				findings = append(findings, res.Refused...)
-				return nil, true
-			}
-			final, why = "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues))
+		var refused []string
+		if final, why, refused, stop = t.planAccepted(ref); stop {
+			findings = append(findings, refused...)
 			return nil, true
 		}
 		ok, err := t.planAnswered(ref)
@@ -1277,6 +1272,36 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64) (final, why string, findi
 			return "", "", findings
 		}
 	}
+}
+
+// planAccepted takes the acceptances signalled so far: the first of
+// revision ref files its cards and ends the task done (final), or, the
+// cards refused, clears ref and returns the refusals for the planner;
+// either way stop. An acceptance of no plan or of another revision is
+// recorded and ignored.
+func (t *taskRun) planAccepted(ref *PlanRef) (final, why string, refused []string, stop bool) {
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
+		if ref.Revision == 0 {
+			t.recordPlanSignal(SignalPlanAccepted, sig, "no plan waits for acceptance")
+			continue
+		}
+		if sig.Revision != ref.Revision || sig.SHA256 != ref.SHA256 {
+			t.recordPlanSignal(SignalPlanAccepted, sig, fmt.Sprintf("the plan changed to revision %d", ref.Revision))
+			continue
+		}
+		t.recordPlanSignal(SignalPlanAccepted, sig, "")
+		var res ChildrenResult
+		if err := workflow.ExecuteActivity(t.short, ActivityCreateChildren, t.taskID, ref.Revision, sig.Author, t.cfg.PolicyVersion).Get(t.ctx, &res); err != nil {
+			return "failed", "create the plan's cards: " + errMessage(err), nil, true
+		}
+		if len(res.Refused) > 0 {
+			*ref = PlanRef{}
+			return "", "", res.Refused, true
+		}
+		return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil, true
+	}
+	return "", "", nil, false
 }
 
 // planAnswered takes the members' answers signalled so far: whether one
