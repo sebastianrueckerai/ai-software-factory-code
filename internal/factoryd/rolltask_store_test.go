@@ -121,13 +121,20 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 
 	// rt1 merges with c folded in too late (never committed); rt2's row
-	// lost its task (a crash between the row and the issue); rt3 failed
+	// lost its task (a crash between the row and the issue); rt3 failed;
+	// f's refusal has its card, closed; g's refusal lost its card
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 'rt1'`); err != nil {
 		t.Fatal(err)
 	}
 	insert(RollRequest{SHA: "d", Repository: repo, RunID: 13, State: RollOpened, TaskID: "rt2"})
 	task("rt3", "failed")
 	insert(RollRequest{SHA: "e", Repository: repo, RunID: 14, State: RollOpened, TaskID: "rt3"})
+	if err := s.CreateTask(ctx, Task{ID: "rc1", Status: "done", Repository: repo, Kind: "human", Source: SourceRollRefused}); err != nil {
+		t.Fatal(err)
+	}
+	insert(RollRequest{SHA: "f", Repository: repo, RunID: 15, State: RollRefused, TaskID: "rc1",
+		Changes: map[string]string{"worker": "sha256:w3"}, Summary: "roll f refused"})
+	insert(RollRequest{SHA: "g", Repository: repo, RunID: 16, State: RollRefused, TaskID: "rc2"})
 	if err := s.SettleRollRequests(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +151,7 @@ func TestPGStoreRollRequests(t *testing.T) {
 		states[sha] = state
 	}
 	rows.Close()
-	if want := map[string]string{"a": RollSkipped, "b": RollMerged, "e": RollFailed}; !reflect.DeepEqual(states, want) {
+	if want := map[string]string{"a": RollSkipped, "b": RollMerged, "e": RollFailed, "f": RollRefused}; !reflect.DeepEqual(states, want) {
 		t.Fatalf("settled %v, want %v", states, want)
 	}
 	if open() != "" {

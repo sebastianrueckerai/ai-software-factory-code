@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
@@ -332,7 +333,7 @@ func main() {
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Registry:  registry}
+		Registry:  registry, SigningKey: rollSigningKey()}
 	go roller.Run(ctx)
 	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
 	go revertPass.Loop(ctx)
@@ -780,6 +781,17 @@ func env(name, def string) string {
 // overwrite no tag.
 func rollRegistry(baseURL, token string) *factoryd.Registry {
 	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: token}
+}
+
+// rollSigningKey is the public half of main CI's cosign key
+// (k8s/cosign.pub, ConfigMap image-signing): the roller rolls only an
+// image signed with it.
+func rollSigningKey() *ecdsa.PublicKey {
+	key, err := factoryd.ParseSigningKey([]byte(mustEnv("COSIGN_PUB")))
+	if err != nil {
+		log.Fatalf("COSIGN_PUB: %v", err)
+	}
+	return key
 }
 
 func mustEnv(name string) string {

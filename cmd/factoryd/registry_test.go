@@ -1,6 +1,11 @@
 package main
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"encoding/pem"
 	"os"
 	"slices"
 	"strings"
@@ -86,5 +91,98 @@ func TestTheRollerReadsTheRegistryWithTheReadToken(t *testing.T) {
 	// the kubelet hands the token to the container: no Role reads it
 	if slices.Contains(secretsRead, "forgejo-registry-read") {
 		t.Fatalf("a Role reads forgejo-registry-read: %v", secretsRead)
+	}
+}
+
+// The roller's key is the public half of main CI's cosign key (roadmap
+// 46): factoryd reads it from ConfigMap image-signing, which the
+// kustomization makes from k8s/cosign.pub with a hashed name, so a new
+// key restarts factoryd.
+func TestTheRollerTakesItsSigningKeyFromCosignPub(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("COSIGN_PUB", string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})))
+	if got := rollSigningKey(); !got.Equal(&key.PublicKey) {
+		t.Fatalf("signing key %v, want the PEM's", got)
+	}
+
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ref struct{ Name, Key string }
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Spec     struct {
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							Name string `yaml:"name"`
+							Env  []struct {
+								Name      string `yaml:"name"`
+								ValueFrom struct {
+									ConfigMapKeyRef struct{ Name, Key string } `yaml:"configMapKeyRef"`
+								} `yaml:"valueFrom"`
+							} `yaml:"env"`
+						} `yaml:"containers"`
+					} `yaml:"spec"`
+				} `yaml:"template"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind != "Deployment" || doc.Metadata.Name != "factoryd" {
+			continue
+		}
+		for _, c := range doc.Spec.Template.Spec.Containers {
+			for _, e := range c.Env {
+				if c.Name == "factoryd" && e.Name == "COSIGN_PUB" {
+					ref = e.ValueFrom.ConfigMapKeyRef
+				}
+			}
+		}
+	}
+	if ref.Name != "image-signing" || ref.Key != "cosign.pub" {
+		t.Fatalf("COSIGN_PUB from ConfigMap %+v, want image-signing's cosign.pub", ref)
+	}
+
+	k, err := os.ReadFile("../../k8s/kustomization.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kustomization struct {
+		ConfigMapGenerator []struct {
+			Name, Namespace string
+			Files           []string
+			Options         struct {
+				DisableNameSuffixHash bool `yaml:"disableNameSuffixHash"`
+			}
+		} `yaml:"configMapGenerator"`
+	}
+	if err := yaml.Unmarshal(k, &kustomization); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, g := range kustomization.ConfigMapGenerator {
+		if g.Name != "image-signing" {
+			continue
+		}
+		found = true
+		if g.Namespace != "factory" || !slices.Equal(g.Files, []string{"cosign.pub"}) || g.Options.DisableNameSuffixHash {
+			t.Fatalf("image-signing %+v, want factory's, from cosign.pub, with a hashed name", g)
+		}
+	}
+	if !found {
+		t.Fatal("the kustomization generates no ConfigMap image-signing")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"crypto/ecdsa"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -25,13 +26,20 @@ import (
 // one commit, the digest bump under k8s/, and no agent session runs.
 const SourceRoll = "roll"
 
+// SourceRollRefused is the human card of a commit whose images the roller
+// refused unsigned (roadmap 46).
+const SourceRollRefused = "roll-refused"
+
 // Roll request states: the task a commit's images opened or were folded
-// into, merged or failed with it, or skipped when they changed nothing.
+// into, merged or failed with it, skipped when they changed nothing, or
+// refused when one carries no signature by the factory's key, its task the
+// human card that says so.
 const (
 	RollOpened  = "opened"
 	RollMerged  = "merged"
 	RollSkipped = "skipped"
 	RollFailed  = "failed"
+	RollRefused = "refused"
 )
 
 // RollRequest is factoryd's judgement of one main commit whose push run
@@ -184,12 +192,12 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 // SettleRollRequests follows the roll tasks that ended: a merged task's
 // committed requests merged, and the ones folded in after its last commit
 // forgotten, so the next poll judges their images again; a task that ended
-// otherwise fails its requests; a request whose task never got filed is
-// forgotten.
+// otherwise fails its requests; a request whose task or card never got
+// filed is forgotten.
 func (s *PGStore) SettleRollRequests(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `WITH gone AS (
-		DELETE FROM roll_requests r WHERE r.state = 'opened' AND (NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
-			OR NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status = 'done'))
+		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
+			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status = 'done')
 		RETURNING r.sha)
 		UPDATE roll_requests r SET state = CASE WHEN t.status = 'done' THEN 'merged' ELSE 'failed' END
 		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1)
@@ -267,12 +275,16 @@ type RollerStore interface {
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
 // and for a changed image files a task of source roll whose one commit
 // bumps the digests; while a roll task is open, a newer set of images is
-// folded into it as a second commit. It judges each commit once.
+// folded into it as a second commit. A changed image without a signature
+// by SigningKey refuses the commit: a human card says why, and nothing of
+// it rolls. It judges each commit once.
 type Roller struct {
-	Forgejo   *Forgejo
-	Registry  *Registry
-	Store     RollerStore
-	Workflows Workflows
+	Forgejo  *Forgejo
+	Registry *Registry
+	// SigningKey is the public half of main CI's cosign key (k8s/cosign.pub).
+	SigningKey *ecdsa.PublicKey
+	Store      RollerStore
+	Workflows  Workflows
 	// Timeline records the events of the tasks it files.
 	Timeline *Timeline
 	Repo     Repo
@@ -376,7 +388,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	if folding {
 		at, ref = r.Forgejo.Fork(r.Repo), "factory/"+open.ID
 	}
-	changes, refs, err := r.changes(ctx, at, ref, run.CommitSHA[:7])
+	changes, refs, unsigned, err := r.changes(ctx, at, ref, run.CommitSHA[:7])
 	if err != nil {
 		return false, err
 	}
@@ -384,7 +396,11 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		log.Printf("roller: %s (run %d) changed no image; nothing to roll", run.CommitSHA, run.ID)
 		return false, r.Store.InsertRollRequest(ctx, req)
 	}
-	req.State, req.Changes = RollOpened, changes
+	req.Changes = changes
+	if len(unsigned) > 0 {
+		return false, r.refuse(ctx, run, req, unsigned)
+	}
+	req.State = RollOpened
 	if req.Summary, err = r.summary(ctx, run, changes, refs); err != nil {
 		return false, err
 	}
@@ -429,8 +445,9 @@ func (r *Roller) onlyK8s(ctx context.Context, sha string) (bool, error) {
 
 // changes compares each target's image published for tag with the one
 // pinned at ref of repo, by the linux/amd64 manifest, and returns the
-// changed targets' new digests and their new references.
-func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (map[string]string, map[string]string, error) {
+// changed targets' new digests and their new references, and for each new
+// digest without a signature by SigningKey, why, by target.
+func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (changes, refs, unsigned map[string]string, err error) {
 	files := map[string][]byte{}
 	resolved := map[string]ImageManifest{}
 	token := ""
@@ -451,35 +468,48 @@ func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (map[s
 		}
 		return m, err
 	}
-	changes, refs := map[string]string{}, map[string]string{}
+	verified := map[string]error{}
+	changes, refs, unsigned = map[string]string{}, map[string]string{}, map[string]string{}
 	for _, t := range RollTargets {
 		content, ok := files[t.File]
 		if !ok {
-			var err error
 			if content, err = r.Forgejo.FileAt(ctx, repo.Owner, repo.Name, ref, t.File); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			files[t.File] = content
 		}
 		pinned, digest, err := pinnedRef(content, t.Image)
 		if err != nil {
-			return nil, nil, fmt.Errorf("%s at %s: %w", t.File, ref, err)
+			return nil, nil, nil, fmt.Errorf("%s at %s: %w", t.File, ref, err)
 		}
 		path := registryPath(pinned)
 		now, err := resolve(path, tag)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		was, err := resolve(path, digest)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if now.Platform != was.Platform {
-			changes[t.Name] = now.Digest
-			refs[t.Name] = strings.TrimSuffix(pinned, digest) + now.Digest
+		if now.Platform == was.Platform {
+			continue
+		}
+		changes[t.Name] = now.Digest
+		refs[t.Name] = strings.TrimSuffix(pinned, digest) + now.Digest
+		key := path + "@" + now.Digest
+		verr, ok := verified[key]
+		if !ok {
+			verr = r.Registry.Verify(ctx, token, path, now.Digest, r.SigningKey)
+			verified[key] = verr
+		}
+		var refusal ErrUnsigned
+		if errors.As(verr, &refusal) {
+			unsigned[t.Name] = refusal.Error()
+		} else if verr != nil {
+			return nil, nil, nil, verr
 		}
 	}
-	return changes, refs, nil
+	return changes, refs, unsigned, nil
 }
 
 func rollNames(changes map[string]string) []string {
@@ -605,6 +635,38 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 		log.Printf("roller: task %s: summary: %v", t.ID, err)
 	}
 	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, title)
+	return nil
+}
+
+// refuse records the commit refused and files the human card that names
+// each unsigned image and why: its request first, linked to the card, so
+// a crash before the card exists leaves a request the next settle
+// forgets. No roll task is filed and nothing is folded.
+func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, unsigned map[string]string) error {
+	var lines []string
+	for _, name := range rollNames(unsigned) {
+		lines = append(lines, name+": "+unsigned[name])
+	}
+	title := fmt.Sprintf("roll %s refused: %s not signed with the factory's key", run.CommitSHA[:7], strings.Join(rollNames(unsigned), ", "))
+	body := fmt.Sprintf("Main CI's push run %d of %s (%s/%s/actions/runs/%d) is green, and factoryd rolls none of its images: an image it "+
+		"rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not:\n\n- %s\n\n"+
+		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; "+
+		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. "+
+		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one."+
+		"\n\nfiled by factoryd",
+		run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index, strings.Join(lines, "\n- "))
+	req.State, req.TaskID, req.Summary = RollRefused, NewTaskID(), title
+	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
+		return err
+	}
+	_, ref, err := FileTask(ctx, r.Store, r.Forgejo, r.Repo, title, body, []string{"human"}, Task{
+		ID: req.TaskID, Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA,
+		Source: SourceRollRefused, Author: r.Forgejo.BotUser,
+	})
+	if err != nil {
+		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
+	}
+	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, ref.Number, title)
 	return nil
 }
 

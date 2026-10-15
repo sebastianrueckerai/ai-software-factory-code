@@ -2,19 +2,27 @@ package factoryd
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // The fakeStore's roll requests, as PGStore keeps them.
@@ -412,16 +420,20 @@ func pushRun(id int64, sha, status string) map[string]any {
 	return map[string]any{"id": id, "commit_sha": sha, "event": "push", "status": status, "prettyref": "main", "created": "2026-09-29T10:00:00Z"}
 }
 
-// registryOf serves each index under its digest and under the tags given.
+// registryOf serves each index under its digest and under the tags given,
+// each signed as main CI signs what it pushes.
 func registryOf(tags map[string]string, indexes ...string) map[string]string {
 	out := map[string]string{}
 	for _, image := range []string{"factory-gateway", "opencode-worker", "ci-runner"} {
 		for _, idx := range indexes {
 			out["sf/"+image+"/manifests/"+sha256Of(idx)] = idx
+			maps.Copy(out, cosignSigned(testCosignKey, "sf/"+image, sha256Of(idx)))
 		}
 	}
 	for key, idx := range tags {
 		out[key] = idx
+		repository, _, _ := strings.Cut(key, "/manifests/")
+		maps.Copy(out, cosignSigned(testCosignKey, repository, sha256Of(idx)))
 	}
 	return out
 }
@@ -430,8 +442,8 @@ func newTestRoller(t *testing.T, f *rollForgejo) (*Roller, *fakeStore, *fakeWork
 	t.Helper()
 	fj, reg := f.srv(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	return &Roller{Forgejo: fj, Registry: reg, Store: store, Workflows: wf, Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok",
-		Budget: testBudget}, store, wf
+	return &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: wf,
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget}, store, wf
 }
 
 // mainPins is the code repository's main before the roll: every image at
@@ -499,6 +511,82 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	}
 	if len(f.issues) != 1 || len(store.rolls) != 1 || len(wf.started) != 1 {
 		t.Fatalf("the second poll filed again: issues %d, rolls %d, starts %d", len(f.issues), len(store.rolls), len(wf.started))
+	}
+}
+
+// A green commit whose changed images are not all signed with the
+// factory's key (roadmap 46) rolls none of them: the gateway's signature
+// is by another key and the worker carries none, so no roll task is
+// filed, the commit's request is refused, and a human card names each
+// image and why. A second poll files nothing: each commit once.
+func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
+	logs := captureLog(t)
+	run := pushRun(57, commitC1, "success")
+	run["index_in_repo"] = 412
+	f := &rollForgejo{
+		runs:  []map[string]any{run},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerNewIdx,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	stranger, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maps.Copy(f.registry, cosignSigned(stranger, "sf/factory-gateway", sha256Of(gwNewIdx)))
+	delete(f.registry, "sf/opencode-worker/manifests/sha256-"+strings.TrimPrefix(sha256Of(workerNewIdx), "sha256:"))
+	roller, store, wf := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	gw, worker := "sf/factory-gateway@"+sha256Of(gwNewIdx), "sf/opencode-worker@"+sha256Of(workerNewIdx)
+	title := "roll c1c1c1c refused: factoryd, gateway, worker not signed with the factory's key"
+	want := title + "\n\nMain CI's push run 412 of " + commitC1 + " (https://git.example/sf/ai-software-factory-code/actions/runs/412) is green, " +
+		"and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), " +
+		"and these do not:\n\n" +
+		"- factoryd: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
+		"- gateway: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
+		"- worker: " + worker + " carries no signature\n\n" +
+		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
+		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
+		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one." +
+		"\n\nfiled by factoryd"
+	if len(f.issues) != 1 || f.issues[0] != want {
+		t.Fatalf("issues %q, want one:\n%s", f.issues, want)
+	}
+	if len(store.rolls) != 1 {
+		t.Fatalf("roll requests %+v, want one", store.rolls)
+	}
+	req := store.rolls[0]
+	card := store.tasks[req.TaskID]
+	if req.SHA != commitC1 || req.RunID != 57 || req.State != RollRefused || req.Summary != title || !reflect.DeepEqual(req.Changes,
+		map[string]string{"factoryd": sha256Of(gwNewIdx), "gateway": sha256Of(gwNewIdx), "worker": sha256Of(workerNewIdx)}) {
+		t.Fatalf("roll request %+v", req)
+	}
+	if card.Kind != "human" || card.Source != SourceRollRefused || card.Status != "waiting-human" || card.SHA != commitC1 ||
+		card.IssueNumber != 31 || card.Objective != want || len(store.tasks) != 1 {
+		t.Fatalf("card %+v of tasks %v, want the one human card", card, store.tasks)
+	}
+	if len(wf.started) != 0 || len(f.pulls) != 0 {
+		t.Fatalf("a roll ran: starts %v, pull requests %v", wf.started, f.pulls)
+	}
+	if !strings.Contains(logs.String(), "refused, human card "+card.ID+", issue #31: "+title) {
+		t.Fatalf("log %q", logs.String())
+	}
+	if n := slices.Index(f.calls, "GET /v2/token"); n < 0 || slices.Contains(f.calls[n+1:], "GET /v2/token") {
+		t.Fatalf("registry tokens read %v, want one per poll", f.calls)
+	}
+
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.issues) != 1 || len(store.rolls) != 1 || len(store.tasks) != 1 {
+		t.Fatalf("the second poll filed again: issues %d, rolls %d, tasks %d", len(f.issues), len(store.rolls), len(store.tasks))
 	}
 }
 
@@ -792,6 +880,106 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 
 // Every roll target is pinned exactly once in the repository's own
 // manifests: an edit there that breaks the roller fails here.
+// Main CI signs every image the roller rolls (roadmap 46): the job that
+// pushes it writes the pushed digest to /tmp/image.json, and its next step
+// signs exactly that digest with the key from the Actions secrets, run here
+// with docker, jq and the cosign it exports standing in. No other step of
+// any workflow reads the key: pull request runs never see it.
+func TestMainCISignsEveryImageTheRollerRolls(t *testing.T) {
+	type step struct {
+		Name string            `yaml:"name"`
+		Env  map[string]string `yaml:"env"`
+		Run  string            `yaml:"run"`
+	}
+	type workflow struct {
+		Jobs map[string]struct {
+			Steps []step `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	read := func(name string) (string, workflow) {
+		t.Helper()
+		b, err := os.ReadFile("../../.forgejo/workflows/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var w workflow
+		if err := yaml.Unmarshal(b, &w); err != nil {
+			t.Fatal(err)
+		}
+		return string(b), w
+	}
+	raw, ci := read("ci.yml")
+	keyEnv := map[string]string{"COSIGN_PRIVATE_KEY": "${{ secrets.COSIGN_PRIVATE_KEY }}", "COSIGN_PASSWORD": "${{ secrets.COSIGN_PASSWORD }}"}
+	const digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	for _, target := range RollTargets {
+		pushed := "name=git.aisoftwarefactory.world/sf/" + target.Image + ":$SHA"
+		var job string
+		var steps []step
+		for name, j := range ci.Jobs {
+			for _, st := range j.Steps {
+				if strings.Contains(st.Run, pushed) && strings.Contains(st.Run, "push=true") {
+					job, steps = name, j.Steps
+				}
+			}
+		}
+		if job == "" {
+			t.Errorf("%s: no job of ci.yml pushes %s", target.Name, pushed)
+			continue
+		}
+		i := slices.IndexFunc(steps, func(st step) bool { return strings.Contains(st.Run, pushed) })
+		if !strings.Contains(steps[i].Run, "--metadata-file /tmp/image.json") || i+1 == len(steps) {
+			t.Errorf("%s: job %s writes no /tmp/image.json, or no step follows its push", target.Name, job)
+			continue
+		}
+		sign := steps[i+1]
+		if !maps.Equal(sign.Env, keyEnv) {
+			t.Errorf("%s: job %s's step %q has env %v, want the key's two Actions secrets", target.Name, job, sign.Name, sign.Env)
+		}
+		dir := t.TempDir()
+		stub := func(name, body string) {
+			if err := os.WriteFile(filepath.Join(dir, "bin", name), []byte("#!/bin/sh\n"+body), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := os.Mkdir(filepath.Join(dir, "bin"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stub("docker", `echo "docker $*" >> "$LOG"
+[ "$6" = -o ] && mkdir -p "$7" && printf '#!/bin/sh\necho "cosign $* key=$COSIGN_PRIVATE_KEY password=$COSIGN_PASSWORD" >> "$LOG"\n' > "$7/cosign" && chmod +x "$7/cosign"
+`)
+		stub("jq", `echo "jq $*" >> "$LOG"; echo `+digest+"\n")
+		cmd := exec.Command("sh", "-e", "-c", strings.ReplaceAll(sign.Run, "/tmp/", dir+"/"))
+		cmd.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":/usr/bin:/bin", "LOG="+filepath.Join(dir, "log"),
+			"COSIGN_PRIVATE_KEY=the-key", "COSIGN_PASSWORD=its-password")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: job %s's sign step: %v: %s", target.Name, job, err, out)
+		}
+		log, err := os.ReadFile(filepath.Join(dir, "log"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "docker build -f Dockerfile.runner --target cosign -o " + dir + "/cosign .\n" +
+			"jq -r .\"containerimage.digest\" " + dir + "/image.json\n" +
+			"cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config " + dir + "/signing-config.json git.aisoftwarefactory.world/sf/" +
+			target.Image + "@" + digest + " key=the-key password=its-password\n"
+		if string(log) != want {
+			t.Errorf("%s: job %s's sign step ran\n%s\nwant\n%s", target.Name, job, log, want)
+		}
+		if config, err := os.ReadFile(filepath.Join(dir, "signing-config.json")); err != nil ||
+			string(config) != `{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}` {
+			t.Errorf("%s: signing config %q %v, want one of no services", target.Name, config, err)
+		}
+	}
+	if n := strings.Count(raw, "secrets.COSIGN_PRIVATE_KEY"); n != 3 {
+		t.Errorf("ci.yml reads the key in %d steps, want the three image jobs' sign steps", n)
+	}
+	for _, name := range []string{"pr.yml", "nightly.yml"} {
+		if other, _ := read(name); strings.Contains(other, "COSIGN_") {
+			t.Errorf("%s reads the signing key", name)
+		}
+	}
+}
+
 func TestRollTargetsMatchTheManifests(t *testing.T) {
 	for _, target := range RollTargets {
 		content, err := os.ReadFile("../../" + target.File)

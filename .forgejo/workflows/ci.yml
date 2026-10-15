@@ -77,10 +77,24 @@ jobs:
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
-          docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=$EPOCH \
+          docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=$EPOCH --metadata-file /tmp/image.json \
             --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true \
             --output "type=image,\"name=git.aisoftwarefactory.world/sf/factory-gateway:$SHA,git.aisoftwarefactory.world/sf/factory-gateway:main\",push=true,rewrite-timestamp=true" .
+      - name: sign the gateway image
+        # by the digest pushed, with the factory's key (roadmap 46): the
+        # roller rolls no image without this signature. cosign is the
+        # runner image's pinned download; a signing config of no services
+        # keeps the signature in the registry beside the image, out of any
+        # transparency log. Only this job and the two below read the key.
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          docker build -f Dockerfile.runner --target cosign -o /tmp/cosign .
+          printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
+          /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
+            git.aisoftwarefactory.world/sf/factory-gateway@$(jq -r '."containerimage.digest"' /tmp/image.json)
   image-sandbox:
     needs: test
     runs-on: ubuntu-latest
@@ -103,7 +117,7 @@ jobs:
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
-          docker buildx build --builder "$B" -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH \
+          docker buildx build --builder "$B" -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH --metadata-file /tmp/image.json \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true \
             --output type=image,name=git.aisoftwarefactory.world/sf/opencode-worker:$SHA,push=true,rewrite-timestamp=true .
@@ -111,6 +125,16 @@ jobs:
           # the builder keeps no image in the daemon
           docker run --rm --entrypoint sh git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             -c "gcc --version && make --version && python3 --version"
+      - name: sign the sandbox image
+        # as the gateway's
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          docker build -f Dockerfile.runner --target cosign -o /tmp/cosign .
+          printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
+          /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
+            git.aisoftwarefactory.world/sf/opencode-worker@$(jq -r '."containerimage.digest"' /tmp/image.json)
   image-runner:
     needs: test
     runs-on: ubuntu-latest
@@ -133,7 +157,17 @@ jobs:
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
-          docker buildx build --builder "$B" -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH \
+          docker buildx build --builder "$B" -f Dockerfile.runner --build-arg SOURCE_DATE_EPOCH=$EPOCH --metadata-file /tmp/image.json \
             --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/ci-runner:main,mode=max,registry.insecure=true,ignore-error=true \
             --output type=image,name=git.aisoftwarefactory.world/sf/ci-runner:$SHA,push=true,rewrite-timestamp=true .
+      - name: sign the CI runner image
+        # as the gateway's
+        env:
+          COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+        run: |
+          docker build -f Dockerfile.runner --target cosign -o /tmp/cosign .
+          printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
+          /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
+            git.aisoftwarefactory.world/sf/ci-runner@$(jq -r '."containerimage.digest"' /tmp/image.json)

@@ -547,6 +547,10 @@ spec:
           value: factory-registry-read
         - name: REGISTRY_READ_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-registry-read, key: token}}
+        # the public half of main CI's cosign key (roadmap 46): the roller
+        # rolls only an image signed with it; a new key restarts factoryd
+        - name: COSIGN_PUB
+          valueFrom: {configMapKeyRef: {name: image-signing, key: cosign.pub}}
         # the repository holding the configuration tree factory/; every
         # other repository factoryd works on is named by a project file
         - name: CONFIG_REPO

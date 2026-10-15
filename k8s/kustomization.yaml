@@ -13,6 +13,11 @@ resources:
 # and routes them to factoryd's intake, where a firing one files a bug issue
 # on this repository.
 configMapGenerator:
+# The public half of main CI's cosign key, for the roller (roadmap 46);
+# the name's hash rolls factoryd onto a new key.
+- name: image-signing
+  namespace: factory
+  files: [cosign.pub]
 - name: signoz-rules
   namespace: factory
   files: [alerts/5xx-rate.json, alerts/restarts-factoryd.json, alerts/restarts-gateway.json, platform/signoz/project-rules/ci-queue-p95.json, alerts/roll-not-live-factoryd.json, alerts/roll-not-live-gateway.json]

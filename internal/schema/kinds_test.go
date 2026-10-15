@@ -60,8 +60,8 @@ func kindConstants(t *testing.T, pattern string) map[string]string {
 
 // Every migration that adds a kind rewrites the whole check, so of two
 // parallel ones only the last applied keeps its kind: after all migrations,
-// every alert kind, alert verdict and approval kind factoryd names is
-// accepted.
+// every alert kind, alert verdict, approval kind and roll request state
+// factoryd names is accepted.
 func TestKindChecksAccept(t *testing.T) {
 	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds"))
 	if err != nil {
@@ -72,7 +72,7 @@ func TestKindChecksAccept(t *testing.T) {
 	if err := Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `DELETE FROM alerts; DELETE FROM approval_requests`); err != nil {
+	if _, err := db.ExecContext(ctx, `DELETE FROM alerts; DELETE FROM approval_requests; DELETE FROM roll_requests`); err != nil {
 		t.Fatal(err)
 	}
 	for name, kind := range kindConstants(t, `^Alert[A-Z]`) {
@@ -88,6 +88,13 @@ func TestKindChecksAccept(t *testing.T) {
 	for name, kind := range kindConstants(t, `^Approval[A-Z]`) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO approval_requests (kind, task_id, project) VALUES ($1, $2, 'o/r')`, kind, "t-"+kind); err != nil {
 			t.Errorf("approval kind %s (%q): %v", name, kind, err)
+		}
+	}
+	// a skip alone has no task
+	for name, state := range kindConstants(t, `^Roll[A-Z][a-z]+ed$`) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO roll_requests (sha, repository, run_id, state, task_id)
+			VALUES ($1, 'o/r', 1, $1, CASE WHEN $1 = 'skipped' THEN NULL ELSE 't-' || $1 END)`, state); err != nil {
+			t.Errorf("roll request state %s (%q): %v", name, state, err)
 		}
 	}
 }
