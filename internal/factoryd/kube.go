@@ -203,6 +203,26 @@ func (k *InClusterKube) DeleteNamespace(ctx context.Context, name string) error 
 	return err
 }
 
+// Delete removes the object at path (e.g.
+// /api/v1/namespaces/x/secrets/y) and reports whether it was there; an
+// object already gone is no error, so remove-project's second run after a
+// partial failure finishes the rest (roadmap 272).
+func (k *InClusterKube) Delete(ctx context.Context, path string) (bool, error) {
+	if err := k.getJSON(ctx, path, nil); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	if _, err := k.call(ctx, http.MethodDelete, path, nil, nil); err != nil {
+		if errors.Is(err, ErrNotFound) { // deleted between the read and the delete
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
 	nsList, err := k.listNamespaces(ctx, key, value)
 	if err != nil {

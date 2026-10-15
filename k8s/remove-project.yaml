@@ -1,0 +1,267 @@
+# Roadmap 272: `factoryd remove-project <name>`, register's inverse, run
+# as a one-off Job with its own ServiceAccount. Not in kustomization.yaml:
+# Flux must not run it on a schedule; the runbook applies this file and
+# deletes the Job before a rerun (its spec is immutable):
+#
+#   kubectl apply -f k8s/remove-project.yaml
+#   kubectl -n factory delete job/factoryd-remove-project 2>/dev/null || true
+#   kubectl -n factory create job factoryd-remove-project \
+#     --image="$(kgp -n factory -l app=factoryd -o jsonpath='{.items[0].spec.containers[0].image}')" \
+#     -- /factoryd remove-project <name> --dry-run   # then without --dry-run
+#   kubectl -n factory logs job/factoryd-remove-project -f
+#
+# The ServiceAccount holds exactly the deletes of the removal's step 3
+# (the ClusterRole and the flux-system Role below), and the
+# ValidatingAdmissionPolicy below confines even those: factoryd's own
+# policy (factoryd.yaml) keeps refusing every DELETE for the factoryd
+# ServiceAccount, so the path exists for this account only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: factoryd-remove
+  namespace: factory
+---
+# Cluster scope holds what cannot be namespaced: listing the project's
+# namespaces by their factory/project label, and deleting them and the
+# Kustomizations inside them (the project's namespaces are whatever the
+# configuration names, so they cannot be listed by name in RBAC). The
+# ValidatingAdmissionPolicy below confines both deletes to a project's
+# labelled objects.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factoryd-remove
+rules:
+- apiGroups: [""]
+  resources: [namespaces]
+  verbs: [list, get, delete]
+- apiGroups: [kustomize.toolkit.fluxcd.io]
+  resources: [kustomizations]
+  verbs: [get, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: factoryd-remove
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factoryd-remove
+subjects:
+- kind: ServiceAccount
+  name: factoryd-remove
+  namespace: factory
+---
+# The project's GitRepository and its credential, both in flux-system.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factoryd-remove
+  namespace: flux-system
+rules:
+- apiGroups: [source.toolkit.fluxcd.io]
+  resources: [gitrepositories]
+  verbs: [get, delete]
+- apiGroups: [""]
+  resources: [secrets]
+  verbs: [get, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd-remove
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factoryd-remove
+subjects:
+- kind: ServiceAccount
+  name: factoryd-remove
+  namespace: factory
+---
+# The removal's account may only ever delete a project's objects — never
+# create or update anything, never touch an unlabelled object — and only
+# the shapes registration made: a Flux Kustomization named after the
+# project inside one of its labelled namespaces, the labelled namespace
+# itself, the project's labelled GitRepository in flux-system and its
+# <project>-git credential. Everything else this account asks for is
+# denied, so the RBAC above is the belt and this the braces.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: factoryd-remove-project
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+    - apiGroups: ["*"]
+      apiVersions: ["*"]
+      operations: [CREATE, UPDATE, DELETE, CONNECT]
+      resources: ["*"]
+      scope: "*"
+  matchConditions:
+  - name: removal
+    expression: request.userInfo.username == 'system:serviceaccount:factory:factoryd-remove'
+  # access reviews (kubectl auth can-i) are queries, not objects
+  - name: not-a-review
+    expression: "!(request.resource.group in ['authorization.k8s.io', 'authentication.k8s.io'])"
+  variables:
+  - name: kind
+    expression: request.kind.kind
+  # a project's namespace, labelled factory/project and not a seed
+  # project's (factory/objects, ruling 180: those are the infra
+  # repository's, and a removal never touches them)
+  - name: projectNamespace
+    expression: >-
+      variables.kind == 'Namespace' && request.operation == 'DELETE' &&
+      has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+      !('factory/objects' in oldObject.metadata.labels)
+  # the project's Kustomization: inside one of its labelled namespaces,
+  # named after the project the namespace carries
+  - name: projectKustomization
+    expression: >-
+      variables.kind == 'Kustomization' && request.operation == 'DELETE' &&
+      namespaceObject != null && has(namespaceObject.metadata.labels) &&
+      'factory/project' in namespaceObject.metadata.labels &&
+      !('factory/objects' in namespaceObject.metadata.labels) &&
+      oldObject.metadata.name == namespaceObject.metadata.labels['factory/project']
+  # the project's Flux source and its credential (as factoryd.yaml's
+  # policy shapes them on CREATE)
+  - name: projectSource
+    expression: >-
+      variables.kind == 'GitRepository' && request.operation == 'DELETE' &&
+      request.namespace == 'flux-system' &&
+      has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+      oldObject.metadata.name == oldObject.metadata.labels['factory/project']
+  - name: projectGitSecret
+    expression: >-
+      variables.kind == 'Secret' && request.operation == 'DELETE' &&
+      request.namespace == 'flux-system' &&
+      has(oldObject.metadata.labels) && 'factory/project' in oldObject.metadata.labels &&
+      oldObject.metadata.name == oldObject.metadata.labels['factory/project'] + '-git'
+  validations:
+  - expression: >-
+      (variables.projectNamespace || variables.projectKustomization ||
+       variables.projectSource || variables.projectGitSecret) &&
+      request.operation == 'DELETE'
+    message: the removal's account only deletes a project's namespaces, Kustomizations, GitRepository and git credential
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: factoryd-remove-project
+spec:
+  policyName: factoryd-remove-project
+  validationActions: [Deny]
+---
+# The Job's egress, default-deny with exactly its callees: the API
+# server (the deletes), Postgres (the rows), Forgejo (the admin's
+# deletes, by the public hostname CoreDNS rewrites in-cluster to the
+# Gateway), OpenBao (the admin's login) and LiteLLM (the keys).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: factoryd-remove-egress
+  namespace: factory
+spec:
+  endpointSelector:
+    matchLabels: {app: factoryd-remove}
+  egress:
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": kube-system
+        "k8s:k8s-app": kube-dns
+    toPorts:
+    - ports: [{port: "53", protocol: ANY}]
+      rules:
+        dns:
+        - matchName: sf-cluster-rw.platform.svc.cluster.local
+        - matchName: litellm.platform.svc.cluster.local
+        - matchName: openbao.platform.svc.cluster.local
+        - matchName: git.aisoftwarefactory.world
+  - toEntities: [kube-apiserver]
+    toPorts:
+    - ports: [{port: "6443", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        cnpg.io/cluster: sf-cluster
+    toPorts:
+    - ports: [{port: "5432", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: litellm
+    toPorts:
+    - ports: [{port: "4000", protocol: TCP}]
+  - toEndpoints:
+    - matchLabels:
+        "k8s:io.kubernetes.pod.namespace": platform
+        app.kubernetes.io/name: openbao
+        component: server
+    toPorts:
+    - ports: [{port: "8200", protocol: TCP}]
+  - toFQDNs:
+    - matchName: git.aisoftwarefactory.world
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+---
+# One run. Not applied by anything: the runbook creates it (see the
+# header), with the image the factoryd Deployment rolls (infra holds the
+# digest) and the project's name in args. --dry-run first lists every
+# step's target and acts on nothing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: factoryd-remove-project
+  namespace: factory
+  labels: {app: factoryd-remove}
+spec:
+  completions: 1
+  backoffLimit: 0 # a failure keeps its lines in the log; the runbook reads them and reruns
+  template:
+    metadata:
+      labels: {app: factoryd-remove}
+    spec:
+      serviceAccountName: factoryd-remove
+      restartPolicy: Never
+      imagePullSecrets:
+      - name: forgejo-registry
+      containers:
+      - name: remove
+        image: git.aisoftwarefactory.world/sf/factoryd  # the runbook pins the digest rolled on the factoryd Deployment
+        args: [remove-project, "<name>"]  # e.g. remove-project demo-app --dry-run
+        env:
+        - name: FACTORYD_DATABASE_URL
+          valueFrom: {secretKeyRef: {name: factory-db-creds, key: url}}
+        # the projects token reads the repository's push mirrors (the
+        # GitHub export); the rest of the removal runs as the Forgejo
+        # site admin, whose login OpenBao holds
+        - name: FORGEJO_PROJECTS_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-tokens, key: projects}}
+        - name: LITELLM_URL
+          value: http://litellm.platform.svc.cluster.local:4000
+        - name: LITELLM_MASTER_KEY
+          valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
+        - name: OPENBAO_URL
+          value: http://openbao.platform.svc.cluster.local:8200
+        securityContext:
+          runAsNonRoot: true
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities: {drop: [ALL]}
+          seccompProfile: {type: RuntimeDefault}
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 500m, memory: 256Mi}
+        volumeMounts:
+        - {name: openbao-token, mountPath: /var/run/secrets/openbao, readOnly: true}
+      volumes:
+      # a ServiceAccount token only OpenBao's Kubernetes auth accepts
+      # (role factoryd, which the infra repository also binds to this
+      # ServiceAccount; noted in the pull request)
+      - name: openbao-token
+        projected:
+          sources:
+          - serviceAccountToken: {path: token, audience: openbao, expirationSeconds: 3600}
