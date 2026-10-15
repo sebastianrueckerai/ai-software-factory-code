@@ -20,11 +20,14 @@ const (
 	upstreamTitle = "Weekly bump of the pinned outside inputs"
 	upstreamBody  = "The factory pins every outside input of its builds and its cluster (roadmaps 203 and 242): nothing moves until this card moves it. " +
 		"Bump each to the newest release of its line in one pull request, and check what each item says:\n\n" +
-		"- **Outside images**: `upstream-images.txt`, one line per image, its tag and its linux/amd64 digest " +
-		"(`crane digest --platform linux/amd64 <image>:<tag>`). Every reference names the store's copy of a line: the Dockerfiles' " +
+		"- **Outside images and charts**: `upstream-images.txt`. An image or OCI chart is its tag and its linux/amd64 digest " +
+		"(`crane digest --platform linux/amd64 <image>:<tag>`), an HTTP chart repository's archive or a file a pod needs its URL and " +
+		"sha256 (a chart's from the repository's index.yaml). Every reference names the store's copy of a line: the Dockerfiles' " +
 		"`FROM ${UPSTREAM}` lines and ci.yml's `BUILDKIT` here (`go test ./internal/reproducible` names a reference off the list), " +
-		"the infra repository's manifests and HelmReleases there (its `scripts/upstream-images-test/test.sh`). A line marked bootstrap " +
-		"(Forgejo, CNPG, cert-manager, local-path, Flux) is an upgrade of what Forgejo runs on: read its release notes first.\n" +
+		"the infra repository's manifests, HelmReleases, chart sources and ts-go template there (its " +
+		"`scripts/upstream-images-test/test.sh`, which config-check runs). A line marked bootstrap (Forgejo, CNPG, cert-manager, " +
+		"local-path, Flux, Talos's Kubernetes, Cilium) is an upgrade of what Forgejo or the nodes run on: read its release notes " +
+		"first; Talos's and Cilium's lines move with their upgrade.\n" +
 		"- **Debian snapshot**: `DEBIAN_SNAPSHOT` in Dockerfile.runner and Dockerfile.sandbox, one snapshot.debian.org time for both, " +
 		"moved with the `debian:bookworm-slim` line.\n" +
 		"- **PostgreSQL**: `POSTGRESQL_VERSION`, `LIBPQ_VERSION` and `POSTGRESQL_COMMON_VERSION` in both Dockerfiles, the versions " +
