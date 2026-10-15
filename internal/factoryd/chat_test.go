@@ -21,6 +21,7 @@ func chatStore(t *testing.T) *PGStore {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
+	s.SetSealKey([]byte("0123456789abcdef0123456789abcdef"))
 	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_conversations, chat_proposals, chat_seen, ledger, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
