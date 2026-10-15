@@ -63,6 +63,8 @@ jobs:
       - name: registry login
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build and push gateway image
+        # also as :main, the newest green main's factoryd, which the infra
+        # repository's config-check runs against the configuration
         run: |
           SHA=${GITHUB_SHA::7}
           EPOCH=$(git log -1 --pretty=%ct -- $GATEWAY_INPUTS)
@@ -78,7 +80,7 @@ jobs:
           docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=$EPOCH \
             --cache-from type=registry,ref=$CACHE/factory-gateway:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/factory-gateway:main,mode=max,registry.insecure=true,ignore-error=true \
-            --output type=image,name=git.aisoftwarefactory.world/sf/factory-gateway:$SHA,push=true,rewrite-timestamp=true .
+            --output "type=image,\"name=git.aisoftwarefactory.world/sf/factory-gateway:$SHA,git.aisoftwarefactory.world/sf/factory-gateway:main\",push=true,rewrite-timestamp=true" .
   image-sandbox:
     needs: test
     runs-on: ubuntu-latest
