@@ -1450,24 +1450,55 @@ func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
 	}
 }
 
-// A withdrawn escalation's answers end at its withdrawal: the comment
-// before it answers it, the one after it nothing; the withdrawal of an
-// earlier question leaves a later one's answers as they are.
+// A withdrawn escalation's answers end at its withdrawal's comment: 101
+// answers 100, 104 after the withdrawal 103 nothing; the withdrawal of
+// an earlier question leaves a later one's answers as they are.
 func TestAnswersFromEndsAWithdrawnEscalationsAnswers(t *testing.T) {
 	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs"
 	audit := "The gate supervisor stopped GateAudit (attempt 1) past its bound of 10m0s: hangs"
 	answers, _, _ := answersFrom([]IntakeEvent{
 		{Kind: IntakeEscalation, CommentID: 100, Body: review},
 		{Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 101, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 100, Body: "the checks failed"},
-		{Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 102, Trusted: true},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 103, Body: "100"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 104, Trusted: true},
 		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
 		{Kind: IntakeEscalation, CommentID: 300, Body: audit},
 		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 301, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 200, Body: "the checks failed"},
-		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 302, Trusted: true},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 302, Body: "200"},
+		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 303, Trusted: true},
 	})
 	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
+	if !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
+// A comment answers by its id, whenever its webhook came: 150 and 250,
+// delivered after the later escalation 200 and the information request
+// 300, answer 100 and 200, the escalations asked last before them; 301
+// answers the information request, no escalation; 405, delivered after
+// 400's withdrawal at 410, still answers 400, and 420 nothing. Newest
+// escalation first, each one's answers in their comments' order.
+func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
+	comment := func(id int64, body string) IntakeEvent {
+		return IntakeEvent{Kind: "issue_comment", Author: "sebastian", Body: body, CommentID: id, Trusted: true}
+	}
+	answers, _, _ := answersFrom([]IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?"},
+		comment(101, "a1"),
+		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?"},
+		comment(201, "b1"),
+		comment(150, "a2"),
+		{Kind: IntakeInfoRequest, CommentID: 300},
+		comment(301, "the log"),
+		{Kind: IntakeEscalation, CommentID: 400, Body: "The agent asks: Which port?"},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 410, Body: "400"},
+		comment(405, "d1"),
+		comment(420, "d2"),
+		comment(250, "b2"),
+	})
+	want := []string{`sebastian, to "Which port?": d1`, `sebastian, to "Which text?": b1`, `sebastian, to "Which text?": b2`,
+		`sebastian, to "Which file?": a1`, `sebastian, to "Which file?": a2`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
 	}

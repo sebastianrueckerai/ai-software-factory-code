@@ -196,20 +196,25 @@ func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by
 	return err
 }
 
-func (s *PGStore) JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $3, resolved_by = $4, resolved_at = now()
-		 WHERE task_id = $1 AND kind = $5 AND source = $2 AND verdict IS NULL`, taskID, source, verdict, by, AlertEscalation)
-	return err
+// EscalationFilter picks a task's escalation alerts: those from Source
+// (the day cap's), or the one of the escalation Comment (a withdrawn
+// question's, its detail's comment); a zero field picks any.
+type EscalationFilter struct {
+	Source  string
+	Comment int64
 }
 
-// JudgeEscalation sets verdict on task's open escalation alert of the
-// escalation comment (its detail's comment).
-func (s *PGStore) JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error {
+// JudgeEscalations sets verdict on task's open escalation alerts that
+// filter picks.
+func (s *PGStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
+	comment := ""
+	if filter.Comment != 0 {
+		comment = strconv.FormatInt(filter.Comment, 10)
+	}
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $3, resolved_by = $4, resolved_at = now()
-		 WHERE task_id = $1 AND kind = $5 AND verdict IS NULL AND detail->>'comment' = $2`,
-		taskID, strconv.FormatInt(comment, 10), verdict, by, AlertEscalation)
+		`UPDATE alerts SET verdict = $4, resolved_by = $5, resolved_at = now()
+		 WHERE task_id = $1 AND kind = $6 AND verdict IS NULL AND ($2 = '' OR source = $2) AND ($3 = '' OR detail->>'comment' = $3)`,
+		taskID, filter.Source, comment, verdict, by, AlertEscalation)
 	return err
 }
 

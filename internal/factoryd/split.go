@@ -316,7 +316,7 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 		if ask == "" {
 			ask = splitFailed + "; approve, deny or split the pull request again. The findings:\n- " + strings.Join(findings, "\n- ")
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, ask, []string(nil)).Get(t.ctx, &t.escalation); err != nil {
+		if err := t.ask(ask, escalationQuestion(ask), nil); err != nil {
 			return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 		}
 		return verdict{}, false

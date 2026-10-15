@@ -167,8 +167,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return GateDecision{}, nil
 		},
 		ActivityDropTrip: func(ctx context.Context, taskID string, trip GateTrip) error { return nil },
-		ActivityWithdrawQuestion: func(ctx context.Context, taskID, reason string, comment int64, why string) error {
-			return nil
+		ActivityWithdrawQuestion: func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+			return 0, nil
 		},
 		ActivityAutoMergeNote: func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
 			return nil

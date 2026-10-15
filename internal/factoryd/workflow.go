@@ -994,7 +994,6 @@ type taskRun struct {
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
-	answerTo          []int64   // the escalation comment each answer this run took answers, the head of answers (keepAnswers)
 	escalation        int64     // the escalation comment human answers must be newer than
 	infoRequest       int64     // the information request comment the author's answers must be newer than
 	posterInfo        []string  // the author's answers, oldest first (versionNeedsInfo)
@@ -1015,6 +1014,11 @@ type taskRun struct {
 	beside []*besideRun
 	// drops are the DropTrip calls endTrips joins (versionTripRouting)
 	drops []workflow.Future
+	// answerKeys name each answer this run took, the head of answers,
+	// those Reconcile rebuilt following them (insertAnswer); anchors are
+	// the escalations and information requests this run asked (answerOf)
+	answerKeys []answerKey
+	anchors    []anchor
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -2655,16 +2659,21 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 // awaitHumanUntil is awaitHuman that also ends, with no answer, when day,
 // a wait on the day cap, ends on its own (versionDayCap).
 func (t *taskRun) awaitHumanUntil(reason, question string, choices []string, day *dayWait) (final, why string, answer []string) {
-	if err := t.ask(reason, choices); err != nil {
+	if err := t.ask(reason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
 	return t.awaitAnswer(question, day)
 }
 
-// ask escalates the task with reason and the agent's choices, if any:
-// only comments newer than its comment answer it.
-func (t *taskRun) ask(reason string, choices []string) error {
-	return workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation)
+// ask escalates the task with reason, which asks question, and the
+// agent's choices, if any: only comments newer than its comment answer
+// it (answerOf).
+func (t *taskRun) ask(reason, question string, choices []string) error {
+	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
+		return err
+	}
+	t.anchors = append(t.anchors, anchor{comment: t.escalation, question: question})
+	return nil
 }
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
@@ -2682,8 +2691,7 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 		}
 		var sig TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
-			if f := t.besideOf(t.beside, sig.Comment); f != nil {
-				t.answerBeside(f, sig)
+			if t.besideLadder >= versionBesideLadder && t.fileAnswer(sig, t.escalation) {
 				continue
 			}
 			if !t.counted(SignalHumanComment, sig) {
@@ -2694,8 +2702,11 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
 				continue
 			}
+			if t.besideLadder >= versionBesideLadder {
+				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body))
+				continue
+			}
 			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body))
-			t.answerTo = slices.Insert(t.answerTo, at, t.escalation)
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}
@@ -2857,6 +2868,7 @@ func (t *taskRun) awaitPoster(reason string) (final, why string, changes []strin
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestInfo, t.taskID, reason).Get(t.ctx, &t.infoRequest); err != nil {
 		return "failed", "request information: " + errMessage(err), nil
 	}
+	t.anchors = append(t.anchors, anchor{comment: t.infoRequest, request: true})
 	return t.waitPoster(workflow.Now(t.ctx))
 }
 

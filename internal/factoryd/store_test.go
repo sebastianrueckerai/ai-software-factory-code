@@ -934,24 +934,12 @@ func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, 
 	return nil
 }
 
-func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID, source, verdict, by string) error {
+func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
 	for i, a := range s.alerts {
-		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Source == source && a.Verdict == "" {
-			now := time.Now()
-			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
-			s.alerts[i] = a
-		}
-	}
-	return nil
-}
-
-func (s *fakeStore) JudgeEscalation(ctx context.Context, taskID string, comment int64, verdict, by string) error {
-	s.alertsMu.Lock()
-	defer s.alertsMu.Unlock()
-	for i, a := range s.alerts {
-		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Verdict == "" && fmt.Sprint(a.Detail["comment"]) == fmt.Sprint(comment) {
+		if a.TaskID == taskID && a.Kind == AlertEscalation && a.Verdict == "" && (filter.Source == "" || a.Source == filter.Source) &&
+			(filter.Comment == 0 || fmt.Sprint(a.Detail["comment"]) == fmt.Sprint(filter.Comment)) {
 			now := time.Now()
 			a.Verdict, a.ResolvedBy, a.ResolvedAt = verdict, by, &now
 			s.alerts[i] = a

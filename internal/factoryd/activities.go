@@ -442,7 +442,7 @@ func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned boo
 		}
 		why = fmt.Sprintf("the day's free headroom of %.6f EUR funds a session", free)
 	}
-	if err := r.store.JudgeEscalations(ctx, taskID, "day_cap", VerdictReal, FactoryDecider); err != nil {
+	if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Source: "day_cap"}, VerdictReal, FactoryDecider); err != nil {
 		return false, err
 	}
 	r.record(ctx, taskID, "day_cap_resumed", map[string]any{"why": why})
@@ -1370,32 +1370,85 @@ func waitsOnScreening(events []IntakeEvent) bool {
 }
 
 // answersFrom rebuilds the human's answers from a task's intake events
-// (oldest first), newest first: every trusted issue comment newer than an
-// escalation's comment, until its withdrawal, tagged with that
-// escalation's question (a healed re-ask keeps the question it re-asks),
-// the comments answering one escalation in the order they were written
-// (versionAnswerBurst). question is the last one asked, choices the
-// answers its agent offered.
+// (oldest first): every trusted issue comment that answers an escalation
+// by the comments' ids (answerOf), tagged with that escalation's question
+// (a healed re-ask keeps the question it re-asks), in answerKey's order.
+// question is the last one asked, choices the answers its agent offered.
 func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
-	var since int64
-	at := 0 // where the escalation's next answer goes
+	var anchors []anchor
 	for _, e := range events {
-		switch {
-		case e.Kind == IntakeEscalation:
-			since, at = e.CommentID, 0
+		switch e.Kind {
+		case IntakeEscalation:
 			if e.Body != healedReason {
 				question, choices = escalationQuestion(e.Body), e.Choices
 			}
-		case e.Kind == IntakeInfoRequest:
-			since = 0 // what follows answers the information request
-		case e.Kind == IntakeEscalationWithdrawn && e.CommentID == since:
-			since = 0
-		case e.Kind == "issue_comment" && e.Trusted && since != 0 && e.CommentID > since:
-			answers = slices.Insert(answers, at, answerText(e.Author, question, e.Body))
-			at++
+			anchors = append(anchors, anchor{comment: e.CommentID, question: question})
+		case IntakeInfoRequest:
+			anchors = append(anchors, anchor{comment: e.CommentID, request: true})
 		}
 	}
+	for _, e := range events {
+		escalation, err := strconv.ParseInt(e.Body, 10, 64)
+		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == escalation }); e.Kind == IntakeEscalationWithdrawn && err == nil && i >= 0 {
+			anchors[i].withdrawn = e.CommentID
+		}
+	}
+	type answer struct {
+		key  answerKey
+		text string
+	}
+	var got []answer
+	for _, e := range events {
+		if e.Kind != "issue_comment" || !e.Trusted {
+			continue
+		}
+		if a := answerOf(anchors, e.CommentID); a != nil {
+			got = append(got, answer{answerKey{a.comment, e.CommentID}, answerText(e.Author, a.question, e.Body)})
+		}
+	}
+	slices.SortStableFunc(got, func(x, y answer) int { return x.key.compare(y.key) })
+	for _, a := range got {
+		answers = append(answers, a.text)
+	}
 	return answers, question, choices
+}
+
+// anchor is a comment on the task's issue that later comments answer, by
+// the comments' ids (answerOf): an escalation, which asked question, or
+// an information request (request); withdrawn is the comment of an
+// escalation's withdrawal, 0 while none.
+type anchor struct {
+	comment   int64
+	question  string
+	request   bool
+	withdrawn int64
+}
+
+// answerOf is the escalation of anchors that comment c answers, by the
+// comments' ids alone, so a late webhook changes nothing: the newest
+// anchor before c, unless that is an information request or was withdrawn
+// before c; nil for none. Reconcile (answersFrom) and the live run
+// (fileAnswer) read the human's answers by it.
+func answerOf(anchors []anchor, c int64) *anchor {
+	var a *anchor
+	for i := range anchors {
+		if anchors[i].comment < c && (a == nil || anchors[i].comment > a.comment) {
+			a = &anchors[i]
+		}
+	}
+	if a == nil || a.request || a.withdrawn != 0 && a.withdrawn < c {
+		return nil
+	}
+	return a
+}
+
+// answerKey names an answer by its escalation's comment and its own: the
+// human's answers go newest escalation first, each escalation's in the
+// order they were written.
+type answerKey struct{ escalation, comment int64 }
+
+func (k answerKey) compare(o answerKey) int {
+	return cmp.Or(cmp.Compare(o.escalation, k.escalation), cmp.Compare(k.comment, o.comment))
 }
 
 // posterInfoFrom rebuilds the answers to the task's information requests

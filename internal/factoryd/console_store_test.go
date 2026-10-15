@@ -386,10 +386,10 @@ func TestPGStoreResolveAlert(t *testing.T) {
 	}
 }
 
-// JudgeEscalation judges one escalation's alert, the one its comment
-// names: not the task's other escalations, nor another task's, nor one
-// judged already.
-func TestPGStoreJudgeEscalation(t *testing.T) {
+// JudgeEscalations judges the task's open escalation alerts its filter
+// picks: by source the day cap's, by comment one question's, never
+// another task's nor one judged already.
+func TestPGStoreJudgeEscalations(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
@@ -399,17 +399,21 @@ func TestPGStoreJudgeEscalation(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	for _, a := range []Alert{{TaskID: "t1", Detail: map[string]any{"comment": 650}}, {TaskID: "t1", Detail: map[string]any{"comment": 701}},
-		{TaskID: "t2", Detail: map[string]any{"comment": 701}}} {
-		a.Kind, a.Source = AlertEscalation, "supervisor"
+	for _, a := range []Alert{{TaskID: "t1", Source: "supervisor", Detail: map[string]any{"comment": 650}},
+		{TaskID: "t1", Source: "supervisor", Detail: map[string]any{"comment": 701}}, {TaskID: "t1", Source: "day_cap", Detail: map[string]any{"comment": 702}},
+		{TaskID: "t2", Source: "supervisor", Detail: map[string]any{"comment": 701}}} {
+		a.Kind = AlertEscalation
 		if _, err := s.InsertAlert(ctx, a); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for range 2 {
-		if err := s.JudgeEscalation(ctx, "t1", 701, VerdictNoise, FactoryDecider); err != nil {
+		if err := s.JudgeEscalations(ctx, "t1", EscalationFilter{Comment: 701}, VerdictNoise, FactoryDecider); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := s.JudgeEscalations(ctx, "t1", EscalationFilter{Source: "day_cap"}, VerdictReal, FactoryDecider); err != nil {
+		t.Fatal(err)
 	}
 	alerts, err := s.Alerts(ctx, 10)
 	if err != nil {
@@ -417,10 +421,11 @@ func TestPGStoreJudgeEscalation(t *testing.T) {
 	}
 	var got []string
 	for _, a := range alerts {
-		got = append(got, fmt.Sprintf("%s %v %q by %q", a.TaskID, a.Detail["comment"], a.Verdict, a.ResolvedBy))
+		got = append(got, fmt.Sprintf("%s %s %v %q by %q", a.TaskID, a.Source, a.Detail["comment"], a.Verdict, a.ResolvedBy))
 	}
 	slices.Sort(got)
-	if want := []string{`t1 650 "" by ""`, `t1 701 "noise" by "factoryd"`, `t2 701 "" by ""`}; !slices.Equal(got, want) {
+	want := []string{`t1 day_cap 702 "real" by "factoryd"`, `t1 supervisor 650 "" by ""`, `t1 supervisor 701 "noise" by "factoryd"`, `t2 supervisor 701 "" by ""`}
+	if !slices.Equal(got, want) {
 		t.Fatalf("alerts = %q, want %q", got, want)
 	}
 }

@@ -1525,9 +1525,9 @@ func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
 			g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
 			var withdrawn []string
 			g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-				func(ctx context.Context, taskID, reason string, comment int64, why string) error {
+				func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
 					withdrawn = append(withdrawn, fmt.Sprintf("%d at %s because %s: %s", comment, g.env.Now().Sub(g.started), why, reason))
-					return nil
+					return 900, nil
 				})
 			g.tripAfter(15*time.Minute, tc.activity, 1)
 			g.signalAfter(17*time.Minute, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 700})
@@ -1657,6 +1657,59 @@ func TestStagesAnAnswerGoesToTheQuestionItAnswers(t *testing.T) {
 	}
 	if want := []string{"615 answers 610", "700 answers <nil>"}; !slices.Equal(signals, want) {
 		t.Fatalf("comment signals %q, want %q", signals, want)
+	}
+}
+
+// The live run keeps the human's answers as Reconcile rebuilds them, by
+// the comments' ids (answerOf): the review's question 610 at 10 min, its
+// answer 615 at 12 min, the checks' question 620 at 20 min, its answer
+// 700 at 1 h, and 618, posted before 620 but delivered at 1h0m10s. The
+// checks' wait files 615 and 618 under 610, its own 700 under 620; a
+// change request at 5 h sends the head back, and the second session's
+// answers are those answersFrom reads from the intake events in their
+// delivery order: 620's first, then 610's in their comments' order.
+func TestStagesLiveAnswersReadAsReconcileRebuildsThem(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) {
+		g.reviewDelay = 3 * time.Hour
+		g.escalationIDs = []int64{610, 620, 630}
+	})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(time.Hour).Return(ChecksResult{State: ChecksSuccess}, nil).Once()
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(ChecksResult{State: ChecksSuccess}, nil)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "stuck", Recommendation: "look"})
+	g.tripAfter(10*time.Minute, ActivityModelReview, 1)
+	g.tripAfter(20*time.Minute, ActivityWaitChecks, 2)
+	comments := []struct {
+		at   time.Duration
+		id   int64
+		body string
+	}{{12 * time.Minute, 615, "gateway restarted"}, {time.Hour, 700, "runner registered"}, {time.Hour + 10*time.Second, 618, "it was the gateway"}}
+	for _, c := range comments {
+		g.signalAfter(c.at, SignalHumanComment, TaskSignal{Author: "sebastian", Body: c.body, Comment: c.id})
+	}
+	g.signalAfter(5*time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	review := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: stuck"
+	checks := "The gate supervisor stopped WaitChecks (attempt 1) past its bound of 10m0s: stuck"
+	want := []string{`sebastian, to "` + checks + `": runner registered`, `sebastian, to "` + review + `": gateway restarted`,
+		`sebastian, to "` + review + `": it was the gateway`}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Answers, want) {
+		t.Fatalf("sessions = %+v, want the second with answers %q", g.sessions, want)
+	}
+	events := []IntakeEvent{{Kind: IntakeEscalation, CommentID: 610, Body: g.escalated[0]}}
+	for i, c := range comments {
+		if i == 1 {
+			events = append(events, IntakeEvent{Kind: IntakeEscalation, CommentID: 620, Body: g.escalated[1]})
+		}
+		events = append(events, IntakeEvent{Kind: "issue_comment", Author: "sebastian", Body: c.body, CommentID: c.id, Trusted: true})
+	}
+	if rebuilt, _, _ := answersFrom(events); !slices.Equal(rebuilt, g.sessions[1].Answers) {
+		t.Fatalf("Reconcile rebuilds %q, the live run kept %q", rebuilt, g.sessions[1].Answers)
 	}
 }
 
