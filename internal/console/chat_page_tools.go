@@ -148,7 +148,8 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
 	}
 	var b strings.Builder
-	for _, x := range ps {
+	envs := c.envRows(ctx, ps)
+	for i, x := range ps {
 		state := "not registered"
 		switch {
 		case !x.File:
@@ -173,12 +174,12 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 		}
 		fmt.Fprintf(&b, "%s (%s): objects %s; process %s; merge rule %s; %s; GitHub export %s",
 			x.Name, x.Repository, x.Objects, cmp.Or(x.Process, "none"), x.MergeRule, state, export)
-		if x.Objects == policy.ObjectsFactory && len(x.Environments) > 0 {
-			var envs []string
-			for _, e := range c.envRows(ctx, x) {
-				envs = append(envs, e.Words())
+		if len(envs[i]) > 0 {
+			var words []string
+			for _, e := range envs[i] {
+				words = append(words, e.Words())
 			}
-			b.WriteString("; environments " + strings.Join(envs, ", "))
+			b.WriteString("; environments " + strings.Join(words, ", "))
 		}
 		b.WriteString("\n")
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"maps"
 	"net/http"
@@ -146,7 +147,7 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		}
 		return f.ok, f.msg, f.err
 	}
-	readOnce := []string{"demo-staging/demo-app", "demo-prod/demo-app", "broken-staging/broken", "broken-prod/broken", "broken-new/broken", "broken-locked/broken"}
+	readOnce := []string{"broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken", "demo-prod/demo-app", "demo-staging/demo-app"}
 
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
 	if rec.Code != http.StatusOK {
@@ -164,6 +165,7 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 			t.Errorf("/projects lacks %q", want)
 		}
 	}
+	slices.Sort(read)
 	equal(t, "the page's reads", read, readOnce)
 
 	read = nil
@@ -178,7 +180,50 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		"broken-locked: deploy/locked (deploy state unreadable)\n" +
 		"waiting (waiting/waiting): objects factory; process none; merge rule auto; not registered; GitHub export none; " +
 		"environments waiting-staging: deploy/staging (no Flux Kustomization yet)"})
+	slices.Sort(read)
 	equal(t, "the tool's reads", read, readOnce)
+}
+
+// The Kustomizations are read at once, at most fluxReads at a time: each
+// read waits until fluxReads reads have started, so reads one after
+// another would wait out the deadline with one in flight.
+func TestProjectsReadTheKustomizationsAtOnce(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	wide := factoryd.Project{Name: "wide", Repository: "wide/wide", MergeRule: "auto", Objects: policy.ObjectsFactory, Agents: "coder",
+		File: true, GitToken: "g"}
+	for i := range fluxReads + 2 {
+		wide.Environments = append(wide.Environments, factoryd.Environment{Namespace: fmt.Sprintf("wide-%d", i), Path: "deploy/staging"})
+	}
+	r.projects.rows = []factoryd.Project{wide}
+	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	all := make(chan struct{})
+	var mu sync.Mutex
+	started, inFlight, most := 0, 0, 0
+	r.c.cfg.FluxReady = func(context.Context, string, string) (bool, string, error) {
+		mu.Lock()
+		started, inFlight = started+1, inFlight+1
+		most = max(most, inFlight)
+		if started == fluxReads {
+			close(all)
+		}
+		mu.Unlock()
+		select {
+		case <-all:
+		case <-deadline.Done():
+		}
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return true, "", nil
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /projects = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "the reads at once at most", most, fluxReads)
+	equal(t, "the ready environments", strings.Count(rec.Body.String(), "deploy/staging (ready)"), fluxReads+2)
 }
 
 // The settings edits are gone: the file is the one place, and a new

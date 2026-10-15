@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -55,12 +57,30 @@ func (e envRow) Words() string {
 	return s
 }
 
-// envRows are p's environments with their deploy states.
-func (c *Console) envRows(ctx context.Context, p factoryd.Project) []envRow {
-	rows := make([]envRow, len(p.Environments))
-	for i, e := range p.Environments {
-		rows[i] = envRow{e, c.deployState(ctx, p, e)}
+// fluxReads bounds the Kustomization reads that run at once.
+const fluxReads = 8
+
+// envRows are the environments of each factory project of ps with their
+// deploy states, by ps's index; the Kustomizations are read at once, at
+// most fluxReads at a time, so a slow read does not add up across them.
+func (c *Console) envRows(ctx context.Context, ps []factoryd.Project) [][]envRow {
+	rows := make([][]envRow, len(ps))
+	var g errgroup.Group
+	g.SetLimit(fluxReads)
+	for i, p := range ps {
+		if p.Objects != policy.ObjectsFactory {
+			continue
+		}
+		rows[i] = make([]envRow, len(p.Environments))
+		for j, e := range p.Environments {
+			rows[i][j].Environment = e
+			g.Go(func() error {
+				rows[i][j].State = c.deployState(ctx, p, e)
+				return nil
+			})
+		}
 	}
+	_ = g.Wait() // deployState says a failed read in its words
 	return rows
 }
 
@@ -114,7 +134,8 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rows []projectRow
-	for _, p := range ps {
+	envs := c.envRows(r.Context(), ps)
+	for i, p := range ps {
 		row := projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.ApproversOf(p.Repository)), NotifyDefault: len(p.Notify) == 0,
 			GatewayYAML: factoryd.ListenerYAML(p)}
 		if p.File {
@@ -126,9 +147,7 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		row.Approver = slices.Contains(v.ApproversOf(p.Repository), current(r).user)
-		if p.Objects == policy.ObjectsFactory {
-			row.Envs = c.envRows(r.Context(), p)
-		}
+		row.Envs = envs[i]
 		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
 			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
 			if err != nil {
