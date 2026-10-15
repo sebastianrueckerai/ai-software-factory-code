@@ -679,16 +679,17 @@ func (k *InClusterKube) KustomizationState(ctx context.Context, namespace, name 
 	return s, nil
 }
 
-// FluxRollouts are the newest rollouts of the Flux objects that roll the
-// platform: every HelmRelease, and every Kustomization but a project
-// environment's (ProjectLabel) and the factory's own, the one applying the
-// roll targets' Deployments in namespace, whose rolls those Deployments'
-// own window judges (ruling 237).
+// FluxRollouts are the newest rollouts of every HelmRelease and every
+// Kustomization but the factory's own, the one applying the roll targets'
+// Deployments in namespace, whose rolls those Deployments' own window
+// judges (ruling 237). A project environment's Kustomization (ProjectLabel)
+// holds its own namespace's alerts, the platform's objects every
+// namespace's.
 func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error) {
 	var ks struct {
 		Items []fluxKustomization `json:"items"`
 	}
-	if err := k.getJSON(ctx, "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations?labelSelector="+url.QueryEscape("!"+ProjectLabel), &ks); err != nil {
+	if err := k.getJSON(ctx, "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations", &ks); err != nil {
 		return nil, err
 	}
 	var hrs struct {
@@ -712,8 +713,9 @@ func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]R
 // fluxKustomization is the slice of a Flux Kustomization its rollout reads.
 type fluxKustomization struct {
 	Metadata struct {
-		Namespace string `json:"namespace"`
-		Name      string `json:"name"`
+		Namespace string            `json:"namespace"`
+		Name      string            `json:"name"`
+		Labels    map[string]string `json:"labels"`
 	} `json:"metadata"`
 	Spec struct {
 		Interval string `json:"interval"`
@@ -740,7 +742,10 @@ type fluxKustomization struct {
 // reconcile after the content before it last reconciled, so within one
 // interval of that.
 func (ks fluxKustomization) rollout() Rollout {
-	r, h := Rollout{Object: "Kustomization " + ks.Metadata.Namespace + "/" + ks.Metadata.Name}, ks.Status.History
+	r, h := Rollout{Kind: "Kustomization", Namespace: ks.Metadata.Namespace, Name: ks.Metadata.Name}, ks.Status.History
+	if ks.Metadata.Labels[ProjectLabel] != "" {
+		r.Scope = ks.Metadata.Namespace
+	}
 	if len(h) == 0 {
 		return r
 	}
@@ -776,6 +781,7 @@ type fluxHelmRelease struct {
 		Conditions []struct {
 			Type               string    `json:"type"`
 			Status             string    `json:"status"`
+			Message            string    `json:"message"`
 			ObservedGeneration int64     `json:"observedGeneration"`
 			LastTransitionTime time.Time `json:"lastTransitionTime"`
 		} `json:"conditions"`
@@ -792,12 +798,15 @@ type fluxHelmRelease struct {
 // for good settled as much as a ready one. Ready Unknown, or a generation
 // the controller has not observed yet, still runs.
 func (hr fluxHelmRelease) rollout() Rollout {
-	r := Rollout{Object: "HelmRelease " + hr.Metadata.Namespace + "/" + hr.Metadata.Name}
+	r := Rollout{Kind: "HelmRelease", Namespace: hr.Metadata.Namespace, Name: hr.Metadata.Name}
 	if len(hr.Status.History) == 0 {
 		return r
 	}
 	r.Applied = hr.Status.History[0].LastDeployed
 	for _, c := range hr.Status.Conditions {
+		if c.Type == "Ready" {
+			r.Message = c.Message
+		}
 		if c.Type == "Ready" && c.Status != "Unknown" && c.ObservedGeneration == hr.Metadata.Generation {
 			r.Settled = c.LastTransitionTime
 			if r.Settled.Before(r.Applied) {

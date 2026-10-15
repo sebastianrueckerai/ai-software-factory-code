@@ -743,10 +743,9 @@ func TestAlertIssueNamesTheService(t *testing.T) {
 // with the task id it would file under, but no issue or task, and a sweep
 // inside the window files nothing. A resolve inside it judges the firing
 // the roll's noise. A later firing past the window files, and every other
-// rule files at once inside it (ruling 237). A rollout still running has
-// an open-ended window: its firing waits through a redelivery and any
-// sweep, and the first sweep once the window closed files it, while SigNoz
-// still lists it, under its row's task id.
+// rule files at once inside it (ruling 237). A rollout still running
+// holds its firing through a sweep, and the first sweep once the window
+// closed files it, while SigNoz still lists it, under its row's task id.
 //
 // Alertmanager's fingerprint hashes the alert's label set, so every firing
 // of this rule on this namespace carries the SAME fingerprint "fp-5xx"
@@ -826,20 +825,18 @@ func TestAlertInsideRollWindowIsHeld(t *testing.T) {
 
 	deployments.set("factory-gateway", deploymentJSON("2026-09-28T12:00:00Z", "", registryHost+"factory-gateway@"+digestNew))
 	running := sigAlert("firing", "fp-running", "factory", "2026-09-28T12:02:00Z", neverEnds)
-	for range 2 {
-		if rr := r.post(t, "signoz", "hook-pw", running); rr.Code != http.StatusOK {
-			t.Fatalf("status %d: %s", rr.Code, rr.Body)
-		}
+	if rr := r.post(t, "signoz", "hook-pw", running); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
 	}
 	restartsListed := listed("fp-restarts", "2026-09-28T12:03:00Z")
 	restartsListed.Labels["alertname"] = "container restarts"
 	signoz.list = []FiringAlert{listed("fp-5xx", "2026-09-28T12:11:31Z"), listed("fp-running", "2026-09-28T12:02:00Z"), restartsListed}
-	if err := r.in.SweepSigNoz(ctx, at("2026-09-28T13:00:00Z")); err != nil {
+	if err := r.in.SweepSigNoz(ctx, at("2026-09-28T12:29:59Z")); err != nil {
 		t.Fatal(err)
 	}
 	rows = r.store.alertRows()
 	if len(rows) != 4 || !held(rows[3]) || rows[3].Detail["settled"] != nil || len(r.fj.issues) != 2 {
-		t.Fatalf("a rollout still running, redelivered and swept: %d rows (last %+v), %d issues; want 4 rows (the last held, open-ended), 2 issues",
+		t.Fatalf("a rollout still running, swept: %d rows (last %+v), %d issues; want 4 rows (the last held, not settled), 2 issues",
 			len(rows), rows[len(rows)-1], len(r.fj.issues))
 	}
 
@@ -974,6 +971,73 @@ func helmRelease(namespace, name string, gen int, deployed, ready string) string
 		"history":[{"lastDeployed":%q}]}}`, namespace, name, gen, gen, ready, deployed)
 }
 
+// fluxAPI is the API server's lists of Kustomizations and HelmReleases as
+// FluxRollouts reads them, the label selector !factory/project honoured;
+// set swaps them.
+type fluxAPI struct {
+	mu                       sync.Mutex
+	kustomizations, releases []string
+}
+
+func (f *fluxAPI) set(kustomizations, releases []string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.kustomizations, f.releases = kustomizations, releases
+}
+
+func (f *fluxAPI) kube(t *testing.T) *InClusterKube {
+	return stubKube(t, func(w http.ResponseWriter, req *http.Request) {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch req.URL.Path {
+		case "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations":
+			items := f.kustomizations
+			if req.URL.Query().Get("labelSelector") == "!"+ProjectLabel {
+				items = slices.DeleteFunc(slices.Clone(items), func(k string) bool { return strings.Contains(k, `"`+ProjectLabel+`"`) })
+			}
+			io.WriteString(w, `{"items":[`+strings.Join(items, ",")+`]}`)
+		case "/apis/helm.toolkit.fluxcd.io/v2/helmreleases":
+			io.WriteString(w, `{"items":[`+strings.Join(f.releases, ",")+`]}`)
+		default:
+			t.Errorf("%s %s", req.Method, req.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+}
+
+// seedProjects gives the rig the factory's own projects: the code
+// repository's on namespace factory with agents, the infra repository's on
+// platform and forgejo without, and factoryd's Deployments in factory,
+// their last roll live at 10:31 on 2026-10-15.
+func seedProjects(r *alertRig) {
+	r.ns.labels["factory"], r.ns.labels["platform"], r.ns.labels["forgejo"] =
+		"ai-software-factory-code", "ai-software-factory-infra", "ai-software-factory-infra"
+	m := r.in.Projects.(*memProjects).m
+	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
+		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
+		File: true, Namespaces: []string{"platform", "forgejo"}}
+	r.in.Kube = &fakeDeployments{json: map[string]string{
+		"factoryd":        deploymentJSON("2026-10-15T10:29:40Z", "2026-10-15T10:31:02Z", registryHost+"factory-gateway@"+digestNew),
+		"factory-gateway": deploymentJSON("2026-10-15T10:29:40Z", "2026-10-15T10:30:51Z", registryHost+"factory-gateway@"+digestNew),
+	}, reads: map[string]int{}}
+	r.in.Namespace = "factory"
+}
+
+// alert is a firing of rule name in namespace as SigNoz's webhook delivers
+// it, labels added, and the same as SigNoz's list holds it.
+func (r *alertRig) alert(name, fp, namespace, startsAt string, labels ...string) (map[string]any, FiringAlert) {
+	a := sigAlert("firing", fp, namespace, startsAt, neverEnds)
+	l := a["labels"].(map[string]string)
+	l["alertname"], l["project"] = name, r.ns.labels[namespace]
+	for i := 0; i < len(labels); i += 2 {
+		l[labels[i]] = labels[i+1]
+	}
+	f := firing("active", maps.Clone(l), "s")
+	f.Fingerprint, f.StartsAt, f.Annotations = fp, at(startsAt), a["annotations"].(map[string]string)
+	return a, f
+}
+
 // Roadmap 265, card #831: the infra push of 2026-10-15 10:35Z rolled the
 // Postgres clusters, Forgejo, SigNoz, Temporal and LiteLLM, factoryd
 // answered 5xx during the switchover, and the 5xx rule's firing at 10:43:45
@@ -990,19 +1054,7 @@ func helmRelease(namespace, name string, gen int, deployed, ready string) string
 func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	r := newAlertRig(t)
 	ctx := context.Background()
-	r.ns.labels["factory"], r.ns.labels["platform"], r.ns.labels["forgejo"] =
-		"ai-software-factory-code", "ai-software-factory-infra", "ai-software-factory-infra"
-	m := r.in.Projects.(*memProjects).m
-	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
-		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
-	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
-		File: true, Namespaces: []string{"platform", "forgejo"}}
-	// factoryd's own roll of 10:29 was live by 10:31: its window closed at 10:41
-	r.in.Kube = &fakeDeployments{json: map[string]string{
-		"factoryd":        deploymentJSON("2026-10-15T10:29:40Z", "2026-10-15T10:31:02Z", registryHost+"factory-gateway@"+digestNew),
-		"factory-gateway": deploymentJSON("2026-10-15T10:29:40Z", "2026-10-15T10:30:51Z", registryHost+"factory-gateway@"+digestNew),
-	}, reads: map[string]int{}}
-	r.in.Namespace = "factory"
+	seedProjects(r)
 	signoz := &fakeAlerts{}
 	r.in.SigNoz = signoz
 
@@ -1031,37 +1083,13 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 		helmRelease("forgejo", "forgejo-runner", 3, "2026-10-15T10:49:26Z", "2026-10-15T10:49:33Z"),
 		helmRelease("platform", "k8s-infra", 3, "2026-10-15T10:55:20Z", "2026-10-15T10:57:46Z"),
 		helmRelease("platform", "signoz", 3, "2026-10-15T10:49:31Z", "2026-10-15T10:50:04Z"))
-	var mu sync.Mutex
-	kustomizations, releases := firstPush, firstReleases
-	r.in.Flux = stubKube(t, func(w http.ResponseWriter, req *http.Request) {
-		mu.Lock()
-		defer mu.Unlock()
-		switch {
-		case req.URL.Path == "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations" && req.URL.Query().Get("labelSelector") == "!factory/project":
-			io.WriteString(w, `{"items":[`+strings.Join(kustomizations, ",")+`]}`)
-		case req.URL.Path == "/apis/helm.toolkit.fluxcd.io/v2/helmreleases":
-			io.WriteString(w, `{"items":[`+strings.Join(releases, ",")+`]}`)
-		default:
-			t.Errorf("%s %s", req.Method, req.URL)
-			w.WriteHeader(http.StatusNotFound)
-		}
-	})
+	api := &fluxAPI{kustomizations: firstPush, releases: firstReleases}
+	r.in.Flux = api.kube(t)
 
-	alert := func(name, fp, namespace, startsAt string, labels ...string) (map[string]any, FiringAlert) {
-		a := sigAlert("firing", fp, namespace, startsAt, neverEnds)
-		l := a["labels"].(map[string]string)
-		l["alertname"], l["project"] = name, r.ns.labels[namespace]
-		for i := 0; i < len(labels); i += 2 {
-			l[labels[i]] = labels[i+1]
-		}
-		f := firing("active", maps.Clone(l), "s")
-		f.Fingerprint, f.StartsAt, f.Annotations = fp, at(startsAt), a["annotations"].(map[string]string)
-		return a, f
-	}
-	clickhouse, clickhouseListed := alert("ClickHouse disk above 80 %", "2ba7f03351bca2dd", "platform", "2026-10-15T10:30:06Z", "service", "clickhouse")
-	fiveXX, fiveXXListed := alert("5xx rate above 5 %", "fdd8734135148c49", "factory", "2026-10-15T10:43:45Z", "service.name", "factoryd")
-	jobFailed, jobFailedListed := alert("Job failed", "53cdc28c0b9dfbc8", "platform", "2026-10-15T10:45:09Z", "k8s.object.name", "signoz-objects-29867680")
-	forgejo, forgejoListed := alert("Forgejo 5xx rate above 5 %", "fp-forgejo-5xx", "forgejo", "2026-10-15T10:48:00Z", "service", "forgejo")
+	clickhouse, clickhouseListed := r.alert("ClickHouse disk above 80 %", "2ba7f03351bca2dd", "platform", "2026-10-15T10:30:06Z", "service", "clickhouse")
+	fiveXX, fiveXXListed := r.alert("5xx rate above 5 %", "fdd8734135148c49", "factory", "2026-10-15T10:43:45Z", "service.name", "factoryd")
+	jobFailed, jobFailedListed := r.alert("Job failed", "53cdc28c0b9dfbc8", "platform", "2026-10-15T10:45:09Z", "k8s.object.name", "signoz-objects-29867680")
+	forgejo, forgejoListed := r.alert("Forgejo 5xx rate above 5 %", "fp-forgejo-5xx", "forgejo", "2026-10-15T10:48:00Z", "service", "forgejo")
 	for _, a := range []map[string]any{clickhouse, fiveXX, jobFailed, forgejo} {
 		if rr := r.post(t, "signoz", "hook-pw", a); rr.Code != http.StatusOK {
 			t.Fatalf("status %d: %s", rr.Code, rr.Body)
@@ -1083,9 +1111,7 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 		}
 	}
 
-	mu.Lock()
-	kustomizations, releases = secondPush, secondReleases
-	mu.Unlock()
+	api.set(secondPush, secondReleases)
 	signoz.list = []FiringAlert{clickhouseListed, fiveXXListed, jobFailedListed, forgejoListed}
 	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T10:50:00Z")); err != nil {
 		t.Fatal(err)
@@ -1123,6 +1149,120 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 		len(r.store.tasks) != 2 || len(r.flows.started) != 0 {
 		t.Fatalf("the last window closed: issues %q on %v, %d tasks, started %v; want Forgejo's filed second on the infra repository:\n%s",
 			r.fj.issues, r.fj.repos, len(r.store.tasks), r.flows.started, want)
+	}
+}
+
+// No window outlasts rolloutCap after Flux applied its rollout: a
+// HelmRelease whose upgrade never settles (SigNoz stalled 33 hours on
+// 2026-10-15) holds factoryd's 5xx firing for thirty minutes, not a second
+// more, and the first sweep then files it. RolloutPass raises the stuck
+// rollout's own alert at the cap, a human card on the infra repository
+// naming the HelmRelease, Flux's message and the action, once; the sweep
+// leaves its row alone, as SigNoz never lists it, and RolloutPass
+// resolves it once the HelmRelease is Ready.
+func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T) {
+	r := newAlertRig(t)
+	ctx := context.Background()
+	seedProjects(r)
+	stuck := `{"metadata":{"namespace":"platform","name":"signoz","generation":4},
+		"status":{"conditions":[{"type":"Ready","status":"Unknown","observedGeneration":4,"lastTransitionTime":"2026-10-15T12:00:02Z",
+		"message":"Running 'upgrade' action with timeout of 5m0s"}],
+		"history":[{"lastDeployed":"2026-10-15T12:00:00Z"},{"lastDeployed":"2026-10-15T10:49:31Z"}]}}`
+	api := &fluxAPI{releases: []string{stuck}}
+	r.in.Flux = api.kube(t)
+	fiveXX, fiveXXListed := r.alert("5xx rate above 5 %", "fdd8734135148c49", "factory", "2026-10-15T12:04:00Z", "service.name", "factoryd")
+	r.in.SigNoz = &fakeAlerts{list: []FiringAlert{fiveXXListed}}
+	if rr := r.post(t, "signoz", "hook-pw", fiveXX); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	for _, now := range []string{"2026-10-15T12:20:00Z", "2026-10-15T12:29:59Z"} {
+		if err := r.in.SweepSigNoz(ctx, at(now)); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.in.RolloutPass(ctx, at(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := r.store.alertRows(); len(rows) != 1 || !held(rows[0]) || rows[0].Detail["roll_window"] != "HelmRelease platform/signoz" || len(r.fj.issues) != 0 {
+		t.Fatalf("before the cap: rows %+v, issues %q; want the 5xx firing held, nothing filed", rows, r.fj.issues)
+	}
+
+	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T12:30:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.fj.issues) != 1 || r.fj.repos[0] != "sf/ai-software-factory-code" || len(r.flows.started) != 1 {
+		t.Fatalf("at the cap: issues %q on %v, started %v; want the 5xx firing's agent card", r.fj.issues, r.fj.repos, r.flows.started)
+	}
+	for _, now := range []string{"2026-10-15T12:30:00Z", "2026-10-15T12:31:00Z"} {
+		if err := r.in.RolloutPass(ctx, at(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "alert: HelmRelease signoz not settled in platform\n\n" +
+		"factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
+		"Firing since 2026-10-15T12:30:00Z.\n\n" +
+		"Value and annotations:\n\n```\nvalue=Running 'upgrade' action with timeout of 5m0s\n" +
+		"action=find why Flux has not settled HelmRelease platform/signoz 30m0s after applying it, from its status and events; " +
+		"its window holds no alert any more. A cause outside the repository is a question for a human.\n" +
+		"applied=2026-10-15T12:00:00Z\n```\n\n" +
+		"Labels:\n\n```\nalertname=HelmRelease signoz not settled\nkind=HelmRelease\nname=signoz\nnamespace=platform\n```\n\n" +
+		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz"
+	if len(r.fj.issues) != 2 || r.fj.issues[1] != want || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
+		!slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+		t.Fatalf("the stuck rollout's alert: issues %q on %v, labels %v; want one human card on the infra repository:\n%s",
+			r.fj.issues, r.fj.repos, r.fj.labels[2], want)
+	}
+
+	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T12:32:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	api.set(nil, []string{helmRelease("platform", "signoz", 4, "2026-10-15T12:00:00Z", "2026-10-15T12:35:00Z")})
+	for _, now := range []string{"2026-10-15T12:36:00Z", "2026-10-15T12:37:00Z"} {
+		if err := r.in.RolloutPass(ctx, at(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"#2 factoryd: resolved at 2026-10-15T12:36:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 2 {
+		t.Fatalf("settled: comments %q, %d issues; want %q, 2", r.fj.comments, len(r.fj.issues), want)
+	}
+}
+
+// A project environment's Kustomization rollout opens the same window for
+// that environment's namespace alone: demo-staging's deploy at 12:00 holds
+// the 5xx firing in demo-staging until 12:10, while the same rule firing
+// in demo-prod at the same minute files at once.
+func TestProjectEnvironmentRolloutHoldsItsOwnNamespace(t *testing.T) {
+	r := newAlertRig(t)
+	ctx := context.Background()
+	api := &fluxAPI{kustomizations: []string{`{"metadata":{"namespace":"demo-staging","name":"demo-app","labels":{"factory/project":"demo-app"}},
+		"spec":{"interval":"1m"},"status":{"history":[{"firstReconciled":"2026-10-15T12:00:00Z","lastReconciled":"2026-10-15T12:03:00Z"},
+		{"firstReconciled":"2026-10-14T09:00:00Z","lastReconciled":"2026-10-15T11:59:00Z"}]}}`}}
+	r.in.Flux = api.kube(t)
+	staging, stagingListed := r.alert("5xx rate above 5 %", "fp-staging", "demo-staging", "2026-10-15T12:03:00Z")
+	prod, prodListed := r.alert("5xx rate above 5 %", "fp-prod", "demo-prod", "2026-10-15T12:03:00Z")
+	r.in.SigNoz = &fakeAlerts{list: []FiringAlert{stagingListed, prodListed}}
+	for _, a := range []map[string]any{staging, prod} {
+		if rr := r.post(t, "signoz", "hook-pw", a); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 2 || !held(rows[0]) || rows[0].Detail["roll_window"] != "Kustomization demo-staging/demo-app" ||
+		held(rows[1]) || len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "alert: 5xx rate above 5 % in demo-prod\n\n") {
+		t.Fatalf("rows %+v, issues %q; want demo-staging's firing held, demo-prod's filed", rows, r.fj.issues)
+	}
+	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T12:09:59Z")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.fj.issues) != 1 {
+		t.Fatalf("inside demo-staging's window: issues %q, want demo-prod's alone", r.fj.issues)
+	}
+	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T12:10:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], "alert: 5xx rate above 5 % in demo-staging\n\n"+
+		"factoryd: the alert fired while Kustomization demo-staging/demo-app rolled out and still fires 10m0s after the rollouts settled.\n\n") {
+		t.Fatalf("the window closed: issues %q, want demo-staging's filed second", r.fj.issues)
 	}
 }
 

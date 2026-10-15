@@ -327,6 +327,10 @@ func main() {
 			if err := alertIntake.SweepSigNoz(ctx, time.Now()); err != nil {
 				log.Printf("signoz sweep: %v", err)
 			}
+			// a rollout not settled at its window's cap raises its own alert
+			if err := alertIntake.RolloutPass(ctx, time.Now()); err != nil {
+				log.Printf("rollout pass: %v", err)
+			}
 			select {
 			case <-ctx.Done():
 				return

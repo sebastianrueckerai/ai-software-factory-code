@@ -43,13 +43,32 @@ const restartWindowAlert = "5xx rate above 5 %"
 // a Cluster the platform Kustomization applied) settles after Flux does.
 const rolloutSettle = 10 * time.Minute
 
+// rolloutCap is the longest a rollout's window lasts after Flux applied
+// it, settled or not. A normal apply settles well inside it and keeps its
+// whole settle: the platform pushes of 2026-10-15 settled seven and eight
+// minutes after Flux applied them, the slowest HelmRelease six and a half;
+// Helm gives up an action at its five-minute timeout and Kubernetes a
+// Deployment at its ten-minute progress deadline. A rollout not settled
+// by then holds no alert any more and raises its own (RolloutPass).
+const rolloutCap = 30 * time.Minute
+
 // fluxAlert is FluxPass's alert: an environment whose Flux Kustomization
 // applied once stands not Ready (roadmap 259).
 const fluxAlert = "Kustomization not Ready"
 
-// fluxPrefix starts a fluxAlert's fingerprint, flux/<namespace>/<name>;
-// SigNoz's fingerprints are hexadecimal.
-const fluxPrefix = "flux/"
+// fluxPrefix starts a fluxAlert's fingerprint, flux/<namespace>/<name>,
+// and rolloutPrefix a stuck rollout's, rollout/<kind>/<namespace>/<name>
+// (RolloutPass); SigNoz's fingerprints are hexadecimal.
+const (
+	fluxPrefix    = "flux/"
+	rolloutPrefix = "rollout/"
+)
+
+// fromFlux reports whether fingerprint is of an alert factoryd raises
+// from Flux's status, not SigNoz's.
+func fromFlux(fingerprint string) bool {
+	return strings.HasPrefix(fingerprint, fluxPrefix) || strings.HasPrefix(fingerprint, rolloutPrefix)
+}
 
 // fluxGrace is how long a Kustomization that applied once reads not
 // Ready before its alert fires: ten of its one-minute reconciles, so a
@@ -88,9 +107,8 @@ type DeployedCommitReader interface {
 // FluxReader reads Flux's Kustomizations and HelmReleases (InClusterKube).
 type FluxReader interface {
 	KustomizationState(ctx context.Context, namespace, name string) (FluxState, error)
-	// FluxRollouts are the newest rollouts of the Flux objects that roll
-	// the platform, the factory's own Kustomization in namespace not one
-	// of them.
+	// FluxRollouts are the newest rollouts of Flux's objects, the
+	// factory's own Kustomization in namespace not one of them.
 	FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error)
 }
 
@@ -98,14 +116,26 @@ type FluxReader interface {
 // applied a change to it at Applied, and it settled at Settled, zero while
 // it still runs.
 type Rollout struct {
-	Object           string // kind namespace/name
+	Kind, Namespace, Name string
+	// Scope is the one namespace whose alerts the rollout holds, a project
+	// environment's; "" holds every namespace's, as the platform's does.
+	Scope            string
 	Applied, Settled time.Time
+	// Message is Flux's message on the Ready condition.
+	Message string
 }
 
-// holds reports whether at lies in r's window: from Applied to
-// rolloutSettle after Settled, open-ended while r still runs.
-func (r Rollout) holds(at time.Time) bool {
-	return !r.Applied.IsZero() && !at.Before(r.Applied) && (r.Settled.IsZero() || at.Before(r.Settled.Add(rolloutSettle)))
+func (r Rollout) object() string { return r.Kind + " " + r.Namespace + "/" + r.Name }
+
+// holds reports whether r's window holds an alert in namespace ns that
+// starts at at: ns in r's Scope, at from Applied until rolloutSettle after
+// Settled, rolloutCap after Applied at the latest.
+func (r Rollout) holds(at time.Time, ns string) bool {
+	end := r.Applied.Add(rolloutCap)
+	if !r.Settled.IsZero() && r.Settled.Add(rolloutSettle).Before(end) {
+		end = r.Settled.Add(rolloutSettle)
+	}
+	return !r.Applied.IsZero() && (r.Scope == "" || r.Scope == ns) && !at.Before(r.Applied) && at.Before(end)
 }
 
 // AlertBook is what the alert intake keeps: the task rows it files and one
@@ -159,9 +189,9 @@ type AlertIntake struct {
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
 	// project's own environment hosts, allowed unmangled in a posted alert.
 	LinkHosts func() []string
-	// Flux reads the Kustomizations FluxPass watches and the platform's
-	// rollouts, whose windows hold every alert; nil = no platform rollout
-	// holds one.
+	// Flux reads the Kustomizations FluxPass watches and the rollouts
+	// whose windows hold alerts: the platform's every alert, a project
+	// environment's its namespace's; nil = no Flux rollout holds one.
 	Flux FluxReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
@@ -382,8 +412,8 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 
 // SweepSigNoz resolves, through take as its lost resolve delivery would
 // have, each SigNoz alerts row that still fires while SigNoz no longer
-// lists its fingerprint as active, so a row stays true to SigNoz (Flux
-// alerts' rows are FluxPass's). The issue of a finished task hears
+// lists its fingerprint as active, so a row stays true to SigNoz (the rows
+// of the alerts factoryd raises from Flux are FluxPass's and RolloutPass's). The issue of a finished task hears
 // nothing, so the stale rows a first sweep finds resolve quietly and only
 // a running card's issue gets the comment. A held row SigNoz still lists
 // goes to take as its redelivery would, which files it once no rollout's
@@ -417,7 +447,7 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		f, listed := active[row.Fingerprint]
 		var a SigNozAlert
 		switch _, firing := firingSince(row); {
-		case !firing || strings.HasPrefix(row.Fingerprint, fluxPrefix):
+		case !firing || fromFlux(row.Fingerprint):
 			continue
 		case !listed:
 			ns, _ := row.Detail["namespace"].(string)
@@ -429,6 +459,58 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		default:
 			continue
 		}
+		if err := in.take(ctx, a, now); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// RolloutPass raises an alert, through take as a SigNoz alert would, on
+// each Flux object whose rollout has not settled rolloutCap after Flux
+// applied it: its window no longer holds any alert, so a stuck rollout
+// silences none, and the alert names the object, Flux's message and the
+// action. It resolves once the rollout settled or the object is gone. The
+// factory's own Deployments' rolls have SigNoz's roll-not-live rules.
+func (in *AlertIntake) RolloutPass(ctx context.Context, now time.Time) error {
+	if in.Flux == nil {
+		return nil
+	}
+	rollouts, err := in.Flux.FluxRollouts(ctx, in.Namespace)
+	if err != nil {
+		return fmt.Errorf("flux rollouts: %w", err)
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	stuck := map[string]bool{}
+	for _, r := range rollouts {
+		capped := r.Applied.Add(rolloutCap)
+		if r.Applied.IsZero() || !r.Settled.IsZero() || now.Before(capped) {
+			continue
+		}
+		fp := rolloutPrefix + r.Kind + "/" + r.Namespace + "/" + r.Name
+		stuck[fp] = true
+		a := SigNozAlert{Status: "firing", StartsAt: capped, Fingerprint: fp,
+			Labels: map[string]string{"alertname": r.Kind + " " + r.Name + " not settled", "namespace": r.Namespace, "kind": r.Kind, "name": r.Name},
+			Annotations: map[string]string{"value": r.Message, "applied": stamp(r.Applied),
+				"action": "find why Flux has not settled " + r.object() + " " + rolloutCap.String() + " after applying it, from its status and events; " +
+					"its window holds no alert any more. A cause outside the repository is a question for a human."}}
+		if err := in.take(ctx, a, now); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", r.object(), err))
+		}
+	}
+	for _, row := range rows {
+		if _, firing := firingSince(row); !firing || !strings.HasPrefix(row.Fingerprint, rolloutPrefix) || stuck[row.Fingerprint] {
+			continue
+		}
+		ns, _ := row.Detail["namespace"].(string)
+		a := SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
+			Labels: map[string]string{"alertname": row.Source, "namespace": ns}}
 		if err := in.take(ctx, a, now); err != nil {
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
 		}
@@ -466,21 +548,22 @@ func (in *AlertIntake) fileUnlessHeld(ctx context.Context, a SigNozAlert, p Proj
 		return in.file(ctx, a, p, ns, at, false)
 	}
 	row := alertRow(a, p, ns, at, false)
-	row.Detail["roll_window"], row.Detail["applied"] = r.Object, stamp(r.Applied)
+	row.Detail["roll_window"], row.Detail["applied"] = r.object(), stamp(r.Applied)
 	if !r.Settled.IsZero() {
 		row.Detail["settled"] = stamp(r.Settled)
 	}
 	if _, err := in.Store.InsertAlert(ctx, row); err != nil {
 		return err
 	}
-	log.Printf("signoz webhook: alert %s in %s fired in the window of %s: held", strconv.Quote(name), ns, r.Object) // #nosec G706 -- quoted, ns is a checked DNS label
+	log.Printf("signoz webhook: alert %s in %s fired in the window of %s: held", strconv.Quote(name), ns, r.object()) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
 }
 
 // rolloutAt is a rollout whose window holds at for the alert name in
-// namespace ns; ok false when none does. A platform rollout Flux applies
-// holds every alert; a roll of the factory's own Deployments holds only
-// the restart-window rule in their namespace (ruling 237).
+// namespace ns; false when none does. A platform rollout Flux applies
+// holds every alert, a project environment's the alerts of its namespace,
+// and a roll of the factory's own Deployments only the restart-window
+// rule in their namespace (ruling 237).
 func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns string) (Rollout, bool, error) {
 	var rollouts []Rollout
 	if name == restartWindowAlert && ns == in.Namespace {
@@ -499,18 +582,19 @@ func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns str
 			}
 			applied, _ := d.applied()
 			live, _ := d.live()
-			rollouts = append(rollouts, Rollout{Object: "Deployment " + in.Namespace + "/" + target.Deployment, Applied: applied, Settled: live})
+			rollouts = append(rollouts, Rollout{Kind: "Deployment", Namespace: in.Namespace, Name: target.Deployment, Scope: in.Namespace,
+				Applied: applied, Settled: live})
 		}
 	}
 	if in.Flux != nil {
-		platform, err := in.Flux.FluxRollouts(ctx, in.Namespace)
+		flux, err := in.Flux.FluxRollouts(ctx, in.Namespace)
 		if err != nil {
 			return Rollout{}, false, fmt.Errorf("flux rollouts: %w", err)
 		}
-		rollouts = append(rollouts, platform...)
+		rollouts = append(rollouts, flux...)
 	}
 	for _, r := range rollouts {
-		if r.holds(at) {
+		if r.holds(at, ns) {
 			return r, true, nil
 		}
 	}
@@ -679,7 +763,7 @@ func alertService(labels map[string]string) string {
 // is sanitised Outbound: hosts is the links left unmangled.
 func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
 	name, on, source := oneLine(a.Labels["alertname"]), "", "SigNoz"
-	if strings.HasPrefix(a.Fingerprint, fluxPrefix) {
+	if fromFlux(a.Fingerprint) {
 		source = "Flux"
 	}
 	if s := alertService(a.Labels); s != "" {

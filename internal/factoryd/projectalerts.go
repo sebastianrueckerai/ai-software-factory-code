@@ -143,7 +143,7 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 			continue
 		}
 		source := "signoz"
-		if strings.HasPrefix(a.Fingerprint, fluxPrefix) {
+		if fromFlux(a.Fingerprint) {
 			source = "flux"
 		}
 		summary, _ := a.Detail["summary"].(string)
