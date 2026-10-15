@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -16,9 +17,10 @@ import (
 // run of main pauses the project's merge queue, files the fix-forward
 // card, and, when no fix lands within mainRedBound, files the revert of
 // the red commit as a factory-PR card. A run whose every failed job lost
-// its runner files a human card to re-run them instead, and no revert:
-// the commit is not at fault. The next green run of main ends the pause
-// and wakes the queue's heads.
+// its runner (killed, shut down, or its docker daemon restarted) files a
+// human card to re-run them instead, and no revert: the commit is not at
+// fault. The next green run of main ends the pause and wakes the queue's
+// heads.
 const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
@@ -135,8 +137,9 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if lost != nil {
 		card = "re-run card"
 		title := fmt.Sprintf("main is red at %s: re-run %s (runner lost)", short, failed)
-		body := fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: the runner of each failed job shut down while "+
-			"the job ran, as its own line below says. No change to the code fixes that, so no agent works on this card.\n\n%s\n\n"+
+		body := fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
+			"(the runner killed or shut down, or its docker daemon restarted), as the job's record below says. No change to the code "+
+			"fixes that, so no agent works on this card.\n\n%s\n\n"+
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green "+
 			"result ends the pause, and factoryd closes this issue.\n\nfiled by factoryd",
 			run.Index, run.CommitSHA, strings.Join(lost, "\n\n"))
@@ -186,9 +189,10 @@ func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link
-// and its runner's line, when every one is a job of run that lost its
-// runner (runnerLost); nil when any failed a step, is no job of run, or
-// has a log factoryd cannot read: the fix-forward card stays the default.
+// and the record that says it lost its runner (runnerLost), when every one
+// is a job of run that did; nil when any failed a step, is no job of run,
+// or has a log factoryd cannot read: the fix-forward card stays the
+// default.
 func (r *Roller) lostRunners(ctx context.Context, run ActionRun, failed []CommitStatus) []string {
 	jobs := fmt.Sprintf("/%s/actions/runs/%d/jobs/", r.Repo, run.Index)
 	var out []string
@@ -201,11 +205,15 @@ func (r *Roller) lostRunners(ctx context.Context, run ActionRun, failed []Commit
 			log.Printf("roller: job log %s: %v", s.TargetURL, err)
 			return nil
 		}
-		line, ok := runnerLost(body)
+		line, silent, ok := runnerLost(body, s.Created)
 		if !ok {
 			return nil
 		}
-		out = append(out, fmt.Sprintf("%s, %s%s:\n\n%s", s.Context, r.Forgejo.PublicURL, s.TargetURL, fenced(line)))
+		record := ""
+		if silent > 0 {
+			record = fmt.Sprintf(": Forgejo failed it at %s, %s after its log's last line, its runner silent since", s.Created.UTC().Format(time.RFC3339), silent.Round(time.Second))
+		}
+		out = append(out, fmt.Sprintf("%s, %s%s%s:\n\n%s", s.Context, r.Forgejo.PublicURL, s.TargetURL, record, fenced(line)))
 	}
 	return out
 }
@@ -215,30 +223,66 @@ func (r *Roller) lostRunners(ctx context.Context, run ActionRun, failed []Commit
 // each failed step ended on.
 const runnerLogPrefix = "\u2699\ufe0f [runner]:"
 
-// runnerLost reads a failed job's raw log and answers the runner's line
-// when the job lost its runner rather than failed a step. Forgejo marks
-// the step failed either way; only the runner's own line for it tells the
-// two apart. A red step's names its exit ("exitcode '1': failure", "RUN
-// exit status 1"); a step the runner abandoned as it shut down (its pod
-// evicted: main's run 1208) names its job's cancelled context, first of
-// the errors the line joins. Any other runner line is a red step, and a
-// log with none answers false too.
-func runnerLost(log []byte) (string, bool) {
-	lost := ""
-	for _, line := range strings.Split(string(log), "\n") {
-		line = stripLogTimestamp(line)
-		msg, ok := strings.CutPrefix(line, runnerLogPrefix)
+// dockerLost are the words of the docker client and daemon (moby 28:
+// client/errors.go, client/request.go, daemon/errors.go) when the
+// runner's daemon is down, or back without the job's container or exec:
+// its dind restarted under the job. A step that removed its own container
+// through the same daemon reads alike; a re-run tells, at a click's cost.
+var dockerLost = []string{
+	"Cannot connect to the Docker daemon",
+	"error during connect",
+	"is not running",
+	"No such container",
+	"No such exec instance",
+}
+
+// runnerSilence tells a job its runner ended from one Forgejo ended for
+// it. A runner reports a job's end within seconds of the job's last line
+// (49 failed jobs of 2026-10-13 to 15: at most 1.5 s). A runner killed
+// outright reports nothing, and its log stops mid-step; Forgejo's
+// stop_zombie_tasks (every 5 minutes) fails a job whose runner has been
+// silent for ZOMBIE_TASK_TIMEOUT (10 minutes, the chart keeps the
+// default), 10 to 15 minutes after the job's last line (main's run 1208:
+// 834 s).
+const runnerSilence = 5 * time.Minute
+
+// runnerLost reads a failed job's raw log and the time Forgejo recorded
+// its failure (its commit status), and answers the line that says the job
+// lost its runner rather than failed a step; Forgejo marks the step failed
+// either way. A red step's runner line names its exit
+// ("exitcode '1': failure", "RUN exit status 1", a timeout's "context
+// deadline exceeded"), and any such line answers false. A runner that
+// shut down under the job (main's run 1208) names the job's cancelled
+// context, first of the errors its line joins; one whose docker daemon
+// restarted names the daemon lost (dockerLost). A log with no runner line
+// that Forgejo failed runnerSilence or more after its last line lost its
+// runner outright: silent is that gap, the line the log's last.
+func runnerLost(log []byte, recorded time.Time) (line string, silent time.Duration, ok bool) {
+	last := ""
+	for _, l := range strings.Split(string(log), "\n") {
+		if strings.TrimSpace(l) != "" {
+			last = l
+		}
+		msg, ok := strings.CutPrefix(stripLogTimestamp(l), runnerLogPrefix)
 		if !ok {
 			continue
 		}
 		// Forgejo's raw log writes the newlines of a row as \n
 		first, _, _ := strings.Cut(msg, `\n`)
-		if !strings.Contains(first, context.Canceled.Error()) {
-			return "", false
+		if !strings.Contains(first, context.Canceled.Error()) && !slices.ContainsFunc(dockerLost, func(w string) bool { return strings.Contains(first, w) }) {
+			return "", 0, false
 		}
-		lost = line
+		line = stripLogTimestamp(l)
 	}
-	return lost, lost != ""
+	if line != "" {
+		return line, 0, true
+	}
+	ts, _, _ := strings.Cut(last, " ")
+	at, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil || recorded.Sub(at) < runnerSilence {
+		return "", 0, false
+	}
+	return stripLogTimestamp(last), recorded.Sub(at), true
 }
 
 // revertBranch writes the revert of sha on a new branch of the bot's fork

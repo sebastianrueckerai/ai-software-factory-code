@@ -211,7 +211,7 @@ type rollForgejo struct {
 	rolled      map[string][]string            // commit -> the files it changes against the commit the last merged roll rolled; unlisted: touched, else main.go
 	forkParents map[string][]string            // fork commit -> its parents (a merge commit has several)
 	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
-	statuses    map[string][]map[string]string // commit -> its statuses (status, context)
+	statuses    map[string][]map[string]string // commit -> its statuses (status, context, target_url, created_at)
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
