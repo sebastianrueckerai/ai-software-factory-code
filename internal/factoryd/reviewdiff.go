@@ -152,6 +152,20 @@ func fileList(parts [][]fileDiff) string {
 	return strings.Join(lines, "\n")
 }
 
+// partOf is the index of the part holding the longest path s contains, 0
+// when it contains none.
+func partOf(s string, parts [][]fileDiff) int {
+	at, longest := 0, 0
+	for k, part := range parts {
+		for _, f := range part {
+			if len(f.Path) > longest && strings.Contains(s, f.Path) {
+				at, longest = k, len(f.Path)
+			}
+		}
+	}
+	return at
+}
+
 func joinFiles(files []fileDiff) string {
 	var b strings.Builder
 	for _, f := range files {
@@ -185,6 +199,8 @@ const (
 	maxSiteText  = 200
 )
 
+const concurrencyHead = "every goroutine, channel, lock, select and atomic the diff adds, with file and line:"
+
 // concurrencySites are the diff's added lines of each kind, at most one
 // site per line, in the new files' lines.
 func concurrencySites(files []fileDiff) []site {
@@ -202,12 +218,13 @@ func concurrencySites(files []fileDiff) []site {
 	return out
 }
 
-// concurrencyBlock renders sites one per line, at most maxListLines.
+// concurrencyBlock renders sites one per line, at most maxListLines, under
+// a line that says what they are.
 func concurrencyBlock(sites []site) string {
 	if len(sites) == 0 {
 		return "none"
 	}
-	var lines []string
+	lines := []string{concurrencyHead}
 	for _, s := range sites[:min(len(sites), maxListLines)] {
 		lines = append(lines, fmt.Sprintf("%s:%d %s: %s", s.File, s.Line, s.Kind, s.Text))
 	}

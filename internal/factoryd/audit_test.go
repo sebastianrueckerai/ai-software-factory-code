@@ -207,7 +207,7 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
 	for i, part := range []string{`"part": "file 1 of 2, part 1 of 2"`, `"part": "file 2 of 2, part 2 of 2"`} {
-		if user := userMessage(ll.chats[i]); !strings.Contains(user, part) || !strings.Contains(user, `"concurrency": "a.go:1 goroutine: go func() {"`) {
+		if user := userMessage(ll.chats[i]); !strings.Contains(user, part) || !strings.Contains(user, `"concurrency": "`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
 			t.Fatalf("call %d lacks its part or the concurrency summary", i+1)
 		}
 	}

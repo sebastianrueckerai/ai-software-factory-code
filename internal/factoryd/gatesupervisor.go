@@ -102,7 +102,7 @@ const (
 	bundleReads    = time.Minute
 )
 
-const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, and the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's last result). Then choose exactly one of allowed_actions:
+const gateSupervisorPrompt = `You supervise the machine gates of an autonomous software factory. One activity of a task ran past its time bound: a check wait, an agent session, a reproduction run, a model review, a merge or another gate step. Read the diagnosis bundle: the task's objective and timeline so far, the activity's input, its bound and the time elapsed, its last error, and the state factoryd read for it (check runs and the CI runner queue, the sandbox pod with its log tail, the pull request's mergeability, the model review's or the audit's last result when the timeline's tail does not hold it). Then choose exactly one of allowed_actions:
 - "wait": the activity makes progress and needs more time (checks queued or running, a pod pulling its image). Its bound is extended once by its own length.
 - "retry": the attempt is stuck and a fresh attempt is likely to succeed (a hung poll, a lost connection). The attempt is stopped and runs again.
 - "cancel": the activity cannot succeed and no human could change that. The task fails with your diagnosis as the reason.
@@ -246,19 +246,25 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 		}
 		b.State = map[string]any{"pull_request": pr}
 	case ActivityModelReview:
-		review := map[string]any{"model": factoryModel(pinned, t, policy.PurposeReview), "last_result": "none on this task's timeline"}
-		if step := lastStep(tl, "model_review"); step != nil {
-			review["last_result"] = step
-		}
-		b.State = map[string]any{"review": review}
+		b.State = map[string]any{"review": lastResult(factoryModel(pinned, t, policy.PurposeReview), tl, b.Timeline, "model_review")}
 	case ActivityGateAudit:
-		audit := map[string]any{"model": factoryModel(pinned, t, policy.PurposeAudit), "last_result": "none on this task's timeline"}
-		if step := lastStep(tl, "audit"); step != nil {
-			audit["last_result"] = step
-		}
-		b.State = map[string]any{"audit": audit}
+		b.State = map[string]any{"audit": lastResult(factoryModel(pinned, t, policy.PurposeAudit), tl, b.Timeline, "audit")}
 	}
 	return b, secrets
+}
+
+// lastResult is a model gate's state: its model, and the timeline's last
+// step named step unless tail, the bundle's tail of the timeline, holds
+// that step whole.
+func lastResult(model string, timeline []byte, tail, step string) map[string]any {
+	state := map[string]any{"model": model}
+	switch last := lastStep(timeline, step); {
+	case last == nil:
+		state["last_result"] = "none on this task's timeline"
+	case lastStep([]byte(tail), step) == nil:
+		state["last_result"] = last
+	}
+	return state
 }
 
 // lastStep is the timeline's last step named step, nil when none.

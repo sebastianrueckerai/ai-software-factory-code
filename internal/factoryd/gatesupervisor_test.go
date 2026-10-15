@@ -250,8 +250,8 @@ func TestSuperviseGateMergeCancels(t *testing.T) {
 }
 
 // A model review past its bound: the model reads the review's last result
-// from the timeline and its last error; its escalation carries the
-// recommendation.
+// in the timeline's tail, not a second time beside it, and its last error;
+// its escalation carries the recommendation.
 func TestSuperviseGateModelReviewEscalates(t *testing.T) {
 	c := newGateCase(t, ActivityModelReview, `{"action":"escalate","diagnosis":"the review alias answers in minutes","recommendation":"skip the review for this head"}`, nil)
 	c.failure = "model review: context deadline exceeded"
@@ -263,7 +263,7 @@ func TestSuperviseGateModelReviewEscalates(t *testing.T) {
 	if d != (GateDecision{Action: ActionEscalate, Diagnosis: "the review alias answers in minutes", Recommendation: "skip the review for this head"}) {
 		t.Fatalf("decision = %+v", d)
 	}
-	want := `{"review":{"last_result":{"commit":"c0","step":"model_review","time":"2026-09-28T10:00:00Z","verdict":"approve"},"model":"review-frontier"}}`
+	want := `{"review":{"model":"review-frontier"}}`
 	if got := jsonOf(bundle["state"]); got != want || bundle["last_error"] != c.failure {
 		t.Fatalf("state = %s, last error %v\nwant    %s", got, bundle["last_error"], want)
 	}
@@ -272,17 +272,57 @@ func TestSuperviseGateModelReviewEscalates(t *testing.T) {
 	}
 }
 
-// An audit past its bound: the model reads the audit's last result; the
-// policy here names no audit model.
+// pendingChecks are n timeline lines of 66 bytes each.
+func pendingChecks(n int) string {
+	return strings.Repeat(`{"step":"checks","time":"2026-09-28T10:30:00Z","state":"pending"}`+"\n", n)
+}
+
+// An audit past its bound: the model reads the audit's last result, which
+// the timeline's tail no longer holds; the policy here names no audit
+// model.
 func TestSuperviseGateAuditReadsItsLastResult(t *testing.T) {
 	c := newGateCase(t, ActivityGateAudit, `{"action":"wait","diagnosis":"the frontier model is slow today"}`, nil)
-	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"audit","time":"2026-09-28T10:00:00Z","commit":"c0","verdict":"clear"}`+"\n"))
+	c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(`{"step":"audit","time":"2026-09-28T10:00:00Z","commit":"c0","verdict":"clear"}`+"\n"+pendingChecks(200)))
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
 
 	_, bundle := c.supervise(t, ActivityGateAudit, nil, true, true)
 	want := `{"audit":{"last_result":{"commit":"c0","step":"audit","time":"2026-09-28T10:00:00Z","verdict":"clear"},"model":""}}`
 	if got := jsonOf(bundle["state"]); got != want {
 		t.Fatalf("state = %s\nwant    %s", got, want)
+	}
+}
+
+// A model gate's last result is in the bundle once: in the timeline's
+// tail when the tail holds its step whole, else as last_result, a step the
+// tail cuts by its opening brace alone included; a timeline without the
+// step says so.
+func TestSuperviseGateLastResultOnlyBeyondTheTail(t *testing.T) {
+	head, end := `{"step":"audit","time":"2026-09-28T10:00:00Z","commit":"c0","verdict":"findings","why":"`, `"}`+"\n"
+	step := func(why int) string { return head + strings.Repeat("w", why) + end }
+	after := pendingChecks(60)
+	for name, tc := range map[string]struct {
+		timeline string
+		want     string // last_result's commit, or the whole of it
+	}{
+		"in the tail":          {step(100) + pendingChecks(10), ""},
+		"cut by its brace":     {step(bundleTimeline+1-len(after)-len(head)-len(end)) + after, "c0"},
+		"beyond the tail":      {step(100) + pendingChecks(200), "c0"},
+		"none on the timeline": {pendingChecks(10), "none on this task's timeline"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := newGateCase(t, ActivityGateAudit, `{"action":"wait","diagnosis":"slow"}`, nil)
+			c.objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(tc.timeline))
+			liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+			_, bundle := c.supervise(t, ActivityGateAudit, nil, true, true)
+			audit := bundle["state"].(map[string]any)["audit"].(map[string]any)
+			got, ok := audit["last_result"]
+			if m, isStep := got.(map[string]any); isStep {
+				got = m["commit"]
+			}
+			if tc.want == "" && ok || tc.want != "" && got != tc.want {
+				t.Fatalf("audit state = %s, want last_result %q", jsonOf(audit), tc.want)
+			}
+		})
 	}
 }
 

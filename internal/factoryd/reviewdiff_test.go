@@ -180,7 +180,8 @@ func TestConcurrencySites(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("sites = %+v, want %+v", got, want)
 	}
-	block := "w.go:12 goroutine: go func() {\n" +
+	block := "every goroutine, channel, lock, select and atomic the diff adds, with file and line:\n" +
+		"w.go:12 goroutine: go func() {\n" +
 		"w.go:20 channel: ch := make(chan int, 1)\n" +
 		"w.go:31 lock: var mu sync.Mutex\n" +
 		"w.go:40 select: select {\n" +
@@ -231,7 +232,8 @@ func TestConcurrencySiteKinds(t *testing.T) {
 	}
 }
 
-// The block names at most 200 sites and counts the rest.
+// The block names at most 200 sites under its first line and counts the
+// rest.
 func TestConcurrencyBlockIsCapped(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("diff --git a/g.go b/g.go\n--- a/g.go\n+++ b/g.go\n@@ -0,0 +1,205 @@\n")
@@ -240,8 +242,19 @@ func TestConcurrencyBlockIsCapped(t *testing.T) {
 	}
 	sites := concurrencySites(splitDiff(b.String()))
 	lines := strings.Split(concurrencyBlock(sites), "\n")
-	if len(sites) != 205 || len(lines) != 201 || lines[199] != "g.go:200 goroutine: go f()" || lines[200] != "... and 5 more" {
+	if len(sites) != 205 || len(lines) != 202 || lines[0] != concurrencyHead || lines[200] != "g.go:200 goroutine: go f()" || lines[201] != "... and 5 more" {
 		t.Fatalf("%d sites, %d lines, last %q", len(sites), len(lines), lines[len(lines)-1])
+	}
+}
+
+// A finding goes to the part holding the longest path it contains:
+// sub/b.go's finding contains b.go too.
+func TestPartOf(t *testing.T) {
+	parts := [][]fileDiff{{{Path: "a.go"}, {Path: "sub/b.go"}}, {{Path: "b.go"}}}
+	for s, want := range map[string]int{"sub/b.go:3: x": 0, "b.go:3: y": 1, "a.go: z": 0, "the change lacks a test": 0} {
+		if got := partOf(s, parts); got != want {
+			t.Errorf("partOf(%q) = %d, want %d", s, got, want)
+		}
 	}
 }
 
