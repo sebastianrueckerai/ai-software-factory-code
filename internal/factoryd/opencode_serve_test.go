@@ -100,6 +100,13 @@ func TestServeMapperFollowsSubagentAsksAndErrors(t *testing.T) {
 	}
 }
 
+// oversizeLine is the serve stream's line past the reader's 1 MiB cap: a
+// text part whose text alone is 2 MiB, its type and part id in its head.
+func oversizeLine() string {
+	return "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"prt_2mib\",\"sessionID\":\"ses_f111daf97ffeEpTXXz2p2WARoR\",\"type\":\"text\",\"text\":\"" +
+		strings.Repeat("x", 2<<20) + "\"}}"
+}
+
 // fakeServeEnv makes the test binary a fake `opencode serve`
 // (TestFakeOpencodeServe): it replays the named fixture's events after the
 // first prompt and records every request it takes in the working
@@ -143,7 +150,10 @@ func fakeServe(fixture string) int {
 		}
 		switch mode {
 		case "oversize":
-			fmt.Fprintf(w, "data: %s\n\n", bytes.Repeat([]byte("x"), 2<<20))
+			// a normal event, one line past the reader's cap, then the
+			// session's own events: the reader must survive the middle one
+			fmt.Fprint(w, "data: {\"type\":\"message.part.updated\",\"properties\":{\"part\":{\"id\":\"prt_step\",\"sessionID\":\"ses_f111daf97ffeEpTXXz2p2WARoR\",\"type\":\"step-start\"}}}\n\n")
+			fmt.Fprintf(w, "%s\n\n", oversizeLine())
 		case "hold":
 			// a leftover the agent started, one holding the output pipe
 			exec.Command("sh", "-c", "sleep 300 & echo $! > holder.pid; sleep 300 >/dev/null 2>&1 </dev/null & echo $! > detached.pid").Run()
