@@ -79,6 +79,11 @@ func main() {
 	}
 	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
 	factoryd := &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	// the tool connectors' clients dial through the egress guard (roadmap
+	// 42): every connection on an agent's behalf resolves once, refuses
+	// non-public addresses and dials the address it checked; LiteLLM,
+	// Factoryd and the in-cluster clients keep their plain clients
+	egress := &gateway.EgressGuard{Audit: store}
 	srv := gateway.NewServer(gateway.ServerOptions{
 		Auth:       auth,
 		Store:      store,
@@ -86,13 +91,13 @@ func main() {
 		Prices:     &policy.PriceBook{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey},
 		LiteLLMURL: cfg.LiteLLMURL,
 		Firecrawl: &gateway.Firecrawl{BaseURL: "https://api.firecrawl.dev", Key: cfg.FirecrawlKey,
-			HTTP: &http.Client{Timeout: 90 * time.Second}},
+			HTTP: egress.Client(90 * time.Second)},
 		// Prefer: wait (at most 60 s) bounds the create call inside the client
 		// timeout; the cancel and the read after it are timed per request
 		Replicate: &gateway.Replicate{BaseURL: "https://api.replicate.com", Key: cfg.ReplicateKey,
-			HTTP: &http.Client{Timeout: 75 * time.Second}},
+			HTTP: egress.Client(75 * time.Second)},
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
-			HTTP: &http.Client{Timeout: 120 * time.Second}},
+			HTTP: egress.Client(120 * time.Second)},
 		Escalator:     factoryd,
 		PlanFiler:     factoryd,
 		Delegator:     factoryd,
