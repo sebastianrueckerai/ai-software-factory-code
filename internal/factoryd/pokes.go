@@ -111,10 +111,7 @@ func (p *Poker) Pass(ctx context.Context) error {
 			m, ok := pokeOf(e, t)
 			var to []string
 			if ok {
-				to = tree.ApproversOf(e.Repository)
-				if _, c, found := tree.ProjectOf(e.Repository); found && len(c.Notify) > 0 {
-					to = c.Notify
-				}
+				to = pokeTo(tree, e.Repository)
 			}
 			if err := p.poke(ctx, e, to, m); err != nil {
 				return err
@@ -151,6 +148,15 @@ func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessag
 	}
 	copy(ids, got)
 	return nil
+}
+
+// pokeTo are the members a poke on repository tells: its project's
+// notify list, else its approvers.
+func pokeTo(tree policy.Tree, repository string) []string {
+	if _, c, ok := tree.ProjectOf(repository); ok && len(c.Notify) > 0 {
+		return c.Notify
+	}
+	return tree.ApproversOf(repository)
 }
 
 // pokeOf is event e's poke, t the card it names, false for an event that

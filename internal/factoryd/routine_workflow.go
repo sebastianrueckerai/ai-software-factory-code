@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"context"
 	"time"
 
 	"go.temporal.io/sdk/converter"
@@ -58,9 +57,4 @@ func routineRunPrefix(in RoutineRunInput) string { return "routine/" + in.Projec
 // the same due time.
 func RoutineRunID(in RoutineRunInput) string {
 	return routineRunPrefix(in) + "/" + in.Due.UTC().Format("20060102T1504")
-}
-
-// RoutineRun is a routine run's activity. It files nothing yet.
-func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRunResult, error) {
-	return RoutineRunResult{Outcome: "stub"}, nil
 }

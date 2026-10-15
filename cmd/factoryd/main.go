@@ -309,6 +309,9 @@ func main() {
 	routines := &factoryd.Routines{Store: store, Events: store, Current: policyLoader.Current,
 		Schedules: factoryd.TemporalSchedules{Client: temporal}, Workflows: workflows, Now: time.Now}
 	registrar.PushRoutines = routines.MainPushed
+	// a routine's run files its card, records the run and pokes through the
+	// store, and policy.yaml's template pass runs the registrar's pass
+	runner.Routines, runner.TemplatePass = store, registrar.TemplateUpdates
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it),
 	// and the alerts of the factory projects' Kustomizations (roadmap 259)
 	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,

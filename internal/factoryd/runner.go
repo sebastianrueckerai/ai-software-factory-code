@@ -148,6 +148,13 @@ type Runner struct {
 	// booted is when this factoryd started: for rollBoot after it, the
 	// sessions its restart stopped may not be retried here yet
 	booted time.Time
+
+	// Routines keeps the routines' runs, and reads the project a run files
+	// on and pokes (roadmap 267). TemplatePass runs the template pass over
+	// every project with a template and counts the cards it filed
+	// (Registrar.TemplateUpdates). Both are set before the worker starts.
+	Routines     RoutineRunStore
+	TemplatePass func(ctx context.Context) (cards int, err error)
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send

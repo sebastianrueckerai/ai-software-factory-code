@@ -112,6 +112,10 @@ type Registrar struct {
 	// githubAt is githubPass's last read of the GitHub pull requests'
 	// states.
 	githubAt time.Time
+	// templateMu runs one template pass at a time, and templateCards
+	// counts the cards the running one filed.
+	templateMu    sync.Mutex
+	templateCards int
 	// gitMu runs one git operation for GitHub at a time.
 	gitMu sync.Mutex
 
@@ -248,25 +252,17 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 // version (ruling 156) and every interval besides, so a hand edit in
 // Forgejo or the cluster is set back within that interval. It polls the
 // version, and reads the GitHub mirrors' states, every poll until ctx
-// ends. The template pass runs templateDelay after its start, then every
-// templateEvery, and at once at a new version.
+// ends.
 func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, poll, every time.Duration) {
-	seen, last, templates := int64(0), time.Time{}, time.Now().Add(templateDelay)
+	seen, last := int64(0), time.Time{}
 	for {
 		if v := version(); v != seen || time.Since(last) >= every {
-			if seen != 0 && v != seen {
-				templates = time.Now()
-			}
 			seen, last = v, time.Now()
 			r.ReconcileAll(ctx) // #nosec G104 -- each object's failure is logged by the pass
 		}
 		r.mirrorStates(ctx)
 		r.githubPass(ctx)
 		r.poll(ctx)
-		if !time.Now().Before(templates) {
-			templates = time.Now().Add(templateEvery)
-			r.TemplateUpdates(ctx)
-		}
 		select {
 		case <-ctx.Done():
 			return

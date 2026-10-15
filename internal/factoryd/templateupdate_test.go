@@ -14,7 +14,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -448,6 +447,15 @@ func failTemplateCard(t *testing.T, fj *templateForgejo, tasks *fakeStore, id st
 	fj.closePR(1, false)
 }
 
+// templatePass runs reg's template pass and fails t unless it filed want
+// cards.
+func templatePass(t *testing.T, reg *Registrar, want int) {
+	t.Helper()
+	if cards, err := reg.TemplateUpdates(context.Background()); cards != want || err != nil {
+		t.Fatalf("the pass filed %d cards (%v), want %d", cards, err, want)
+	}
+}
+
 // templateCards are the ids of pull request #1's cards, newest first.
 func templateCards(t *testing.T, tasks *fakeStore) []string {
 	t.Helper()
@@ -471,15 +479,14 @@ func templateCards(t *testing.T, tasks *fakeStore) []string {
 // standing until the template's next change.
 func TestTemplateUpdateRefilesACardItsFailureClosed(t *testing.T) {
 	fj, reg, _, tasks, wf := templateCardRig(t, stage15Main(), true)
-	ctx := context.Background()
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 1)
 	first := templateCards(t, tasks)
 	if len(first) != 1 {
 		t.Fatalf("cards %v, want the opening pass's one", first)
 	}
 	failTemplateCard(t, fj, tasks, first[0], false)
 	writes, logs := len(fj.writes), captureLog(t)
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 1)
 	cards := templateCards(t, tasks)
 	if len(fj.prs) != 1 || fj.prs[0].state != "open" || len(cards) != 2 || cards[1] != first[0] {
 		t.Fatalf("pull requests %+v, cards %v: want #1 reopened with a second card", fj.prs, cards)
@@ -498,12 +505,12 @@ func TestTemplateUpdateRefilesACardItsFailureClosed(t *testing.T) {
 		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == first[0] && e.Kind == IntakeFactoryClosed }) {
 		t.Fatalf("issues %+v, comments %q, intake events %+v: want the failed card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
 	}
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 0)
 	if len(templateCards(t, tasks)) != 2 || len(fj.issues) != 2 || len(fj.prs) != 1 {
 		t.Fatalf("cards %v, issues %d, pull requests %d: the kept pull request has its card", templateCards(t, tasks), len(fj.issues), len(fj.prs))
 	}
 	failTemplateCard(t, fj, tasks, again.ID, false)
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 0)
 	if fj.prs[0].state != "closed" || len(templateCards(t, tasks)) != 2 || len(fj.issues) != 2 ||
 		!strings.Contains(logs.String(), "project demo-app: template update: waiting: #1 closed unmerged; the template's next change reopens it\n") {
 		t.Fatalf("pull requests %+v, cards %v\n%s: want the second failure's close to stand", fj.prs, templateCards(t, tasks), logs)
@@ -531,12 +538,11 @@ func TestTemplateUpdateJudgedCloseStands(t *testing.T) {
 // it is due from keepTemplateUpdate.
 func TestTemplateUpdateKeepFilesTheDueCard(t *testing.T) {
 	fj, reg, _, tasks, _ := templateCardRig(t, stage15Main(), true)
-	ctx := context.Background()
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 1)
 	first := templateCards(t, tasks)[0]
 	failTemplateCard(t, fj, tasks, first, false)
 	fj.prs[0].state = "open"
-	reg.TemplateUpdates(ctx)
+	templatePass(t, reg, 1)
 	if cards := templateCards(t, tasks); len(cards) != 2 || cards[1] != first || tasks.tasks[cards[0]].Status != "queued" || fj.issues[0].state != "closed" {
 		t.Fatalf("cards %v, issues %+v: want the due card filed and the failed one closed", cards, fj.issues)
 	}
@@ -744,7 +750,7 @@ func templateBody(lines ...string) string {
 func TestTemplateUpdateOpensOnePullRequest(t *testing.T) {
 	fj, reg, _ := templateRig(t, stage15Main())
 	logs := captureLog(t)
-	reg.TemplateUpdates(context.Background())
+	templatePass(t, reg, 0) // the rig keeps no card store
 	want := map[string]string{".forgejo/workflows/ci.yml": renderedCI, "deploy/smoke.sh": renderedSmoke}
 	if got := fj.proposed(TemplateUpdateBranch); !reflect.DeepEqual(got, want) {
 		t.Errorf("proposed %q\nwant %q", got, want)
@@ -919,35 +925,5 @@ func TestTemplateUpdateRespectsAClose(t *testing.T) {
 	reg.TemplateUpdates(ctx)
 	if got, want := fj.proposed(TemplateUpdateBranch), map[string]string{".forgejo/workflows/ci.yml": renderedCI, "deploy/smoke.sh": "curl -f demo-app\n"}; len(fj.prs) != 2 || fj.prs[1].state != "open" || !reflect.DeepEqual(got, want) {
 		t.Errorf("pull requests %+v, proposed %q", fj.prs, got)
-	}
-}
-
-// The loop runs the template pass at a new configuration version, not
-// before templateDelay otherwise.
-func TestReconcileLoopRunsTheTemplatePassAtANewVersion(t *testing.T) {
-	rig := newRegisterRig(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	rig.fj.branches["main"] = "c0ffee"
-	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
-		t.Fatal(err)
-	}
-	p := rig.store.m["demo-app"]
-	p.Template = "gone" // no files: the pass says so without a call
-	rig.store.m["demo-app"] = p
-	rig.logs.Reset()
-	var version atomic.Int64
-	version.Store(7)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		rig.reg.ReconcileLoop(ctx, version.Load, time.Millisecond, time.Hour)
-	}()
-	time.Sleep(50 * time.Millisecond)
-	version.Store(8)
-	time.Sleep(50 * time.Millisecond)
-	cancel()
-	<-done
-	if n := strings.Count(rig.logs.String(), "project demo-app: template update: template \"gone\" is not in the configuration version in force\n"); n != 1 {
-		t.Errorf("template passes = %d, want 1:\n%s", n, rig.logs)
 	}
 }

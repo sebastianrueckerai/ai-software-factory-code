@@ -612,6 +612,12 @@ func (s *accBatchStore) LeaveQueue(ctx context.Context, taskID string) (project 
 	panic("unused")
 }
 func (s *accBatchStore) WaitingQueueHeads(ctx context.Context) ([]string, error) { panic("unused") }
+func (s *accBatchStore) RoutineRunOfTask(ctx context.Context, taskID string) (factoryd.RoutineRun, bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
+	panic("unused")
+}
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
 }

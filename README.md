@@ -1954,9 +1954,11 @@ egress policy admits the edge gateway (entity `ingress`, 443), where
 buildctl fetches the VM's registry tokens. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
-moves on its own: the roller files a human card on this repository a
-week after the last, "Weekly bump of the pinned outside inputs", never
-while one is open (`internal/factoryd/upstream.go`), naming the list,
+moves on its own: the code project's routine `weekly-bump` files a
+human card on this repository every Monday 06:00, "Weekly bump of the
+pinned outside inputs", and holds while one is open (its project file and
+brief `routines/weekly-bump.md` in the configuration,
+`internal/factoryd/routine_run.go`), naming the list,
 the snapshot, the PostgreSQL versions, the Go patch and the downloaded
 tools; a human's, since no agent sandbox reaches a registry or a
 release page. Each build imports and exports (`mode=max`)
