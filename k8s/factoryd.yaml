@@ -601,10 +601,6 @@ spec:
         # the agent sandboxes get the same endpoint (ruling 158)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://signoz-otel-collector.platform.svc.cluster.local:4318
-        # the namespace every rule of k8s/alerts is bound to; the SDK's
-        # own resource carries none
-        - name: OTEL_RESOURCE_ATTRIBUTES
-          value: k8s.namespace.name=factory
         readinessProbe: {httpGet: {path: /readyz, port: http}}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:

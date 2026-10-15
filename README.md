@@ -1879,9 +1879,10 @@ under its bucket series), and factoryd's or the gateway's roll not live for
 10 minutes (a ReplicaSet with fewer available replicas than desired, from
 the cluster collector: factoryd's Recreate leaves no old pod to report its
 own stuck roll, and the gateway's rolling update keeps the Deployment's
-counts whole). Both Deployments set `OTEL_RESOURCE_ATTRIBUTES=
-k8s.namespace.name=factory`, the namespace the rules are bound to; server
-spans are named by route pattern (`GET /tasks/{id}`), never by path.
+counts whole). SigNoz's collector names their telemetry's namespace,
+`factory`, the one the rules are bound to, from the pods it comes from;
+server spans are named by route pattern (`GET /tasks/{id}`), never by
+path.
 
 The CI spawner serves every active project on `agents: coder`, each with
 its Actions token (Forgejo keeps the runner API to the repository's owner):

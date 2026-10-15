@@ -85,7 +85,7 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 			}
 		}
 		for _, kv := range res.GetAttributes() {
-			if kv.Key == "service.name" || kv.Key == "k8s.namespace.name" {
+			if kv.Key == "service.name" {
 				mu.Lock()
 				got[r.URL.Path+" "+kv.Key] = kv.Value.GetStringValue()
 				mu.Unlock()
@@ -96,8 +96,6 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", srv.URL)
 	t.Setenv("OTEL_SERVICE_NAME", "someone-else")
-	// the Deployments' env: the namespace SigNoz's alert rules are bound to
-	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "k8s.namespace.name=factory")
 	p, err := Setup(context.Background(), "factory-gateway")
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +120,7 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 	defer mu.Unlock()
 	want := map[string]string{}
 	for _, path := range []string{"/v1/traces", "/v1/logs", "/v1/metrics"} {
-		want[path+" service.name"], want[path+" k8s.namespace.name"] = "factory-gateway", "factory"
+		want[path+" service.name"] = "factory-gateway"
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("service.name per path = %v, want %v", got, want)
