@@ -679,6 +679,135 @@ func (k *InClusterKube) KustomizationState(ctx context.Context, namespace, name 
 	return s, nil
 }
 
+// FluxRollouts are the newest rollouts of the Flux objects that roll the
+// platform: every HelmRelease, and every Kustomization but a project
+// environment's (ProjectLabel) and the factory's own, the one applying the
+// roll targets' Deployments in namespace, whose rolls those Deployments'
+// own window judges (ruling 237).
+func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error) {
+	var ks struct {
+		Items []fluxKustomization `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations?labelSelector="+url.QueryEscape("!"+ProjectLabel), &ks); err != nil {
+		return nil, err
+	}
+	var hrs struct {
+		Items []fluxHelmRelease `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/helm.toolkit.fluxcd.io/v2/helmreleases", &hrs); err != nil {
+		return nil, err
+	}
+	var out []Rollout
+	for _, item := range ks.Items {
+		if !item.appliesRollTargets(namespace) {
+			out = append(out, item.rollout())
+		}
+	}
+	for _, item := range hrs.Items {
+		out = append(out, item.rollout())
+	}
+	return out, nil
+}
+
+// fluxKustomization is the slice of a Flux Kustomization its rollout reads.
+type fluxKustomization struct {
+	Metadata struct {
+		Namespace string `json:"namespace"`
+		Name      string `json:"name"`
+	} `json:"metadata"`
+	Spec struct {
+		Interval string `json:"interval"`
+	} `json:"spec"`
+	Status struct {
+		// History is Flux's record of the contents it applied, one entry
+		// per digest and outcome, the one applied last first.
+		History []struct {
+			FirstReconciled time.Time `json:"firstReconciled"`
+			LastReconciled  time.Time `json:"lastReconciled"`
+		} `json:"history"`
+		Inventory struct {
+			Entries []struct {
+				ID string `json:"id"` // namespace_name_group_kind
+			} `json:"entries"`
+		} `json:"inventory"`
+	} `json:"status"`
+}
+
+// rollout is the Kustomization's newest content's. Flux applies a
+// Kustomization in one reconcile, so its rollout starts and settles when
+// Flux first applied that content. An older content brought back (a
+// revert) keeps its old first reconcile: it was applied at the first
+// reconcile after the content before it last reconciled, so within one
+// interval of that.
+func (ks fluxKustomization) rollout() Rollout {
+	r, h := Rollout{Object: "Kustomization " + ks.Metadata.Namespace + "/" + ks.Metadata.Name}, ks.Status.History
+	if len(h) == 0 {
+		return r
+	}
+	r.Applied, r.Settled = h[0].FirstReconciled, h[0].FirstReconciled
+	if len(h) > 1 && h[1].LastReconciled.After(r.Applied) {
+		interval, _ := time.ParseDuration(ks.Spec.Interval)
+		r.Applied, r.Settled = h[1].LastReconciled, h[1].LastReconciled.Add(interval)
+	}
+	return r
+}
+
+// appliesRollTargets reports whether the Kustomization applies a roll
+// target's Deployment in namespace.
+func (ks fluxKustomization) appliesRollTargets(namespace string) bool {
+	for _, e := range ks.Status.Inventory.Entries {
+		for _, t := range RollTargets {
+			if e.ID == namespace+"_"+t.Deployment+"_apps_Deployment" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// fluxHelmRelease is the slice of a Flux HelmRelease its rollout reads.
+type fluxHelmRelease struct {
+	Metadata struct {
+		Namespace  string `json:"namespace"`
+		Name       string `json:"name"`
+		Generation int64  `json:"generation"`
+	} `json:"metadata"`
+	Status struct {
+		Conditions []struct {
+			Type               string    `json:"type"`
+			Status             string    `json:"status"`
+			ObservedGeneration int64     `json:"observedGeneration"`
+			LastTransitionTime time.Time `json:"lastTransitionTime"`
+		} `json:"conditions"`
+		// History is the Helm releases, the newest first.
+		History []struct {
+			LastDeployed time.Time `json:"lastDeployed"`
+		} `json:"history"`
+	} `json:"status"`
+}
+
+// rollout is the HelmRelease's newest release's: from its deploy (an
+// install, upgrade or rollback, of a new generation or a new chart) until
+// Ready reads True or False for the object's generation, a release failed
+// for good settled as much as a ready one. Ready Unknown, or a generation
+// the controller has not observed yet, still runs.
+func (hr fluxHelmRelease) rollout() Rollout {
+	r := Rollout{Object: "HelmRelease " + hr.Metadata.Namespace + "/" + hr.Metadata.Name}
+	if len(hr.Status.History) == 0 {
+		return r
+	}
+	r.Applied = hr.Status.History[0].LastDeployed
+	for _, c := range hr.Status.Conditions {
+		if c.Type == "Ready" && c.Status != "Unknown" && c.ObservedGeneration == hr.Metadata.Generation {
+			r.Settled = c.LastTransitionTime
+			if r.Settled.Before(r.Applied) {
+				r.Settled = r.Applied
+			}
+		}
+	}
+	return r
+}
+
 func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error {
 	_, err := k.call(ctx, http.MethodGet, path, nil, out)
 	return err

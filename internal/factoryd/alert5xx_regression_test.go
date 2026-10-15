@@ -13,7 +13,7 @@ import (
 // Regression test for the SigNoz alert "5xx rate above 5 % on service
 // factoryd in namespace factory", firing since 2026-10-12T18:58:38Z.
 //
-// The rule that fired is judged by judgeRestartWindow, which reads the roll
+// The rule that fired is judged by rolloutAt, which reads the roll
 // targets' Deployments through AlertIntake.Kube. cmd/factoryd/main.go's
 // AlertIntake literal shipped without naming Kube, so this very rule reaching
 // the deployed intake ran on the nil DeploymentReader: the handler goroutine

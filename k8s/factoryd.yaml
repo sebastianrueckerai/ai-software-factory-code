@@ -30,6 +30,13 @@ rules:
 - apiGroups: [""]
   resources: [persistentvolumes]
   verbs: [list, delete]
+# the platform's rollouts, whose windows hold the alerts that fire in them
+- apiGroups: [kustomize.toolkit.fluxcd.io]
+  resources: [kustomizations]
+  verbs: [list]
+- apiGroups: [helm.toolkit.fluxcd.io]
+  resources: [helmreleases]
+  verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

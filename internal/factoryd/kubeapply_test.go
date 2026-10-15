@@ -153,3 +153,71 @@ func TestKubeKustomizationState(t *testing.T) {
 		t.Fatalf("a missing Kustomization: %v, want ErrNotFound", err)
 	}
 }
+
+// FluxRollouts lists every Kustomization but a project environment's, the
+// factory's own (it applies a roll target's Deployment in the namespace
+// asked) left out too, and every HelmRelease. A Kustomization's rollout
+// starts and settles at its newest content's first reconcile; a reverted
+// content keeps its old first reconcile, so its rollout starts when the
+// content before it last reconciled and settles one interval later. A
+// HelmRelease's runs from its newest release's deploy until Ready reads
+// True or False for its generation, never before the deploy; Ready
+// Unknown, or a generation not observed yet, still runs. An object Flux
+// never applied has none.
+func TestKubeFluxRollouts(t *testing.T) {
+	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/apis/kustomize.toolkit.fluxcd.io/v1/kustomizations" &&
+			r.URL.Query().Get("labelSelector") == "!factory/project":
+			io.WriteString(w, `{"items":[
+				{"metadata":{"namespace":"flux-system","name":"factory"},"spec":{"interval":"10m"},
+				 "status":{"history":[{"firstReconciled":"2026-10-15T11:00:37Z","lastReconciled":"2026-10-15T11:00:37Z"}],
+				  "inventory":{"entries":[{"id":"factory_factoryd_apps_Deployment","v":"v1"}]}}},
+				{"metadata":{"namespace":"flux-system","name":"platform"},"spec":{"interval":"10m"},
+				 "status":{"history":[{"firstReconciled":"2026-10-15T10:49:30Z","lastReconciled":"2026-10-15T11:00:39Z"},
+				  {"firstReconciled":"2026-10-15T10:35:53Z","lastReconciled":"2026-10-15T10:45:25Z"}],
+				  "inventory":{"entries":[{"id":"platform_sf-cluster_postgresql.cnpg.io_Cluster","v":"v1"},{"id":"other_factoryd_apps_Deployment","v":"v1"}]}}},
+				{"metadata":{"namespace":"flux-system","name":"reverted"},"spec":{"interval":"10m0s"},
+				 "status":{"history":[{"firstReconciled":"2026-10-14T08:00:00Z","lastReconciled":"2026-10-15T11:00:00Z"},
+				  {"firstReconciled":"2026-10-15T10:20:00Z","lastReconciled":"2026-10-15T10:41:00Z"}]}},
+				{"metadata":{"namespace":"flux-system","name":"fresh"}}]}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/apis/helm.toolkit.fluxcd.io/v2/helmreleases":
+			io.WriteString(w, `{"items":[
+				{"metadata":{"namespace":"platform","name":"signoz","generation":3},
+				 "status":{"conditions":[{"type":"Released","status":"True","observedGeneration":3,"lastTransitionTime":"2026-10-15T10:50:01Z"},
+				  {"type":"Ready","status":"True","observedGeneration":3,"lastTransitionTime":"2026-10-15T10:50:04Z"}],
+				  "history":[{"lastDeployed":"2026-10-15T10:49:31Z"},{"lastDeployed":"2026-10-15T10:36:13Z"}]}},
+				{"metadata":{"namespace":"platform","name":"upgrading","generation":5},
+				 "status":{"conditions":[{"type":"Ready","status":"Unknown","observedGeneration":5,"lastTransitionTime":"2026-10-15T11:01:00Z"}],
+				  "history":[{"lastDeployed":"2026-10-15T11:00:58Z"}]}},
+				{"metadata":{"namespace":"platform","name":"unobserved","generation":6},
+				 "status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":5,"lastTransitionTime":"2026-10-15T10:20:00Z"}],
+				  "history":[{"lastDeployed":"2026-10-15T10:19:00Z"}]}},
+				{"metadata":{"namespace":"forgejo","name":"failed","generation":2},
+				 "status":{"conditions":[{"type":"Ready","status":"False","observedGeneration":2,"lastTransitionTime":"2026-10-15T10:47:10Z"}],
+				  "history":[{"lastDeployed":"2026-10-15T10:42:10Z"}]}},
+				{"metadata":{"namespace":"forgejo","name":"quick","generation":1},
+				 "status":{"conditions":[{"type":"Ready","status":"True","observedGeneration":1,"lastTransitionTime":"2026-10-15T10:59:59Z"}],
+				  "history":[{"lastDeployed":"2026-10-15T11:00:01Z"}]}},
+				{"metadata":{"namespace":"forgejo","name":"new","generation":1}}]}`)
+		default:
+			t.Errorf("%s %s", r.Method, r.URL)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	got, err := k.FluxRollouts(context.Background(), "factory")
+	want := []Rollout{
+		{Object: "Kustomization flux-system/platform", Applied: at("2026-10-15T10:49:30Z"), Settled: at("2026-10-15T10:49:30Z")},
+		{Object: "Kustomization flux-system/reverted", Applied: at("2026-10-15T10:41:00Z"), Settled: at("2026-10-15T10:51:00Z")},
+		{Object: "Kustomization flux-system/fresh"},
+		{Object: "HelmRelease platform/signoz", Applied: at("2026-10-15T10:49:31Z"), Settled: at("2026-10-15T10:50:04Z")},
+		{Object: "HelmRelease platform/upgrading", Applied: at("2026-10-15T11:00:58Z")},
+		{Object: "HelmRelease platform/unobserved", Applied: at("2026-10-15T10:19:00Z")},
+		{Object: "HelmRelease forgejo/failed", Applied: at("2026-10-15T10:42:10Z"), Settled: at("2026-10-15T10:47:10Z")},
+		{Object: "HelmRelease forgejo/quick", Applied: at("2026-10-15T11:00:01Z"), Settled: at("2026-10-15T11:00:01Z")},
+		{Object: "HelmRelease forgejo/new"},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("FluxRollouts = %+v, %v\nwant %+v", got, err, want)
+	}
+}

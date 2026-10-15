@@ -35,6 +35,8 @@ type FiringAlert struct {
 	Labels      map[string]string `json:"labels"`
 	Annotations map[string]string `json:"annotations"`
 	StartsAt    time.Time         `json:"startsAt"`
+	// GeneratorURL is the alert's link into SigNoz.
+	GeneratorURL string `json:"generatorURL"`
 	// Fingerprint is Alertmanager's label-set hash, top level of its
 	// message; empty when the answer carries none.
 	Fingerprint string `json:"fingerprint"`
@@ -72,8 +74,8 @@ const alertsCacheFor = 30 * time.Second
 // project too), the namespace one of the project's (403 otherwise). The
 // alerts that fire are read from their alerts rows, the one record of
 // SigNoz's alerts and factoryd's alike: each fingerprint's newest row while
-// no resolve came after its start, unless its verdict is noise (a roll
-// window's restart, ruling 237, or a human's close). With no
+// no resolve came after its start, unless its verdict is noise (a firing
+// that ended while a rollout's window held it, or a human's close). With no
 // digest, a Deployment lags only when its own rollout has not finished. With
 // a digest (a staging rollout's wait), a namespace lags when it holds no
 // Deployment, when a Deployment's images do not all end in @digest, or when

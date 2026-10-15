@@ -29,14 +29,19 @@ const SourceAlert = "alert"
 // the same start is filed once more: the merged fix did not fix it.
 const refileAfter = 30 * time.Minute
 
-// restartWindowAlert is the only rule a roll's restart trips for nothing
-// (ruling 237): k8s/alerts/5xx-rate.json's "alert". The restarts and
-// roll-not-live rules are what a broken roll trips, so they still file.
+// restartWindowAlert is the only rule a roll of the factory's own
+// Deployments holds (ruling 237): k8s/alerts/5xx-rate.json's "alert". The
+// restarts and roll-not-live rules are what a broken roll trips, so they
+// file at once.
 const restartWindowAlert = "5xx rate above 5 %"
 
-// restartWindow is how long after a Deployment is live its alerts still
-// count as the roll's own restart, not a real problem (ruling 237).
-const restartWindow = 10 * time.Minute
+// rolloutSettle is how long after a rollout settled its alerts still count
+// as the rollout's own (ruling 237's ten minutes): a rule reads a window of
+// samples (the 5xx rule five minutes, evaluated each minute), so a burst
+// that ends as the rollout settles fires for up to six minutes more, and
+// what a rollout restarts without Flux waiting on it (CNPG's switchover of
+// a Cluster the platform Kustomization applied) settles after Flux does.
+const rolloutSettle = 10 * time.Minute
 
 // fluxAlert is FluxPass's alert: an environment whose Flux Kustomization
 // applied once stands not Ready (roadmap 259).
@@ -80,9 +85,27 @@ type DeployedCommitReader interface {
 	DeployedCommit(ctx context.Context, deployment string) (string, bool, error)
 }
 
-// FluxReader reads a Flux Kustomization (InClusterKube).
+// FluxReader reads Flux's Kustomizations and HelmReleases (InClusterKube).
 type FluxReader interface {
 	KustomizationState(ctx context.Context, namespace, name string) (FluxState, error)
+	// FluxRollouts are the newest rollouts of the Flux objects that roll
+	// the platform, the factory's own Kustomization in namespace not one
+	// of them.
+	FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error)
+}
+
+// Rollout is one object's newest rollout as its status tells it: Flux
+// applied a change to it at Applied, and it settled at Settled, zero while
+// it still runs.
+type Rollout struct {
+	Object           string // kind namespace/name
+	Applied, Settled time.Time
+}
+
+// holds reports whether at lies in r's window: from Applied to
+// rolloutSettle after Settled, open-ended while r still runs.
+func (r Rollout) holds(at time.Time) bool {
+	return !r.Applied.IsZero() && !at.Before(r.Applied) && (r.Settled.IsZero() || at.Before(r.Settled.Add(rolloutSettle)))
 }
 
 // AlertBook is what the alert intake keeps: the task rows it files and one
@@ -93,6 +116,7 @@ type AlertBook interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
+	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
 
@@ -103,10 +127,12 @@ type AlertBook interface {
 // the first firing of a fingerprint files a bug issue on the project's
 // repository as the bot and starts its task, a later firing is a comment
 // on it while the task runs and a new issue once it ended, and a resolve
-// is a comment. An alert no project owns is logged and dropped. FluxPass
-// takes factoryd's own alert of a broken environment the same way, and
-// SweepSigNoz resolves the rows SigNoz no longer lists, so the alerts rows
-// are the one answer to whether an alert fires.
+// is a comment. An alert no project owns is logged and dropped. A firing
+// that starts inside a rollout's window is held, filed only if it still
+// fires once no window holds (fileUnlessHeld). FluxPass takes factoryd's
+// own alert of a broken environment the same way, and SweepSigNoz resolves
+// the rows SigNoz no longer lists, so the alerts rows are the one answer
+// to whether an alert fires.
 type AlertIntake struct {
 	User, Password string
 	Namespaces     NamespaceLabeler
@@ -118,7 +144,7 @@ type AlertIntake struct {
 	Timeline *Timeline
 	Budget   func() policy.Budget
 	// Kube reads a roll target's Deployment, to tell a restartWindowAlert
-	// inside its restart window from a real one (item 127). Namespace is
+	// inside its roll's window from a real one (item 127). Namespace is
 	// the factory's own namespace, the one those Deployments run in. An
 	// intake serving that namespace must name Kube: take answers a plain
 	// error on this rule rather than dereference a nil reader.
@@ -133,7 +159,9 @@ type AlertIntake struct {
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
 	// project's own environment hosts, allowed unmangled in a posted alert.
 	LinkHosts func() []string
-	// Flux reads the Kustomizations FluxPass watches.
+	// Flux reads the Kustomizations FluxPass watches and the platform's
+	// rollouts, whose windows hold every alert; nil = no platform rollout
+	// holds one.
 	Flux FluxReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
@@ -166,7 +194,7 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer in.mu.Unlock()
 	var errs []error
 	for _, a := range msg.Alerts {
-		if err := in.take(r.Context(), a); err != nil {
+		if err := in.take(r.Context(), a, time.Now()); err != nil {
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(a.Fingerprint), err))
 		}
 	}
@@ -182,7 +210,9 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
+// take judges alert a at now, the time of its delivery or of the pass that
+// found it.
+func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) error {
 	name, ns := a.Labels["alertname"], namespaceOf(a.Labels)
 	p, ok, err := in.project(ctx, ns)
 	if err != nil {
@@ -220,6 +250,10 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 		if !seen || row.Detail["resolved_at"] == at {
 			return nil
 		}
+		if !filed && held(row) {
+			// it ended before a window let it file: the rollout's own
+			return in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{"resolved_at": at})
+		}
 		if filed && ok && !(a.swept && Final(t.Status)) {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
@@ -229,7 +263,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	}
 	at := stamp(a.StartsAt)
 	if !seen {
-		return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+		return in.fileUnlessHeld(ctx, a, p, ns, at, name)
 	}
 	if !filed {
 		switch {
@@ -238,21 +272,33 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 			// same across every firing of this rule in this namespace, so a
 			// later, distinct start is not this row's redelivery: judged
 			// again rather than trusted on the strength of the row's verdict
-			// or filed under the task its failed filing never made
-			return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+			// or filed under the task its failed filing never made. A held
+			// row's firing ended unfiled: the rollout's own.
+			if held(row) {
+				if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{}); err != nil {
+					return err
+				}
+			}
+			return in.fileUnlessHeld(ctx, a, p, ns, at, name)
 		case row.Verdict != "":
 			// the exact same firing redelivered: nothing
 			return nil
+		case held(row):
+			// held for a rollout: filed once no rollout's window holds now
+			if _, open, err := in.rolloutAt(ctx, now, name, ns); err != nil || open {
+				return err
+			}
 		}
 		// an earlier delivery wrote the row and failed before its task
-		// was filed: file it now, under the row's task id
+		// was filed, or a rollout held it: file it now, under the row's
+		// task id
 		return in.fileTask(ctx, a, p, ns, row)
 	}
 	if row.Detail["starts_at"] == at {
 		// the same firing again (Alertmanager resends a group's every
 		// alert): nothing, unless the task's fix merged a while ago and it
 		// still fires, filed once more; a human's close is their answer
-		if t.Status == "done" && t.FinishedAt != nil && time.Since(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
+		if t.Status == "done" && t.FinishedAt != nil && now.Sub(*t.FinishedAt) > refileAfter && row.Detail["refiled"] != true {
 			return in.file(ctx, a, p, ns, at, true)
 		}
 		return nil
@@ -267,7 +313,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	// the fingerprint's task already closed: a roll can retrigger this same
 	// fingerprint (item 127, fix round 2), so it is judged again rather than
 	// filed outright
-	return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+	return in.fileUnlessHeld(ctx, a, p, ns, at, name)
 }
 
 // FluxPass raises fluxAlert, through take as a SigNoz alert would, on each
@@ -331,7 +377,7 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 		}
 		a.StartsAt = since
 	}
-	return in.take(ctx, a)
+	return in.take(ctx, a, now)
 }
 
 // SweepSigNoz resolves, through take as its lost resolve delivery would
@@ -339,9 +385,11 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 // lists its fingerprint as active, so a row stays true to SigNoz (Flux
 // alerts' rows are FluxPass's). The issue of a finished task hears
 // nothing, so the stale rows a first sweep finds resolve quietly and only
-// a running card's issue gets the comment. A list whose active alerts carry no
-// fingerprint cannot be matched and resolves nothing. The rows are read
-// before the list, so a row filed meanwhile waits for the next sweep.
+// a running card's issue gets the comment. A held row SigNoz still lists
+// goes to take as its redelivery would, which files it once no rollout's
+// window holds now. A list whose active alerts carry no fingerprint cannot
+// be matched and resolves nothing. The rows are read before the list, so a
+// row filed meanwhile waits for the next sweep.
 func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
 	if err != nil {
@@ -351,7 +399,7 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("signoz: %w", err)
 	}
-	active := map[string]bool{}
+	active := map[string]FiringAlert{}
 	for _, a := range live {
 		if a.Status.State != "active" {
 			continue
@@ -360,19 +408,28 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		if fp == "" {
 			return fmt.Errorf("signoz lists the active alert %s without a fingerprint: no row resolved", strconv.Quote(a.Labels["alertname"]))
 		}
-		active[fp] = true
+		active[fp] = a
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
 	var errs []error
 	for _, row := range rows {
-		if _, firing := firingSince(row); !firing || active[row.Fingerprint] || strings.HasPrefix(row.Fingerprint, fluxPrefix) {
+		f, listed := active[row.Fingerprint]
+		var a SigNozAlert
+		switch _, firing := firingSince(row); {
+		case !firing || strings.HasPrefix(row.Fingerprint, fluxPrefix):
+			continue
+		case !listed:
+			ns, _ := row.Detail["namespace"].(string)
+			a = SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
+				Labels: map[string]string{"alertname": row.Source, "namespace": ns}, swept: true}
+		case held(row) && row.Detail["issue"] == nil:
+			a = SigNozAlert{Status: "firing", Labels: f.Labels, Annotations: f.Annotations, StartsAt: f.StartsAt,
+				GeneratorURL: f.GeneratorURL, Fingerprint: row.Fingerprint}
+		default:
 			continue
 		}
-		ns, _ := row.Detail["namespace"].(string)
-		a := SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
-			Labels: map[string]string{"alertname": row.Source, "namespace": ns}, swept: true}
-		if err := in.take(ctx, a); err != nil {
+		if err := in.take(ctx, a, now); err != nil {
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
 		}
 	}
@@ -388,87 +445,76 @@ func firingSince(a Alert) (time.Time, bool) {
 	return start, err == nil && resolved < at
 }
 
-// fileUnlessRestartWindow files a as a fresh issue and task, unless it is
-// the restart-window rule firing inside a roll's restart window, in which
-// case judgeRestartWindow has already recorded it as noise.
-func (in *AlertIntake) fileUnlessRestartWindow(ctx context.Context, a SigNozAlert, p Project, ns, at, name string) error {
-	noise, err := in.judgeRestartWindow(ctx, a, name, ns)
+// held reports whether row is a firing a rollout's window held, not
+// filed and not judged yet.
+func held(row Alert) bool {
+	return row.Verdict == "" && row.Detail["roll_window"] != nil
+}
+
+// fileUnlessHeld files a as a fresh issue and task, unless a rollout's
+// window holds its start (rolloutAt): then a's row is written with the
+// task id it would file under but no task, and the firing waits. Take,
+// reached by every redelivery and by the sweep while SigNoz lists it,
+// files it once no window holds; a resolve before that judges it the
+// rollout's noise.
+func (in *AlertIntake) fileUnlessHeld(ctx context.Context, a SigNozAlert, p Project, ns, at, name string) error {
+	r, hold, err := in.rolloutAt(ctx, a.StartsAt, name, ns)
 	if err != nil {
 		return err
 	}
-	if noise {
-		return nil
+	if !hold {
+		return in.file(ctx, a, p, ns, at, false)
 	}
-	return in.file(ctx, a, p, ns, at, false)
+	row := alertRow(a, p, ns, at, false)
+	row.Detail["roll_window"], row.Detail["applied"] = r.Object, stamp(r.Applied)
+	if !r.Settled.IsZero() {
+		row.Detail["settled"] = stamp(r.Settled)
+	}
+	if _, err := in.Store.InsertAlert(ctx, row); err != nil {
+		return err
+	}
+	log.Printf("signoz webhook: alert %s in %s fired in the window of %s: held", strconv.Quote(name), ns, r.Object) // #nosec G706 -- quoted, ns is a checked DNS label
+	return nil
 }
 
-// judgeRestartWindow records a's row as noise and reports true when name is
-// the restart-window rule firing in the factory's own namespace inside a
-// roll target's restart window (item 127); otherwise it reports false and
-// leaves filing it to the caller.
-func (in *AlertIntake) judgeRestartWindow(ctx context.Context, a SigNozAlert, name, ns string) (bool, error) {
-	if name != restartWindowAlert || ns != in.Namespace {
-		return false, nil
-	}
-	dep, applied, live, inWindow, err := in.inRestartWindow(ctx, a.StartsAt)
-	if err != nil {
-		return false, err
-	}
-	if !inWindow {
-		return false, nil
-	}
-	return true, in.recordRestartWindowNoise(ctx, a, dep, applied, live)
-}
-
-// inRestartWindow reports whether starts lies in a roll target Deployment's
-// restart window, in the factory's own namespace: from Flux applying the
-// spec to restartWindow after the Deployment is live, open-ended while the
-// rollout still runs (live not reached yet). deployment names the
-// Deployment the window matched.
-func (in *AlertIntake) inRestartWindow(ctx context.Context, starts time.Time) (deployment string, applied, live time.Time, ok bool, err error) {
-	checked := map[string]bool{}
-	for _, target := range RollTargets {
-		if checked[target.Deployment] {
-			continue
-		}
-		checked[target.Deployment] = true
-		d, derr := in.Kube.Deployment(ctx, in.Namespace, target.Deployment)
-		if derr != nil {
-			if errors.Is(derr, ErrNotFound) {
+// rolloutAt is a rollout whose window holds at for the alert name in
+// namespace ns; ok false when none does. A platform rollout Flux applies
+// holds every alert; a roll of the factory's own Deployments holds only
+// the restart-window rule in their namespace (ruling 237).
+func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns string) (Rollout, bool, error) {
+	var rollouts []Rollout
+	if name == restartWindowAlert && ns == in.Namespace {
+		checked := map[string]bool{}
+		for _, target := range RollTargets {
+			if checked[target.Deployment] {
 				continue
 			}
-			return "", time.Time{}, time.Time{}, false, derr
-		}
-		at, hasApplied := d.applied()
-		if !hasApplied || starts.Before(at) {
-			continue
-		}
-		if up, hasLive := d.live(); hasLive {
-			if starts.Before(up.Add(restartWindow)) {
-				return target.Deployment, at, up, true, nil
+			checked[target.Deployment] = true
+			d, err := in.Kube.Deployment(ctx, in.Namespace, target.Deployment)
+			if errors.Is(err, ErrNotFound) {
+				continue
 			}
-			continue
+			if err != nil {
+				return Rollout{}, false, err
+			}
+			applied, _ := d.applied()
+			live, _ := d.live()
+			rollouts = append(rollouts, Rollout{Object: "Deployment " + in.Namespace + "/" + target.Deployment, Applied: applied, Settled: live})
 		}
-		return target.Deployment, at, time.Time{}, true, nil
 	}
-	return "", time.Time{}, time.Time{}, false, nil
-}
-
-// recordRestartWindowNoise writes a's row as noise, resolved by factoryd,
-// because its startsAt lies in deployment's restart window: no issue or
-// task files. Its starts_at, read back by judgeRestartWindow, tells this
-// exact firing's redelivery from a later firing of the same fingerprint
-// (Alertmanager's fingerprint never changes between firings of this rule),
-// which is judged again rather than trusted on the strength of this one.
-func (in *AlertIntake) recordRestartWindowNoise(ctx context.Context, a SigNozAlert, deployment string, applied, live time.Time) error {
-	detail := map[string]any{"roll_window": "roll window of " + deployment, "applied": stamp(applied), "starts_at": stamp(a.StartsAt),
-		"namespace": in.Namespace}
-	if !live.IsZero() {
-		detail["live"] = stamp(live)
+	if in.Flux != nil {
+		platform, err := in.Flux.FluxRollouts(ctx, in.Namespace)
+		if err != nil {
+			return Rollout{}, false, fmt.Errorf("flux rollouts: %w", err)
+		}
+		rollouts = append(rollouts, platform...)
 	}
-	_, err := in.Store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]),
-		Fingerprint: a.Fingerprint, Verdict: VerdictNoise, ResolvedBy: "factoryd", Detail: detail})
-	return err
+	for _, r := range rollouts {
+		if r.holds(at) {
+			return r, true, nil
+		}
+	}
+	return Rollout{}, false, nil
 }
 
 // file writes the alert's row, the dedupe key, with the id of the task it
@@ -476,19 +522,25 @@ func (in *AlertIntake) recordRestartWindowNoise(ctx context.Context, a SigNozAle
 // task of the last one. A delivery that fails after the row is written is
 // finished by SigNoz's retry under the same task id (take).
 func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
-	link := ""
-	if safeLink(a.GeneratorURL) {
-		link = a.GeneratorURL
-	}
-	row := Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: NewTaskID(), Fingerprint: a.Fingerprint,
-		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": p.Repo().String(),
-			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled,
-			"summary": oneLine(cmp.Or(a.Annotations["summary"], a.Annotations["description"], a.Annotations["value"]))}}
+	row := alertRow(a, p, ns, at, refiled)
 	var err error
 	if row.ID, err = in.Store.InsertAlert(ctx, row); err != nil {
 		return err
 	}
 	return in.fileTask(ctx, a, p, ns, row)
+}
+
+// alertRow is the alerts row of a on project p, with the id of the task
+// it files.
+func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
+	link := ""
+	if safeLink(a.GeneratorURL) {
+		link = a.GeneratorURL
+	}
+	return Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: NewTaskID(), Fingerprint: a.Fingerprint,
+		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": p.Repo().String(),
+			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled,
+			"summary": oneLine(cmp.Or(a.Annotations["summary"], a.Annotations["description"], a.Annotations["value"]))}}
 }
 
 // fileTask files the issue and task of the alert a on project p whose row,
@@ -507,6 +559,9 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
+	}
+	if w, ok := row.Detail["roll_window"].(string); ok {
+		body = "factoryd: the alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
 	}
 	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
