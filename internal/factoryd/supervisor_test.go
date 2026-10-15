@@ -104,7 +104,7 @@ func TestDigestKeepsTheFilesEditedLast(t *testing.T) {
 }
 
 // Roadmap 201: where a model reads a bash command (a finding, the
-// digest, the supervisor's record) commandLine cuts it like a tool's
+// digest, the supervisor's record) CommandLine cuts it like a tool's
 // string argument: its first 512 bytes, "…", its size and the first 8
 // bytes of its SHA-256. A short one stands whole. Two long failing
 // commands alike in their first 512 bytes, with one output, read as two
@@ -116,8 +116,8 @@ func TestCommandLineIsCutWhereAModelReadsIt(t *testing.T) {
 		sum := sha256.Sum256([]byte(cmd))
 		return strings.Repeat("a", 512) + "… (1000 bytes, sha256 " + hex.EncodeToString(sum[:8]) + ")"
 	}
-	if commandLine("go test ./...") != "go test ./..." || commandLine(a) != line(a) || line(a) == line(b) {
-		t.Fatalf("commandLine: short %q, long %q", commandLine("go test ./..."), commandLine(a))
+	if CommandLine("go test ./...") != "go test ./..." || CommandLine(a) != line(a) || line(a) == line(b) {
+		t.Fatalf("CommandLine: short %q, long %q", CommandLine("go test ./..."), CommandLine(a))
 	}
 	t0 := time.Unix(0, 0)
 	d := newDigestBuilder(t0)

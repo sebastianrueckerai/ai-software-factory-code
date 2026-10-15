@@ -1,6 +1,8 @@
 package console
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -231,6 +233,19 @@ func TestChatSessionStep(t *testing.T) {
 	if strings.Count(got, "model call") != 4 {
 		t.Errorf("the answer holds %d steps, want 4 of the 20 asked (8 KiB each in 32 KiB)", strings.Count(got, "model call"))
 	}
+}
+
+// Roadmap 201: a long command reaches the chat model as every model reads
+// one, its first 512 bytes, "…", its size and the first 8 bytes of its
+// SHA-256 (factoryd.CommandLine), never whole.
+func TestChatSessionStepCutsALongCommand(t *testing.T) {
+	r, g := newSessionsRig(t)
+	cmd := strings.Repeat("a", 512) + strings.Repeat("b", 488)
+	sum := sha256.Sum256([]byte(cmd))
+	r.objects["sessions/t-r/s2.jsonl"] = []byte(`{"time":"2026-10-11T10:14:00Z","kind":"command","detail":{"command":"` + cmd + `","exit":1,"output":"FAIL"}}` + "\n")
+	equal(t, "the long command's step", reads(t, r, g, "session_step", `{"task_id":"t-r","from":1}`), []string{
+		"1 1:00 command: " + strings.Repeat("a", 80) + "…, exit 1\n$ " + strings.Repeat("a", 512) + "… (1000 bytes, sha256 " + hex.EncodeToString(sum[:8]) + ")\nFAIL\n\nsteps 1 to 1 of 1",
+	})
 }
 
 // The search reads the transcripts line by line for a text,

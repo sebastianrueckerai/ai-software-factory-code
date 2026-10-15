@@ -406,7 +406,7 @@ func (s *Supervisor) noteFinding(ev harness.Event) {
 	case harness.EventCommand:
 		line := "ran command"
 		if cmd, ok := ev.Detail["command"].(string); ok {
-			line = "ran `" + commandLine(cmd) + "`"
+			line = "ran `" + CommandLine(cmd) + "`"
 		}
 		if exit, ok := ev.Detail["exit"]; ok {
 			line += " (exit " + fmt.Sprint(exit) + ")"
@@ -622,12 +622,13 @@ func (d *traceDetectors) diffMoved(ev harness.Event) bool {
 	return ok && d.lastDiff != "" && fmt.Sprint(ev.Detail["diff"]) != d.lastDiff
 }
 
-// commandLine is a bash command as a model reads it (roadmap 201): like a
-// tool's string argument its first maxArgString bytes, and when cut a note
-// of its size and hash, so two long commands with one start read as two.
-// Wherever factoryd decides on a command (the detectors, the acceptance
-// runs) it reads the whole one the event carries.
-func commandLine(cmd string) string {
+// CommandLine is a bash command as a model reads it (roadmap 201), the
+// supervisor or the project agent's chat: like a tool's string argument
+// its first maxArgString bytes, and when cut a note of its size and hash,
+// so two long commands with one start read as two. Wherever factoryd
+// decides on a command (the detectors, the acceptance runs) it reads the
+// whole one the event carries.
+func CommandLine(cmd string) string {
 	if len(cmd) <= maxArgString {
 		return cmd
 	}
@@ -698,7 +699,7 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 	d.runs[cmd] = run
 	if run.n >= d.cfg.SameFailure {
 		return &Trip{Kind: TripSameFailure, key: cmd,
-			Detail: fmt.Sprintf("`%s` gave the same output %d times, with file changes in between (exit %s, signature %s)", commandLine(cmd), run.n, code, sig)}
+			Detail: fmt.Sprintf("`%s` gave the same output %d times, with file changes in between (exit %s, signature %s)", CommandLine(cmd), run.n, code, sig)}
 	}
 	return nil
 }
@@ -728,7 +729,7 @@ func (d *traceDetectors) refail(cmd string) *Trip {
 	slices.Sort(paths)
 	clear(d.pending)
 	return &Trip{Kind: TripFlipFlop, key: paths[0],
-		Detail: fmt.Sprintf("after %s returned to a content it had before, `%s` failed again, unchanged", strings.Join(paths, ", "), commandLine(cmd))}
+		Detail: fmt.Sprintf("after %s returned to a content it had before, `%s` failed again, unchanged", strings.Join(paths, ", "), CommandLine(cmd))}
 }
 
 // disarm drops cmd from the pending returns: a check that failed before a

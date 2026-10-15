@@ -545,7 +545,7 @@ func parseLines(p *opencodeParser, lines ...string) []harness.Event {
 
 // Roadmap 201: the command event carries a bash command whole, since
 // factoryd decides on it (the detectors, the acceptance runs);
-// commandLine cuts it only where a model reads it.
+// CommandLine cuts it only where a model reads it.
 func TestOpencodeCommandEventKeepsTheWholeLine(t *testing.T) {
 	long := strings.Repeat("a", 512) + strings.Repeat("b", 488)
 	part, _ := json.Marshal(map[string]any{"tool": "bash", "state": map[string]any{"status": "completed", "input": map[string]any{"command": long}, "output": "ok"}})

@@ -147,7 +147,7 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 	switch ev.Kind {
 	case harness.EventCommand:
 		cmd := detailString(ev, "command")
-		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: commandLine(cmd)}
+		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: CommandLine(cmd)}
 		if exit, ok := detailInt(ev, "exit"); ok {
 			c.Exit = &exit
 			if exit != 0 {

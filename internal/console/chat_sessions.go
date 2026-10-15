@@ -345,7 +345,7 @@ func stepFull(ev harness.Event) string {
 		}
 		add("error: ", textAt(d, "error"))
 	case harness.EventCommand:
-		add("$ ", textAt(d, "command"))
+		add("$ ", factoryd.CommandLine(textAt(d, "command")))
 		add("", textAt(d, "output"))
 	case harness.EventCheckpoint:
 	default:
