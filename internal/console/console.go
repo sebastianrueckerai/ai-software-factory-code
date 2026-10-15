@@ -122,9 +122,14 @@ type Config struct {
 	ConfigDir    string
 	Approvals    Approvals
 	ApproveMerge MergeApprover
-	Resources    Resources
-	Alerts       Alerts
-	Projects     Projects
+	// RerunChecks and CloseFactoryPR decide a factory pull request card's
+	// merge request as a member's re-run of its red checks or close with
+	// their words (factoryd.RerunFactoryChecks, factoryd.CloseFactoryPR).
+	RerunChecks    MergeApprover
+	CloseFactoryPR FactoryCloser
+	Resources      Resources
+	Alerts         Alerts
+	Projects       Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
@@ -362,6 +367,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
+		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
 		{"POST /projects", http.HandlerFunc(c.createProject), nil},

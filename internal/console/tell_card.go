@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -133,6 +134,13 @@ func (t *turn) tellRoute(in toolInput) (tellBranch, factoryd.Task, factoryd.Appr
 			return tellBranch{}, k, factoryd.ApprovalRequest{}, err
 		}
 		key.merge, q = has, pending
+		var spec factoryd.MergeSpec
+		if has && json.Unmarshal(q.Spec, &spec) == nil && spec.Factory {
+			// no agent reads a text there: the actions that fit decide it
+			return tellBranch{}, k, q, refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s waits at its approval gate on a pull request factoryd opened, "+
+				"where no agent reads a message: approve_merge merges it on green checks, rerun_checks runs red ones again, deny_merge closes it with your words.",
+				k.IssueNumber, k.ID))
+		}
 	} else if key.status == "waiting-human" {
 		pending, has, err := t.pendingMergeOf(k)
 		if err != nil {

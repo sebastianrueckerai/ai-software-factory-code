@@ -889,13 +889,23 @@ var tools = []chatTool{
 		params: map[string]any{"task_id": taskParam, "note": str("why"),
 			"action": fallback("request_changes", enum("request_changes returns it to its agent, reject fails it", "request_changes", "reject"))},
 		required: []string{"task_id", "note"},
-		about:    "Deny a card's pending merge request with a reason.",
+		about:    "Deny a card's merge request with a reason, or close a pull request factoryd opened with it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
 				return "", nil, err
 			}
 			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, in.Action, in.Note)
+			return note, nil, err
+		}},
+	{name: "rerun_checks", title: "Re-run a pull request's checks", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
+		about: "Run the red checks of a pull request factoryd opened again, from its pending merge request.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			q, err := t.mergeRequest(in)
+			if err != nil {
+				return "", nil, err
+			}
+			note, err := t.c.doRerun(t.r.Context(), t.a, q.ID)
 			return note, nil, err
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,

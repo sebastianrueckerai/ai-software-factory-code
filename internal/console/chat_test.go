@@ -832,12 +832,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
-			"set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "notes_read",
+			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "notes_read",
 			"notes_write", "escalate", "active_threads"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
-			"request_changes", "reject_plan", "deny_merge", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency",
-			"read_doc", "write_doc", "notes_read", "notes_write", "escalate", "active_threads"}},
+			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
+			"set_dependency", "read_doc", "write_doc", "notes_read", "notes_write", "escalate", "active_threads"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)

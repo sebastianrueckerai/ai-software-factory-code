@@ -1733,19 +1733,46 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 	if err != nil {
 		return "", err
 	}
-	fork := r.forgejo.Fork(repo)
-	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(t))
+	f, fork, branch, err := r.headBranch(ctx, t, repo)
+	if err != nil {
+		return "", err
+	}
+	head, err := f.BranchHeadSHA(ctx, fork.Owner, fork.Name, branch)
 	if err != nil {
 		return "", fmt.Errorf("branch head: %w", err)
 	}
 	if head == sha {
-		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, taskBranch(t), "",
+		if head, err = f.CommitFiles(ctx, fork.Owner, fork.Name, branch, "",
 			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "factoryd: run the checks of "+sha+" again", nil); err != nil {
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
 	r.record(ctx, taskID, "checks_rerun", map[string]any{"commit": sha, "head": head})
 	return head, nil
+}
+
+// headBranch is where task t's head is written, as whom: its branch on the
+// bot's fork, or for a factory pull request card (roadmap 264) its pull
+// request's head, on the fork of the bot or of the projects user that
+// opened it. A head on any other fork is no one's factoryd writes.
+func (r *Runner) headBranch(ctx context.Context, t Task, repo Repo) (*Forgejo, Repo, string, error) {
+	if !factoryPRSources(t.Source) {
+		return r.forgejo, r.forgejo.Fork(repo), taskBranch(t), nil
+	}
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+	if err != nil {
+		return nil, Repo{}, "", fmt.Errorf("pull request #%d: %w", t.PRNumber, err)
+	}
+	fork, err := SplitRepo(pr.HeadRepo)
+	switch {
+	case err != nil:
+		return nil, Repo{}, "", terminalError("pull request #%d's head repository %q: %v", t.PRNumber, pr.HeadRepo, err)
+	case fork.Owner == r.forgejo.BotUser:
+		return r.forgejo, fork, pr.Head, nil
+	case fork.Owner == r.cfg.ProjectsUser && r.cfg.ProjectsUser != "":
+		return r.forgejo.As(r.cfg.ProjectsUser, r.forgejo.ProjectsToken), fork, pr.Head, nil
+	}
+	return nil, Repo{}, "", terminalError("pull request #%d's head is on %s, a fork factoryd does not write: its checks run again from Forgejo's run page", t.PRNumber, pr.HeadRepo)
 }
 
 // checksResult maps a combined status onto a verdict; empty means still
@@ -1961,9 +1988,9 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 	return firing, nil
 }
 
-// Finish is the terminal step. A failed task's open pull request is closed
-// first, with the reason; a done or closed task's branch on the fork is
-// deleted. Both return a transient error, so a Forgejo blip retries them before the task
+// Finish is the terminal step. A failed or closed task's open pull request
+// is closed first, with the reason, and a closed task's issue still open
+// too; a done or closed task's branch on the fork is deleted. Both return a transient error, so a Forgejo blip retries them before the task
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
@@ -1997,6 +2024,11 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 				msg = "factoryd: task " + taskID + " closed: " + why
 			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
+				return err
+			}
+		}
+		if final == "closed" && t.IssueNumber != 0 {
+			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, msg)); err != nil {
 				return err
 			}
 		}
@@ -2055,6 +2087,28 @@ func cleanup(taskID, step string, err error) error {
 		return nil
 	}
 	return err
+}
+
+// closeTaskIssue closes a closed task's issue while it is still open, as
+// factoryd's recorded close, then leaves msg as the reason, as
+// closeTaskPullRequest does on the pull request: the card a change request
+// closed (versionFactoryPRActions) reads closed on its issue as on the
+// board. An issue a human closed, the usual way to a closed task, is left.
+func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg string) error {
+	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil || closed {
+		return err
+	}
+	if err := recordFactoryClose(ctx, r.store, t); err != nil {
+		return err
+	}
+	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+		return err
+	}
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
+		log.Printf("task %s: comment the close's reason on issue #%d: %v", t.ID, t.IssueNumber, err)
+	}
+	return nil
 }
 
 // closeTaskPullRequest closes the task's pull request while it is still

@@ -849,6 +849,18 @@ func newRig(t *testing.T) *rig {
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))
 			return r.signalErr
 		},
+		RerunChecks: func(_ context.Context, taskID string, pr int64, by string) error {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL rerun_checks %s #%d by %s", taskID, pr, by))
+			return r.signalErr
+		},
+		CloseFactoryPR: func(_ context.Context, taskID string, pr int64, by, words string) error {
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL changes_requested %s #%d by %s: %s", taskID, pr, by, words))
+			return r.signalErr
+		},
 		MayMove: func(_ context.Context, repository, user, movedBy string) (bool, error) {
 			r.mayAsked = append(r.mayAsked, repository+" "+user+" "+movedBy)
 			if r.mayErr != nil {
@@ -1831,6 +1843,96 @@ func TestMergeDenyRequestsChangesOrRejectsAsTheHuman(t *testing.T) {
 	if a := r.approvals.get(4); a.Status != "denied" || a.DecisionNote != "rejected: not wanted" {
 		t.Fatalf("request = %+v", a)
 	}
+}
+
+// A factory pull request card's approval offers what fits its head
+// (roadmap 264): on red checks a re-run and a close, no Approve, and an
+// approve refuses naming them; on green Approve and a close, and a re-run
+// refuses. The close is the deny box without a choice of action: no agent
+// works on the pull request, so the member's words go to its workflow,
+// which closes the card and the pull request with them, whatever branch
+// the pull request has; no review is posted.
+func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	factory := func(red bool) {
+		r.approvals.mu.Lock()
+		defer r.approvals.mu.Unlock()
+		r.approvals.rows[1].Spec = json.RawMessage(fmt.Sprintf(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":%t,`+
+			`"why_human":["factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"]}`, red))
+	}
+	item := func() string {
+		t.Helper()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+		start := strings.Index(body, `action="/approvals/4/`)
+		if start < 0 {
+			t.Fatalf("the board shows no form of request 4:\n%s", body)
+		}
+		start = strings.LastIndex(body[:start], "<article")
+		return body[start : start+strings.Index(body[start:], "</article>")]
+	}
+
+	factory(true)
+	got := item()
+	for _, want := range []string{`action="/approvals/4/rerun"`, `aria-label="Re-run the checks of PR #9 of t-m">Re-run the checks</button>`,
+		`aria-controls="deny-4">Close</button>`, `<label for="note-4">Why it closes, posted on its issue and pull request</label>`,
+		`aria-label="Close PR #9 of t-m and its card">Close</button>`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the red factory request lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{`action="/approvals/4/approve"`, `name="action"`, ">Deny</button>", "Only the project&#39;s approvers may approve."} {
+		if strings.Contains(got, not) {
+			t.Errorf("the red factory request shows %q:\n%s", not, got)
+		}
+	}
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are red, so it cannot merge: run them again "+
+		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") || len(r.fg.calls) != 0 {
+		t.Fatalf("approve on red = %d %q, calls %q: want the refusal and no review", rec.Code, rec.Body, r.fg.calls)
+	}
+	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
+	}
+	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
+		"SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
+
+	factory(false)
+	got = item()
+	if !strings.Contains(got, `action="/approvals/4/approve"`) || !strings.Contains(got, `aria-controls="deny-4">Close</button>`) ||
+		strings.Contains(got, `action="/approvals/4/rerun"`) {
+		t.Errorf("the green factory request offers no Approve and Close, or a re-run:\n%s", got)
+	}
+	r.fg.calls = nil
+	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are green: approve it to merge (approve_merge) or close it (deny_merge).") ||
+		len(r.fg.calls) != 0 {
+		t.Fatalf("re-run on green = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
+	}
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123"}`)
+	rec = r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "approval request 4 is no merge request of a pull request factoryd opened") ||
+		len(r.fg.calls) != 0 {
+		t.Fatalf("re-run of an agent's pull request = %d %q, calls %q", rec.Code, rec.Body, r.fg.calls)
+	}
+}
+
+// A factory pull request's merge request on red checks fits its re-run and
+// its close, not an approval, wherever a refusal names what fits a card; on
+// green checks approve and deny decide it as any merge request.
+func TestFittingAFactoryPullRequest(t *testing.T) {
+	card := factoryd.Task{ID: "t-f", Status: "in-review", IssueNumber: 36}
+	request := func(red bool) []factoryd.ApprovalRequest {
+		return []factoryd.ApprovalRequest{{TaskID: "t-f", Kind: factoryd.ApprovalMerge,
+			Spec: json.RawMessage(fmt.Sprintf(`{"head_sha":"c1","factory":true,"red_checks":%t}`, red))}}
+	}
+	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
+		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
+	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
 }
 
 // A resource request is approved for its task, once; the project's

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,7 +55,8 @@ type prForgejo struct {
 	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
 	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
 	pulls         map[int64]string    // GET /pulls/{n} bodies
-	issueOff      bool                // GET /issues/{n} reports closed
+	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it
+	issuesClosed  []int64             // PATCH /issues/{n} closes
 	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
 	open          []map[string]any    // open pull requests
 	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
@@ -70,6 +72,7 @@ type prForgejo struct {
 	head          string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
 	mainHead      string             // GET /branches/main's commit; unlisted branches answer head
 	contents      []map[string]any   // POST /contents bodies
+	contentAuths  []string           // POST /contents' Authorization, in order
 	calls         []string
 }
 
@@ -79,7 +82,8 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"), "/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app")
+		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"),
+			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo")
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			io.WriteString(w, `[]`)
@@ -146,6 +150,12 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				state = "closed"
 			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
+			var n int64
+			fmt.Sscanf(p, "/issues/%d", &n)
+			f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
 			if f.refuse {
 				http.Error(w, "forbidden", http.StatusForbidden)
@@ -176,7 +186,7 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "POST" && p == "/contents":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
-			f.contents = append(f.contents, body)
+			f.contents, f.contentAuths = append(f.contents, body), append(f.contentAuths, r.Header.Get("Authorization"))
 			f.head += "e"
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": f.head}})
@@ -1283,7 +1293,7 @@ func TestFinishFailedKeepsBranch(t *testing.T) {
 // done and closed delete the task's branch on the fork.
 func TestFinishDoneDeletesBranch(t *testing.T) {
 	for _, final := range []string{"done", "closed"} {
-		fj := &prForgejo{}
+		fj := &prForgejo{issueOff: true}
 		r, _, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
 		if _, err := execActivity(t, r, ActivityFinish, "t1", final, "x"); err != nil {
 			t.Fatalf("%s: %v", final, err)
@@ -1651,6 +1661,42 @@ func TestRerunChecksPushesOneEmptyCommit(t *testing.T) {
 	if len(fj.contents) != 1 || fj.contents[0]["branch"] != "factory/t1" || fmt.Sprint(fj.contents[0]["files"]) != "[]" ||
 		fj.contents[0]["message"] != "factoryd: run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
 		t.Fatalf("commits = %v, want one empty commit on factory/t1", fj.contents)
+	}
+}
+
+// A factory pull request card's checks run again on its pull request's
+// head (roadmap 264): a template update's on factory-projects' fork as
+// factory-projects, a schema copy's on the bot's fork as the bot. A head
+// on any other fork refuses, naming where its checks run again.
+func TestRerunChecksOfAFactoryPullRequest(t *testing.T) {
+	pull := func(repo, ref string) string {
+		return fmt.Sprintf(`{"number":12,"state":"open","head":{"ref":%q,"sha":"c1","repo":{"full_name":%q}}}`, ref, repo)
+	}
+	for name, tc := range map[string]struct {
+		source, repo, ref, auth string
+	}{
+		"template update": {SourceTemplateUpdate, "factory-projects/repo", "factory/template-update", "token projects-tok"},
+		"schema copy":     {SourceSchemaCopy, "factory-agent/repo", "factory/schema-b7", "Basic " + base64.StdEncoding.EncodeToString([]byte("factory-agent:bot-pw"))},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &prForgejo{head: "c1", pulls: map[int64]string{12: pull(tc.repo, tc.ref)}}
+			r, _, _ := newActivityRunner(t, withSource(withPR(withStatus(prTask, "in-review"), 12), tc.source), fj)
+			r.forgejo.ProjectsToken, r.cfg.ProjectsUser = "projects-tok", "factory-projects"
+			var head string
+			if val, err := execActivity(t, r, ActivityRerunChecks, "t1", "c1"); err != nil || val.Get(&head) != nil || head != "c1e" {
+				t.Fatalf("RerunChecks = %q, %v; want c1e", head, err)
+			}
+			if len(fj.contents) != 1 || fj.contents[0]["branch"] != tc.ref || !slices.Equal(fj.contentAuths, []string{tc.auth}) ||
+				!slices.Contains(fj.calls, "POST /api/v1/repos/"+tc.repo+"/contents") {
+				t.Fatalf("commits %v as %v, calls %v: want one empty commit on %s %s as %q", fj.contents, fj.contentAuths, fj.calls, tc.repo, tc.ref, tc.auth)
+			}
+		})
+	}
+	fj := &prForgejo{head: "c1", pulls: map[int64]string{12: pull("someone/repo", "fix")}}
+	r, _, _ := newActivityRunner(t, withSource(withPR(withStatus(prTask, "in-review"), 12), SourceGitHubSync), fj)
+	_, err := execActivity(t, r, ActivityRerunChecks, "t1", "c1")
+	if err == nil || !strings.Contains(err.Error(), "pull request #12's head is on someone/repo, a fork factoryd does not write") || len(fj.contents) != 0 {
+		t.Fatalf("RerunChecks on someone's fork = %v, commits %v: want the refusal and no commit", err, fj.contents)
 	}
 }
 

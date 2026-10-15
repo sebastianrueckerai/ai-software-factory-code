@@ -50,6 +50,13 @@ func (k approvalCard) Waiting() string {
 	return minutes(time.Since(k.CreatedAt))
 }
 
+// Rerun: the card is a factory pull request's merge request on red
+// checks, whose approval offers their re-run instead of a merge (roadmap
+// 264).
+func (k approvalCard) Rerun() bool {
+	return k.Kind == factoryd.ApprovalMerge && k.Merge.Factory && k.Merge.RedChecks
+}
+
 // planQuestion is a plan's question as its card shows it, numbered from 1.
 type planQuestion struct {
 	Index int
@@ -147,6 +154,15 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
 		_, err := c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
+		return err
+	})
+}
+
+// rerun runs the red checks of the factory pull request card whose merge
+// request the path names again (doRerun).
+func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
+		_, err := c.doRerun(ctx, a, id)
 		return err
 	})
 }

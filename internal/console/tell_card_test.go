@@ -105,6 +105,20 @@ func TestTellCardApprovalGate(t *testing.T) {
 			Detail: map[string]any{"pr": int64(12), "action": "request_changes"}})
 }
 
+// A tell at a factory pull request card's approval gate refuses: no agent
+// reads it, and a change request there closes the card (roadmap 264), so
+// the refusal names the actions that fit and nothing is decided.
+func TestTellCardFactoryApprovalGate(t *testing.T) {
+	r, _, _ := tellRig(t)
+	r.approvals.rows[len(r.approvals.rows)-1].Spec = json.RawMessage(`{"head_sha":"c0ffee1","risk_class":"low","factory":true,"red_checks":true}`)
+	got := toldRun(t, r, toolInput{TaskID: "t-g", Text: "Drop the committed binary."})
+	equal(t, "the answer", got, "Refused: Card #15 t-g waits at its approval gate on a pull request factoryd opened, where no agent reads a message: "+
+		"approve_merge merges it on green checks, rerun_checks runs red ones again, deny_merge closes it with your words.")
+	if q := r.approvals.get(6); q.Status != "pending" || len(r.fg.reviews) != 0 {
+		t.Fatalf("approval request 6 = %+v, reviews %+v: want it pending and no review", q, r.fg.reviews)
+	}
+}
+
 // deny_merge's action defaults to request_changes: a call without one
 // proposes and asks for changes as the tell at the approval gate does.
 func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {

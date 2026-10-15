@@ -49,6 +49,10 @@ const (
 	// folded into a roll task (ruling 178): it wakes the approval wait and
 	// is never a finding.
 	SignalRollFolded = "roll_folded"
+	// SignalRerunChecks is the console's re-run of a factory pull request
+	// card's red checks (versionFactoryPRActions): the approval wait runs
+	// them again on an empty commit and asks again with what they say.
+	SignalRerunChecks = "rerun_checks"
 	// SignalStaleNudge is the stale sweep's wake-up of a live-status card
 	// quiet for the stale window: SignalWithStart starts a workflow that
 	// died; a live one has no handler and drops it.
@@ -459,6 +463,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.podWait = workflow.GetVersion(ctx, "pod-wait", workflow.DefaultVersion, versionPodWait)
 	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
 	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
+	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -902,6 +907,14 @@ const (
 	// concerns, an audit's findings) go on its approval card under noAgent,
 	// for a human. A run from before the change fails the card on them.
 	versionFactoryPRFindings workflow.Version = 1
+	// versionFactoryPRActions (change id "factory-pr-actions"): a factory
+	// pull request card's approval offers what fits its head (roadmap 264):
+	// red checks run again at a human's word (SignalRerunChecks) and ask
+	// again with what they say, and a change request closes the card and
+	// its pull request with the human's words, since no agent answers it.
+	// A run from before the change hears no re-run and fails on a change
+	// request.
+	versionFactoryPRActions workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -995,6 +1008,7 @@ type taskRun struct {
 	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
 	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
 	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
+	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1044,6 +1058,9 @@ type verdict struct {
 	// restage: the merge found the queue head's checks red, and its
 	// turn takes it again (versionRedHeadRestage)
 	restage bool
+	// rerun: a human asked to run a factory pull request's red checks
+	// again (versionFactoryPRActions)
+	rerun bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1620,7 +1637,9 @@ func (t *taskRun) roll(head string) (string, error) {
 // Unlike a roll it runs no RollCommit — nothing writes its branch, the
 // pull request exists already — and no agent answers its findings: they go
 // to the human's approval (versionFactoryPRFindings), and a human's change
-// request ends the task where a roll's next round would write what it asks
+// request ends the task where a roll's next round would write what it asks:
+// it closes the card and its pull request with the human's words
+// (versionFactoryPRActions), as Finish closes a closed card's issue
 // (verify opens no pull request: the linked one is taken, t.orphanPR).
 func (t *taskRun) factoryPR(head string) (string, error) {
 	if final, why, ok := t.decided(); ok {
@@ -1633,11 +1652,35 @@ func (t *taskRun) factoryPR(head string) (string, error) {
 	if last.final != "" {
 		return t.finish(last.final, last.reason)
 	}
+	if last.requested && t.factoryActions() {
+		return t.finish("closed", factoryPRClosed+": "+strings.Join(last.findings, "; "))
+	}
 	reason := last.reason
 	if reason == "" {
 		reason = "changes requested"
 	}
 	return t.finish("failed", "factory pull request: "+reason+": "+strings.Join(last.findings, "; "))
+}
+
+// factoryPRClosed heads the reason of a factory pull request card a change
+// request closed (versionFactoryPRActions).
+const factoryPRClosed = "no agent answers a change request on a pull request factoryd opened, so it closes"
+
+// factoryActions: the card's approval offers what fits a factory pull
+// request's head (versionFactoryPRActions).
+func (t *taskRun) factoryActions() bool {
+	return t.orphanPR && t.factoryPRActions >= versionFactoryPRActions
+}
+
+// drainReruns takes the pending re-runs of the checks and reports whether
+// one counts.
+func (t *taskRun) drainReruns() bool {
+	rerun := false
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalRerunChecks).ReceiveAsync(&sig) {
+		rerun = t.counted(SignalRerunChecks, sig) || rerun
+	}
+	return rerun
 }
 
 // drainFolds takes the pending roll_folded signals; RollCommit writes what
@@ -1898,7 +1941,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
 // task, a reviewer requests changes, a member's split files its cards
-// (versionSplit), or an approval merges the pull request as
+// (versionSplit), a member re-runs a factory pull request's checks
+// (versionFactoryPRActions), or an approval merges the pull request as
 // factory-merge. An approval over findings the card showed adjudicates
 // them (versionAdjudicated). A merge Forgejo refuses keeps the wait, but
 // a queue head's red checks take it back through its turn while re-runs
@@ -1918,6 +1962,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		if t.rolling {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalRollFolded), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.factoryActions() {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalRerunChecks), func(workflow.ReceiveChannel, bool) {})
+		}
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -1930,6 +1977,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		if t.rolling && t.drainFolds() {
 			return verdict{reason: "newer images folded in"}
+		}
+		if t.factoryActions() && t.drainReruns() {
+			return verdict{rerun: true, reason: "the checks run again"}
 		}
 		var split TaskSignal
 		if workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(&split) {

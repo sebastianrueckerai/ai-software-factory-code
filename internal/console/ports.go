@@ -25,6 +25,10 @@ type Approvals interface {
 // request (factoryd.ApproveMerge), after the human's review is on it.
 type MergeApprover func(ctx context.Context, taskID string, pr int64, approver string) error
 
+// FactoryCloser signals a factory pull request card's workflow that by
+// closes it with words (factoryd.CloseFactoryPR).
+type FactoryCloser func(ctx context.Context, taskID string, pr int64, by, words string) error
+
 // Resources is the agent project's registry and what each project holds
 // against its envelope (cloudres.AgentStore). The gateway's collector acts on what they record.
 type Resources interface {

@@ -85,6 +85,10 @@ type RunnerConfig struct {
 	// Workflows starts the workflows of the report tasks the screening
 	// stage opens.
 	Workflows Workflows
+	// ProjectsUser is factory-projects, whose fork a template update pull
+	// request comes from: a re-run of its checks writes there with
+	// Forgejo's ProjectsToken.
+	ProjectsUser string
 	// Prices is the alias price book the attempt grant's floor reads
 	// (ruling 322): whether the task's remaining budget can fund a call at
 	// all. nil = every attempt is funded; the per-call hold still guards

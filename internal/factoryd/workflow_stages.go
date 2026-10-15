@@ -837,24 +837,25 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // is. Success leaves the request to approve as before; a red or pending
 // head goes back through the checks stage's on_findings with the failing
 // or pending checks named, so no approval request exists while the head
-// is not green. After the cheap turn it reads the checked head, whose
-// checks hold for the synced one (versionCheckedHead).
-func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
+// is not green; red says the findings went onto the card instead (a cap,
+// no agent). After the cheap turn it reads the checked head, whose checks
+// hold for the synced one (versionCheckedHead).
+func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red bool) {
 	if t.approvalGreen < versionApprovalGreen {
-		return verdict{}, false
+		return verdict{}, false, false
 	}
 	if t.checkedRead >= versionCheckedHead {
 		commit = cmp.Or(t.checkedHead, commit)
 	}
 	var checks ChecksResult
 	if err := workflow.ExecuteActivity(t.short, ActivityHeadChecks, t.taskID, commit).Get(t.ctx, &checks); err != nil {
-		return verdict{final: "failed", reason: "read the head's checks: " + errMessage(err)}, true
+		return verdict{final: "failed", reason: "read the head's checks: " + errMessage(err)}, true, false
 	}
 	if final, why, ok := t.decided(); ok {
-		return verdict{final: final, reason: why}, true
+		return verdict{final: final, reason: why}, true, false
 	}
 	if checks.State == ChecksSuccess {
-		return verdict{}, false
+		return verdict{}, false, false
 	}
 	findings := checks.Findings
 	if len(findings) == 0 {
@@ -868,7 +869,7 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 	var capped []string
 	if v, stop := t.onFindings(t.cfg.Stages[i], findings, &capped, card); stop {
-		return v, true
+		return v, true, false
 	}
 	if len(capped) > 0 {
 		// the stages' pass may have put the same lines on the card
@@ -878,7 +879,7 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 		}
 		*card = lines
 	}
-	return verdict{}, false
+	return verdict{}, false, true
 }
 
 // approve is the approval stage: the merge rule auto when no stage left
@@ -887,9 +888,13 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 // green first: headGreen sends a red or pending one back to the agent
 // before any request (versionApprovalGreen). covered: the review findings
 // the card shows, which an approval over it adjudicates
-// (versionAdjudicated).
+// (versionAdjudicated). A factory pull request's red checks run again at
+// a human's word (versionFactoryPRActions): an empty commit on its head
+// (RerunChecks), the checks stage waits for them, and the new head comes
+// back here.
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
-	if v, stop := t.headGreen(commit, &card); stop {
+	v, stop, red := t.headGreen(commit, &card)
+	if stop {
 		return v
 	}
 	whyHuman := card
@@ -917,11 +922,21 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 	for workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(nil) {
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
-		Review: review, EarlierReviews: earlier, WhyHuman: whyHuman}).Get(t.ctx, nil); err != nil {
+		Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	t.approvalRequested = workflow.Now(t.ctx)
-	return t.awaitApproval(commit, covered)
+	if v = t.awaitApproval(commit, covered); !v.rerun {
+		return v
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
+		return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
+	}
+	t.rerunHead, t.checkedHead, g.ChecksPassed = commit, "", false
+	if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
+		return v
+	}
+	return t.approve(commit, g, review, earlier, card, covered)
 }
 
 // screen runs the screening stage before the first session: the task's

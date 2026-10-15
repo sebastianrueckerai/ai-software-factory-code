@@ -196,11 +196,20 @@ type MergeSpec struct {
 	// Audit is the security audit's verdict, its own section (ruling
 	// 188).
 	Audit *AuditResult `json:"audit,omitempty"`
+	// Factory marks a pull request factoryd opened, which no agent works
+	// on, in a run that hears its actions (roadmap 264): its approval
+	// offers a merge on green checks, a re-run of them on red, and a
+	// close, which a change request is too.
+	Factory bool `json:"factory,omitempty"`
+	// RedChecks: the head's checks were not green when the request opened.
+	RedChecks bool `json:"red_checks,omitempty"`
 }
 
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
 // pull request from the auto merge, EarlierReviews the reviews of earlier
-// heads.
+// heads, RedChecks whether the head's checks were not green, and Factory
+// whether the run hears a factory pull request's re-run and close
+// (versionFactoryPRActions).
 type ApprovalInput struct {
 	PR             PullRequest
 	Commit         string
@@ -208,6 +217,8 @@ type ApprovalInput struct {
 	Review         Review
 	EarlierReviews []Review
 	WhyHuman       []string
+	RedChecks      bool
+	Factory        bool
 }
 
 // MergeResult is how an approved merge went: By names who merged when it
@@ -1053,7 +1064,8 @@ func reviewComment(model, commit string, rv Review, read string) string {
 // card: the pull request, its risk class, migrations, reproduction and the
 // model review. It replaces any earlier pending one of the task. A factory
 // pull request's paths forbidden to agents come first in why a human
-// decides.
+// decides, and its request and event say it is one and whether its checks
+// are red, which its actions follow (roadmap 264).
 func (r *Runner) RequestApproval(ctx context.Context, taskID string, in ApprovalInput) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1069,6 +1081,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
 		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
 		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
+		Factory: in.Factory, RedChecks: in.RedChecks,
 	})
 	if err != nil {
 		return err
@@ -1081,8 +1094,11 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": in.PR.Number, "commit": in.Commit, "class": in.Gates.Policy.Class})
-	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
-		map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class})
+	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class}
+	if in.Factory && in.RedChecks {
+		detail["rerun"] = true
+	}
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
 	return nil
 }
 
@@ -1309,17 +1325,52 @@ const consoleApproved = "approved in the console"
 // which merges as factory-merge. Only a pending merge request of the
 // task, for that pull request, is approved.
 func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, approver string) error {
-	pending, err := store.ApprovalRequests(ctx, "pending")
+	q, err := pendingMerge(ctx, store, taskID, pr)
 	if err != nil {
 		return err
+	}
+	return decideAndSignal(ctx, store, wf, q, "approved", approver, consoleApproved, SignalApproved, TaskSignal{Author: approver, PR: pr})
+}
+
+// RerunFactoryChecks is the console's re-run of a factory pull request
+// card's red checks (roadmap 264): the pending merge request, whose head
+// cannot merge, is decided as by's, and the workflow runs the checks again
+// and asks again with what they say.
+func RerunFactoryChecks(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, by string) error {
+	q, err := pendingMerge(ctx, store, taskID, pr)
+	if err != nil {
+		return err
+	}
+	return decideAndSignal(ctx, store, wf, q, "denied", by, "the checks run again; a new request follows", SignalRerunChecks, TaskSignal{Author: by, PR: pr})
+}
+
+// CloseFactoryPR is the console's close of a factory pull request card, a
+// change request on it (roadmap 264): no agent answers one, so the
+// pending merge request is decided as by's and the change request closes
+// the card and its pull request with by's words. It reaches the workflow
+// whatever branch the pull request has, which a review on Forgejo does
+// only from a factory/<id> branch.
+func CloseFactoryPR(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, by, words string) error {
+	q, err := pendingMerge(ctx, store, taskID, pr)
+	if err != nil {
+		return err
+	}
+	return decideAndSignal(ctx, store, wf, q, "denied", by, "closed: "+words, SignalChangesRequested, TaskSignal{Author: by, Body: words, PR: pr})
+}
+
+// pendingMerge is task taskID's pending merge request for pull request pr.
+func pendingMerge(ctx context.Context, store Store, taskID string, pr int64) (ApprovalRequest, error) {
+	pending, err := store.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		return ApprovalRequest{}, err
 	}
 	i := slices.IndexFunc(pending, func(a ApprovalRequest) bool {
 		return a.Kind == ApprovalMerge && a.TaskID == taskID && a.PRNumber == pr
 	})
 	if i < 0 {
-		return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
+		return ApprovalRequest{}, fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
 	}
-	return decideAndSignal(ctx, store, wf, pending[i], "approved", approver, consoleApproved, SignalApproved, TaskSignal{Author: approver, PR: pr})
+	return pending[i], nil
 }
 
 // decideAndSignal records by's decision on request q, then signals its

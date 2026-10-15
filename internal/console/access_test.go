@@ -87,8 +87,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		pages++
 	}
-	if pages != 36 || !slices.Equal(skipped, []string{"POST /logout"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 36 driven and only logout skipped", pages, skipped)
+	if pages != 37 || !slices.Equal(skipped, []string{"POST /logout"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 37 driven and only logout skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -133,8 +133,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 32 || len(tools) != 54 {
-		t.Fatalf("%d of %d tools checked as writes: want 32 of 54", writes, len(tools))
+	if writes != 33 || len(tools) != 55 {
+		t.Fatalf("%d of %d tools checked as writes: want 33 of 55", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -269,8 +269,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 32 {
-		t.Fatalf("%d write tools driven: want 32", writes)
+	if writes != 33 {
+		t.Fatalf("%d write tools driven: want 33", writes)
 	}
 }
 

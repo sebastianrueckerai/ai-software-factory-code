@@ -485,6 +485,67 @@ func TestFactoryPRCardTakesItsFindingsToAHuman(t *testing.T) {
 	}
 }
 
+// A factory pull request card's approval fits its head (roadmap 264): on
+// red checks its request says so, which the console turns into a re-run
+// and a close in place of a merge; a re-run runs them again on an empty
+// commit, waits for them and asks again, and on green the approval merges
+// the new head.
+func TestFactoryPRCardRerunsItsRedChecks(t *testing.T) {
+	red := "check \"pr / test (pull_request)\": failure"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+	})
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}}, ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}}, ChecksResult{State: ChecksSuccess})
+	var reruns []string
+	g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		reruns = append(reruns, sha)
+		return "c8", nil
+	})
+	g.signalAfter(time.Hour, SignalRerunChecks, TaskSignal{Author: "anna", PR: 9})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 2 || g.approvals[0].Commit != "c7" || !g.approvals[0].RedChecks || !g.approvals[0].Factory ||
+		g.approvals[1].Commit != "c8" || g.approvals[1].RedChecks || !g.approvals[1].Factory {
+		t.Fatalf("approvals %+v: want c7's on red checks, then c8's on green", g.approvals)
+	}
+	if !slices.Equal(reruns, []string{"c7"}) || !slices.Equal(g.merges, []string{"9 c8 sebastian"}) || len(g.sessions) != 0 {
+		t.Fatalf("re-runs %v, merges %v, sessions %v: want c7's checks run again once and c8 merged, no session", reruns, g.merges, g.sessions)
+	}
+}
+
+// A change request on a factory pull request card closes it with the
+// human's words, since no agent answers it (roadmap 264): Finish closes
+// the pull request and the issue with them. A run from before the change
+// fails it as before.
+func TestFactoryPRCardClosesOnAChangeRequest(t *testing.T) {
+	factoryCard := func(g *gateHarness) {
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceSchemaCopy, PR: PullRequest{Number: 9}, Head: "c7"}
+		g.onChecks(ChecksResult{State: ChecksSuccess})
+		g.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "anna", PR: 9, Body: "the copy is of the wrong build"})
+	}
+	g := newGateHarness(t, factoryCard)
+	if final := g.run(t); final != "closed" ||
+		g.finals[0][1] != factoryPRClosed+": reviewer anna requested changes: the copy is of the wrong build" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].RedChecks || len(g.merges) != 0 {
+		t.Fatalf("approvals %+v, merges %v: want one request on green checks and no merge", g.approvals, g.merges)
+	}
+
+	old := newGateHarness(t, factoryCard)
+	old.env.OnGetVersion("factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions).Return(workflow.DefaultVersion)
+	if final := old.run(t); final != "failed" ||
+		old.finals[0][1] != "factory pull request: changes requested: reviewer anna requested changes: the copy is of the wrong build" {
+		t.Fatalf("a run from before the change: final = %q, finals %v", final, old.finals)
+	}
+	if len(old.approvals) != 1 || old.approvals[0].Factory {
+		t.Fatalf("a run from before the change asked %+v: want a request that offers no factory actions, which it does not hear", old.approvals)
+	}
+}
+
 // The task state machine refuses in-review from queued, the move the
 // factory pull request card's old lane entry asked of its run (finding
 // 224); the gate path enters from running.

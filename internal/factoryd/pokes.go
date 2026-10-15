@@ -29,6 +29,10 @@ const (
 	MessageEscalation = "escalation"
 )
 
+// ChoiceRerun is the inbox's answer that runs a factory pull request's red
+// checks again (roadmap 264).
+const ChoiceRerun = "Re-run the checks"
+
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
 	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted}
@@ -180,6 +184,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		case ApprovalMerge:
 			m.Content = fmt.Sprintf("Merge PR #%d of %s waits for you: risk class %s.", num("pr"), ref, str("class"))
 			m.Choices = []string{"Approve"}
+			if rerun, _ := e.Detail["rerun"].(bool); rerun {
+				m.Content = fmt.Sprintf("PR #%d of %s waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.", num("pr"), ref)
+				m.Choices = []string{ChoiceRerun}
+			}
 		case ApprovalPlan:
 			m.Content = fmt.Sprintf("Plan %s %q waits for your acceptance: revision %d, %d cards.", ref, CardTitle(t), num("revision"), num("cards"))
 			m.Choices = []string{"Accept"}

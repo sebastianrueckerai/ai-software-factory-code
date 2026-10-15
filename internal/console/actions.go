@@ -71,6 +71,9 @@ func refuse(status int, msg string) error { return &refusal{status, msg} }
 type capFacts struct {
 	attempts, sessions, extra int
 	capped, merge, plan       bool
+	// rerun: its merge request is a factory pull request's on red checks,
+	// which a re-run or a close decides (roadmap 264)
+	rerun bool
 }
 
 // capFactsOf reads t's facts, only for a card waiting on a human or in
@@ -107,6 +110,10 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 	for _, q := range pending {
 		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
 		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan
+		var spec factoryd.MergeSpec
+		if q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
+			f.rerun = spec.Factory && spec.RedChecks
+		}
 	}
 	f.capped = t.Status == "waiting-human" && !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
@@ -129,6 +136,10 @@ func splitRunning(t factoryd.Task, pr int64) error {
 		"approve, deny or split it once the split ends.", t.IssueNumber, pr))
 }
 
+// factoryRedFits is what decides a factory pull request's merge request on
+// red checks (roadmap 264).
+const factoryRedFits = "rerun_checks runs its red checks again, or deny_merge closes it with your words"
+
 // fitting is the action that fits t's state.
 func fitting(t factoryd.Task, f capFacts) string {
 	switch t.Status {
@@ -140,6 +151,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "a human does its work and closes its issue"
 		case f.capped:
 			return "an answer with the findings grants one session (answer); close ends it"
+		case f.rerun:
+			return factoryRedFits
 		case f.merge:
 			return "approve_merge or deny_merge decide its merge request"
 		case f.plan:
@@ -153,6 +166,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "queued", "waiting-deps":
 		return "nothing to do until it starts"
 	case "in-review":
+		if f.rerun {
+			return factoryRedFits
+		}
 		if f.merge {
 			return "approve_merge or deny_merge decide its merge request"
 		}
@@ -1440,7 +1456,8 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // task (one commission of that spec; the project's envelope is its file's,
 // ruling 183); a merge request gets the member's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge.
+// which merges as factory-merge. A factory pull request's red checks
+// merge never: its approval refuses, naming the re-run and the close.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -1467,6 +1484,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 		}
+		if spec.Factory && spec.RedChecks {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: run them again "+
+				"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).", q.PRNumber))
+		}
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the approving review", err}
 		}
@@ -1486,7 +1507,9 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 // the reason). A merge request gets a REQUEST_CHANGES review as the
 // member, which sends the task back to its agent (action
 // request_changes), or is rejected: the reason commented and the pull
-// request closed as the member, which fails the task (action reject).
+// request closed as the member, which fails the task (action reject). A
+// factory pull request's has no agent to send it back to: either action
+// closes the card and its pull request with the reason (roadmap 264).
 func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if note == "" || len(note) > 64<<10 {
@@ -1507,6 +1530,18 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	default:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 	}
+	var spec factoryd.MergeSpec
+	if err := json.Unmarshal(q.Spec, &spec); err != nil {
+		return "", refuse(http.StatusInternalServerError, "cannot read the merge request")
+	}
+	if spec.Factory {
+		if err := c.cfg.CloseFactoryPR(ctx, q.TaskID, q.PRNumber, a.s.user, note); err != nil {
+			log.Printf("console: %s closed PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
+			return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; close it again")
+		}
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": "close"})
+		return fmt.Sprintf("Closing pull request #%d and its card with your words: no agent works on a pull request factoryd opened.", q.PRNumber), nil
+	}
 	repo, err := factoryd.SplitRepo(q.Project)
 	if err != nil {
 		log.Printf("console: approval request %d: %v", q.ID, err)
@@ -1514,10 +1549,6 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	}
 	switch action {
 	case "request_changes":
-		var spec factoryd.MergeSpec
-		if err := json.Unmarshal(q.Spec, &spec); err != nil {
-			return "", refuse(http.StatusInternalServerError, "cannot read the merge request")
-		}
 		if err := c.review(ctx, a, q, "REQUEST_CHANGES", note, spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the change request", err}
 		}
@@ -1542,6 +1573,36 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": action})
 	return fmt.Sprintf("Denied pull request #%d (%s).", q.PRNumber, strings.ReplaceAll(action, "_", " ")), nil
+}
+
+// doRerun runs the red checks of a factory pull request card again
+// (roadmap 264), a writer's act: its merge request, whose head cannot
+// merge, is decided as the member's, and the card asks again once the
+// checks settle. Any other request refuses, naming what decides it.
+func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error) {
+	q, err := c.pendingRequest(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	var spec factoryd.MergeSpec
+	if q.Kind == factoryd.ApprovalMerge {
+		if err := json.Unmarshal(q.Spec, &spec); err != nil {
+			return "", refuse(http.StatusInternalServerError, "cannot read the merge request")
+		}
+	}
+	switch {
+	case !spec.Factory:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is no merge request of a pull request factoryd opened: "+
+			"its checks run again by a push to its branch, and approve and deny decide it", q.ID))
+	case !spec.RedChecks:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green: approve it to merge (approve_merge) or close it (deny_merge).", q.PRNumber))
+	}
+	if err := c.cfg.RerunChecks(ctx, q.TaskID, q.PRNumber, a.s.user); err != nil {
+		log.Printf("console: %s re-ran the checks of PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
+		return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; run the checks again once more")
+	}
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": "rerun_checks"})
+	return fmt.Sprintf("Running the checks of pull request #%d again; the card asks again once they settle.", q.PRNumber), nil
 }
 
 // doInvite makes login a member of the chat's project, an approver's

@@ -749,6 +749,48 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 	}
 }
 
+// A factory pull request card's merge request says what its approval
+// offers (roadmap 264): it is a factory pull request's, and whether its
+// checks were red, which its row carries to the inbox's poke too: a re-run
+// on red, the approval on green.
+func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
+	task := gateTask
+	task.Source, task.Kind, task.IssueNumber = SourceTemplateUpdate, "agent", 36
+	for _, c := range []struct {
+		red     bool
+		content string
+		choices []string
+	}{
+		{true, "PR #9 of #36 waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.", []string{ChoiceRerun}},
+		{false, "Merge PR #9 of #36 waits for you: risk class high.", []string{"Approve"}},
+	} {
+		r, store, _ := newGateRunner(t, task, &gateForgejo{})
+		rows := &fakeEventRecorder{}
+		r.timeline.Events = rows
+		in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "high", PolicyVersion: 7}},
+			RedChecks: c.red, Factory: true}
+		if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := store.ApprovalRequests(context.Background(), "pending")
+		var spec MergeSpec
+		if len(pending) != 1 || json.Unmarshal(pending[0].Spec, &spec) != nil || !spec.Factory || spec.RedChecks != c.red {
+			t.Fatalf("red %t: requests %+v, spec %+v: want a factory pull request's, red %t", c.red, pending, spec, c.red)
+		}
+		if len(rows.rows) != 1 {
+			t.Fatalf("red %t: rows %+v, want the approval_requested row", c.red, rows.rows)
+		}
+		b, _ := json.Marshal(rows.rows[0].Detail)
+		e := Event{Kind: EventApprovalRequested, TaskID: "t1"}
+		if err := json.Unmarshal(b, &e.Detail); err != nil {
+			t.Fatal(err)
+		}
+		if m, ok := pokeOf(e, task); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
+			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
+		}
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).

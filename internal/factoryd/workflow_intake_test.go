@@ -583,12 +583,12 @@ func TestReconcileRebuildsTheInfoRequest(t *testing.T) {
 	}
 }
 
-// Finishing closed (not reproducible) closes an open pull request with
-// the reason, leaves no failure comment on the issue, and mirrors
-// state/closed.
+// Finishing closed (not reproducible, its issue closed first) closes an
+// open pull request with the reason, leaves no failure comment on the
+// issue, and mirrors state/closed.
 func TestFinishClosed(t *testing.T) {
 	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
-	fj := &prForgejo{pulls: map[int64]string{12: open}, labels: map[int64][]string{4: {"bug", "state/waiting-poster"}}}
+	fj := &prForgejo{issueOff: true, pulls: map[int64]string{12: open}, labels: map[int64][]string{4: {"bug", "state/waiting-poster"}}}
 	r, store, _ := newActivityRunner(t, withStatus(withPR(prTask, 12), "waiting-poster"), fj)
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", notReproducedClose); err != nil {
 		t.Fatal(err)
@@ -602,6 +602,33 @@ func TestFinishClosed(t *testing.T) {
 	}
 	if labels := fj.labels[4]; !slices.Equal(labels, []string{"bug", "state/closed"}) {
 		t.Fatalf("labels = %v", labels)
+	}
+}
+
+// A card that ends closed with its issue still open, a factory pull
+// request card a change request closed (roadmap 264), has its pull request
+// and its issue closed with the reason, the issue's close recorded as
+// factoryd's own, so its webhook ends no other task.
+func TestFinishClosedClosesAnOpenIssue(t *testing.T) {
+	open := `{"number":12,"state":"open","merged":false,"html_url":"u12","head":{"ref":"factory/template-update","sha":"c7","repo":{"full_name":"factory-projects/repo"}}}`
+	fj := &prForgejo{pulls: map[int64]string{12: open}, labels: map[int64][]string{4: {"state/in-review"}}}
+	task := withStatus(withPR(prTask, 12), "in-review")
+	task.Source = SourceTemplateUpdate
+	r, store, _ := newActivityRunner(t, task, fj)
+	reason := factoryPRClosed + ": reviewer anna requested changes: the template's CI file is not ours"
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "closed", reason); err != nil {
+		t.Fatal(err)
+	}
+	msg := "factoryd: task t1 closed: " + reason
+	if !slices.Equal(fj.closed, []int64{12}) || !slices.Equal(fj.issuesClosed, []int64{4}) || !slices.Equal(fj.comments, []string{msg, msg}) {
+		t.Fatalf("pulls closed %v, issues closed %v, comments %q: want #12 and #4 closed, each with %q", fj.closed, fj.issuesClosed, fj.comments, msg)
+	}
+	events, _ := store.IntakeEvents(context.Background(), "t1")
+	if !botCloseRecorded(events, task) {
+		t.Fatalf("intake events = %+v, want factoryd's close of #4 recorded", events)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "closed" {
+		t.Fatalf("status = %q, want closed", got.Status)
 	}
 }
 

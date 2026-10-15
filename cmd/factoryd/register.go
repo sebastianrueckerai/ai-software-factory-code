@@ -115,6 +115,10 @@ func newForgejo() *factoryd.Forgejo {
 	}
 }
 
+// projectsUser is factory-projects, the owner of every project
+// organisation.
+func projectsUser() string { return env("FORGEJO_PROJECTS_USER", "factory-projects") }
+
 func newRegistrar(store *factoryd.PGStore, forgejo *factoryd.Forgejo, kube factoryd.ProjectKube, tree func() policy.Tree, webhookSecret string) *factoryd.Registrar {
 	return &factoryd.Registrar{Forgejo: forgejo, Kube: kube, Store: store, Mirrors: store, Policy: tree,
 		WebhookURL:       env("FACTORYD_WEBHOOK_URL", "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo"),
@@ -125,7 +129,7 @@ func newRegistrar(store *factoryd.PGStore, forgejo *factoryd.Forgejo, kube facto
 		HostKey: func(ctx context.Context) (string, error) {
 			return factoryd.ScanHostKey(ctx, env("FORGEJO_SSH_ADDR", "forgejo-ssh.forgejo.svc.cluster.local:22"), 10*time.Second)
 		},
-		ProjectsUser: env("FORGEJO_PROJECTS_USER", "factory-projects"),
+		ProjectsUser: projectsUser(),
 		GitHub: &factoryd.GitHub{API: "https://api.github.com", Git: "https://github.com",
 			Forgejo: env("FORGEJO_URL", "https://git.aisoftwarefactory.world")},
 		OpenBao: &openbao.Client{BaseURL: env("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"), AuthRole: "factoryd",

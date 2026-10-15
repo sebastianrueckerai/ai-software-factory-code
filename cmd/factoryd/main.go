@@ -189,7 +189,8 @@ func main() {
 		Workflows: &workflows,
 		// the attempt grant's floor (ruling 322) reads the same price
 		// table the gateway's hold math prices a call with
-		Prices: &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
+		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
+		ProjectsUser: projectsUser(),
 	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
 		GatewayURL: gatewayURL,
 		Token:      gatewayToken,
@@ -427,6 +428,12 @@ func main() {
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
+		},
+		RerunChecks: func(ctx context.Context, taskID string, pr int64, by string) error {
+			return factoryd.RerunFactoryChecks(ctx, store, workflows, taskID, pr, by)
+		},
+		CloseFactoryPR: func(ctx context.Context, taskID string, pr int64, by, words string) error {
+			return factoryd.CloseFactoryPR(ctx, store, workflows, taskID, pr, by, words)
 		},
 		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,

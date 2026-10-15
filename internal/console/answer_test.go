@@ -247,3 +247,30 @@ func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
 		t.Fatal("the thread still shows a writer in its line after the answer landed")
 	}
 }
+
+// A factory pull request card's red checks run again from the chat as from
+// its card (roadmap 264): the inbox's Re-run the checks and the
+// rerun_checks tool signal the workflow as the member.
+func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":true}`)
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "PR #9 of #5 waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.",
+		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	r.fg.calls = nil
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {factoryd.ChoiceRerun}}); code != http.StatusNoContent {
+		t.Fatalf("the answer = %d %q", code, body)
+	}
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	equal(t, "the inbox's poke", rows[len(rows)-1].Content, "Running the checks of pull request #9 again; the card asks again once they settle.")
+
+	g.replies = [][]string{{call(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
+	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL rerun_checks t-m #9 by sebastian"})
+}

@@ -1398,7 +1398,13 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   REQUEST_CHANGES review (the changes-requested path sends the task back)
   or rejects: the reason is commented and the pull request closed as the
   human, which fails the task. A merge Forgejo refuses (or that fails and
-  is retried) notes why on the pending request, and the card shows it.
+  is retried) notes why on the pending request, and the card shows it. A
+  pull request factoryd opened has no agent (roadmap 264): its card offers
+  Approve on green checks and Re-run the checks on red ones
+  (`POST /approvals/{id}/rerun`, an empty commit on its head, and the card
+  asks again once they settle), with Close beside either, the deny box
+  without a choice: the reason goes to its workflow as a change request,
+  which closes the card and its pull request and issue with it.
 - `/resources`: the agent project's commissions by project and task (open,
   or closed in the last 7 days) with type, IPv4, lease end, EUR/h, cost
   booked so far and state; promote and release per commission (a released
