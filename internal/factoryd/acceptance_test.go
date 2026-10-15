@@ -38,9 +38,15 @@ func TestRunsAcceptance(t *testing.T) {
 		{"cd /workspace/repo &&bash check&& echo done", "bash check", true},
 		{"cd /workspace/repo && bash check || true", "bash check", false},
 		{"cd /workspace/repo && bash check | tee log", "bash check", false},
-		// a pipe anywhere hides the command's exit behind the last stage's
+		// a pipe the run adds hides the command's exit behind its last stage
 		{"bash check | tee log", "bash check", false},
 		{"bash check -- ./... 2>&1 | tail -20", "bash check", false},
+		// a command's own operators are its own: a run of it is its exit
+		{"go test ./... | grep -v skip", "go test ./... | grep -v skip", true},
+		{"go test ./... | grep -v skip -e flaky", "go test ./... | grep -v skip", true},
+		{"cd /workspace/repo && go test ./... | grep -v skip && echo done", "go test ./... | grep -v skip", true},
+		{"go test ./... | grep -v skip | tee log", "go test ./... | grep -v skip", false},
+		{"cat list | go test ./... | grep -v skip", "go test ./... | grep -v skip", false},
 		{"cd /workspace/repo; bash check", "bash check", false},
 		{"cd /workspace/repo && bash check & wait", "bash check", false},
 		{"cd /workspace/repo && bash check\necho $?", "bash check", false},
@@ -180,30 +186,43 @@ func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
 	}
 }
 
-// A red acceptance run piped to tee exits with tee's status, 0: it is no
-// green, and the session carries no acceptance home, so the card does not
-// close on it.
-func TestRunSessionCarriesNoAcceptanceFromAPipe(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
-		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
-	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
-	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
-		t.Fatal(err)
-	}
-	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
-		Acceptance: []string{"go test ./acceptance/"}}}})
-	if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
-		t.Fatal(err)
-	}
-	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{
-		"command": "go test ./acceptance/ | tee test.log", "exit": 0, "output": "--- FAIL: TestA1\nFAIL"}}) + "\n" + resultLine(false, "out of time")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Acceptance != nil {
-		t.Fatalf("acceptance = %+v, want none from a run whose exit is tee's", res.Acceptance)
+// A run proves an acceptance command only where its exit status is the
+// command's: a red run of "go test ./acceptance/" piped to tee exits with
+// tee's 0 and carries nothing home, while a command whose own text holds
+// a pipe is proven by a green run of exactly that text, and not by one the
+// run pipes on to tee. The workflow closes the card on what a session
+// carries home (TestWorkflowClosesOnAnAcceptanceGreen).
+func TestRunSessionAcceptanceOnlyWhereTheExitIsTheCommands(t *testing.T) {
+	for _, tt := range []struct {
+		name, item, run string
+		want            bool
+	}{
+		{"red piped to tee", "go test ./acceptance/", "go test ./acceptance/ | tee test.log", false},
+		{"its own pipe, exactly", "go test ./... | grep -v skip", "go test ./... | grep -v skip", true},
+		{"its own pipe, then tee", "go test ./... | grep -v skip", "go test ./... | grep -v skip | tee log", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
+				Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+			(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+			if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+				t.Fatal(err)
+			}
+			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief", Acceptance: []string{tt.item}}}})
+			if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
+				t.Fatal(err)
+			}
+			logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": tt.run, "exit": 0, "output": "ok"}}) + "\n" +
+				resultLine(false, "out of time")
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := res.Acceptance != nil; got != tt.want || got && res.Acceptance.Command != tt.run {
+				t.Fatalf("acceptance = %+v, want carried %v", res.Acceptance, tt.want)
+			}
+		})
 	}
 }
 

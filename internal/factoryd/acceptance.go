@@ -171,36 +171,43 @@ func commandExit(detail map[string]any) (int, bool) {
 	return 0, false
 }
 
-// runsAcceptance is whether run ran an acceptance command: equal after
-// whitespace, or the command with arguments added — "bash check -- ./..."
-// runs what "bash check" names, the arguments the same command's — as one
-// of run's exitSteps, whose exit status is the run's. The words are
+// runsAcceptance is whether run ran acceptance command item, so that the
+// run's exit status is the command's: the command as said, operators of
+// its own included, with arguments added — "bash check -- ./..." runs what
+// "bash check" names — and && steps before or after it, whose exit 0 says
+// every step passed. What the run adds around the command holds no other
+// control operator (addsOperator). Whitespace aside, the words are
 // compared as said: a shell command's case is its meaning.
 func runsAcceptance(run, item string) bool {
-	item = strings.Join(strings.Fields(item), " ")
+	run, item = shellWords(run), shellWords(item)
 	if item == "" {
 		return false
 	}
-	for _, step := range exitSteps(run) {
-		step = strings.Join(strings.Fields(step), " ")
-		if step == item || strings.HasPrefix(step, item+" ") {
+	for from := 0; ; {
+		i := strings.Index(run[from:], item)
+		if i < 0 {
+			return false
+		}
+		i += from
+		before, after := run[:i], run[i+len(item):]
+		if (before == "" || strings.HasSuffix(strings.TrimRight(before, " "), "&&")) &&
+			(after == "" || after[0] == ' ' || strings.HasPrefix(after, "&&")) && !addsOperator(before) && !addsOperator(after) {
 			return true
 		}
+		from = i + 1
 	}
-	return false
 }
 
-// exitSteps are the commands whose exit status run's exit 0 vouches for:
-// run itself, and each step of an && chain, whose exit 0 says every step
-// passed. None when another control operator could hide a step's exit
-// (masksExitStatus: ;, a pipe, ||, a lone &, a second line, $?); a
-// redirection's & (2>&1, &>) is none.
-func exitSteps(run string) []string {
-	if masksExitStatus(strings.NewReplacer("&&", " ", ">&", " ", "<&", " ", "&>", " ").Replace(run)) {
-		return nil
-	}
-	if !strings.Contains(run, "&&") {
-		return []string{run}
-	}
-	return append([]string{run}, strings.Split(run, "&&")...)
+// shellWords is s with its whitespace one space, a line break a ; (a
+// second line is a second command).
+func shellWords(s string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(s, "\n", ";")), " ")
+}
+
+// addsOperator: s, a part of a run around an acceptance command, holds a
+// control operator other than && that could hide the command's exit
+// (masksExitStatus: ;, a pipe, ||, a lone &, $?); a redirection's &
+// (2>&1, &>) is none.
+func addsOperator(s string) bool {
+	return masksExitStatus(strings.NewReplacer("&&", " ", ">&", " ", "<&", " ", "&>", " ").Replace(s))
 }
