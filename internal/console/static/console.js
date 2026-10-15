@@ -487,7 +487,10 @@ document.addEventListener("keydown", function (e) {
 // GET /projects/{name}/docs/{path}. ?doc=<path> in the URL holds it, so a
 // reload and the back button stand where you were, and a card's #card=
 // hash takes the slot: the document hides while the card's drawer shows
-// and comes back when it closes. Recent documents and each one's scroll
+// and comes back when it closes. Under the head the path line carries the
+// document's path, its short commit and its time of day; the pins row
+// holds a tab per pinned document — the backlog file pinned by default —
+// in localStorage per project. Recent documents and each one's scroll
 // are remembered per project; a hover of a link peeks its first
 // paragraph after 400ms, never on a coarse pointer or a narrow screen.
 (function () {
@@ -507,6 +510,56 @@ document.addEventListener("keydown", function (e) {
   }
   function store(key, value) {
     try { sessionStorage.setItem("doc:" + project() + ":" + key, JSON.stringify(value)); } catch (err) {}
+  }
+  // the pins outlive the tab: localStorage, with the backlog file pinned
+  // until the member pins another
+  function pins() {
+    try {
+      var v = localStorage.getItem("doc:" + project() + ":pins");
+      var p = v ? JSON.parse(v) : null;
+      if (Array.isArray(p) && p.length) return p;
+    } catch (err) {}
+    return ["docs/roadmap.md"];
+  }
+  function storePins(list) {
+    try { localStorage.setItem("doc:" + project() + ":pins", JSON.stringify(list)); } catch (err) {}
+  }
+  function syncPins() {
+    var navEl = document.getElementById("doc-pins");
+    if (!navEl) return;
+    var current = nav.stack[nav.index] || "";
+    navEl.textContent = "";
+    var l = navEl.appendChild(document.createElement("span"));
+    l.className = "doc-pins-l";
+    l.setAttribute("aria-hidden", "true");
+    l.textContent = "pins";
+    var list = pins();
+    list.forEach(function (p) {
+      var b = navEl.appendChild(document.createElement("button"));
+      b.type = "button";
+      b.className = "doc-pin";
+      b.dataset.doc = p;
+      b.title = p;
+      if (p === current) b.setAttribute("aria-current", "page");
+      b.textContent = label(p);
+    });
+    if (current && list.indexOf(current) < 0) {
+      var add = navEl.appendChild(document.createElement("button"));
+      add.type = "button";
+      add.className = "doc-pin-add";
+      add.title = "Pin " + current;
+      add.textContent = "+ pin";
+    }
+  }
+  function pinOpen() {
+    var path = nav.stack[nav.index];
+    if (!path) return;
+    var list = pins();
+    if (list.indexOf(path) < 0) {
+      list.push(path);
+      storePins(list);
+    }
+    syncPins();
   }
   function docURL(path) {
     return "/projects/" + encodeURIComponent(project()) + "/docs/" + path.split("/").map(encodeURIComponent).join("/");
@@ -572,9 +625,15 @@ document.addEventListener("keydown", function (e) {
     if (!v || !art) return;
     art.textContent = "";
     art.innerHTML = d.html;
-    var facts = document.getElementById("doc-facts");
-    facts.textContent = (d.commit ? d.commit.slice(0, 7) : "") + (d.commit && d.at ? " · " : "") + (d.at ? new Date(d.at).toISOString().slice(0, 10) : "");
-    facts.title = "content " + d.sha256 + (d.commit ? "\ncommit " + d.commit : "");
+    var facts = document.getElementById("doc-facts"), at = d.at ? new Date(d.at) : null;
+    var pathEl = document.getElementById("doc-path");
+    pathEl.textContent = d.path;
+    pathEl.title = d.path;
+    // the path line's state: the short commit and its time of day, the day
+    // itself on the hover
+    var day = at ? ("0" + at.getHours()).slice(-2) + ":" + ("0" + at.getMinutes()).slice(-2) : "";
+    facts.textContent = (d.commit ? d.commit.slice(0, 7) : "") + (d.commit && at ? " · " : "") + day;
+    facts.title = "content " + d.sha256 + (d.commit ? "\ncommit " + d.commit + (at ? " · " + at.toLocaleString() : "") : "");
     var link = document.getElementById("doc-forgejo");
     if (d.forgejo) { link.hidden = false; link.href = d.forgejo; } else link.hidden = true;
     v.classList.toggle("wide", !!load("wide", false));
@@ -612,8 +671,10 @@ document.addEventListener("keydown", function (e) {
     art.appendChild(document.createElement("p")).className = "doc-none";
     art.firstChild.textContent = "Reading " + label(path) + "…";
     var pathEl = document.getElementById("doc-path");
-    pathEl.textContent = label(path);
+    pathEl.textContent = path;
     pathEl.title = path;
+    document.getElementById("doc-facts").textContent = "";
+    syncPins();
     fetch(docURL(path), { headers: { Accept: "application/json" } }).then(function (r) {
       if (!r.ok) return r.text().then(function (t) { throw { status: r.status, text: t }; });
       return r.json();
@@ -670,6 +731,8 @@ document.addEventListener("keydown", function (e) {
       e.target.closest("#doc-wide").setAttribute("aria-pressed", String(wide));
       store("wide", wide);
     } else if (e.target.closest(".doc-recent-row")) openDoc(e.target.closest(".doc-recent-row").dataset.doc);
+    else if (e.target.closest(".doc-pin")) openDoc(e.target.closest(".doc-pin").dataset.doc);
+    else if (e.target.closest(".doc-pin-add")) pinOpen();
   });
   function closeRecent() {
     var d = document.getElementById("doc-recent");

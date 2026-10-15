@@ -8,17 +8,19 @@
 {{template "chat" .}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
 {{if .Docs}}<aside id="doc-view" class="doc-view" aria-label="The project's documents" tabindex="-1" hidden>
-<div class="doc-head"><div class="doc-row">
+<div class="doc-head"><div class="doc-row doc-row-nav">
 <button type="button" id="doc-back" class="xs" aria-label="Nothing back" title="Nothing back" disabled>&#8249;</button>
 <button type="button" id="doc-fwd" class="xs" aria-label="Nothing forward" title="Nothing forward" disabled>&#8250;</button>
-<details id="doc-recent" class="doc-recent"><summary aria-haspopup="menu">Recent</summary><div class="doc-recent-menu" id="doc-recent-menu" role="menu"></div></details>
-<span class="doc-path" id="doc-path"></span>
-<span class="doc-facts" id="doc-facts"></span>
+<details id="doc-recent" class="doc-recent"><summary aria-haspopup="menu">Recent &#9662;</summary><div class="doc-recent-menu" id="doc-recent-menu" role="menu"></div></details>
 <span class="seg doc-mode"><button type="button" id="doc-mode-read" aria-pressed="true">Read</button><button type="button" id="doc-mode-edit" disabled title="Editing the documents arrives with the next card">Edit</button></span>
-<a id="doc-forgejo" class="xs" target="_blank" rel="noopener" hidden>Forgejo</a>
+<span class="doc-gap" aria-hidden="true"></span>
+<a id="doc-forgejo" class="doc-forgejo" target="_blank" rel="noopener" hidden>Open in Forgejo &#8599;</a>
 <button type="button" id="doc-wide" class="xs" aria-pressed="false" title="Wide: across the board and the chat">Wide</button>
-<button type="button" id="doc-close" class="xs" aria-label="Close the document" title="Close the document">&#215;</button>
-</div></div>
+<button type="button" id="doc-close" class="xs doc-x" aria-label="Close the document" title="Close the document">&#215;</button>
+</div>
+<p class="doc-pathline" id="doc-pathline"><span class="doc-file"><span class="doc-path" id="doc-path"></span></span><span class="doc-facts" id="doc-facts"></span></p>
+</div>
+<nav class="doc-pins" id="doc-pins" aria-label="Pinned documents"></nav>
 <article id="doc-article"></article>
 </aside>{{end}}
 </div>

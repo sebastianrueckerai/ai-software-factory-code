@@ -721,8 +721,24 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .doc-head { flex: none; border-bottom: 1px solid var(--line); }
 .doc-row { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 12px 6px 8px; }
 .doc-row .xs { min-width: 28px; }
-.doc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13.5px; }
-.doc-facts { margin-left: auto; flex: none; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.doc-row .doc-mode { margin-left: 8px; }
+.doc-gap { flex: 1; }
+.doc-forgejo { color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
+.doc-forgejo:hover, .doc-forgejo:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
+/* the path line: the document's path and its saved state under the head */
+.doc-pathline { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; margin: 0; padding: 3px 12px 8px 10px; color: var(--text-muted); font: 11.5px/1.6 var(--font-mono); }
+.doc-file { flex: 0 1 auto; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.doc-path { min-width: 0; overflow: hidden; color: var(--text); white-space: nowrap; text-overflow: ellipsis; }
+.doc-facts { flex: 1 1 200px; min-width: 0; font-variant-numeric: tabular-nums; }
+/* the pins: a tab per pinned document, the open one marked, + pin beside */
+.doc-pins { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0 2px; padding: 0 12px; border-bottom: 1px solid var(--line); }
+.doc-pins-l { margin-right: 4px; color: var(--text-faint); font: 11px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
+.doc-pin { position: relative; height: 30px; padding: 0 8px; border: 0; background: none; color: var(--text-muted); font-size: 12.5px; white-space: nowrap; cursor: pointer; }
+.doc-pin:hover { color: var(--text); }
+.doc-pin[aria-current=page] { color: var(--text); }
+.doc-pin[aria-current=page]::after { content: ""; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 2px; background: var(--accent); }
+.doc-pin-add { margin-left: auto; height: 30px; padding: 0 4px; border: 0; background: none; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
+.doc-pin-add:hover { color: var(--text); }
 .doc-mode { display: inline-flex; flex: none; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; }
 .doc-mode button { height: 20px; padding: 0 8px; border: 0; background: none; color: var(--text-muted); font-size: 12px; }
 .doc-mode button[aria-pressed=true] { background: var(--bg-hover); color: var(--text); }
@@ -831,10 +847,23 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .drawer { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view.wide { left: 0; }
-  .doc-row { gap: 4px; padding: 6px 10px 6px 6px; }
-  .doc-row .xs, .doc-recent > summary { min-width: 44px; min-height: 44px; justify-content: center; font-size: 14px; }
+  /* the document head in rows: the nav and × first, the path line with the
+     Forgejo link second, Read|Edit third, so every control fits 390 px */
+  .doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
+  .doc-row { display: contents; }
+  .doc-row .xs { width: 44px; height: 44px; justify-content: center; font-size: 14px; }
+  #doc-close { order: 1; margin-left: auto; }
+  .doc-recent > summary { min-width: 44px; min-height: 44px; justify-content: center; font-size: 14px; }
+  .doc-recent-menu { position: fixed; left: 8px; right: 8px; top: 50px; width: auto; }
+  .doc-pathline { order: 2; flex: 1 1 200px; padding: 4px 4px 4px 10px; }
+  .doc-path { white-space: normal; overflow-wrap: anywhere; }
+  .doc-forgejo { order: 3; display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; font-size: 13px; }
+  .doc-mode { order: 4; margin: 4px 0 4px 4px; }
+  .doc-mode button { height: 44px; padding: 0 18px; font-size: 13px; }
   #doc-wide { display: none; }
-  .doc-mode button { height: 44px; padding: 0 12px; }
+  .doc-pins { padding: 0 6px; }
+  .doc-pin, .doc-pin-add { height: 44px; }
+  .doc-pin-add { padding: 0 10px; }
   #doc-article { padding: 12px 14px 40px; }
   .tabs { overflow-x: auto; }
 }

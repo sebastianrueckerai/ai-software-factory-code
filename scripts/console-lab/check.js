@@ -18,7 +18,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
   ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
   ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
-  ".doc-path, .doc-facts, .doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a";
+  ".doc-path, .doc-facts, .doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
 
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
@@ -159,12 +159,31 @@ async function text(page) {
           if ((await p.page.locator("#documents").getAttribute("aria-expanded")) !== "true") fails.push("docs: the button does not say it opens");
           const dt = await doc.innerText();
           for (const w of ["The roadmap", "The rounds", "build plan", "documents plan"]) if (!dt.includes(w)) fails.push('docs: missing "' + w + '"');
+          // the head (item 2): the prototype's labels, the path line under
+          // the head with the path, the short commit and the time of day,
+          // the pins row with the roadmap marked and a + pin for the rest
+          const head = await doc.locator(".doc-head").innerText();
+          for (const w of ["Recent ▾", "Open in Forgejo ↗", "Read", "Edit"]) if (!head.includes(w)) fails.push('docs: the head lacks "' + w + '"');
+          const pl = (await doc.locator("#doc-pathline").innerText()).replace(/\s+/g, " ");
+          if (!/^docs\/roadmap\.md \S{0,7} · \d\d:\d\d/.test(pl)) fails.push('docs: the path line reads "' + pl + '"');
+          const pinsRow = doc.locator("#doc-pins");
+          if (!(await pinsRow.innerText()).includes("pins")) fails.push("docs: the pins row carries no label");
+          const pin = pinsRow.locator('.doc-pin[data-doc="docs/roadmap.md"]');
+          if (!(await pin.count()) || !(await pin.innerText()).includes("roadmap")) fails.push("docs: the roadmap is not pinned");
+          else if ((await pin.getAttribute("aria-current")) !== "page") fails.push("docs: the open document's pin is not the marked tab");
           const box = await doc.boundingBox(), chat = await p.page.locator("#chat").boundingBox();
           if (box && box.x + box.width < 1430) fails.push("docs: not docked at the right edge (ends at " + Math.round(box.x + box.width) + ")");
           if (box && chat && box.x < chat.x + chat.width - 1) fails.push("docs: over the chat (from " + Math.round(box.x) + ", the chat ends at " + Math.round(chat.x + chat.width) + ")");
           await doc.locator('a[data-doc="docs/plans/2026-09-24-build-plan.md"]').click();
           await p.page.waitForTimeout(600);
           if (!(await doc.innerText()).includes("Four cards")) fails.push("docs: a link opens no plan");
+          const add = doc.locator(".doc-pin-add");
+          if (!(await add.count())) fails.push("docs: an unpinned document offers no + pin");
+          else {
+            await add.click();
+            await p.page.waitForTimeout(200);
+            if (!(await pinsRow.locator('.doc-pin[data-doc="docs/plans/2026-09-24-build-plan.md"]').count())) fails.push("docs: + pin does not pin the open document");
+          }
           if (decodeURIComponent(p.page.url()).indexOf("doc=docs/plans/") < 0) fails.push("docs: the URL carries no doc param (" + p.page.url() + ")");
           await p.page.locator("#doc-back").click();
           await p.page.waitForTimeout(600);
@@ -329,9 +348,17 @@ async function text(page) {
     await pp.page.waitForTimeout(600);
     if (!(await pp.page.locator("#doc-view").isVisible())) fails.push("phone: the documents do not open");
     else {
-      const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".doc-row .xs, .doc-recent > summary, .doc-mode button"))
+      const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".doc-row .xs, .doc-recent > summary, .doc-mode button, .doc-pin, .doc-pin-add, #doc-forgejo"))
         .filter((b) => b.offsetParent).map((b) => [b.id || b.className, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
       if (small.length) fails.push("phone: doc targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+      // every head control stands in view at 390: the nav row, the path
+      // line's Forgejo link, Read|Edit, the pins — none cut off, no
+      // horizontal scroll
+      const cut = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
+        "#doc-view .doc-head button, #doc-view .doc-head a, #doc-view .doc-head summary, #doc-view .doc-pin, #doc-view .doc-pin-add"))
+        .filter((b) => b.offsetParent).map((b) => [b.id || b.className, Math.round(b.getBoundingClientRect().left), Math.round(b.getBoundingClientRect().right)])
+        .filter((x) => x[1] < 0 || x[2] > 390));
+      if (cut.length) fails.push("phone: a document head control is cut off at 390: " + cut.map((x) => x[0] + " " + x[1] + ".." + x[2]).join(", "));
       const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
       if (psw > 390) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + ")");
       await pp.page.keyboard.press("Escape");
