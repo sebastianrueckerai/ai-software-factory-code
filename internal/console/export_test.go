@@ -275,7 +275,7 @@ func TestProjectsPageGithubExport(t *testing.T) {
 }
 
 // The status line ends with the export's state word, which the chat's
-// snapshot carries too; a project without an export shows none.
+// status line carries too; a project without an export shows none.
 func TestStatusLineGithubExport(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -295,8 +295,8 @@ func TestStatusLineGithubExport(t *testing.T) {
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
 	system := messages(t, g.calls()[0])[0]["content"].(string)
-	if !regexp.MustCompile(`\nStatus: [^\n]*; GitHub: synced\n`).MatchString(system) {
-		t.Fatalf("the snapshot's status line lacks GitHub: synced:\n%s", system)
+	if !regexp.MustCompile(`\nStatus: [^\n]*; GitHub: synced$`).MatchString(system) {
+		t.Fatalf("the chat's status line lacks GitHub: synced:\n%s", system)
 	}
 	r.mirrors.rows["ai-software-factory-code export"] = factoryd.Mirror{Project: "ai-software-factory-code", Direction: factoryd.MirrorExport,
 		Remote: "acme/app", State: "failed: auth"}

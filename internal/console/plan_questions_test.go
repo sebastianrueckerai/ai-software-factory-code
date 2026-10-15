@@ -332,13 +332,13 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 		}
 	}
 	equal(t, "the required arguments", tool.required, []string{"task_id", "revision"})
-	def := tool.def()
+	def := tool.def(false)
 	schema, _ := def.Parameters.(map[string]any)
 	params, ok := schema["properties"].(map[string]any)
 	if !ok || params["answers"] == nil {
 		t.Fatalf("the tool's parameters = %#v, they name no answers", def.Parameters)
 	}
-	if !strings.Contains(def.Description, "Answer all open questions of a plan in one call") {
+	if !strings.Contains(def.Description, "every open question of a plan at once") {
 		t.Errorf("the tool's about = %q", def.Description)
 	}
 }

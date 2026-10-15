@@ -105,6 +105,28 @@ func TestTellCardApprovalGate(t *testing.T) {
 			Detail: map[string]any{"pr": int64(12), "action": "request_changes"}})
 }
 
+// deny_merge's action defaults to request_changes: a call without one
+// asks for changes as the tell at the approval gate does.
+func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {
+	r, before := tellRig(t)
+	_, s := r.loggedIn(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, _ := r.c.chatTool("deny_merge")
+	out, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-g", Note: "Drop the committed binary."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the answer", out, "Denied pull request #12 (request changes).")
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" {
+		t.Fatalf("reviews = %+v, want one REQUEST_CHANGES", r.fg.reviews)
+	}
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-g", IssueNumber: 15, Kind: factoryd.EventMergeDenied,
+			Detail: map[string]any{"pr": int64(12), "action": "request_changes"}})
+}
+
 // A tell at a card waiting on a human with no pending request is the
 // answer: the member's comment on its issue, which resumes it, one
 // question_answered row via chat.
@@ -181,7 +203,8 @@ func TestTellCardRoutingTable(t *testing.T) {
 }
 
 // tell_card sits in policy.ChatTools right before steer, needs the
-// member's OK by default, and the system read names it with its states.
+// member's OK by default, which its sentence carries, and the system read
+// names its routes.
 func TestTellCardIsAChatTool(t *testing.T) {
 	i, j := -1, -1
 	for n, name := range policy.ChatTools {
@@ -205,12 +228,17 @@ func TestTellCardIsAChatTool(t *testing.T) {
 		events[len(events)-1] != "done {}" {
 		t.Fatalf("turn = %d %v", code, events)
 	}
+	var about any
+	for _, d := range g.calls()[0]["tools"].([]any) {
+		if f := d.(map[string]any)["function"].(map[string]any); f["name"] == "tell_card" {
+			about = f["description"]
+		}
+	}
+	equal(t, "tell_card's sentence", about, "Tell a card one text, routed by its state to its session, its merge request or its question (needs OK).")
 	msgs := messages(t, g.calls()[1])
 	sys, _ := msgs[len(msgs)-1]["content"].(string)
-	for _, want := range []string{"\n  tell_card, needs OK, " + tellFits + "\n",
-		"\nTools needing OK: new_card, move_card, answer, tell_card, steer, "} {
-		if !strings.Contains(sys, want) {
-			t.Errorf("the manual lacks %q:\n%s", want, sys)
-		}
+	if want := "\n  tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), " +
+		"to the question it waits on as the answer (answer).\n"; !strings.Contains(sys, want) {
+		t.Errorf("the manual lacks %q:\n%s", want, sys)
 	}
 }

@@ -124,7 +124,7 @@ func TestPulseGet(t *testing.T) {
 
 // The pulse reads the project as the project agent does, seen by no
 // member: no writer check runs and its own last pulse is not in it; the
-// agent of a chat turn gets the pulse line in its snapshot.
+// agent of a chat turn gets the pulse line under its status line.
 func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.c.cfg.Pulses = fakePulses{"sf/code": calm}
@@ -144,8 +144,8 @@ func TestPulseContextIsTheAgentsSnapshot(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{say("All calm.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what matters now?"}})
-	if system := messages(t, g.calls()[0])[0]["content"].(string); !strings.Contains(system, "\nPulse: "+calm.Sentence+"\nBacklog (1):") {
-		t.Fatalf("the agent's snapshot lacks the pulse:\n%s", system)
+	if system := messages(t, g.calls()[0])[0]["content"].(string); !strings.HasSuffix(system, "\nPulse: "+calm.Sentence) {
+		t.Fatalf("the agent's status lacks the pulse:\n%s", system)
 	}
 }
 

@@ -360,10 +360,10 @@ func stepFull(ev harness.Event) string {
 	return strings.Join(parts, "\n")
 }
 
-// stepRange is in's from and to over total steps: to defaults to span
-// steps from from, clamped to the end and to most steps.
+// stepRange is in's from and to over total steps: from defaults to 1, to
+// to span steps from from, clamped to the end and to most steps.
 func stepRange(n int, in toolInput, total, span, most int) (int, int, error) {
-	from, to := in.From, in.To
+	from, to := cmp.Or(in.From, 1), in.To
 	switch {
 	case from < 1 || to < 0:
 		return 0, 0, refuse(http.StatusBadRequest, "from and to are step numbers, from 1.")
@@ -533,7 +533,6 @@ func (t *turn) stepsText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	in.From = cmp.Or(in.From, 1)
 	from, to, err := stepRange(s.N, in, len(evs), stepsListed, stepsListed)
 	if err != nil {
 		return "", err

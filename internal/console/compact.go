@@ -14,11 +14,11 @@ import (
 
 // Compaction (roadmap 239): the raw rows stay, the thread carries a
 // running summary of its rows before its kept tail. A turn's context is
-// the snapshot, the events, the summary and the rows after it, so the
-// ceiling holds by construction. Three triggers run the one step: the
-// preset, before a turn projected past 80 percent of the window; the
-// forced, on the provider's refusal of a prompt past its window, at most
-// twice with the second keeping half the tail; and /compact by hand.
+// the status, the summary and the rows after it, so the ceiling holds by
+// construction. Three triggers run the one step: the preset, before a
+// turn projected past 80 percent of the window; the forced, on the
+// provider's refusal of a prompt past its window, at most twice with the
+// second keeping half the tail; and /compact by hand.
 
 const (
 	// keepTurns is the kept tail: the thread's last two turns (C14).

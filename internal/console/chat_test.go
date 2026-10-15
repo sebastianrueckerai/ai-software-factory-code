@@ -701,13 +701,14 @@ func TestChatTextReply(t *testing.T) {
 		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
 		"The member decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
-		"These tools need sebastian's OK: new_card, move_card, answer, tell_card, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource, write_doc, set_autonomy. " +
-			"Call them like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
-		"The project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" + boardText,
+		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
+	}
+	if want := "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"; !strings.HasSuffix(system, want) {
+		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
 	equal(t, "messages", len(msgs), 2)
 	equal(t, "the member's message", msgs[1], map[string]any{"role": "user", "content": "what is open?"})
@@ -728,6 +729,151 @@ func TestChatTextReply(t *testing.T) {
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
 
+// Every tool the agent is offered is one short sentence of at most 100
+// characters, what it reads or does; a tool the chat's confirm names
+// carries the suffix (needs OK) and no other does; a parameter with a
+// default is not required.
+func TestChatToolSentences(t *testing.T) {
+	offered := func(r *rig, g *chatGateway) []map[string]any {
+		t.Helper()
+		ck, s := r.loggedIn(t)
+		g.replies = [][]string{{say("ok")}}
+		chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+		var fs []map[string]any
+		for _, d := range g.calls()[0]["tools"].([]any) {
+			fs = append(fs, d.(map[string]any)["function"].(map[string]any))
+		}
+		return fs
+	}
+	r, _, g := newChatRig(t)
+	var marked []string
+	required := map[string]any{}
+	for _, f := range offered(r, g) {
+		name, about := f["name"].(string), f["description"].(string)
+		sentence, ok := strings.CutSuffix(about, " (needs OK).")
+		if ok {
+			marked = append(marked, name)
+			sentence += "."
+		}
+		body := strings.TrimSuffix(sentence, ".")
+		if len(sentence) > 100 || body == sentence || strings.Contains(body, ". ") || strings.ContainsAny(body, ";!?\n") {
+			t.Errorf("%s: %q is no short sentence", name, about)
+		}
+		required[name] = f["parameters"].(map[string]any)["required"]
+	}
+	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
+		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
+		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy"})
+	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"], required["session_step"]},
+		[]any{[]any{"title"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
+
+	r, _, g = newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
+	for _, f := range offered(r, g) {
+		if about := f["description"].(string); strings.Contains(about, "(needs OK)") {
+			t.Errorf("%s: %q is marked with an empty confirm list", f["name"], about)
+		}
+	}
+}
+
+// The agent is offered the tools its member holds the access table's
+// roles for, so no schema reaches the model for a tool the dispatch would
+// refuse: alice writes and approves the factory's code and is offered
+// every tool; controller writes it and approves nothing, so the
+// approvers' tools go; bob writes demo, which alice approves, so the
+// factory's tools go too.
+func TestChatOffersTheMembersTools(t *testing.T) {
+	for _, c := range []struct {
+		who, project string
+		want         []string
+	}{
+		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
+		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
+			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
+			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
+			"set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "notes_read",
+			"notes_write", "escalate", "active_threads"}},
+		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
+			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
+			"request_changes", "reject_plan", "deny_merge", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency",
+			"read_doc", "write_doc", "notes_read", "notes_write", "escalate", "active_threads"}},
+	} {
+		r, _, g := newChatRig(t)
+		members(r)
+		r.ledger.files = map[string]policy.ProjectConfig{"demo": {Repository: "demo/demo", MergeRule: "human", Objects: "factory",
+			Agents: "coder", Process: "maintenance"}}
+		g.project = c.project
+		ck, s := memberLogin(t, r, c.who)
+		g.replies = [][]string{{say("ok")}}
+		chatPost(t, r, ck, s, "/projects/"+c.project+"/chat", url.Values{"message": {"what is open?"}})
+		var got []string
+		for _, d := range g.calls()[0]["tools"].([]any) {
+			got = append(got, d.(map[string]any)["function"].(map[string]any)["name"].(string))
+		}
+		equal(t, c.who+"'s tools", got, c.want)
+	}
+}
+
+// The turn's opening context is the standing prompt and the project's
+// status line: it restates neither the board read nor the history read,
+// which the tools give on demand.
+func TestChatOpeningContextRestatesNoRead(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 12, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-r",
+		IssueNumber: 11, Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton})
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "board", `{}`, "history", `{}`)}, {say("Read.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what moved?"}})
+	msgs := messages(t, g.calls()[1])
+	system, _ := msgs[0]["content"].(string)
+	board, _ := msgs[len(msgs)-2]["content"].(string)
+	history, _ := msgs[len(msgs)-1]["content"].(string)
+	equal(t, "the board read", board, boardText)
+	if want := "2026-10-11 09:12 #11 t-r card_moved by sebastian via button"; !strings.Contains(history, want) {
+		t.Fatalf("the history read lacks %q:\n%s", want, history)
+	}
+	for _, read := range []string{board, history} {
+		for line := range strings.Lines(read) {
+			if line = strings.TrimSpace(line); line != "" && strings.Contains(system, line) {
+				t.Errorf("the opening context restates the read's line %q:\n%s", line, system)
+			}
+		}
+	}
+}
+
+// Every list of the board's text is bounded as a column's cards are: 25
+// lines, then how many more; the cards, the approval requests and the
+// notes alike.
+func TestBoardWordsBoundsEveryList(t *testing.T) {
+	var d boardData
+	var cards []card
+	for i := 1; i <= 27; i++ {
+		cards = append(cards, card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", i), IssueNumber: int64(i), Status: "backlog", Objective: "Fix."}})
+		d.Approvals = append(d.Approvals, approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}})
+		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
+	}
+	d.Columns = []column{{Title: "Backlog", Cards: cards}}
+	got := boardWords(d)
+	for _, want := range []string{
+		"Backlog (27):\n  #1 t-1 \"Fix.\" backlog (waits in the backlog until a member moves it into a lane)\n",
+		"\n  #25 t-25 \"Fix.\" backlog (waits in the backlog until a member moves it into a lane)\n  and 2 more\nHuman lane (0):\n",
+		"\nApproval requests waiting (27):\n  merge request 1 of t-1\n",
+		"\n  merge request 25 of t-25\n  and 2 more\nNote: problem 1\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the board's text lacks %q:\n%s", want, got)
+		}
+	}
+	if want := "\nNote: problem 25\nNote: and 2 more"; !strings.HasSuffix(got, want) {
+		t.Errorf("the board's text does not end with %q:\n%s", want, got)
+	}
+	for _, not := range []string{"#26", "t-26", "problem 26"} {
+		if strings.Contains(got, not) {
+			t.Errorf("the board's text holds %q past its bound:\n%s", not, got)
+		}
+	}
+}
+
 // The current thread before its first message has no row: it carries no
 // times, so the page says no "739903 days ago" of year 1.
 func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
@@ -740,21 +886,31 @@ func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
 	}
 }
 
+// boardRead is the board read's result a turn whose agent reads the board
+// first stores, and the turn's system message.
+func boardRead(t *testing.T, r *rig, g *chatGateway) (string, string) {
+	t.Helper()
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "board", `{}`)}, {say("Read.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
+	calls := g.calls()
+	if len(calls) != 2 {
+		t.Fatalf("%d model calls, want 2", len(calls))
+	}
+	msgs := messages(t, calls[1])
+	system, _ := msgs[0]["content"].(string)
+	board, _ := msgs[len(msgs)-1]["content"].(string)
+	return board, system
+}
+
 // A card whose next session waits for a roll reads so in the agent's
 // board, as on the board's face.
 func TestChatBoardShowsAHeldCard(t *testing.T) {
 	r, _, g := newChatRig(t)
-	ck, s := r.loggedIn(t)
 	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"held","roll":"t-roll"}` + "\n")
-	g.replies = [][]string{{say("One waits.")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
-	calls := g.calls()
-	if len(calls) != 1 {
-		t.Fatalf("%d model calls, want 1", len(calls))
-	}
-	system, _ := messages(t, calls[0])[0]["content"].(string)
-	if want := "\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting for a roll\n"; !strings.Contains(system, want) {
-		t.Fatalf("the system message lacks %q:\n%s", want, system)
+	board, _ := boardRead(t, r, g)
+	if want := "\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting for a roll\n"; !strings.Contains(board, want) {
+		t.Fatalf("the board read lacks %q:\n%s", want, board)
 	}
 }
 
@@ -762,20 +918,13 @@ func TestChatBoardShowsAHeldCard(t *testing.T) {
 // on its status line, as on the board.
 func TestChatBoardShowsACardWaitingOnTheProvider(t *testing.T) {
 	r, _, g := newChatRig(t)
-	ck, s := r.loggedIn(t)
 	r.objects["sessions/t-r/timeline.jsonl"] = []byte(`{"step":"provider_refused","status":429,"reason":"budget exhausted","backoff_s":120}` + "\n")
-	g.replies = [][]string{{say("One waits.")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs?"}})
-	calls := g.calls()
-	if len(calls) != 1 {
-		t.Fatalf("%d model calls, want 1", len(calls))
+	board, system := boardRead(t, r, g)
+	if want := "\nStatus: waiting on you; 0 working; 1 waiting on the provider; 3 need you; "; !strings.Contains(system, want) {
+		t.Errorf("the system message lacks %q:\n%s", want, system)
 	}
-	system, _ := messages(t, calls[0])[0]["content"].(string)
-	for _, want := range []string{"\nStatus: waiting on you; 0 working; 1 waiting on the provider; 3 need you; ",
-		"\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting on the provider\n"} {
-		if !strings.Contains(system, want) {
-			t.Errorf("the system message lacks %q:\n%s", want, system)
-		}
+	if want := "\n  #11 t-r \"Speed up the board.\" running (runs an agent session), gate session (an agent works in a sandbox), waiting on the provider\n"; !strings.Contains(board, want) {
+		t.Errorf("the board read lacks %q:\n%s", want, board)
 	}
 }
 
@@ -819,9 +968,9 @@ func (l cappedPolicies) CurrentPolicy(ctx context.Context) (policy.Version, bool
 
 // The system tool is the factory's manual rendered from the code at call
 // time: the paragraph, the states in words, the process's gates in its
-// order, the tools the agent is offered with what each needs and whether
-// it needs the member's OK, the process, the budgets and the chat's
-// bounds. A read, it records nothing.
+// order, what the tools' sentences leave to it, the autonomy states, the
+// process, the budgets and the chat's bounds. It lists no tool and no OK:
+// the schemas carry both. A read, it records nothing.
 func TestSystemTool(t *testing.T) {
 	const first = "Signals and members file cards; a card runs agent sessions in a sandbox; " +
 		"its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; " +
@@ -872,17 +1021,12 @@ func TestSystemTool(t *testing.T) {
 	contains(got, first+"\n",
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
-		"\n  card, any card\n",
-		"\n  diff, a card with a pull request\n  plan, a plan card or a card of a plan\n  pr, a card with a pull request\n  file, the project's repository\n"+
-			"  session, a card with a session\n  session_steps, a card with a session\n  session_step, a card with a session\n  session_search, a card with a session\n"+
-			"  ci, a project with a repository\n"+
-			"  alerts, the factory's writers\n  resources, the factory's writers\n  projects, the factory's writers\n  policy, the factory's writers\n",
-		"\n  approve_merge, needs OK, a pending merge request\n", "\n  github_export, needs OK, a factory project, for an approver\n",
-		"\n  invite, needs OK, an approver of the project\n",
-		"\n  alert_verdict, needs OK, an open escalation alert\n  promote_resource, needs OK, an open leased commission\n  release_resource, needs OK, an open commission\n",
-		"\n  close, needs OK, a card that is not final, or a failed card without an issue\n  edit, needs OK, a card not in a session\n  grant_session, needs OK, a card at its session cap\n"+
-			"  set_dependency, needs OK, two cards of which the first has not started\n  split_card, needs OK, a pending merge request of risk class large\n",
-		"\nTools needing OK: new_card, move_card, answer, tell_card, steer, start_plan, retry, accept_plan, request_changes, reject_plan, approve_merge, deny_merge, invite, github_export, github_sync, close, edit, grant_session, set_dependency, split_card, alert_verdict, promote_resource, release_resource, write_doc, set_autonomy\n",
+		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.\n",
+		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
+		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
+			"  assisted: the agent starts and files ready work by itself; direction, money and merges still ask\n"+
+			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money still ask\n"+
+			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
@@ -897,7 +1041,7 @@ func TestSystemTool(t *testing.T) {
 		}
 		at = i
 	}
-	for _, not := range []string{"\n  steer", "month cap"} {
+	for _, not := range []string{"\n  steer", "month cap", "needs OK", "\n  card, ", "\n  approve_merge"} {
 		if strings.Contains(got, not) {
 			t.Errorf("the manual holds %q, which the rig has not:\n%s", not, got)
 		}
@@ -907,11 +1051,7 @@ func TestSystemTool(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	r.c.cfg.Policies = cappedPolicies{r.ledger}
 	got = read(r, g)
-	contains(got, "\n  approve_merge, a pending merge request\n", "\nTools needing OK: none\n",
-		"\n  approvers: sebastian\n  project month cap: €12.00\n  task budget: €2.00 default, €5.00 maximum\n")
-	if strings.Contains(got, "needs OK") {
-		t.Errorf("a tool needs OK with an empty confirm list:\n%s", got)
-	}
+	contains(got, "\n  approvers: sebastian\n  project month cap: €12.00\n  task budget: €2.00 default, €5.00 maximum\n")
 }
 
 // A tool the chat's confirm names proposes and runs nothing; the
@@ -1918,11 +2058,12 @@ func TestChatToolResultCarriesReadAt(t *testing.T) {
 	}
 }
 
-// TestChatTurnContextHasFreshCards proves the system message contains
-// fresh card state and old results show their age: two turns with a card
-// spend change between them; the second turn's system message holds the
-// new spend, and the first turn's replayed result carries its age prefix.
-func TestChatTurnContextHasFreshCards(t *testing.T) {
+// TestChatTurnContextHasFreshStatus proves the system message holds the
+// status line read at the turn's start and old results show their age:
+// two turns with a card started between them; the second turn's status
+// line counts it working, and the first turn's replayed result carries
+// its age prefix.
+func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("first answer")}}
@@ -1941,7 +2082,7 @@ func TestChatTurnContextHasFreshCards(t *testing.T) {
 	var found bool
 	for i := range r.tasks.tasks {
 		if r.tasks.tasks[i].ID == "t-m" {
-			r.tasks.tasks[i].SpentEUR = 2.5
+			r.tasks.tasks[i].Status, r.tasks.tasks[i].Gate = "running", factoryd.GateSession
 			found = true
 		}
 	}
@@ -1955,13 +2096,14 @@ func TestChatTurnContextHasFreshCards(t *testing.T) {
 	if len(calls) < 3 {
 		t.Fatalf("%d model calls, want at least 3", len(calls))
 	}
+	firstSystem, _ := messages(t, calls[0])[0]["content"].(string)
 	secondMsgs := messages(t, calls[2])
 	secondSystem, _ := secondMsgs[0]["content"].(string)
-	if !strings.Contains(secondSystem, "€2.50 of €3.00") {
-		t.Errorf("the second turn's system message lacks the new spend:\n%s", secondSystem)
+	if !strings.Contains(firstSystem, "\nStatus: waiting on you; 1 working; 3 need you; ") {
+		t.Errorf("the first turn's status line counts no 1 working:\n%s", firstSystem)
 	}
-	if !strings.Contains(secondSystem, "Cards now:") {
-		t.Errorf("the second turn's system message lacks 'Cards now:':\n%s", secondSystem)
+	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 3 need you; ") {
+		t.Errorf("the second turn's status line counts no 2 working:\n%s", secondSystem)
 	}
 	var agedFound bool
 	for _, m := range secondMsgs {

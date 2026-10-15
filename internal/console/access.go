@@ -331,6 +331,22 @@ func (t *turn) admitTool(name string, in toolInput) error {
 	return t.c.admit(t.r.Context(), rule, t.a, repository, subject)
 }
 
+// offers reports whether the turn's member holds tool name's table roles
+// over the chat's project, as admitTool judges them before a card is
+// named: a card the turn reaches is the chat project's.
+func (t *turn) offers(name string) bool {
+	rule := accessTable[name]
+	repository := t.p.Repository
+	if rule.scope == scFactory {
+		repository = t.c.writersOwn()
+	}
+	// judged here first, so a tool left unoffered logs no refused action
+	if rule.need&approver != 0 && !t.c.isApprover(t.r.Context(), t.a.s.user, repository) {
+		return false
+	}
+	return t.c.admit(t.r.Context(), rule, t.a, repository, t.p.Name) == nil
+}
+
 func (t *turn) scopeOf(sc scope, in toolInput) (string, string, error) {
 	switch sc {
 	case scFactory:

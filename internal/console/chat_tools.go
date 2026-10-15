@@ -102,22 +102,29 @@ type inverse struct {
 
 // chatTool is one of the project agent's tools: a read, or a console
 // action (write) it runs through the action's own function as the member.
+// Its about is one short sentence, what it reads or does; the system read
+// carries the depth.
 type chatTool struct {
 	name, title, about string
 	params             map[string]any // the arguments' JSON Schema properties
 	required           []string
 	write              bool
 	internal           bool // an undo's inverse only: the agent is not offered it
-	fits               string
 	run                func(t *turn, in toolInput) (string, *inverse, error)
 }
 
-func (tool chatTool) def() factoryd.OperatorTool {
+// def is the tool's schema, its sentence marked (needs OK) when the
+// chat's confirm names it.
+func (tool chatTool) def(confirm bool) factoryd.OperatorTool {
 	params := map[string]any{"type": "object", "properties": tool.params}
 	if len(tool.required) > 0 {
 		params["required"] = tool.required
 	}
-	return factoryd.OperatorTool{Name: tool.name, Description: tool.about, Parameters: params}
+	about := tool.about
+	if confirm {
+		about = strings.TrimSuffix(about, ".") + " (needs OK)."
+	}
+	return factoryd.OperatorTool{Name: tool.name, Description: about, Parameters: params}
 }
 
 func str(about string) map[string]any { return map[string]any{"type": "string", "description": about} }
@@ -137,8 +144,6 @@ var (
 	sessionN  = stepParam("the session's number on the card, 1 the first (default the newest)")
 )
 
-const sessionFits = "a card with a session"
-
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session, github_export
 // where it keeps exports, github_sync where it syncs them.
@@ -147,6 +152,19 @@ func (c *Console) chatTools() []chatTool {
 		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil ||
 			t.name == "github_sync" && c.cfg.GitHubSync == nil
 	})
+}
+
+// offered are the schemas of the chat's tools the turn's member holds the
+// access table's roles for: the model is offered no tool the dispatch
+// would refuse them.
+func (t *turn) offered() []factoryd.OperatorTool {
+	var defs []factoryd.OperatorTool
+	for _, tool := range t.c.chatTools() {
+		if t.offers(tool.name) {
+			defs = append(defs, tool.def(slices.Contains(t.cfg.Confirm, tool.name)))
+		}
+	}
+	return defs
 }
 
 func (c *Console) chatTool(name string) (chatTool, bool) {
@@ -433,8 +451,9 @@ func cardLine(t factoryd.Task) string {
 	return s
 }
 
-// chatColumnCards bounds the cards of one column the agent reads.
-const chatColumnCards = 25
+// boardListed bounds each list of the board the agent reads: a column's
+// cards, the approval requests and the notes.
+const boardListed = 25
 
 // boardText is project p's board in the wide view as the session's member
 // sees it, for the agent: each column with its cards, the human lane, the
@@ -447,22 +466,35 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 	if err != nil {
 		return "", d, err
 	}
+	return boardWords(d), d, nil
+}
+
+// boardWords is board d's text for the agent, each list bounded at
+// boardListed.
+func boardWords(d boardData) string {
 	var b strings.Builder
-	list := func(title string, cards []card) {
-		fmt.Fprintf(&b, "%s (%d):", title, len(cards))
-		for i, k := range cards {
-			if i == chatColumnCards {
-				fmt.Fprintf(&b, "\n  and %d more", len(cards)-i)
+	listed := func(prefix string, lines []string) {
+		for i, l := range lines {
+			if i == boardListed {
+				fmt.Fprintf(&b, "%sand %d more", prefix, len(lines)-i)
 				break
 			}
-			b.WriteString("\n  " + cardLine(k.Task))
+			b.WriteString(prefix + l)
+		}
+	}
+	list := func(title string, cards []card) {
+		fmt.Fprintf(&b, "%s (%d):", title, len(cards))
+		lines := make([]string, len(cards))
+		for i, k := range cards {
+			lines[i] = cardLine(k.Task)
 			if k.Held {
-				b.WriteString(", " + heldWords)
+				lines[i] += ", " + heldWords
 			}
 			if k.Provider {
-				b.WriteString(", " + providerWords)
+				lines[i] += ", " + providerWords
 			}
 		}
+		listed("\n  ", lines)
 		b.WriteString("\n")
 	}
 	for _, col := range d.Columns {
@@ -475,19 +507,19 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 	}
 	list("Escalated, waiting on an answer", escalated)
 	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
-	for _, a := range d.Approvals {
-		fmt.Fprintf(&b, "\n  %s request %d of %s", a.Kind, a.ID, a.TaskID)
+	requests := make([]string, len(d.Approvals))
+	for i, a := range d.Approvals {
+		requests[i] = fmt.Sprintf("%s request %d of %s", a.Kind, a.ID, a.TaskID)
 		if a.Issue > 0 {
-			fmt.Fprintf(&b, " (#%d)", a.Issue)
+			requests[i] += fmt.Sprintf(" (#%d)", a.Issue)
 		}
 		if a.PRNumber > 0 {
-			fmt.Fprintf(&b, ", pull request #%d", a.PRNumber)
+			requests[i] += fmt.Sprintf(", pull request #%d", a.PRNumber)
 		}
 	}
-	for _, problem := range d.Problems {
-		b.WriteString("\nNote: " + problem)
-	}
-	return b.String(), d, nil
+	listed("\n  ", requests)
+	listed("\nNote: ", d.Problems)
+	return b.String()
 }
 
 // limit is in's n, 20 when unset, at most 100.
@@ -533,32 +565,28 @@ func eventLines(events []factoryd.Event) string {
 // tools are the project agent's tools in policy.ChatTools' order.
 var tools = []chatTool{
 	{name: "system", title: "Read the manual",
-		about: "The factory's manual, rendered from the code: the card states, the gates in order, the tools with the states each fits, this project's process and budgets, the chat's OK list; read it when a state or a refusal is unclear.",
+		about: "The factory's manual: states, gates, how the tools work, autonomy, the process and its limits.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.systemText()
 			return s, nil, err
 		}},
 	{name: "board", title: "Read the board",
-		about: "The project's board as the member sees it: each column with its cards (issue, task id, title, status, gate, spend of budget), the human lane, the escalated cards and the approval requests waiting.",
-		fits:  "any card",
+		about: "The project's board: each column's cards, the human lane, the escalations and the approval requests.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, _, err := t.c.boardText(t.r, t.p)
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "One card in full: its state, gate, spend of budget, lane, issue and sessions of its cap; its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call; the cards it depends on and that depend on it; the question it waits on with its choices; its pull request with its head and state, and its waiting requests; which of the reads pr, plan and session holds its reviews, audit, checks, plan and sessions; its objective and the agent's summary.",
-		fits:  "any card",
+		about: "One card in full, its model calls included, with pointers to its plan, pull request and sessions.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
-		about: "The project's newest events, newest first: what was done to which card, by whom and through what (button, chat, factoryd, webhook).",
-		fits:  "any card",
+		about: "The project's events, newest first: what was done to which card, by whom and how.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			events, err := t.c.cfg.Events.ProjectEvents(t.r.Context(), t.p.Repository, 0, in.limit())
 			return eventLines(events), nil, err
 		}},
 	{name: "card_history", title: "Read a card's history", params: map[string]any{"task_id": taskParam, "n": nParam}, required: []string{"task_id"},
 		about: "One card's events, newest first.",
-		fits:  "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			k, err := t.card(in)
 			if err != nil {
@@ -571,8 +599,7 @@ var tools = []chatTool{
 		params: map[string]any{"by": enum("the whole ledger by day, by card (task) or by tier (model alias), for the factory's writers; none: the project's spend line", "day", "card", "tier"),
 			"from_date": str("the window's first UTC day, YYYY-MM-DD (default the current month's first day)"),
 			"to_date":   str("the window's last UTC day, YYYY-MM-DD (default today)")},
-		about: "The project's spend this UTC month against its month cap, the cards' and the chat's apart; with by day, card or tier the whole ledger that way over the window from_date to to_date (both included, YYYY-MM-DD; the current month when unset), in EUR, with the totals line.",
-		fits:  "any card",
+		about: "The project's spend this month against its cap, or the whole ledger by day, card or tier.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if in.By != "" {
 				s, err := t.c.costsByText(t.r.Context(), t.a, in.By, in.FromDate, in.ToDate)
@@ -582,80 +609,67 @@ var tools = []chatTool{
 			return "The project's " + s + ".", nil, err
 		}},
 	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "The diff of a card's pull request, read from Forgejo as the member; its first 20 KB.",
-		fits:  "a card with a pull request",
+		about: "A card's pull request diff, its first 20 KB.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "A plan's newest revision: its number and sha256 (which accept_plan takes), its summary, its questions with their answers, each card's key, role, title, size, dependencies and issue once filed, and each filed card's state; for a card of a plan, its plan's.",
-		fits:  "a plan card or a card of a plan",
+		about: "The newest revision of a card's plan: its sha256, questions and cards.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
 	{name: "pr", title: "Read a pull request",
 		params:   map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "add the diff's first 20 KB"}},
 		required: []string{"task_id"},
-		about:    "A card's pull request: its newest checks' jobs with their verdicts and run times, its newest model review with its findings and the earlier reviews' verdicts, its audit with its findings, and its changed files with their additions and deletions, read from Forgejo as the member.",
-		fits:     "a card with a pull request",
+		about:    "A card's pull request: its checks, reviews, audit and changed files.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
 	{name: "file", title: "Read a file",
 		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path in the repository")},
 		required: []string{"ref", "path"},
-		about:    "A file of the project's repository at a branch, tag or commit, read from Forgejo as the member; its first 64 KB, a binary file refused.",
-		fits:     "the project's repository",
+		about:    "A file of the project's repository at a branch, tag or commit, its first 64 KB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
-		about: "One session of a card, the newest unless n numbers one: its model, attempt and outcome, its duration, the agent's closing summary, the supervisor's trips and the messages it got; its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call; the files it changed, its diff stat and its step count.",
-		fits:  sessionFits,
+		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
 	{name: "session_steps", title: "List a session's steps",
 		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number (default 1)"),
 			"to": stepParam("the last step's number (default from + 99, at most 100 steps)")},
 		required: []string{"task_id"},
-		about:    "A session's transcript as numbered steps, one line each: the time since the session's start, the kind or tool, the duration and a summary without content; the first 100 unless from and to name others.",
-		fits:     sessionFits,
+		about:    "A session's steps, one line each.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
 	{name: "session_step", title: "Read a session's steps",
-		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number"),
+		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number (default 1)"),
 			"to": stepParam("the last step's number (default from, at most 20 steps)")},
-		required: []string{"task_id", "from"},
-		about:    "Steps of a session in full, from from to to: a tool call's arguments and error, a model call's text, a command's output, a checkpoint's diff stat; each step cut at 8 KiB, the answer at 32 KiB.",
-		fits:     sessionFits,
+		required: []string{"task_id"},
+		about:    "A session's steps in full.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
 	{name: "session_search", title: "Search a card's sessions",
 		params: map[string]any{"task_id": taskParam, "query": str("the text to find, 2 to 200 characters, any case"),
 			"n": stepParam("the session's number on the card (default every session)")},
 		required: []string{"task_id", "query"},
-		about:    "Search the transcripts of a card's sessions, or of session n, for a text: each hit's session, step and kind with the matching line and the line before and after it; at most 20 hits.",
-		fits:     sessionFits,
+		about:    "Search a card's sessions for a text, at most 20 hits.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
 	{name: "ci", title: "Read CI",
 		params: map[string]any{"ref": str("a branch (default main)"), "sha": str("a commit, 7 to 64 hex digits (default the ref's head)")},
-		about:  "Main's (or a ref's or commit's) CI result: the head commit, the combined state, and each job's state in the order Forgejo reports, with its target link.",
-		fits:   "a project with a repository",
+		about:  "The CI result of main, a branch or a commit.",
 		run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
 	{name: "alerts", title: "Read the alerts",
 		params: map[string]any{"state": enum("open for the alerts without a verdict (default), all for every alert the page lists", "open", "all")},
-		about:  "The factory's alerts as the /alerts page shows them, newest first: each with id, severity, title, since and the verdict if any; state all lists the judged ones too.",
-		fits:   "the factory's writers",
+		about:  "The factory's alerts, newest first.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
 			return s, nil, err
 		}},
 	{name: "resources", title: "Read the resources",
-		about: "The commissioned cloud resources as the /resources page shows them, by project: each with id, kind, state, cost per month and whether it may be promoted or released.",
-		fits:  "the factory's writers",
+		about: "The commissioned cloud resources by project.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.resourcesText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
 	{name: "projects", title: "Read the projects",
-		about: "The factory's projects as the /projects page shows them: each with name, objects, process, merge rule, state and GitHub export state.",
-		fits:  "the factory's writers",
+		about: "The factory's projects.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.projectsText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
 	{name: "policy", title: "Read the policy",
-		about: "The policy in force as the /policy page shows it: the limits, the budgets (task default and maximum, day, month and each project's month cap), the risk classes with their paths, and the approvers.",
-		fits:  "the factory's writers",
+		about: "The policy in force: its limits, budgets, risk classes and approvers.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.policyText(t.r.Context(), t.a)
 			return s, nil, err
@@ -663,45 +677,41 @@ var tools = []chatTool{
 	{name: "alert_verdict", title: "Judge an alert", write: true,
 		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id, from the alerts read", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
 		required: []string{"id", "verdict"},
-		about:    "Judge an open escalation alert real or noise, as the /alerts page's verdict buttons do (a factory approver's action).",
-		fits:     "an open escalation alert",
+		about:    "Judge an open escalation alert real or noise.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict)
 			return note, nil, err
 		}},
 	{name: "promote_resource", title: "Make a resource standing", write: true,
 		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
-		about: "Make a commissioned resource standing, as the /resources page's Promote button does: project-owned, no lease, within the project file's standing block (a factory approver's action).",
-		fits:  "an open leased commission",
+		about: "Make a leased resource standing, owned by its project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doPromoteResource(t.r.Context(), t.a, in.ID)
 			return note, nil, err
 		}},
 	{name: "release_resource", title: "Release a resource", write: true,
 		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
-		about: "End a commissioned resource's lease now, as the /resources page's Release button does; the collector deletes it (a factory writer's action).",
-		fits:  "an open commission",
+		about: "End a resource's lease now, so the collector deletes it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)
 			return note, nil, err
 		}},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
-			"lane":        enum("where the card starts: backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
+			"lane":        enum("where the card starts (default backlog): backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
 			"size":        enum("the card's size, which sets its budget; none for the default budget", policy.CardSizes...),
 			"rung":        enum("the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text", factoryd.RungCheap, factoryd.RungFrontier),
 			"rung_reason": str("one line: why that rung, required with a rung")},
-		required: []string{"title", "lane"},
-		about:    "File a new card on the project as the member: an issue with the lane's label, which the factory takes in.",
-		fits:     "a lane of the project",
+		required: []string{"title"},
+		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size, in.Rung, in.RungReason)
-			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
+			lane := cmp.Or(in.Lane, policy.LaneBacklog)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, lane, "", in.Size, in.Rung, in.RungReason)
+			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
 		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
-		about: "Move a backlog card into a starting lane of its process, as the member's label on its issue.",
-		fits:  "a card in the backlog",
+		about: "Move a backlog card into a starting lane.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doMoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
 			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
@@ -715,47 +725,40 @@ var tools = []chatTool{
 				"text":     map[string]any{"type": "string", "description": "its answer, one line"}},
 				"required": []string{"question", "text"}}}},
 		required: []string{"task_id", "revision"},
-		about: "Answer all open questions of a plan in one call: pass answers as a list of {question, text}. A single question may still be answered with question and text for non-plan cards. " +
-			"For a card that waits on your answer (it needs you), answer with text, one of the choices the card offers word for word or in free text: a comment on its issue as the member, which resumes it.",
-		fits: "a card waiting on a human with a question or at its session cap, or a plan with open questions",
+		about:    "Answer the question a card waits on, or every open question of a plan at once.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
 			return note, nil, err
 		}},
 	{name: "comment", title: "Comment on a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Comment on a card's issue as the member.",
-		fits:     "any card",
+		about:    "Comment on a card's issue.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},
 	{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Tell a card one text, and the server routes it by the card's state: to its running session as a message (steer), as changes requested at its approval gate (deny_merge with request_changes), or as the answer to the question it waits on (answer). Prefer this over choosing steer, deny_merge or answer yourself.",
-		fits:     tellFits,
+		about:    "Tell a card one text, routed by its state to its session, its merge request or its question.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.runTellCard(in)
 			return note, nil, err
 		}},
 	{name: "steer", title: "Message a running card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Send a message to a running card's agent session, marked as the member's; the agent reads it next.",
-		fits:     "a card running a session",
+		about:    "Send a running card's session a message.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSteer(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "File a failed card of a plan again and start the replacement in lane ready (an approver's action).",
-		fits:  "a failed plan card",
+		about: "File a failed plan card again, its replacement in lane ready.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
 		}},
 	{name: "start_plan", title: "Start a plan", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Start an accepted plan: its cards still in the backlog go to lane ready (an approver's action).",
-		fits:  "an accepted plan",
+		about: "Start an accepted plan, its backlog cards into lane ready.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doStartPlan(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
@@ -764,8 +767,7 @@ var tools = []chatTool{
 		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the plan revision the member saw (default the newest)", "minimum": 1},
 			"sha256": str("that revision's sha256, from the plan tool (default the revision's)")},
 		required: []string{"task_id"},
-		about:    "Accept a plan's revision, the newest unless revision names one, which factoryd then files as cards (an approver's action); the proposal names the revision and its sha256.",
-		fits:     "a plan awaiting acceptance",
+		about:    "Accept a plan's revision, which factoryd files as cards.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if err := t.pinPlan(&in); err != nil {
 				return "", nil, err
@@ -775,23 +777,20 @@ var tools = []chatTool{
 		}},
 	{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Ask the planner for changes to a plan: a comment on its issue as the member.",
-		fits:     "a plan awaiting acceptance",
+		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
 	{name: "reject_plan", title: "Reject a plan", write: true, params: map[string]any{"task_id": taskParam, "note": str("why")},
 		required: []string{"task_id", "note"},
-		about:    "Reject a plan: its task ends failed with the reason.",
-		fits:     "a plan awaiting acceptance",
+		about:    "Reject a plan, its task failed with the reason.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRejectPlan(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Approve a card's waiting merge request: the member's approving review on its pull request, then factoryd merges it (an approver's action).",
-		fits:  "a pending merge request",
+		about: "Approve a card's pending merge request, which factoryd then merges.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
@@ -802,40 +801,36 @@ var tools = []chatTool{
 		}},
 	{name: "deny_merge", title: "Deny a merge", write: true,
 		params: map[string]any{"task_id": taskParam, "note": str("why"),
-			"action": enum("request_changes sends the card back to its agent, reject closes the pull request and fails the card", "request_changes", "reject")},
-		required: []string{"task_id", "note", "action"},
-		about:    "Deny a card's waiting merge request with the member's reason.",
-		fits:     "a pending merge request",
+			"action": enum("request_changes (default) sends the card back to its agent, reject closes the pull request and fails the card", "request_changes", "reject")},
+		required: []string{"task_id", "note"},
+		about:    "Deny a card's pending merge request with a reason.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			q, err := t.mergeRequest(in)
 			if err != nil {
 				return "", nil, err
 			}
-			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, in.Action, in.Note)
+			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, cmp.Or(in.Action, "request_changes"), in.Note)
 			return note, nil, err
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line of up to 255 characters; empty restores the generated title")},
-		required: []string{"task_id", "summary"},
+		required: []string{"task_id"},
 		about:    "Set the one-line summary a card's face shows instead of its generated title.",
-		fits:     "any card",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetSummary(t.r.Context(), t.a, in.TaskID, in.Summary)
 			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
 		}},
 	{name: "set_accent", title: "Set a card's accent", write: true,
 		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour; empty removes it", append([]string{""}, factoryd.Accents...)...)},
-		required: []string{"task_id", "accent"},
-		about:    "Set a card's colour label, which shows as a chip and its left edge.",
-		fits:     "any card",
+		required: []string{"task_id"},
+		about:    "Set a card's colour label.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
 			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
 		}},
 	{name: "invite", title: "Invite a member", write: true,
 		params: map[string]any{"login": str("the Forgejo user name")}, required: []string{"login"},
-		about: "Make a Forgejo user a member of the project: a write collaborator of its repository, whom the console admits within a minute (an approver's action).",
-		fits:  "an approver of the project",
+		about: "Make a Forgejo user a writer of the project's repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doInvite(t.r.Context(), t.a, in.Login)
 			return note, nil, err
@@ -844,9 +839,7 @@ var tools = []chatTool{
 		params: map[string]any{"remote": str("the GitHub repository, owner/name"),
 			"mode": enum("mirror (default): Forgejo pushes every branch and tag; pull_requests: each merged card becomes a GitHub pull request", factoryd.ModeMirror, factoryd.ModePullRequests)},
 		required: []string{"remote"},
-		about: "Export the project's repository to a GitHub repository, in place of the project's last export, with the GitHub login and token an approver set on the projects page's export form (an approver's action): " +
-			"in mode mirror Forgejo pushes it on every commit and every 8 h, in mode pull_requests each card that merges is pushed as its branch and opened there as a pull request.",
-		fits: "a factory project, for an approver",
+		about:    "Export the project's repository to GitHub, in place of its last export.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			m, err := t.exportToken()
 			if err != nil {
@@ -856,17 +849,14 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "github_sync", title: "Sync from GitHub", write: true, params: map[string]any{},
-		about: "Start bringing the GitHub default branch of the project's export back when it moved since the last sync: factoryd pushes it to the bot's fork as github/sync-<short sha> and opens a pull request to main, which an approver merges (an approver's action). " +
-			"It answers at once; the result arrives as an event and on the projects page's export row.",
-		fits: "a project with a GitHub export, for an approver",
+		about: "Bring the GitHub export's moved default branch back as a pull request to main.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doGithubSync(t.r.Context(), t.a, t.p)
 			return note, nil, err
 		}},
 	{name: "close", title: "Close a card", write: true,
 		params: map[string]any{"task_id": taskParam, "note": str("why, commented on the issue before it closes; optional")}, required: []string{"task_id"},
-		about: "Close a card's issue as the member, the note commented first when given; the factory ends the card.",
-		fits:  "a card that is not final, or a failed card without an issue",
+		about: "Close a card's issue, which ends the card.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doClose(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
@@ -875,16 +865,14 @@ var tools = []chatTool{
 		params: map[string]any{"task_id": taskParam, "title": str("the new title, at most 255 characters; empty keeps it"),
 			"body": str("the new description in Markdown, replacing the old; empty keeps it")},
 		required: []string{"task_id"},
-		about:    "Edit a card's issue as the member, its title, its description or both; the card's next session reads the edit.",
-		fits:     "a card not in a session",
+		about:    "Edit a card's issue title or description.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
 			return note, nil, err
 		}},
 	{name: "grant_session", title: "Grant a session", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Grant a card at its session cap one more session: the member's answer to its findings, a comment on its issue, which resumes it.",
-		fits:     "a card at its session cap",
+		about:    "Grant a card at its session cap one more session, with an answer to its findings.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
@@ -893,15 +881,13 @@ var tools = []chatTool{
 		params: map[string]any{"task_id": taskParam, "depends_on": str("the task id of the card it waits for"),
 			"remove": map[string]any{"type": "boolean", "description": "true removes the dependency"}},
 		required: []string{"task_id", "depends_on"},
-		about:    "Make a card that has not started wait for another card of the project until that one is done, or with remove no longer; its issue shows the dependency.",
-		fits:     "two cards of which the first has not started",
+		about:    "Make an unstarted card wait for another until that one is done.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
 			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
 		}},
 	{name: "split_card", title: "Split a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Have a planner split a card's large pull request into 2 or 3 cards, which start once factoryd's check passes; the card then closes (an approver's action).",
-		fits:  "a pending merge request of risk class large",
+		about: "Have a planner split a card's large pull request into 2 or 3 cards.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doSplit(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
@@ -910,8 +896,7 @@ var tools = []chatTool{
 		params: map[string]any{"path": str(docPathWords),
 			"find": str("a word or passage: answers only the lines holding it, each with its number, instead of the file's first 20 KiB")},
 		required: []string{"path"},
-		about:    "A document of the project's document repository at master with its base_sha256, the hash write_doc's edit carries: its first 20 KiB, or the lines holding find.",
-		fits:     "the project's document repository",
+		about:    "A document of the project's document repository with its base_sha256.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find)
 			return s, nil, err
@@ -923,18 +908,16 @@ var tools = []chatTool{
 			"content":     str("a new file's full content; an existing file takes old and new"),
 			"base_sha256": str("the base_sha256 read_doc answered: an edit carries it, and a stale one refuses with the file's current hash")},
 		required: []string{"path"},
-		about:    "Commit a document to the project's document repository, straight to master: an edit of one passage of an existing file, or a new file. The path allow-list under docs/, the size cap, the roadmap's structure check on a roadmap edit, one commit at a time, and the content-hash compare-and-swap. The member's OK at every level.",
-		fits:     "the project's document repository",
+		about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
 			return note, nil, err
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
-		params: map[string]any{"autonomy": enum("the state: manual confirms everything, assisted starts and files ready work itself, autonomous runs within the always-confirm set with merges human, full auto is autonomous with the merge rule on auto", policy.AutonomyStates...),
+		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
 			"backlog_cap": map[string]any{"type": "integer", "description": "how many of the project's cards may wait unstarted, 1 or more (default 8)", "minimum": 1}},
 		required: []string{"autonomy"},
-		about:    "Set the project's autonomy state, and its backlog cap with it, in the configuration's project file through a pull request the member files and merges: the one change that waits for the member's OK at every level, the level's own included.",
-		fits:     "the project's policy",
+		about:    "Set the project's autonomy state and backlog cap through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.BacklogCap, t.a); err != nil {
 				return "", nil, err
@@ -942,8 +925,7 @@ var tools = []chatTool{
 			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
 		}},
 	{name: "notes_read", title: "Read the scratchpad",
-		about: "The project's scratchpad: working notes every thread of the chat reads and writes, round state and findings in flight. It steers nothing.",
-		fits:  "the project's chat",
+		about: "The project's scratchpad, which every thread of the chat shares.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.notesText()
 			return s, nil, err
@@ -951,8 +933,7 @@ var tools = []chatTool{
 	{name: "notes_write", title: "Write the scratchpad", write: true,
 		params: map[string]any{"text": str("a note to append as its own paragraph"),
 			"old": str("a passage to replace, once in the scratchpad"), "new": str("the passage that replaces old; empty removes it")},
-		about: "Append a note to the project's scratchpad, or replace one passage of it. It steers nothing: what becomes direction graduates into the roadmap with write_doc and leaves the scratchpad.",
-		fits:  "the project's chat",
+		about: "Append a note to the scratchpad, or replace one passage of it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.writeNotes(in.Text, in.Old, in.New)
 			return s, nil, err
@@ -962,15 +943,13 @@ var tools = []chatTool{
 			"choices": map[string]any{"type": "array", "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
 				"description": "at most 5 short answers the members may press, each at most 60 characters"}},
 		required: []string{"ask"},
-		about:    "Reach the project's members when a decision is theirs and they are not in this conversation: a card in Needs you with the question, and the inbox's escalation with its choices as buttons. A choice or a reply there answers it.",
-		fits:     "the project's chat",
+		about:    "Ask the project's members for a decision: a Needs you card, its choices as inbox buttons.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.escalate(in.Ask, in.Choices)
 			return s, nil, err
 		}},
 	{name: "active_threads", title: "Read the member's threads",
-		about: "The member's other active threads on the project: each one's title, last turn, whether a turn runs on it and the member's newest message there; then the scratchpad's tail.",
-		fits:  "the project's chat",
+		about: "The member's other active threads on the project, then the scratchpad's tail.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.activeThreads()
 			return s, nil, err
@@ -1014,13 +993,17 @@ func (t *turn) diff(in toolInput) (string, error) {
 	return string(raw), nil
 }
 
-// offered is chatTools, set in init: tools' system entry reads it, which
-// a direct reference would make an initialization cycle.
-var offered func(*Console) []chatTool
-
-func init() {
-	offered = (*Console).chatTools
-}
+// toolNotes are what the tools' sentences leave to the manual, each
+// stated once.
+const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
+  card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
+  A card's sessions are numbered from 1, the first; n names one, the newest by default.
+  tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
+  answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
+  write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
+  The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
+  escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
+`
 
 func (t *turn) systemText() (string, error) {
 	v, ok := t.c.inForce(t.r.Context())
@@ -1045,26 +1028,11 @@ func (t *turn) systemText() (string, error) {
 	for _, g := range gateOrder {
 		fmt.Fprintf(&b, "  %s: %s\n", g, factoryd.GateMeaning(g))
 	}
-	b.WriteString("\nTools:\n")
-	confirmSet := make(map[string]bool)
-	for _, c := range t.cfg.Confirm {
-		confirmSet[c] = true
+	b.WriteString("\nThe tools:\n" + toolNotes)
+	b.WriteString("\nAutonomy states:\n")
+	for _, s := range policy.AutonomyStates {
+		fmt.Fprintf(&b, "  %s: %s\n", s, policy.AutonomyMeaning[s])
 	}
-	for _, tool := range offered(t.c) {
-		line := "  " + tool.name
-		if confirmSet[tool.name] {
-			line += ", needs OK"
-		}
-		if tool.fits != "" {
-			line += ", " + tool.fits
-		}
-		b.WriteString(line + "\n")
-	}
-	confirm := "none"
-	if len(t.cfg.Confirm) > 0 {
-		confirm = strings.Join(t.cfg.Confirm, ", ")
-	}
-	fmt.Fprintf(&b, "\nTools needing OK: %s\n", confirm)
 	b.WriteString("\nProcess")
 	if t.p.Process != "" {
 		fmt.Fprintf(&b, " %s", t.p.Process)

@@ -189,8 +189,9 @@ func TestChatSessionSteps(t *testing.T) {
 
 // The step read is steps of a session in full: a tool call's arguments
 // and error, a model call's text, a command's output, a checkpoint's
-// stat without its patch; to defaults to from, clamps to the end and to
-// 20 steps; each step is cut at 8 KiB and the answer at 32 KiB.
+// stat without its patch; from defaults to 1, to to from, clamps to the
+// end and to 20 steps; each step is cut at 8 KiB and the answer at 32
+// KiB.
 func TestChatSessionStep(t *testing.T) {
 	r, g := newSessionsRig(t)
 	equal(t, "the step reads", reads(t, r, g, "session_step", `{"task_id":"t-r","n":1,"from":5}`, "session_step", `{"task_id":"t-r","n":1,"from":1,"to":2}`,
@@ -198,10 +199,10 @@ func TestChatSessionStep(t *testing.T) {
 		"5 2:00 command 2.3 s: go test ./..., exit 1\n$ go test ./...\nFAIL: want 3\n\nsteps 5 to 5 of 6",
 		"1 0:05 model call, 1,400 prompt tokens (71% cached)\nreading\n\n" + `2 0:10 read 120 ms: {"path":"a.go"}` + "\n" + `args: {"path":"a.go"}` + "\n\nsteps 1 to 2 of 6",
 		"5 2:00 command 2.3 s: go test ./..., exit 1\n$ go test ./...\nFAIL: want 3\n\n6 3:00 checkpoint: 1 file, +10 -2\n\nsteps 5 to 6 of 6",
-		"Refused: from and to are step numbers, from 1.",
+		"1 0:05 model call, 1,400 prompt tokens (71% cached)\nreading\n\nsteps 1 to 1 of 6",
 	})
-	status, _ := refused(t, r, "session_step", toolInput{TaskID: "t-r", N: 1})
-	equal(t, "from 0", status, http.StatusBadRequest)
+	status, _ := refused(t, r, "session_step", toolInput{TaskID: "t-r", N: 1, From: -1})
+	equal(t, "from -1", status, http.StatusBadRequest)
 
 	r.objects["sessions/t-r/s2.jsonl"] = []byte(`{"time":"2026-10-11T10:14:00Z","kind":"tool_call","detail":{"tool":"bash","status":"error","args":{"command":"rm -rf /"},"error":"refused by the sandbox","duration_ms":3}}
 {"time":"2026-10-11T10:15:00Z","kind":"supervisor","detail":{"detector":"stall","decision":"guide","guidance":"run the tests","reason":""}}
@@ -516,13 +517,13 @@ func TestStepLineWithoutTotal(t *testing.T) {
 }
 
 // The project agent picks a read by its description: the card and session
-// reads name their cost line, and the session's no longer names a spend.
+// reads name their model calls, and the session's no longer names a spend.
 func TestCostReadsNameTheCostLine(t *testing.T) {
 	r, _ := newSessionsRig(t)
 	for _, name := range []string{"card", "session"} {
 		tool, ok := r.c.chatTool(name)
-		if !ok || !strings.Contains(tool.about, "its model calls per alias: calls, prompt tokens per call (median and max), cached share and EUR per call") {
-			t.Errorf("%s: %q names no cost line", name, tool.about)
+		if !ok || !strings.Contains(tool.about, "model calls") {
+			t.Errorf("%s: %q names no model calls", name, tool.about)
 		}
 	}
 	if tool, _ := r.c.chatTool("session"); strings.Contains(tool.about, "spend") {
