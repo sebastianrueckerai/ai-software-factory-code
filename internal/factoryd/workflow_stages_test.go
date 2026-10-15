@@ -654,7 +654,8 @@ func TestStagesFailedScreeningEscalationJudgesNothing(t *testing.T) {
 
 // A new run continues the stage memory the timeline kept (review M1):
 // the task's second return from the review takes the stronger rung, the
-// review gets the earlier one and the card shows every round.
+// review gets the last earlier one with its round and the card shows
+// every round.
 func TestStagesHealedRunKeepsTheStageMemory(t *testing.T) {
 	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
 	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: still"}}
@@ -672,8 +673,9 @@ func TestStagesHealedRunKeepsTheStageMemory(t *testing.T) {
 	if len(g.sessions) != 1 || g.sessions[0].Model != "factory/coding-frontier" || !slices.Equal(g.sessions[0].Findings, second.Findings) {
 		t.Fatalf("sessions = %+v", g.sessions)
 	}
-	if len(g.earlier) != 2 || len(g.earlier[0]) != 1 || len(g.earlier[1]) != 2 {
-		t.Fatalf("earlier = %+v", g.earlier)
+	if len(g.earlier) != 2 || len(g.earlier[0]) != 1 || g.earlier[0][0].Summary != first.Summary ||
+		len(g.earlier[1]) != 1 || g.earlier[1][0].Summary != second.Summary || !slices.Equal(g.rounds, []int{2, 3}) {
+		t.Fatalf("earlier = %+v, rounds %v", g.earlier, g.rounds)
 	}
 	in := g.approvals[0]
 	why := strings.Join(in.WhyHuman, "\n")
@@ -701,7 +703,8 @@ func TestStagesScreeningReportRunsOnTheStrongerRung(t *testing.T) {
 // The review loop follows the one rule (ruling 190): with a session cap
 // of three, concerns go back twice (the first on the same model, the
 // second on the stronger one) and the third opens the card with every
-// review; each review is given the ones before it.
+// review; each review is given the last one before it and its round, so
+// its input does not grow per round.
 func TestStagesReviewConcernsLoop(t *testing.T) {
 	first := Review{Verdict: "concerns", Summary: "the flag is unchecked", Findings: []string{"main.go: check the flag"}}
 	second := Review{Verdict: "concerns", Summary: "still unchecked", Findings: []string{"main.go: the flag is still unchecked"}}
@@ -720,8 +723,9 @@ func TestStagesReviewConcernsLoop(t *testing.T) {
 	if !slices.Equal(g.sessions[1].Findings, first.Findings) || !slices.Equal(g.sessions[2].Findings, second.Findings) {
 		t.Fatalf("findings = %v / %v", g.sessions[1].Findings, g.sessions[2].Findings)
 	}
-	if len(g.earlier) != 3 || len(g.earlier[0]) != 0 || len(g.earlier[1]) != 1 || len(g.earlier[2]) != 2 || g.earlier[2][1].Summary != second.Summary {
-		t.Fatalf("earlier reviews given = %+v", g.earlier)
+	if len(g.earlier) != 3 || len(g.earlier[0]) != 0 || len(g.earlier[1]) != 1 || g.earlier[1][0].Summary != first.Summary ||
+		len(g.earlier[2]) != 1 || g.earlier[2][0].Summary != second.Summary || !slices.Equal(g.rounds, []int{1, 2, 3}) {
+		t.Fatalf("earlier reviews given = %+v, rounds %v", g.earlier, g.rounds)
 	}
 	in := g.approvals[0]
 	if len(g.approvals) != 1 || in.Review.Summary != third.Summary || len(in.EarlierReviews) != 2 ||

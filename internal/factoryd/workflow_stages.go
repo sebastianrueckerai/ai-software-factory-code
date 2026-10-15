@@ -547,7 +547,7 @@ func (t *taskRun) scheduleReview(head string, g *GateResults) {
 	gates := *g
 	gates.Beside = t.reviewParallel >= versionReviewSupervised
 	t.flight = &reviewInFlight{head: head, since: workflow.Now(t.ctx),
-		gateRun: t.startGate(reviewOptions(), ActivityModelReview, t.taskID, t.pr, head, gates, t.reviews)}
+		gateRun: t.startGate(reviewOptions(), ActivityModelReview, t.taskID, t.pr, head, gates, lastVerdict(t.reviews), len(t.reviews)+1)}
 }
 
 // keepTrip keeps a gate trip of the review beside the checks wait, while
@@ -580,7 +580,7 @@ func (t *taskRun) review(head string, g *GateResults, review *Review) (verdict, 
 		}
 	}
 	t.cancelReview()
-	return t.gateActivity(true, reviewOptions(), review, ActivityModelReview, t.taskID, t.pr, head, *g, t.reviews)
+	return t.gateActivity(true, reviewOptions(), review, ActivityModelReview, t.taskID, t.pr, head, *g, lastVerdict(t.reviews), len(t.reviews)+1)
 }
 
 // awaitReview waits for the review scheduled beside the checks wait as

@@ -808,6 +808,53 @@ func TestModelReviewCarriesTheLastRoundOnly(t *testing.T) {
 	}
 }
 
+// A review in parts joins its parts' summaries; as the next round's last
+// review its summary is capped as one answer's. The round the workflow
+// passes is the one the timeline counts.
+func TestModelReviewCapsTheLastSummary(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/main.go b/main.go\n"}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","strict_improvement":true}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	last := Review{Verdict: "concerns", Summary: strings.Repeat("a", 600) + "\n\n" + strings.Repeat("b", 600), Findings: []string{"main.go: x"}}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, []Review{last}, 3); err != nil {
+		t.Fatal(err)
+	}
+	var in struct {
+		LastReview Review `json:"last_review"`
+	}
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Repeat("a", 600) + "\n\n" + strings.Repeat("b", 398) + "…"; in.LastReview.Summary != want {
+		t.Fatalf("last review's summary = %d bytes, want %d", len(in.LastReview.Summary), len(want))
+	}
+	if timeline := string(objGet(objects, "sessions/t1/timeline.jsonl")); !strings.Contains(timeline, `"round":3`) {
+		t.Fatalf("timeline = %s", timeline)
+	}
+}
+
+// The last of the reviews with a verdict is the one whose findings went
+// back to the agent; a review without one sent none.
+func TestLastVerdict(t *testing.T) {
+	one, two, note := Review{Verdict: "concerns", Summary: "one"}, Review{Verdict: "approve", Summary: "two"}, Review{Note: "model review failed"}
+	for name, tc := range map[string]struct {
+		reviews []Review
+		want    string
+	}{
+		"none":          {nil, ""},
+		"only a note":   {[]Review{note}, ""},
+		"the last":      {[]Review{one, two}, "two"},
+		"before a note": {[]Review{one, note}, "one"},
+		"after a note":  {[]Review{note, two}, "two"},
+	} {
+		got := lastVerdict(tc.reviews)
+		if tc.want == "" && got != nil || tc.want != "" && (len(got) != 1 || got[0].Summary != tc.want) {
+			t.Errorf("%s: lastVerdict = %+v, want %q", name, got, tc.want)
+		}
+	}
+}
+
 // The last review's findings go to the call that reads their file: a.go's
 // to part 1 with the review, b.go's to part 2, and one that names no file
 // of the diff to part 1.

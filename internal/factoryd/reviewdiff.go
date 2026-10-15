@@ -3,7 +3,9 @@ package factoryd
 import (
 	"cmp"
 	"fmt"
+	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -152,18 +154,49 @@ func fileList(parts [][]fileDiff) string {
 	return strings.Join(lines, "\n")
 }
 
-// partOf is the index of the part holding the longest path s contains, 0
-// when it contains none.
+// partOf is the index of the part holding the file s names: the longest
+// path it names, else the one part holding a file whose base name it
+// names; 0 when it names none, or a base name more than one part holds.
 func partOf(s string, parts [][]fileDiff) int {
 	at, longest := 0, 0
+	var byBase []int
 	for k, part := range parts {
 		for _, f := range part {
-			if len(f.Path) > longest && strings.Contains(s, f.Path) {
+			if f.Path == "" {
+				continue
+			}
+			if len(f.Path) > longest && names(s, f.Path) {
 				at, longest = k, len(f.Path)
+			}
+			if names(s, path.Base(f.Path)) && !slices.Contains(byBase, k) {
+				byBase = append(byBase, k)
 			}
 		}
 	}
+	if longest == 0 && len(byBase) == 1 {
+		return byBase[0]
+	}
 	return at
+}
+
+// names reports whether name occurs in s as a whole path: after no
+// character a file name holds and before no letter, digit, _ or -, so
+// main.go is not named in domain.go nor cart.go in cart.golden.
+func names(s, name string) bool {
+	word := func(c byte) bool {
+		return c == '_' || c == '-' || '0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
+	}
+	for i := 0; ; {
+		j := strings.Index(s[i:], name)
+		if j < 0 {
+			return false
+		}
+		start, end := i+j, i+j+len(name)
+		if (start == 0 || !word(s[start-1]) && s[start-1] != '.') && (end == len(s) || !word(s[end])) {
+			return true
+		}
+		i = start + 1
+	}
 }
 
 func joinFiles(files []fileDiff) string {

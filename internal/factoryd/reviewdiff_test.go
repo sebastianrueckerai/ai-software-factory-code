@@ -247,11 +247,29 @@ func TestConcurrencyBlockIsCapped(t *testing.T) {
 	}
 }
 
-// A finding goes to the part holding the longest path it contains:
-// sub/b.go's finding contains b.go too.
+// A finding goes to the part holding the longest path it names, sub/b.go's
+// though it names b.go too; else to the one part holding a file whose base
+// name it names, stock.go in part 3 and domain.go in part 2, though
+// main.go in part 3 is a path within domain.go's name; and to part 1 when
+// it names no file or a base name, util.go, two parts hold.
 func TestPartOf(t *testing.T) {
-	parts := [][]fileDiff{{{Path: "a.go"}, {Path: "sub/b.go"}}, {{Path: "b.go"}}}
-	for s, want := range map[string]int{"sub/b.go:3: x": 0, "b.go:3: y": 1, "a.go: z": 0, "the change lacks a test": 0} {
+	parts := [][]fileDiff{
+		{{Path: "a.go"}, {Path: "sub/b.go"}},
+		{{Path: "b.go"}, {Path: "internal/x/domain.go"}, {Path: "a/util.go"}},
+		{{Path: "main.go"}, {Path: "internal/shop/stock.go"}, {Path: "b/util.go"}},
+	}
+	for s, want := range map[string]int{
+		"sub/b.go:3: x":                  0,
+		"b.go:3: y":                      1,
+		"a.go: z":                        0,
+		"the change lacks a test":        0,
+		"stock.go:12: the read lock":     2,
+		"`shop/stock.go`: the lock":      2,
+		"domain.go:3: x":                 1,
+		"util.go: two parts hold it":     0,
+		"main.go: in part 3":             2,
+		"stock.golden: no file it holds": 0,
+	} {
 		if got := partOf(s, parts); got != want {
 			t.Errorf("partOf(%q) = %d, want %d", s, got, want)
 		}

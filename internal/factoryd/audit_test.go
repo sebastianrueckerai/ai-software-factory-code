@@ -192,8 +192,19 @@ func TestGateAuditCutDiffIsAFinding(t *testing.T) {
 	}
 }
 
-// Two files of 30 KiB: two audit calls, each with its part and the whole
-// diff's concurrency summary, and the findings of both.
+// Every audit call reads the whole checklist: no call sees another's.
+func TestAuditPromptsCarryTheChecklist(t *testing.T) {
+	for name, prompt := range map[string]string{"first": auditPrompt, "part": auditPartPrompt} {
+		if !strings.HasSuffix(prompt, auditChecklist) || !strings.Contains(auditChecklist, "\n6. the sandbox contract") {
+			t.Errorf("the %s prompt does not end with the checklist", name)
+		}
+	}
+}
+
+// Two files of 30 KiB: two audit calls, each with its part, and the
+// findings of both. The call on part 1 alone carries the pull request and
+// the whole diff's concurrency summary under the audit prompt; the call on
+// part 2 carries its diff and part under the part prompt.
 func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 	diff := diffFile("a.go", 30<<10, "\tgo func() {") + diffFile("b.go", 30<<10)
 	ll := &fakeLiteLLM{contents: []string{
@@ -206,10 +217,22 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 2 {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
-	for i, part := range []string{`"part": "file 1 of 2, part 1 of 2"`, `"part": "file 2 of 2, part 2 of 2"`} {
-		if user := userMessage(ll.chats[i]); !strings.Contains(user, part) || !strings.Contains(user, `"concurrency": "`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
-			t.Fatalf("call %d lacks its part or the concurrency summary", i+1)
+	for i, want := range []struct {
+		part, prompt string
+		keys         []string
+	}{
+		{`"part": "file 1 of 2, part 1 of 2"`, auditPrompt, []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
+		{`"part": "file 2 of 2, part 2 of 2"`, auditPartPrompt, []string{"diff", "part"}},
+	} {
+		if user := userMessage(ll.chats[i]); !strings.Contains(user, want.part) {
+			t.Fatalf("call %d lacks its part", i+1)
 		}
+		if keys := inputKeys(t, ll.chats[i]); !slices.Equal(keys, want.keys) || systemMessage(ll.chats[i]) != want.prompt {
+			t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(ll.chats[i]) == want.prompt, want.keys)
+		}
+	}
+	if user := userMessage(ll.chats[0]); !strings.Contains(user, `"concurrency": "`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
+		t.Fatal("the first call lacks the whole diff's concurrency summary")
 	}
 }
 

@@ -142,7 +142,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateReproduction: func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
 			return ReproResult{}, nil
 		},
-		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review) (Review, error) {
+		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{}, nil
 		},
 		ActivityScreen:         func(ctx context.Context, taskID string) (ScreenResult, error) { return ScreenResult{}, nil },
@@ -368,8 +368,8 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	var reviewed []int64
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review) (Review, error) {
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			reviewed = append(reviewed, g.Pin)
 			return Review{}, nil
 		})

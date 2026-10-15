@@ -774,24 +774,32 @@ type reviewGates struct {
 	Audit        *AuditResult `json:",omitempty"`
 }
 
-// lastReview is the last of the earlier reviews with a verdict, the one
-// whose findings went back to the agent, each review listing again what
-// its head left unaddressed. The review model reads no adjudication
-// (roadmap 192): a finding an approval covered reads as any other. Its
-// findings go by part, each to the part holding the file it names, part
-// 1 when it names none, so the call that reads the file judges it; the
-// review keeps part 1's.
-func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
-	i := len(earlier) - 1
-	for i >= 0 && earlier[i].Verdict == "" {
-		i--
+// lastVerdict is the last of reviews with a verdict, the one whose
+// findings went back to the agent, each review listing again what its
+// head left unaddressed; nil when none has one.
+func lastVerdict(reviews []Review) []Review {
+	for i := len(reviews) - 1; i >= 0; i-- {
+		if reviews[i].Verdict != "" {
+			return reviews[i : i+1]
+		}
 	}
+	return nil
+}
+
+// lastReview is the review model's view of the last earlier review with a
+// verdict: its summary capped as one answer's, a review in parts having
+// joined its parts', and no adjudication (roadmap 192), so a finding an
+// approval covered reads as any other. Its findings go by part, each to
+// the part holding the file it names (partOf), so the call that reads the
+// file judges it; the review keeps part 1's.
+func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	byPart := make([][]string, len(parts))
-	if i < 0 {
+	found := lastVerdict(earlier)
+	if found == nil {
 		return nil, byPart
 	}
-	last := earlier[i]
-	last.Adjudicated = nil
+	last := found[0]
+	last.Summary, last.Adjudicated = textutil.Truncate(last.Summary, maxReviewSummary), nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -886,16 +894,22 @@ func combineReviews(parts []Review) Review {
 
 // ModelReview asks the review model the policy names for the task's class
 // for a verdict over the brief, the diff, the gate results and the last
-// of the reviews of the task's earlier heads (earlier, oldest first),
-// through the gateway on the task's account, and posts it on the pull
-// request. The diff is read whole, in up to reviewChunks parts of whole
-// files, one call each; the call on the first part carries the brief, the
-// gates and the concurrency summary of the whole diff. No answer (a
-// diff beyond those parts, a gateway refusal such as refused_budget, a
-// failed call, an invalid answer) is a note, which the review stage puts
-// on the card as a finding (versionReviewVerdict); concerns are findings
-// under the review stage's on_findings (ruling 177).
-func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review) (Review, error) {
+// review of the task's earlier heads with a verdict, through the gateway
+// on the task's account, and posts it on the pull request. The workflow
+// passes that review alone as earlier, and round, this review's among the
+// task's; round 0 is an activity scheduled before the workflow passed it,
+// whose earlier holds every earlier review. The diff is read whole, in up
+// to reviewChunks parts of whole files, one call each; the call on the
+// first part carries the brief, the gates and the concurrency summary of
+// the whole diff. No answer (a diff beyond those parts, a gateway refusal
+// such as refused_budget, a failed call, an invalid answer) is a note,
+// which the review stage puts on the card as a finding
+// (versionReviewVerdict); concerns are findings under the review stage's
+// on_findings (ruling 177).
+func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
+	if round == 0 {
+		round = len(earlier) + 1
+	}
 	// the heartbeats, from the start to the answer, carry the workflow's
 	// cancel (a terminal signal during the review) into the Forgejo reads
 	// and the model call: the call is cut, and its hold booked
@@ -930,7 +944,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		rv := Review{Note: "model review not run: " + errMessage(err)}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
-		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": len(earlier) + 1}))
+		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		return rv, nil
 	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, maxForgejoAnswer)
@@ -986,9 +1000,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
 	r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "model": model,
-		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": len(earlier) + 1}))
+		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": round}))
 	process, lane := processLane(ctx, r.store, t)
-	r.countReview(ctx, rv, len(earlier)+1, process, lane)
+	r.countReview(ctx, rv, round, process, lane)
 	return rv, nil
 }
 
