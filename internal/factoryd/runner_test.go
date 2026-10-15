@@ -1675,21 +1675,29 @@ func workerStartFailed(step, summary string) string {
 }
 
 // A worker start that failed on a fault a later start may not meet, the
-// gateway restarting under its egress probe, is no escalation: the
-// session ends aborted with the worker's summary, and the activity's
-// error is retryable, so Temporal starts the session again.
+// gateway restarting under its egress probe or Forgejo answering the clone
+// with a 5xx, is no escalation: the session ends aborted with the worker's
+// summary, and the activity's error is retryable, so Temporal starts the
+// session again.
 func TestRunSessionRetriesATransientStartFailure(t *testing.T) {
-	const restarting = "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable"
-	task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
-	objects := &fakeObjectStore{}
-	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
-	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: restarting, Step: StepEgressProbe, Transient: true}})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
-	if err == nil || !strings.Contains(err.Error(), restarting) || isTerminal(err) || res.StartFailed || res.Reason != "" {
-		t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
-	}
-	if end := timelineStep(t, objects, "t4j", "session_end"); end["outcome"] != "aborted" || end["summary"] != restarting {
-		t.Fatalf("session_end = %v, want outcome aborted with the summary", end)
+	for step, summary := range map[string]string{
+		StepEgressProbe: "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable",
+		"clone": "start failed: clone: git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: " +
+			"fatal: unable to access 'http://forgejo/sf/repo.git/': The requested URL returned error: 502",
+	} {
+		t.Run(step, func(t *testing.T) {
+			task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+			objects := &fakeObjectStore{}
+			runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
+			line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step, Transient: true}})
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
+			if err == nil || !strings.Contains(err.Error(), summary) || isTerminal(err) || res.StartFailed || res.Reason != "" {
+				t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
+			}
+			if end := timelineStep(t, objects, "t4j", "session_end"); end["outcome"] != "aborted" || end["summary"] != summary {
+				t.Fatalf("session_end = %v, want outcome aborted with the summary", end)
+			}
+		})
 	}
 }
 

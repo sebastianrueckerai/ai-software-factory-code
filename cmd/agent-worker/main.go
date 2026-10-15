@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -238,7 +237,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		}
 	}
 	s.repoDir = filepath.Join(ws, "repo")
-	if err := cloned(ws); err != nil {
+	if err := fetched(ws); err != nil {
 		return s, startError{"clone", err}
 	}
 	if s.base, s.mainHead, err = prepareRepo(s.repoDir, s.env); err != nil {
@@ -569,28 +568,9 @@ func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	if err == nil {
 		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR")}
-		dir := filepath.Join(ws, "repo")
-		err = retried(log, func() error {
-			// a retry clones afresh, over what the failed try left
-			if err := os.RemoveAll(dir); err != nil {
-				return err
-			}
-			return cloneBase(e, dir)
-		})
+		err = cloneBase(e, filepath.Join(ws, "repo"))
 	}
 	return recordFetch(log, ws, err)
-}
-
-// cloned is the clone init container's failure, nil when it cloned.
-func cloned(ws string) error {
-	failed, err := os.ReadFile(fetchFailed(ws))
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	return errors.New(string(failed))
 }
 
 // cloneBase clones the task's repository at its base, with the head of a

@@ -43,9 +43,16 @@ const (
 // Alert is an alerts row. A machine that decides at once (the supervisor)
 // writes the verdict with the row; an escalation's verdict is a human's.
 type Alert struct {
-	ID         int64
-	Kind       string
-	Source     string // gate_bound: the activity; supervisor_trip: the detector; escalation: agent, supervisor, cap (the session cap's card), month_cap or project_cap; month_cap: the percent
+	ID   int64
+	Kind string
+	// Source is gate_bound's activity, supervisor_trip's detector,
+	// month_cap's percent, and escalation's asker (escalationSource):
+	// agent, supervisor, cap (the session cap's card), month_cap,
+	// project_cap, day_cap, split_cap (a split's session at a cap),
+	// provider, budget (the task's budget cannot fund a call), queue (a
+	// red head left the merge queue), start (a sandbox that cannot
+	// start), content_filter, or factoryd (the stale sweep's).
+	Source     string
 	TaskID     string
 	RaisedAt   time.Time
 	BoundS     int // gate_bound only

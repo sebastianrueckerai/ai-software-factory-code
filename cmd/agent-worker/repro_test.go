@@ -215,17 +215,9 @@ func TestLoadReproEnv(t *testing.T) {
 	}
 }
 
-// quickFetchRetry makes a transient fetch failure's retry wait no time.
-func quickFetchRetry(t *testing.T) {
-	previous := fetchRetry
-	fetchRetry = 0
-	t.Cleanup(func() { fetchRetry = previous })
-}
-
 // A fetch that fails reports git's error without the read token: the
 // failure file reaches the repro report, the PR comment and the timeline.
 func TestReproFetchFailureHidesTheToken(t *testing.T) {
-	quickFetchRetry(t)
 	reproEnvs(t, "https://x-access-token:s3cret-tok@127.0.0.1:1/repo.git", "0000", "true")
 	t.Setenv("REPO_TOKEN", "s3cret-tok")
 	ws := t.TempDir()
@@ -350,5 +342,39 @@ func TestReproModeReportsAWorkerThatIsNoInit(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "repo", "ran")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the command ran: %v", err)
+	}
+}
+
+// A repro-fetch that failed on the way to Forgejo is a transient start
+// failure, which the reproduction activity's retry answers; one that found
+// the pull request moved is the repro's report, as before.
+func TestReproFetchOnTheWayToForgejoIsTransient(t *testing.T) {
+	down := "fetch refs/pull/9/head: git fetch -q --no-tags https://forgejo/sf/r.git refs/pull/9/head: exit status 128: " +
+		"fatal: unable to access 'https://forgejo/sf/r.git/': The requested URL returned error: 503"
+	moved := "refs/pull/9/head is at c2, not the gated head c1: the pull request moved"
+	for name, tc := range map[string]struct {
+		failed string
+		want   harness.WorkerEnvelope
+	}{
+		"Forgejo down": {down, harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: "start failed: fetch: " + down, Step: "fetch", Transient: true}}},
+		"moved":        {moved, harness.WorkerEnvelope{Type: "repro", Repro: &harness.Repro{Exit: -1, Output: "repro mode: " + moved}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := t.TempDir()
+			if err := os.WriteFile(fetchFailed(ws), []byte(tc.failed), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range map[string]string{"REPRO_COMMAND": "true", "REPRO_TIMEOUT": "60",
+				"GATEWAY_URL": "http://gw", "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443"} {
+				t.Setenv(k, v)
+			}
+			closed := closedSandbox(t)
+			got := reproEnvelope(context.Background(), ws, nil, func(workerEnv) egressProbe { return closed })
+			if !reflect.DeepEqual(got, tc.want) {
+				g, _ := json.Marshal(got)
+				w, _ := json.Marshal(tc.want)
+				t.Fatalf("envelope = %s\nwant %s", g, w)
+			}
+		})
 	}
 }
