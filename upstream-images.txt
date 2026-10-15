@@ -11,8 +11,9 @@
 # manifests, HelmReleases and their sources, and its runner's job image. A
 # line marked bootstrap is referenced at its upstream: Forgejo serves the
 # store, so what Forgejo, its database and the cluster's start run on
-# cannot depend on it; the nodes' registry mirror serves these from the
-# store while it answers, from their upstreams when it does not. An image's
+# cannot depend on it, and a project's own manifests are the project's;
+# the nodes' registry mirror serves these from the store while it answers,
+# from their upstreams when it does not. An image's
 # copy is tagged twice: its tag and the digest's first 12 hex digits, which
 # never moves, and its upstream tag, which names the pinned digest for a
 # pull by tag through the mirror. The weekly upstream card bumps these
@@ -24,6 +25,10 @@ docker.io/library/golang:1.26.9@sha256:cf7e928cb9edc2ed8b3cc6fe77ee1ee30b9fea281
 docker.io/library/node:22-bookworm-slim@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2
 docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
 docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
+
+# the ts-go template's builds (the infra repository's factory/templates)
+docker.io/library/node:24-bookworm-slim@sha256:5cbc7caba8c2c0f0bca675d1b61b9f2857e1cf1853c6164ee9dd409501a936e7
+docker.io/library/golang:1.25-bookworm@sha256:c268a04d59aea0b180ed9946a658cfab9e7b3391dc90eed6e4969ccff98c851f
 
 # main CI's job image and runner
 docker.io/catthehacker/ubuntu:act-22.04@sha256:a03f9d3c8f0930dbf586cf375d09ff2a3718ee794a77d2b635f1a0dd79095488
@@ -59,6 +64,11 @@ code.forgejo.org/forgejo-helm/forgejo:17.1.7@sha256:f5044e73361f5991978f1bc281a5
 https://github.com/temporalio/helm-charts/releases/download/temporal-1.7.0/temporal-1.7.0.tgz@sha256:f7b443f637b71fcbddd12900e5be9fe4c18cf741495d7b2cb247670681bf57d4 helm
 https://github.com/SigNoz/charts/releases/download/signoz-0.143.0/signoz-0.143.0.tgz@sha256:e3ec7144de45404b10837ef80e86c6cec4960cde41e914f4782d9205c739adad helm
 https://github.com/SigNoz/charts/releases/download/k8s-infra-0.17.1/k8s-infra-0.17.1.tgz@sha256:59723bea05092dc85cdeef64154701d3a0cb072b162455abcf11e104ffadf28a helm
+
+# a project's own manifests name these at their upstreams: demo-app's load
+# generator by the digest of its index, copied whole; the nodes' registry
+# mirror serves them
+docker.io/curlimages/curl:8.16.0@sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6 bootstrap
 
 # the nodes' own: Talos's Kubernetes, the installer of its node image, and
 # Cilium, installed by its CLI; the nodes pull them through their registry
