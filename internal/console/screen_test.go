@@ -1305,9 +1305,9 @@ func (s *countingTasks) note(what string) {
 	s.reads[what]++
 }
 
-func (s *countingTasks) BoardTasks(ctx context.Context) ([]factoryd.BoardTask, error) {
+func (s *countingTasks) BoardTasks(ctx context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.note("BoardTasks")
-	return s.fakeTasks.BoardTasks(ctx)
+	return s.fakeTasks.BoardTasks(ctx, repository)
 }
 
 func (s *countingTasks) FinishedTasks(ctx context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
