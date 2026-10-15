@@ -1403,7 +1403,9 @@ func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilte
 // finishedPage answers GET /board/finished: the page of the column of
 // finished cards col after the card that after (its arrival time) and
 // after-id name, its cards and the form of the page after
-// it, which htmx puts in place of the form that asked.
+// it, which htmx puts in place of the form that asked. The page reads
+// only its fragment's column — not the open cards, the approval
+// requests, the status line or the pulse a whole board read takes.
 func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 	f, q := urlFilter(r), r.URL.Query()
 	f.Col, f.After.ID = q.Get("col"), q.Get("after-id")
@@ -1413,16 +1415,128 @@ func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.After.At = at
-	d, ok := c.readBoard(w, r, f)
+	if f.View != "" && !f.wide() {
+		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
+		return
+	}
+	col, ok := c.readFinishedColumn(w, r, f)
 	if !ok {
 		return
 	}
-	i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished == f.Col })
-	if i < 0 {
-		http.Error(w, "the board has no column of finished cards "+f.Col, http.StatusBadRequest)
-		return
+	c.render(w, "finished-page", col)
+}
+
+// finishedColumn is the view's column of finished cards key — the four
+// columns' Done, which holds all three final states, or the wide view's
+// column of that state — false when the view has none.
+func finishedColumn(f boardFilter, key string) (column, bool) {
+	if !f.wide() {
+		if key != "done" {
+			return column{}, false
+		}
+		return column{Title: columnTitles[colDone], Finished: key}, true
 	}
-	c.render(w, "finished-page", d.Columns[i])
+	for _, s := range stateColumns {
+		if s.Status == key && factoryd.Final(s.Status) {
+			return column{Title: s.Title, Finished: s.Status}, true
+		}
+	}
+	return column{}, false
+}
+
+// readFinishedColumn is the board's column of finished cards f.Col, f's
+// view of it: the column's page after f.After with the form of the page
+// after it, false after it answered the refusal. The project shown
+// follows boardOf's rule — f.Project, else the first the viewer writes,
+// and a member sees only a project they write or read (ruling 254) — and
+// the column holds the same cards boardOf's would.
+func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f boardFilter) (column, bool) {
+	ctx := r.Context()
+	v, all, err := c.projectsOf(r, f)
+	if err != nil {
+		log.Printf("console: board: %v", err)
+		http.Error(w, "cannot read the board", http.StatusInternalServerError)
+		return column{}, false
+	}
+	var shown factoryd.Project
+	writable := map[string]bool{}
+	for _, p := range all {
+		// a project whose writers could not be checked is offered, its
+		// buttons hidden, rather than an empty board
+		writes, err := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
+		if err != nil && !v.unchecked {
+			v.unchecked = true
+			log.Printf("console: may %s write %s: %v", v.user, p.Repository, err)
+		}
+		writable[p.Name] = writes
+		if writes || err != nil {
+			if f.Project == "" && shown.Name == "" {
+				shown = p
+			}
+		}
+		if p.Name == f.Project {
+			shown = p
+		}
+	}
+	if f.Project != "" && shown.Name == "" {
+		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
+		return column{}, false
+	}
+	// a member sees only the projects they write or read (ruling 254); the
+	// factory's writers see every board, read-only where they do not write
+	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !c.factoryWriter(r) {
+		if reads, err := c.reads(ctx, current(r), shown); err != nil || !reads {
+			http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
+			return column{}, false
+		}
+	}
+	col, ok := finishedColumn(f, f.Col)
+	if !ok {
+		http.Error(w, "the board has no column of finished cards "+f.Col, http.StatusBadRequest)
+		return column{}, false
+	}
+	if shown.Name == "" {
+		// the viewer writes no project and named none, so no board named
+		// one either: the fragment shows none of its column
+		return col, true
+	}
+	f.Project = shown.Name
+	v.filter = f
+	d := boardData{Columns: []column{col}}
+	page, err := c.readFinished(ctx, &d, f, shown.Repository)
+	if err != nil {
+		log.Printf("console: board: finished tasks: %v", err)
+		http.Error(w, "cannot read the board", http.StatusInternalServerError)
+		return column{}, false
+	}
+	col = d.Columns[0]
+	for _, bt := range page {
+		v.byID[bt.ID] = bt.Task
+	}
+	// a failed plan card's Retry follows its replacement, an open card the
+	// page does not read; boardCard reads it from the board's tasks
+	for _, bt := range page {
+		t := bt.Task
+		if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanKey == "" {
+			if rt, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(t.ID)); err == nil && ok &&
+				rt.Kind != factoryd.KindChat && !factoryd.Final(rt.Status) {
+				v.byID[rt.ID] = rt
+			}
+		}
+	}
+	for _, bt := range page {
+		// a finished card of the human lane holds no column (boardOf)
+		if v.humanLane(bt.Task) {
+			continue
+		}
+		col.Cards = append(col.Cards, c.boardCard(ctx, v, bt))
+	}
+	c.finishCards(ctx, v, func(fn func(*card)) {
+		for i := range col.Cards {
+			fn(&col.Cards[i])
+		}
+	})
+	return col, true
 }
 
 // showBoard answers a board action with the board of the form's project:
@@ -1496,6 +1610,27 @@ type boardView struct {
 // viewOf reads what every card of a render shares, and the projects agents
 // work on, by name.
 func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
+	v, all, err := c.projectsOf(r, f)
+	if err != nil {
+		return v, nil, err
+	}
+	ctx := r.Context()
+	if v.pending, err = c.cfg.Approvals.ApprovalRequests(ctx, "pending"); err != nil {
+		log.Printf("console: approvals: %v", err)
+		v.problems = append(v.problems, "approval requests could not be read")
+	}
+	for _, a := range v.pending {
+		v.carded[a.TaskID] = true
+		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
+		v.merging[a.TaskID] = v.merging[a.TaskID] || a.Kind == factoryd.ApprovalMerge
+	}
+	return v, all, nil
+}
+
+// projectsOf reads the view's policy and the projects agents work on, by
+// name: what a page of finished cards reads, whose cards never wait on an
+// approval.
+func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
 		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, merging: map[string]bool{}}
@@ -1506,15 +1641,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	}
 	for _, p := range all {
 		v.byRepo[p.Repository] = p
-	}
-	if v.pending, err = c.cfg.Approvals.ApprovalRequests(ctx, "pending"); err != nil {
-		log.Printf("console: approvals: %v", err)
-		v.problems = append(v.problems, "approval requests could not be read")
-	}
-	for _, a := range v.pending {
-		v.carded[a.TaskID] = true
-		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
-		v.merging[a.TaskID] = v.merging[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
