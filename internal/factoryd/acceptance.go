@@ -173,9 +173,31 @@ func commandExit(detail map[string]any) (int, bool) {
 
 // runsAcceptance is whether run ran an acceptance command: equal after
 // whitespace, or the command with arguments added — "bash check -- ./..."
-// runs what "bash check" names, the arguments the same command's. The
-// words are compared as said: a shell command's case is its meaning.
+// runs what "bash check" names, the arguments the same command's — as the
+// whole run or as a step of an && chain (andSteps). The words are
+// compared as said: a shell command's case is its meaning.
 func runsAcceptance(run, item string) bool {
-	run, item = strings.Join(strings.Fields(run), " "), strings.Join(strings.Fields(item), " ")
-	return run == item || strings.HasPrefix(run, item+" ")
+	item = strings.Join(strings.Fields(item), " ")
+	if item == "" {
+		return false
+	}
+	for _, step := range append([]string{run}, andSteps(run)...) {
+		step = strings.Join(strings.Fields(step), " ")
+		if step == item || strings.HasPrefix(step, item+" ") {
+			return true
+		}
+	}
+	return false
+}
+
+// andSteps are the steps of run when it is an && chain whose exit 0 says
+// every step passed; none when another control operator could hide a
+// step's exit (;, |, ||, a lone &, a second line, $?). A redirection's &
+// (2>&1, &>) is none.
+func andSteps(run string) []string {
+	ops := strings.NewReplacer("&&", " ", ">&", " ", "<&", " ", "&>", " ").Replace(run)
+	if !strings.Contains(run, "&&") || strings.ContainsAny(ops, ";|&\n") || strings.Contains(ops, "$?") {
+		return nil
+	}
+	return strings.Split(run, "&&")
 }

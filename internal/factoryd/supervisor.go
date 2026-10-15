@@ -146,12 +146,13 @@ func newDigestBuilder(start time.Time) *digestBuilder {
 func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 	switch ev.Kind {
 	case harness.EventCommand:
-		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: detailString(ev, "command")}
+		cmd := detailString(ev, "command")
+		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: commandLine(cmd)}
 		if exit, ok := detailInt(ev, "exit"); ok {
 			c.Exit = &exit
 			if exit != 0 {
 				out := detailString(ev, "output")
-				c.Signature = ErrorSignature(c.Command, out)
+				c.Signature = ErrorSignature(cmd, out)
 				b.noteError(c.Command, c.Signature, out)
 			}
 		}

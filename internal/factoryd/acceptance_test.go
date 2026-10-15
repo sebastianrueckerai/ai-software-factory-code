@@ -33,6 +33,15 @@ func TestRunsAcceptance(t *testing.T) {
 		{"Bash check", "bash check", false}, // a shell command's case is its meaning
 		{"", "bash check", false},
 		{"bash check", "", false},
+		// a step of an && chain: its exit 0 says every step passed
+		{"cd /workspace/repo && bash check -- ./... 2>&1", "bash check", true},
+		{"cd /workspace/repo &&bash check&& echo done", "bash check", true},
+		{"cd /workspace/repo && bash check || true", "bash check", false},
+		{"cd /workspace/repo && bash check | tee log", "bash check", false},
+		{"cd /workspace/repo; bash check", "bash check", false},
+		{"cd /workspace/repo && bash check & wait", "bash check", false},
+		{"cd /workspace/repo && bash check\necho $?", "bash check", false},
+		{"cd /workspace/repo && bash checks", "bash check", false},
 	} {
 		if got := runsAcceptance(tt.run, tt.item); got != tt.want {
 			t.Errorf("runsAcceptance(%q, %q) = %v, want %v", tt.run, tt.item, got, tt.want)
@@ -127,6 +136,44 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 				t.Fatalf("the trail holds no acceptance green: %s", trail)
 			}
 		})
+	}
+}
+
+// Roadmap 201: a session whose acceptance command is a step of an &&
+// chain, past the line's first 512 bytes, carries the green home with the
+// whole line: the worker's adapter keeps the command whole, and only a
+// model's reading of it is cut. The workflow closes the card on it
+// (TestWorkflowClosesOnAnAcceptanceGreen).
+func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
+		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
+		Acceptance: []string{"go test ./acceptance/"}}}})
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	chain := "cd /workspace/repo && " + strings.Repeat("test -f go.mod && ", 30) + "go test ./acceptance/ -run TestA1"
+	if strings.Index(chain, "go test") <= 512 {
+		t.Fatalf("the acceptance step starts at byte %d, want past 512", strings.Index(chain, "go test"))
+	}
+	part, _ := json.Marshal(map[string]any{"tool": "bash", "state": map[string]any{"status": "completed",
+		"input": map[string]any{"command": chain}, "output": "ok", "metadata": map[string]any{"exit": 0}}})
+	events := parseLines(&opencodeParser{}, `{"type":"tool_use","part":`+string(part)+`}`)
+	if len(events) != 1 {
+		t.Fatalf("events = %+v", events)
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		envLine(events[0])+"\n"+resultLine(false, "out of time"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Acceptance == nil || res.Acceptance.Command != chain || res.Acceptance.Exit != 0 {
+		t.Fatalf("acceptance = %+v, want the whole chain's green run", res.Acceptance)
 	}
 }
 

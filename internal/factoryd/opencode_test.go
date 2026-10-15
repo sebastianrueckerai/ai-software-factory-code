@@ -3,8 +3,6 @@ package factoryd
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -545,30 +543,15 @@ func parseLines(p *opencodeParser, lines ...string) []harness.Event {
 	return events
 }
 
-// Roadmap 201: a bash command's line is cut like a tool's string
-// argument, its first 512 bytes then "…", with a note of its size and the
-// first 8 bytes of its SHA-256, so two long commands alike in their first
-// 512 bytes stay two lines; a short one stands whole.
-func TestOpencodeCommandLineIsCapped(t *testing.T) {
-	command := func(cmd string) string {
-		part, _ := json.Marshal(map[string]any{"tool": "bash", "state": map[string]any{"status": "completed", "input": map[string]any{"command": cmd}, "output": "ok"}})
-		events := parseLines(&opencodeParser{}, `{"type":"tool_use","part":`+string(part)+`}`)
-		if len(events) != 1 || events[0].Kind != harness.EventCommand {
-			t.Fatalf("events = %+v, want one command", events)
-		}
-		return events[0].Detail["command"].(string)
-	}
-	if got := command("go test ./..."); got != "go test ./..." {
-		t.Fatalf("short command = %q", got)
-	}
+// Roadmap 201: the command event carries a bash command whole, since
+// factoryd decides on it (the detectors, the acceptance runs);
+// commandLine cuts it only where a model reads it.
+func TestOpencodeCommandEventKeepsTheWholeLine(t *testing.T) {
 	long := strings.Repeat("a", 512) + strings.Repeat("b", 488)
-	sum := sha256.Sum256([]byte(long))
-	want := strings.Repeat("a", 512) + "… (1000 bytes, sha256 " + hex.EncodeToString(sum[:8]) + ")"
-	if got := command(long); got != want {
-		t.Fatalf("long command = %q, want %q", got, want)
-	}
-	if command(strings.Repeat("a", 512)+strings.Repeat("c", 488)) == want {
-		t.Fatal("two long commands with one start share their line")
+	part, _ := json.Marshal(map[string]any{"tool": "bash", "state": map[string]any{"status": "completed", "input": map[string]any{"command": long}, "output": "ok"}})
+	events := parseLines(&opencodeParser{}, `{"type":"tool_use","part":`+string(part)+`}`)
+	if len(events) != 1 || events[0].Kind != harness.EventCommand || events[0].Detail["command"] != long {
+		t.Fatalf("events = %+v, want one command with the whole 1000-byte line", events)
 	}
 }
 

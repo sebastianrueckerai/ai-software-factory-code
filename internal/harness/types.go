@@ -60,8 +60,9 @@ const (
 type EventKind string
 
 // Detail keys factoryd's supervision reads, per kind:
-//   - command: command (its first 512 bytes, when cut with a note of its
-//     size and hash), exit, output (the output's last 4 KiB, whole lines)
+//   - command: command (whole: factoryd decides on it; commandLine cuts it
+//     where a model reads it), exit, output (the output's last 4 KiB,
+//     whole lines)
 //   - tool_call: tool, status, args (long strings capped), args_sha256 (of
 //     the full arguments' canonical JSON), error when status is "error"
 //   - file_change: path, sha256 of the content after the change (absent or

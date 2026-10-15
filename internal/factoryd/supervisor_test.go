@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +100,50 @@ func TestDigestKeepsTheFilesEditedLast(t *testing.T) {
 	want["f10"], want["g"] = 2, 1
 	if g := d.digest(); !reflect.DeepEqual(g.Files, want) {
 		t.Fatalf("files = %v, want f11 gone, f10 twice and g", g.Files)
+	}
+}
+
+// Roadmap 201: where a model reads a bash command (a finding, the
+// digest, the supervisor's record) commandLine cuts it like a tool's
+// string argument: its first 512 bytes, "…", its size and the first 8
+// bytes of its SHA-256. A short one stands whole. Two long failing
+// commands alike in their first 512 bytes, with one output, read as two
+// lines with two signatures.
+func TestCommandLineIsCutWhereAModelReadsIt(t *testing.T) {
+	a := strings.Repeat("a", 512) + strings.Repeat("b", 488)
+	b := strings.Repeat("a", 512) + strings.Repeat("c", 488)
+	line := func(cmd string) string {
+		sum := sha256.Sum256([]byte(cmd))
+		return strings.Repeat("a", 512) + "… (1000 bytes, sha256 " + hex.EncodeToString(sum[:8]) + ")"
+	}
+	if commandLine("go test ./...") != "go test ./..." || commandLine(a) != line(a) || line(a) == line(b) {
+		t.Fatalf("commandLine: short %q, long %q", commandLine("go test ./..."), commandLine(a))
+	}
+	t0 := time.Unix(0, 0)
+	d := newDigestBuilder(t0)
+	d.add(cmdEvent(a, 1, "FAIL"), t0)
+	d.add(cmdEvent(b, 1, "FAIL"), t0)
+	g := d.digest()
+	if g.Commands[0].Command != line(a) || g.Commands[1].Command != line(b) || g.Commands[0].Signature == g.Commands[1].Signature || len(g.Errors) != 2 {
+		t.Fatalf("digest = %+v, want two cut lines with two signatures", g)
+	}
+	sup, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24, MaxCalls: 1}, t0, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sup.Event(cmdEvent(a, 1, "FAIL"), t0)
+	if f := sup.Findings(); len(f) != 1 || f[0] != "ran `"+line(a)+"` (exit 1)" {
+		t.Fatalf("findings = %q", f)
+	}
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), &fakeObjectStore{}, "t1", "s1", "", "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Record(context.Background(), cmdEvent(a, 1, "FAIL")); err != nil {
+		t.Fatal(err)
+	}
+	if tail := string(r.SupervisorTail(maxRecordTail)); !strings.Contains(tail, `"command":"`+line(a)+`"`) || strings.Contains(tail, "bbbb") {
+		t.Fatalf("tail = %s, want the cut line", tail)
 	}
 }
 

@@ -61,7 +61,7 @@ func (r *SessionRecorder) Snapshot(ctx context.Context, findings []string, resta
 // supervisor event, whose guidance the messages carry; no command's
 // output and no checkpoint's patch, the digest carrying the failures'
 // outputs and the diff so far; no model call's tokens and cost, which no
-// decision reads.
+// decision reads; a command's line as commandLine cuts it.
 func (r *SessionRecorder) SupervisorTail(n int) json.RawMessage {
 	return jsonlTail(r.history.Bytes(), n, func(line []byte) []byte {
 		var ev harness.Event
@@ -71,6 +71,9 @@ func (r *SessionRecorder) SupervisorTail(n int) json.RawMessage {
 		switch ev.Kind {
 		case harness.EventCommand:
 			delete(ev.Detail, "output")
+			if cmd, ok := ev.Detail["command"].(string); ok {
+				ev.Detail["command"] = commandLine(cmd)
+			}
 		case harness.EventCheckpoint:
 			delete(ev.Detail, "patch")
 		case harness.EventModelCall:
