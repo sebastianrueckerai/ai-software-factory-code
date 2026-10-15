@@ -26,17 +26,11 @@ func listening(t *testing.T) string {
 	return l.Addr().String()
 }
 
-// refusing is a local address that refuses connections.
-func refusing(t *testing.T) string {
-	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	addr := l.Addr().String()
-	l.Close()
-	return addr
-}
+// refusing is a local address that refuses connections. Its port is
+// privileged, so no test's listener takes it: a freed ephemeral port goes
+// to whichever process binds next, and a console test's fake model server
+// took this probe's GET /healthz there.
+const refusing = "127.0.0.1:1"
 
 // restarting is the URL of a gateway that answers 503, as while it
 // restarts.
@@ -61,7 +55,7 @@ func closedSandbox(t *testing.T) egressProbe {
 	gateway := httptest.NewServer(health.Handler("factory-gateway", "test"))
 	t.Cleanup(gateway.Close)
 	return egressProbe{
-		gateway: gateway.URL, canary: refusing(t), blocked: "canary.example", metadata: refusing(t), directIP: refusing(t),
+		gateway: gateway.URL, canary: refusing, blocked: "canary.example", metadata: refusing, directIP: refusing,
 		uid: factoryd.SandboxUID, timeout: time.Second, dial: (&net.Dialer{}).DialContext, lookup: refuseLookup,
 	}
 }
@@ -174,7 +168,7 @@ func TestEgressProbeRetriesOnlyAServiceThatDidNotAnswer(t *testing.T) {
 		transient bool
 	}{
 		"gateway restarting": {func(t *testing.T, p *egressProbe) { p.gateway = restarting(t) }, true},
-		"gateway down":       {func(t *testing.T, p *egressProbe) { p.gateway = "http://" + refusing(t) }, true},
+		"gateway down":       {func(t *testing.T, p *egressProbe) { p.gateway = "http://" + refusing }, true},
 		"DNS silent":         {func(t *testing.T, p *egressProbe) { p.lookup = silent }, true},
 		"canary open":        {func(t *testing.T, p *egressProbe) { p.canary = listening(t) }, false},
 		"root":               {func(t *testing.T, p *egressProbe) { p.uid = 0 }, false},
