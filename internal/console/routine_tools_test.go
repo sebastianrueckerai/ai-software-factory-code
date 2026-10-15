@@ -257,7 +257,7 @@ func TestRoutinesReadListsTheProject(t *testing.T) {
 	audit := factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "audit", Title: "Audit pair", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{Merges: 20}},
 			WhileOpen: policy.WhileOpenFold},
-		NextWords: "after 6 more merges", Last: factoryd.RoutineRun{Run: 2, Outcome: "filed", Issue: 790}, Open: &factoryd.Task{IssueNumber: 790}, Held: true}
+		NextWords: "after 6 more merges", Last: factoryd.RoutineRun{Run: 2, Outcome: "filed", Issue: 790}, Open: &factoryd.Task{IssueNumber: 790}}
 	bump := weeklyBump()
 	bump.Last = factoryd.RoutineRun{Run: 3, Outcome: "merged", Issue: 781}
 	nightly := factoryd.RoutineView{Project: "ai-software-factory-code",

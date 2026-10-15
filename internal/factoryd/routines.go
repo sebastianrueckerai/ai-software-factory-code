@@ -55,7 +55,9 @@ type RoutineView struct {
 	// Last is the newest run, zero before the first.
 	Last RoutineRun
 	// Open is the open card of the routine's runs, nil for none, and Held
-	// says the routine holds its runs while it is open.
+	// says the newest run was held: it filed nothing, as the card of a run
+	// before is still open. Last.Note says so ("held: #781 is still
+	// open").
 	Open *Task
 	Held bool
 	// Lane is "needs-you" for a routine that files human, else "queued".
@@ -414,8 +416,7 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			return nil, err
 		}
 		if ok {
-			view.Open = &open
-			view.Held = rt.WhileOpenRule() == policy.WhileOpenHold
+			view.Open, view.Held = &open, view.Last.Outcome == "held"
 		}
 		out = append(out, view)
 	}

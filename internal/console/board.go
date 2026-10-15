@@ -18,7 +18,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -1101,8 +1100,8 @@ type statusLine struct {
 	GitHub              string
 	GitHubURL           string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
-	// ("↻ weekly held", RoutineHeld) else the soonest under an hour away
-	// ("↻ weekly in 20 min"), "" for none.
+	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
+	// ("↻ bump in 20 min"), "" for none.
 	RoutineCell string
 	RoutineHeld bool
 }
@@ -2331,7 +2330,7 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 		return cmp.Or(cmp.Compare(rank(a), rank(b)), a.Next.Compare(b.Next), cmp.Compare(a.MergesLeft, b.MergesLeft))
 	})
 	now := time.Now()
-	if i := slices.IndexFunc(views, heldRun); i >= 0 {
+	if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Held }); i >= 0 {
 		d.Status.RoutineCell, d.Status.RoutineHeld = "↻ "+cellWord(views[i].Routine)+" held", true
 	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
 		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine) + " in " + coarse(views[i].Next.Sub(now))
@@ -2372,7 +2371,7 @@ var filesWords = map[string]string{policy.FilesHuman: "human card", policy.Files
 func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
 	rt := rv.Routine
 	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), NextWords: rv.NextWords, Soon: rv.Soon,
-		Held: heldRun(rv), Filter: f, CSRF: csrf}
+		Held: rv.Held, Filter: f, CSRF: csrf}
 	switch {
 	case !rv.Next.IsZero():
 		g.NextWords += " · in " + coarse(rv.Next.Sub(now)) + " · " + filesWords[rt.Files]
@@ -2390,29 +2389,23 @@ func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string)
 		}
 		g.LastWords = strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
 	}
+	if g.Held {
+		g.HeldWords = rv.Last.Note
+	}
 	if rv.Open != nil {
-		g.Open = rv.Open.IssueNumber
-		g.Running = statusClass(rv.Open.Status) == "st-running"
-		if g.Held {
-			g.HeldWords = fmt.Sprintf("held: #%d is still open", g.Open)
-		}
+		g.Open, g.Running = rv.Open.IssueNumber, rv.Open.Status == "running"
 	}
 	return g
 }
 
-// heldRun: rv's newest run was held, as its card is still open; an open
-// card alone is the normal state, which whispers.
-func heldRun(rv factoryd.RoutineView) bool { return rv.Held && rv.Last.Outcome == "held" }
-
-// cellWord is the routine's word in the strip's cell: its title's first
-// word in lower case, its name's first segment for a word over 10
-// letters.
+// cellWord is the routine's word in the strip's cell: its title's last
+// word in lower case, "bump" for Weekly bump.
 func cellWord(rt policy.Routine) string {
-	if w := strings.Fields(rt.Title); len(w) > 0 && utf8.RuneCountInString(w[0]) <= 10 {
-		return strings.ToLower(w[0])
+	w := strings.Fields(rt.Title)
+	if len(w) == 0 {
+		return rt.Name
 	}
-	first, _, _ := strings.Cut(rt.Name, "-")
-	return first
+	return strings.ToLower(w[len(w)-1])
 }
 
 // monthCap is repository's month cap: its project file's budget.month_eur,

@@ -97,7 +97,7 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 		t.Fatalf("Queued's count is not its two cards:\n%s", queued)
 	}
 
-	if !strings.Contains(body, `<span class="cell routine">↻ weekly in 20 min</span>`) {
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {
 		t.Fatal("the strip names no run under an hour away")
 	}
 	if !strings.Contains(body, `<details class="col-menu routines-ctl"><summary aria-label="Routines on the board" title="Routines on the board">↻ routines</summary>`) {
@@ -167,8 +167,18 @@ func TestBoardRoutinesFilter(t *testing.T) {
 		!strings.Contains(queued, `Queued <span class="count">1</span>`) {
 		t.Fatalf("none: the lanes say wrong:\n%s\n%s", needs, queued)
 	}
-	if !strings.Contains(body, `<span class="cell routine">↻ weekly in 20 min</span>`) {
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {
 		t.Fatal("hiding the ghosts hides the strip's cell")
+	}
+
+	// the hidden line's link keeps the find and the column's order, and
+	// the find leaves the ghosts standing
+	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&q=455&queued=oldest&routines=week", nil), ck).Body.String()
+	needs, queued = col(t, body, "Needs you"), col(t, body, "Queued")
+	ghostIn(t, needs, "weekly-bump")
+	ghostIn(t, queued, "audit")
+	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;q=455&amp;queued=oldest&amp;routines=all">1 routine hidden</a></p>`) {
+		t.Fatalf("the hidden line drops the board's state:\n%s", queued)
 	}
 
 	// an act's answer keeps the choice it carried
@@ -196,6 +206,30 @@ func TestBoardShowsNoGhostForARemovedRoutine(t *testing.T) {
 	}
 }
 
+// The wide view has no four columns to stand the ghosts in: the strip
+// keeps its cell, the board has no ghost and no control. A member who
+// reads the project but does not write it sees the ghosts without acts.
+func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
+	r := newRig(t)
+	r.routines.views = []factoryd.RoutineView{audit(), soonBump()}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&view=wide", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) || strings.Contains(body, "data-ghost=") ||
+		strings.Contains(body, "routines-ctl") || strings.Contains(body, "ghosts-hidden") {
+		t.Fatal("the wide view: want the cell, no ghost, no control")
+	}
+
+	ak, _ := r.as(t, "anna")
+	rec := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ak)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("anna's board = %d", rec.Code)
+	}
+	g := ghostIn(t, col(t, rec.Body.String(), "Needs you"), "weekly-bump")
+	if strings.Contains(g, `class="acts"`) || strings.Contains(g, "/skip") || strings.Contains(g, "/run") {
+		t.Fatalf("a reader is offered the acts:\n%s", g)
+	}
+}
+
 // A held run says so on its ghost and in the strip, in the amber text
 // colour; a card a run filed that is still open is no held run, and one
 // that runs breathes on its ghost.
@@ -206,7 +240,7 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	bump.Last = factoryd.RoutineRun{Project: bump.Project, Routine: "weekly-bump", Run: 15, Started: time.Now(), Ended: time.Now(),
 		Trigger: "cron", Outcome: "held", Note: "held: #781 is still open"}
 	run := audit()
-	run.Open, run.Held = &factoryd.Task{ID: "t-792", Status: "running", IssueNumber: 792}, true
+	run.Open = &factoryd.Task{ID: "t-792", Status: "running", IssueNumber: 792}
 	run.Last = factoryd.RoutineRun{Project: run.Project, Routine: "audit", Run: 4, Started: time.Now(), Trigger: "merges", TaskID: "t-792", Issue: 792, Outcome: "filed"}
 	r.routines.views = []factoryd.RoutineView{bump, run}
 	ck, _ := r.loggedIn(t)
@@ -216,7 +250,7 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	if !strings.Contains(g, `<article class="card ghost held"`) || !strings.Contains(g, `<span class="held">held: #781 is still open</span>`) {
 		t.Fatalf("the held ghost is quiet:\n%s", g)
 	}
-	if !strings.Contains(body, `<span class="cell routine warn">↻ weekly held</span>`) {
+	if !strings.Contains(body, `<span class="cell routine warn">↻ bump held</span>`) {
 		t.Fatal("the strip does not say held")
 	}
 	if !strings.Contains(g, `<div class="line2 mono">last held</div>`) {
@@ -228,13 +262,13 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	}
 
 	// the bump's card filed and open, no run held: the ghost and the strip whisper
-	bump.Last = factoryd.RoutineRun{Project: bump.Project, Routine: "weekly-bump", Run: 15, Started: time.Now(), Trigger: "cron", TaskID: "t-781", Issue: 781, Outcome: "filed"}
+	bump.Held, bump.Last = false, factoryd.RoutineRun{Project: bump.Project, Routine: "weekly-bump", Run: 15, Started: time.Now(), Trigger: "cron", TaskID: "t-781", Issue: 781, Outcome: "filed"}
 	r.routines.views = []factoryd.RoutineView{bump, run}
 	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
 	if g := ghostIn(t, col(t, body, "Needs you"), "weekly-bump"); strings.Contains(g, "held") || !strings.Contains(g, "last #781 filed") {
 		t.Fatalf("an open card reads as a held run:\n%s", g)
 	}
-	if !strings.Contains(body, `<span class="cell routine">↻ weekly in 20 min</span>`) {
+	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {
 		t.Fatal("the strip does not name the run under an hour away")
 	}
 }

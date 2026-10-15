@@ -405,7 +405,7 @@ func TestViews(t *testing.T) {
 		bump.NextWords != "Mon 06:00" || bump.MergesLeft != 0 || !bump.Soon || bump.Lane != "needs-you" {
 		t.Fatalf("the weekly bump: %+v", bump)
 	}
-	if bump.Last.Run != 1 || bump.Open == nil || bump.Open.ID != "t-1" || !bump.Held {
+	if bump.Last.Run != 1 || bump.Open == nil || bump.Open.ID != "t-1" || bump.Held {
 		t.Fatalf("the weekly bump's card: last %+v, open %v, held %v", bump.Last, bump.Open, bump.Held)
 	}
 	if audit.Routine.Name != "audit" || audit.State.Merges != 14 || audit.NextWords != "after 6 more merges" || audit.MergesLeft != 6 || !audit.Next.IsZero() ||
@@ -413,10 +413,17 @@ func TestViews(t *testing.T) {
 		t.Fatalf("the audit: %+v", audit)
 	}
 
-	// under fold an open card is not held
-	tree.Projects["ai-software-factory-code"].Routines[0].WhileOpen = policy.WhileOpenFold
-	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[0].Held || vs[0].Open == nil {
-		t.Fatalf("fold: %+v %v", vs, err)
+	// the next run held, as #781 is still open; once #781 closes the
+	// held run no longer holds anything
+	store.routineRuns["ai-software-factory-code/weekly-bump"] = append(store.routineRuns["ai-software-factory-code/weekly-bump"],
+		RoutineRun{Project: "ai-software-factory-code", Routine: "weekly-bump", Run: 2, Trigger: "cron", Outcome: "held", Note: "held: #781 is still open"})
+	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || !vs[0].Held || vs[0].Open == nil || vs[0].Open.ID != "t-1" ||
+		vs[0].Last.Note != "held: #781 is still open" {
+		t.Fatalf("held: %+v %v", vs, err)
+	}
+	store.tasks["t-1"] = Task{ID: "t-1", Status: "done", IssueNumber: 781, Source: SourceRoutine}
+	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[0].Held || vs[0].Open != nil {
+		t.Fatalf("closed: %+v %v", vs, err)
 	}
 	// one merge short, and past the count while a run did not start
 	for merges, want := range map[int]string{19: "after 1 more merge", 25: "after 1 more merge"} {
