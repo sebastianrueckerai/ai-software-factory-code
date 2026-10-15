@@ -85,6 +85,7 @@ func TestLab(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
 		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 120}
+	r.ledger.briefs = map[string]string{labBump.Brief: labBumpBrief}
 	ck, _ := r.loggedIn(t)
 
 	var mu sync.RWMutex
@@ -186,6 +187,12 @@ type labScene struct {
 	inbox, open int64
 	// archived are the member's archived threads
 	archived []int64
+	// routines are the code project's routines as its board shows them
+	// at the design round's time routinesAt, which now stands for, and
+	// runs their runs by routine, newest first (C16)
+	routines   []factoryd.RoutineView
+	runs       map[string][]factoryd.RoutineRun
+	routinesAt time.Time
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
@@ -428,6 +435,24 @@ func (r *rig) labSeed(name string) (string, error) {
 		{Kind: factoryd.KindCronJob, Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *", LastScheduled: nightly(30),
 			LastSuccessful: nightly(30).AddDate(0, 0, -1)},
 	}}
+	r.routines.mu.Lock()
+	r.routines.views, r.routines.runs, r.routines.skips, r.routines.ran = s.routines, map[string][]factoryd.RoutineRun{}, nil, nil
+	for name, runs := range s.runs {
+		r.routines.runs[labProject+"/"+name] = runs
+	}
+	// a Skip once moves the routine's next run on, as factoryd's views do
+	r.routines.onSkip = func(_, name string) {
+		i := slices.IndexFunc(r.routines.views, func(v factoryd.RoutineView) bool { return v.Routine.Name == name })
+		v := &r.routines.views[i]
+		v.State.SkipNext, v.State.SkipBy = true, "sebastian"
+		if every := v.Routine.MergesEvery(); every > 0 {
+			v.MergesLeft += every
+			v.NextWords = fmt.Sprintf("after %d more merges", v.MergesLeft)
+			return
+		}
+		labNext(v, now, s.routinesAt, s.routinesAt.Add(v.Next.Sub(now)-30*time.Second))
+	}
+	r.routines.mu.Unlock()
 	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
 	r.c.turns = newTurnGate()
 	for _, n := range s.working {
@@ -725,6 +750,7 @@ func busyScene(now time.Time) labScene {
 		{ID: 58, Kind: "server", Repo: "sf/code", OwnerRef: labID(571), HoldID: 7, State: "deleted", Size: "cx33", ReleasedBy: "sebastian",
 			LeaseExpires: ago(68 * time.Hour), PricePerHourEUR: 0.0144, AccruedEUR: 0.0576, CreatedAt: ago(72 * time.Hour)},
 	}
+	s.addRoutines(now, "due")
 	return s
 }
 
@@ -765,6 +791,150 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 	return msgs, proposals
 }
 
+// labMonday is the routines round's Monday (C16, design/rounds/04-routines/
+// routines.js) at 06:00, when the weekly bump's run 15 is due, on 2026's
+// calendar. A scene with the routines stands for a moment of it: their
+// runs read as the round's dates, and every age counts back from now.
+var labMonday = time.Date(2026, 10, 12, 6, 0, 0, 0, time.UTC)
+
+const labProject = "ai-software-factory-code"
+
+// labBumpBrief is the weekly bump's brief, routines/weekly-bump.md.
+const labBumpBrief = "The factory pins every outside input of its builds and its cluster: nothing moves until this card moves it. " +
+	"Bump each to the newest release of its line in one pull request: the outside images and charts in upstream-images.txt, " +
+	"the Debian snapshot, the PostgreSQL versions, the Go toolchain, the downloaded tools."
+
+// The round's four routines of the code project: its weekly bump, the
+// factory's template pass, a dependency update and an audit.
+var (
+	labBump = policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman,
+		Brief: "routines/weekly-bump.md", WhileOpen: policy.WhileOpenHold, Missed: policy.MissedFileOnce, Tell: policy.TellInbox}
+	labTemplatePass = policy.Routine{Name: "template-pass", Title: "Template pass", Schedule: []policy.Trigger{{Cron: "3 * * * *"},
+		{On: policy.OnConfigurationVersion}}, Files: policy.FilesPullRequest, Pass: policy.PassTemplate, WhileOpen: policy.WhileOpenFold, Tell: policy.TellQuiet}
+	labDeps = policy.Routine{Name: "dependency-update", Title: "Dependency update", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}},
+		Files: policy.FilesAgent, Skill: "dependency-update", Tell: policy.TellQuiet}
+	labAudit = policy.Routine{Name: "audit", Title: "Audit", Schedule: []policy.Trigger{{Merges: 20}}, Files: policy.FilesAgent, Skill: "audit"}
+)
+
+// labNext sets v's next run to its first cron run after the design time
+// from, worded as factoryd's views word it at the design time at, which
+// now stands for. It comes half a minute later, so a page loaded within
+// that half minute still reads "in 20 min". A routine without a cron
+// trigger keeps its own.
+func labNext(v *factoryd.RoutineView, now, at, from time.Time) {
+	next, ok := v.Routine.NextCron(from, time.UTC)
+	if !ok {
+		return
+	}
+	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour, next.Format("Mon 15:04")
+	if next.Sub(at) >= 7*24*time.Hour {
+		v.NextWords = next.Format("Mon 2 Jan 15:04")
+	}
+}
+
+// addRoutines gives s the round's routines at moment due (Monday 05:40:
+// the weekly bump files in 20 minutes, its last card #781 done), held
+// (06:00: run 15 is held, as #781 of run 14 is still open in Needs you)
+// or filed (06:00: run 15 filed #790 into Needs you), with the runs and
+// the cards they filed: #781, and #779 of the dependency update in Done.
+func (s *labScene) addRoutines(now time.Time, moment string) {
+	at := labMonday
+	if moment == "due" {
+		at = labMonday.Add(-20 * time.Minute)
+	}
+	s.routinesAt = at
+	run := func(rt policy.Routine, n int, trigger string, due time.Time, took time.Duration, outcome, note string, issue int64) factoryd.RoutineRun {
+		r := factoryd.RoutineRun{Project: labProject, Routine: rt.Name, Run: n, Due: due, Started: due, Ended: due.Add(took), Trigger: trigger,
+			Outcome: outcome, Note: note, Issue: issue}
+		if issue > 0 {
+			r.TaskID = labID(issue)
+		}
+		if outcome == "filed" {
+			r.Ended = time.Time{}
+		}
+		return r
+	}
+	week := func(n int) time.Time { return labMonday.AddDate(0, 0, 7*(n-15)) }
+	thursday := labMonday.AddDate(0, 0, -4)
+	s.runs = map[string][]factoryd.RoutineRun{
+		labBump.Name: {
+			run(labBump, 14, "cron", week(14), 51*time.Hour, "done", "", 781),
+			run(labBump, 13, "cron", week(13), 33*time.Hour, "done", "", 742),
+			run(labBump, 12, "cron", week(12), 146*time.Hour, "closed", "", 701),
+			run(labBump, 11, "cron", week(11), 0, "skipped", "skipped once by sebastian", 0),
+			run(labBump, 10, "cron", week(10), 4*time.Hour, "done", "", 655),
+			run(labBump, 9, "cron", week(9), 25*time.Hour, "done", "", 630),
+		},
+		labTemplatePass.Name: {
+			run(labTemplatePass, 1312, "cron", labMonday.Add(-57*time.Minute), 40*time.Second, "no change", "", 0),
+			run(labTemplatePass, 1311, "cron", labMonday.Add(-117*time.Minute), 38*time.Second, "no change", "", 0),
+		},
+		labDeps.Name: {
+			run(labDeps, 9, "cron", thursday, 26*time.Hour, "done", "", 779),
+			run(labDeps, 8, "cron", thursday.AddDate(0, 0, -7), 5*time.Hour, "done", "", 741),
+		},
+		labAudit.Name: {run(labAudit, 4, "merges", labMonday.AddDate(0, 0, -12).Add(8*time.Hour+20*time.Minute), 100*time.Minute, "done", "", 702)},
+	}
+	s.runs[labDeps.Name][0].CostEUR, s.runs[labAudit.Name][0].CostEUR = 0.94, 1.37
+
+	card := func(rt policy.Routine, r factoryd.RoutineRun, status, title, body string) factoryd.Task {
+		lane := policy.LaneReady
+		if rt.Files == policy.FilesHuman {
+			// a human card's body ends in the line factoryd files it with
+			lane, body = "", body+"\n\n"+fmt.Sprintf("%s%s · run %d", factoryd.RoutineProvenance, rt.Name, r.Run)
+		}
+		t := labCard(now, r.Issue, status, lane, at.Sub(r.Started), title, body)
+		t.Source, t.Author, t.AuthorWriter = factoryd.SourceRoutine, "factory-agent", false
+		if rt.Files == policy.FilesHuman {
+			t.Kind, t.BudgetEUR, t.ModelAlias = "human", 0, ""
+		}
+		if !r.Ended.IsZero() {
+			t = finished(t, now, at.Sub(r.Ended), r.CostEUR)
+		}
+		return t
+	}
+	const bumpTitle = "Weekly bump of the pinned outside inputs"
+	bump, status781 := s.runs[labBump.Name], "done"
+	if moment == "held" {
+		bump[0].Outcome, bump[0].Ended, status781 = "filed", time.Time{}, "waiting-human"
+	}
+	k781 := card(labBump, bump[0], status781, bumpTitle, labBumpBrief)
+	s.tasks = append(s.tasks, factoryd.BoardTask{Task: k781}, factoryd.BoardTask{Task: card(labDeps, s.runs[labDeps.Name][0], "done",
+		"Dependency update: go.mod and package.json, patch and minor", "Run the skill dependency-update.")})
+	var open *factoryd.Task
+	switch moment {
+	case "held":
+		bump = append([]factoryd.RoutineRun{run(labBump, 15, "cron", labMonday, 0, "held", "held: #781 is still open", 0)}, bump...)
+		open = &k781
+	case "filed":
+		bump = append([]factoryd.RoutineRun{run(labBump, 15, "cron", labMonday, 0, "filed", "", 790)}, bump...)
+		k790 := card(labBump, bump[0], "waiting-human", bumpTitle, labBumpBrief)
+		s.tasks = append(s.tasks, factoryd.BoardTask{Task: k790})
+		open = &k790
+	}
+	s.runs[labBump.Name] = bump
+
+	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
+		v := factoryd.RoutineView{Project: labProject, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
+		if rt.Files == policy.FilesHuman {
+			v.Lane = "needs-you"
+		}
+		labNext(&v, now, at, at)
+		if every := rt.MergesEvery(); every > 0 {
+			v.MergesLeft = every - st.Merges
+			v.NextWords = fmt.Sprintf("after %d more merges", v.MergesLeft)
+		}
+		return v
+	}
+	b := view(labBump, factoryd.RoutineState{Project: labProject, Routine: labBump.Name, Runs: bump[0].Run})
+	b.Open, b.Held = open, moment == "held"
+	s.routines = []factoryd.RoutineView{b,
+		view(labTemplatePass, factoryd.RoutineState{Routine: labTemplatePass.Name, Runs: 1312}),
+		view(labDeps, factoryd.RoutineState{Project: labProject, Routine: labDeps.Name, Runs: 9}),
+		view(labAudit, factoryd.RoutineState{Project: labProject, Routine: labAudit.Name, Merges: 14, Runs: 4}),
+	}
+}
+
 func idleScene(now time.Time) labScene {
 	s := labScene{spend: 144.16, chatSpend: 6.14}
 	done := []struct {
@@ -800,9 +970,11 @@ func idleScene(now time.Time) labScene {
 		{Task: labCard(now, 178, "backlog", "backlog", 347*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer.")},
 	}, s.tasks...)
+	s.addRoutines(now, "filed")
 	s.pulse = factoryd.Pulse{ID: 91, Repository: "sf/code", At: now.Add(-6 * time.Minute),
 		Sentence: "Factory is idle with no active work; spend of €144.16 has exceeded the monthly budget of €120.00.",
-		Bullets:  []string{"Needs you: nothing", "Queued: #455 and #178 in the backlog", "Spend: €144.16 of the €120.00 cap, €24.16 over"}}
+		Bullets: []string{"Needs you: #790, the weekly bump of the pinned outside inputs", "Queued: #455 and #178 in the backlog",
+			"Spend: €144.16 of the €120.00 cap, €24.16 over"}}
 	s.alerts = []factoryd.Alert{
 		{ID: 62, Kind: factoryd.AlertMonthCap, Source: "100", RaisedAt: now.Add(-20 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/100"},
 		{ID: 55, Kind: factoryd.AlertMonthCap, Source: "80", RaisedAt: now.Add(-3 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/80"},
@@ -886,6 +1058,7 @@ func fireScene(now time.Time) labScene {
 	done := finished(labCard(now, 602, "done", "ready", 7*time.Hour, "Costs: the day cap line under the table",
 		"Show today's spend against the day cap under the costs table."), now, 6*time.Hour, 0.18)
 	s.tasks = []factoryd.BoardTask{capped, {Task: stale}, {Task: near}, {Task: wait1}, {Task: wait2}, queued, {Task: f1}, {Task: f2}, {Task: done}}
+	s.addRoutines(now, "held")
 
 	monthly := 8.99
 	s.approvals = []factoryd.ApprovalRequest{{ID: 67, Kind: factoryd.ApprovalResource, TaskID: stale.ID, Project: "sf/code", Status: "pending",
@@ -906,7 +1079,8 @@ func fireScene(now time.Time) labScene {
 	}
 	s.pulse = factoryd.Pulse{ID: 95, Repository: "sf/code", At: ago(3 * time.Minute), Prominent: true,
 		Sentence: "#610 is at its session cap and needs your answer; two cards wait on the provider.",
-		Bullets: []string{"Needs you: #610's session cap, the cx33 #619 asks for", "Failed: #604 and #609 in the last two hours",
+		Bullets: []string{"Needs you: #610's session cap, the cx33 #619 asks for, #781's weekly bump, which holds this week's run",
+			"Failed: #604 and #609 in the last two hours",
 			"Waiting on the provider: #615 and #621 (429, budget exhausted)", "Spend: €97.30 of the €120 cap"}}
 	s.alerts = []factoryd.Alert{
 		{ID: 66, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: capped.ID, RaisedAt: ago(12 * time.Minute)},
