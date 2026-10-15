@@ -1101,7 +1101,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), capReached, nil)
+		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
 		if final != "" {
 			return final, why
 		}
@@ -1189,7 +1189,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the screening's human, asked again; the answer runs the next
 			// session, whose rebuilt answers are screened again
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitScreening(healedReason, cmp.Or(st.Question, screeningQuestion))
+			final, why, answer := t.judgeScreening(t.awaitHumanAgain(st.Question, nil))
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1207,11 +1207,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = answer
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
-			question := st.Question
-			if question == "" {
-				question = healedReason
-			}
-			final, why, answer := t.awaitHuman(healedReason, question, st.Choices)
+			final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1270,7 +1266,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// whatever granted it: no session, no key, no failure round,
 			// and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
-				final, end, _ := t.awaitHuman(why, escalationQuestion(why), nil)
+				final, end, _ := t.awaitHuman(why, nil)
 				if final != "" {
 					return t.finish(final, end)
 				}
@@ -1289,7 +1285,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), capReached, nil)
+				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
@@ -1338,7 +1334,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
-				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
+				final, why, answer := t.awaitHuman(ask, nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
@@ -1350,7 +1346,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.pendingPods = 0
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
-				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
+				final, why, answer := t.awaitHuman(ask, nil)
 				if final != "" {
 					return t.finish(final, why)
 				}
@@ -1378,7 +1374,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
-			final, why, answer := t.awaitHuman(v.escalate, escalationQuestion(v.escalate), nil)
+			final, why, answer := t.awaitHuman(v.escalate, nil)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1473,7 +1469,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
-			final, why, answer := t.awaitHuman(res.Reason, escalationQuestion(res.Reason), res.Choices)
+			final, why, answer := t.awaitHuman(res.Reason, res.Choices)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -2211,7 +2207,7 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 // change request back to the agent), else the task is in review again and
 // the gate runs again.
 func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
-	return t.gateAnswered(t.awaitHuman(reason, escalationQuestion(reason), nil))
+	return t.gateAnswered(t.awaitHuman(reason, nil))
 }
 
 // gateAnswered goes on from the human's answer to a gate's escalation, as
@@ -2651,14 +2647,27 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 // than the escalation and the rest of its burst, or a change request on
 // the task's PR) or a terminal signal decides the task. answer is the
 // change requests; the human's answers go to t.answers (versionAnswers),
-// or into answer before it.
-func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, why string, answer []string) {
-	return t.awaitHumanUntil(reason, question, choices, nil)
+// or into answer before it, each tagged with the escalation's question,
+// its first line, as Reconcile tags it (answersFrom).
+func (t *taskRun) awaitHuman(reason string, choices []string) (final, why string, answer []string) {
+	return t.awaitHumanUntil(reason, choices, nil)
+}
+
+// awaitHumanAgain is awaitHuman of a healed run that asks question again
+// (healedReason), the one Reconcile read as the last asked; its answers
+// answer question, as Reconcile tags them.
+func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why string, answer []string) {
+	question = cmp.Or(question, escalationQuestion(healedReason))
+	if err := t.ask(healedReason, question, choices); err != nil {
+		return "failed", escalateFailed + errMessage(err), nil
+	}
+	return t.awaitAnswer(question, nil)
 }
 
 // awaitHumanUntil is awaitHuman that also ends, with no answer, when day,
 // a wait on the day cap, ends on its own (versionDayCap).
-func (t *taskRun) awaitHumanUntil(reason, question string, choices []string, day *dayWait) (final, why string, answer []string) {
+func (t *taskRun) awaitHumanUntil(reason string, choices []string, day *dayWait) (final, why string, answer []string) {
+	question := escalationQuestion(reason)
 	if err := t.ask(reason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
@@ -2737,7 +2746,7 @@ func (t *taskRun) awaitCap(c CapRefusal, model string) (final, why string, answe
 	if until := c.until(); !until.IsZero() {
 		return t.awaitDay(c.reason(), until, model)
 	}
-	return t.awaitHuman(c.reason(), escalationQuestion(c.reason()), nil)
+	return t.awaitHuman(c.reason(), nil)
 }
 
 // awaitDay escalates a session the day cap stopped with reason and waits
@@ -2747,7 +2756,7 @@ func (t *taskRun) awaitDay(reason string, until time.Time, model string) (final,
 	if !workflow.Now(t.ctx).Before(until) {
 		return "", "", nil
 	}
-	return t.awaitHumanUntil(reason, escalationQuestion(reason), nil, &dayWait{until: until, model: model})
+	return t.awaitHumanUntil(reason, nil, &dayWait{until: until, model: model})
 }
 
 // dayCheck is how often a wait on the day cap reads the day's free

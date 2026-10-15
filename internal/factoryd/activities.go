@@ -1371,15 +1371,17 @@ func waitsOnScreening(events []IntakeEvent) bool {
 
 // answersFrom rebuilds the human's answers from a task's intake events
 // (oldest first): every trusted issue comment that answers an escalation
-// by the comments' ids (answerOf), tagged with that escalation's question
-// (a healed re-ask keeps the question it re-asks), in answerKey's order.
-// question is the last one asked, choices the answers its agent offered.
+// by the comments' ids (answerOf), tagged with that escalation's question,
+// its first line (a healed re-ask keeps the question it re-asks, its own
+// with none before it), in answerKey's order. question is the last one
+// asked, choices the answers its agent offered. The live run tags its
+// answers alike (awaitHuman, awaitHumanAgain).
 func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
 	var anchors []anchor
 	for _, e := range events {
 		switch e.Kind {
 		case IntakeEscalation:
-			if e.Body != healedReason {
+			if e.Body != healedReason || question == "" {
 				question, choices = escalationQuestion(e.Body), e.Choices
 			}
 			anchors = append(anchors, anchor{comment: e.CommentID, question: question})
@@ -1388,8 +1390,7 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 		}
 	}
 	for _, e := range events {
-		escalation, err := strconv.ParseInt(e.Body, 10, 64)
-		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == escalation }); e.Kind == IntakeEscalationWithdrawn && err == nil && i >= 0 {
+		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == e.Withdraws }); e.Kind == IntakeEscalationWithdrawn && i >= 0 {
 			anchors[i].withdrawn = e.CommentID
 		}
 	}

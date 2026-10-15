@@ -10,7 +10,6 @@ import (
 	"log"
 	"maps"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -221,7 +220,7 @@ func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, co
 		return 0, err
 	}
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalationWithdrawn, Author: FactoryDecider,
-		Body: strconv.FormatInt(comment, 10), CommentID: id}); err != nil {
+		Body: why, CommentID: id, Withdraws: comment}); err != nil {
 		log.Printf("task %s: record the withdrawal of escalation comment %d: %v", taskID, comment, err)
 	}
 	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}

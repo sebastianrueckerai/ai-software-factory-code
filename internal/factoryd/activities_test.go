@@ -1459,12 +1459,12 @@ func TestAnswersFromEndsAWithdrawnEscalationsAnswers(t *testing.T) {
 	answers, _, _ := answersFrom([]IntakeEvent{
 		{Kind: IntakeEscalation, CommentID: 100, Body: review},
 		{Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 101, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 103, Body: "100"},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 103, Withdraws: 100},
 		{Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 104, Trusted: true},
 		{Kind: IntakeEscalation, CommentID: 200, Body: "The agent asks: Which text?\nWhy: open"},
 		{Kind: IntakeEscalation, CommentID: 300, Body: audit},
 		{Kind: "issue_comment", Author: "sebastian", Body: "a", CommentID: 301, Trusted: true},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 302, Body: "200"},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 302, Withdraws: 200},
 		{Kind: "issue_comment", Author: "sebastian", Body: "b", CommentID: 303, Trusted: true},
 	})
 	want := []string{`sebastian, to "` + audit + `": a`, `sebastian, to "` + audit + `": b`, `sebastian, to "` + review + `": gateway restarted`}
@@ -1492,7 +1492,7 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 		{Kind: IntakeInfoRequest, CommentID: 300},
 		comment(301, "the log"),
 		{Kind: IntakeEscalation, CommentID: 400, Body: "The agent asks: Which port?"},
-		{Kind: IntakeEscalationWithdrawn, CommentID: 410, Body: "400"},
+		{Kind: IntakeEscalationWithdrawn, CommentID: 410, Withdraws: 400},
 		comment(405, "d1"),
 		comment(420, "d2"),
 		comment(250, "b2"),
@@ -1501,6 +1501,19 @@ func TestAnswersFromReadsAnAnswerByItsCommentID(t *testing.T) {
 		`sebastian, to "Which file?": a1`, `sebastian, to "Which file?": a2`}
 	if !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
+// A healed re-ask with no question before it (its run's history lost)
+// asks its own first line, which tags its answers, as the live run's
+// awaitHumanAgain tags them with no question to ask again.
+func TestAnswersFromTagsAHealedReAskWithNoQuestionBefore(t *testing.T) {
+	answers, question, _ := answersFrom([]IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 601, Body: healedReason},
+		{Kind: "issue_comment", Author: "sebastian", Body: "go on", CommentID: 650, Trusted: true},
+	})
+	if want := []string{`sebastian, to "` + healedReason + `": go on`}; !slices.Equal(answers, want) || question != healedReason {
+		t.Fatalf("answers = %q, question %q; want %q asked by %q", answers, question, want, healedReason)
 	}
 }
 

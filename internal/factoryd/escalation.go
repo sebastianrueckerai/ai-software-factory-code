@@ -97,8 +97,8 @@ const (
 )
 
 // IntakeEscalationWithdrawn records the withdrawal of an escalation
-// (versionBesideLadder): CommentID the withdrawal's comment, Body the
-// escalation's comment id. Comments after the withdrawal's answer the
+// (versionBesideLadder): CommentID the withdrawal's comment, Withdraws
+// the escalation's, Body why. Comments after the withdrawal's answer the
 // escalation no more (answerOf).
 const IntakeEscalationWithdrawn = "escalation_withdrawn"
 

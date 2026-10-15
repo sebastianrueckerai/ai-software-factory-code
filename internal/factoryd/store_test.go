@@ -1696,6 +1696,53 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	}
 }
 
+// The withdraws column on a real Postgres: a withdrawal's intake event
+// keeps the escalation it withdraws beside its own comment, once however
+// often it is recorded, and every other event withdraws nothing; read
+// back, it ends the escalation's answers at its comment: 650 answers 601,
+// 750 nothing.
+func TestPGStoreIntakeWithdraws(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-wd", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9}); err != nil {
+		t.Fatal(err)
+	}
+	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
+	for _, e := range []IntakeEvent{
+		{TaskID: "t-wd", Kind: IntakeEscalation, Author: FactoryDecider, Body: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs", CommentID: 601},
+		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true},
+		withdrawal, withdrawal,
+		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 750, Trusted: true},
+	} {
+		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := s.IntakeEvents(ctx, "t-wd")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %d withdraws %d", e.Kind, e.CommentID, e.Withdraws))
+	}
+	want := []string{"escalation 601 withdraws 0", "issue_comment 650 withdraws 0", "escalation_withdrawn 701 withdraws 601", "issue_comment 750 withdraws 0"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("intake events = %q, want %q", got, want)
+	}
+	answers, _, _ := answersFrom(events)
+	if want := []string{`sebastian, to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
 // Migration 0027 on a real Postgres: a SigNoz alert row found again by its
 // fingerprint (the newest one), its detail merged, and the verdict set once
 // on a task's open alert rows only.

@@ -980,19 +980,21 @@ func (t *taskRun) awaitSuspect(reasons []string) (final, why string, findings []
 	if len(reasons) == 0 {
 		return "", "", nil
 	}
-	return t.awaitScreening(screeningAsks+strings.Join(reasons, "; ")+
-		"\nReply on this issue to let the agent work on it, or close the issue.", screeningQuestion)
+	return t.awaitScreening(screeningAsks + strings.Join(reasons, "; ") +
+		"\nReply on this issue to let the agent work on it, or close the issue.")
 }
 
-// screeningQuestion is what a suspect screening asks the human.
-const screeningQuestion = "is this issue safe to work on?"
+// awaitScreening waits on the human who reads a suspect screening asked
+// with reason and judges the screening alert (judgeScreening).
+func (t *taskRun) awaitScreening(reason string) (final, why string, answer []string) {
+	return t.judgeScreening(t.awaitHuman(reason, nil))
+}
 
-// awaitScreening waits on the human who reads a suspect screening (asked
-// with reason, or again by a healed run) and judges the screening alert:
-// real when the human closes the issue, noise when one lets the task run.
-// The answer grants no session: none was used.
-func (t *taskRun) awaitScreening(reason, question string) (final, why string, answer []string) {
-	final, why, answer = t.awaitHuman(reason, question, nil)
+// judgeScreening judges the screening alert by how the wait on its human
+// ended, a healed run's too: real when the human closes the issue, noise
+// when one lets the task run. The answer grants no session: none was
+// used.
+func (t *taskRun) judgeScreening(final, why string, answer []string) (string, string, []string) {
 	if strings.HasPrefix(why, escalateFailed) {
 		return final, why, answer // no human decided
 	}
@@ -1045,7 +1047,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish("failed", "report session: the report session ended without a report: "+res.NotStarted)
 	case res.NotStarted != "":
 		if ask := t.notStarted(res.NotStarted); ask != "" {
-			if final, why, _ := t.awaitHuman(ask, escalationQuestion(ask), nil); final != "" {
+			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
 				return t.finish(final, why)
 			}
 		} else if final, why, ok := t.decided(); ok {
@@ -1063,7 +1065,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.finish("failed", "report session: the report session ended without a report: "+res.Refused.Reason)
 	case res.Refused.Status != 0:
 		if ask := t.providerRefused(&refusals, res.Refused); ask != "" {
-			if final, why, _ := t.awaitHuman(ask, escalationQuestion(ask), nil); final != "" {
+			if final, why, _ := t.awaitHuman(ask, nil); final != "" {
 				return t.finish(final, why)
 			}
 		} else if final, why, ok := t.decided(); ok {

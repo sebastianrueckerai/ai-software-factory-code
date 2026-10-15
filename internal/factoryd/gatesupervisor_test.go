@@ -443,7 +443,7 @@ func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
 	if want := []string{`550 "" by ""`, `601 "noise" by "factoryd"`}; !slices.Equal(alerts, want) {
 		t.Fatalf("escalation alerts = %q, want %q", alerts, want)
 	}
-	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeEscalationWithdrawn || e[0].CommentID != 701 || e[0].Body != "601" {
+	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeEscalationWithdrawn || e[0].CommentID != 701 || e[0].Withdraws != 601 || e[0].Body != "the checks failed" {
 		t.Fatalf("intake events = %+v, want the withdrawal of 601 at 701", e)
 	}
 	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(601), checksFailed); err != nil {
