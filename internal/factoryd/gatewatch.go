@@ -51,9 +51,10 @@ var StepGates = map[string]string{
 }
 
 // activityGates are the gates the activities open: the task's row is in
-// the gate from the activity's schedule until the next one opens. The
-// review beside the checks wait opens none (activityBeside): the review
-// stage moves the row to gate review once it awaits the review (SetGate).
+// the gate from the activity's schedule until the next one opens. A gate
+// beside the checks wait (the review, the audit) opens none
+// (activityBeside): its stage moves the row to its gate once it awaits
+// it (SetGate).
 var activityGates = map[string]string{
 	ActivityRunSession:       GateSession,
 	ActivityWaitChecks:       GateChecks,
@@ -294,7 +295,8 @@ func activityTask(args []any) string {
 }
 
 // activityPin is the policy version an activity's input carries: a
-// session's, a gate supervisor call's, a model review's; 0 for the rest.
+// session's, a gate supervisor call's, a model review's, an audit's; 0
+// for the rest.
 func activityPin(args []any) int64 {
 	for _, a := range args {
 		switch a := a.(type) {
@@ -309,7 +311,7 @@ func activityPin(args []any) int64 {
 	return 0
 }
 
-// activityBeside: the activity is the review beside the checks wait
+// activityBeside: the activity is a gate beside the checks wait
 // (GateResults.Beside), which the workflow does not await at its schedule.
 func activityBeside(args []any) bool {
 	for _, a := range args {
@@ -347,6 +349,17 @@ func gateEnd(t Task, gate string, detail map[string]any) map[string]any {
 	if t.Gate == gate && t.GateSince != nil {
 		detail["started"] = rfc3339(*t.GateSince)
 	}
+	return detail
+}
+
+// besideEnd is gateEnd for a gate that can run beside the checks wait
+// (GateResults.Beside): that one opened no gate on the task's row, so its
+// own schedule starts it.
+func besideEnd(ctx context.Context, t Task, gate string, beside bool, detail map[string]any) map[string]any {
+	if !beside {
+		return gateEnd(t, gate, detail)
+	}
+	detail["started"] = rfc3339(activity.GetInfo(ctx).ScheduledTime)
 	return detail
 }
 

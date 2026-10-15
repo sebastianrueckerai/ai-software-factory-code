@@ -126,15 +126,16 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // files, the first with the concurrency summary of the whole diff. A diff
 // beyond those parts and an answer without a verdict are findings. The
 // findings go to the card and the timeline, never to the pull request,
-// which the agent reads.
-func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
+// which the agent reads. An audit beside the checks wait (gates.Beside)
+// starts its gate at its own schedule.
+func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
 	stopBeats := beatUntilDone(ctx, "audit")
 	defer stopBeats()
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return AuditResult{}, err
 	}
-	v, err := r.pinnedVersion(ctx, pin)
+	v, err := r.pinnedVersion(ctx, gates.Pin)
 	if err != nil {
 		return AuditResult{}, err
 	}
@@ -151,7 +152,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			return AuditResult{}, err
 		}
 		noVerdict("the audit did not run: " + errMessage(err))
-		return r.recordAudit(ctx, t, pr, commit, res, redact.New()), nil
+		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
 	}
 	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, maxForgejoAnswer)
 	if err != nil {
@@ -172,7 +173,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if why != "" {
 		res.Findings = append(res.Findings, AuditFinding{Item: "not audited in full", Why: why})
 		stopBeats()
-		return r.recordAudit(ctx, t, pr, commit, res, scrub), nil
+		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
 	}
 	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files))}
 	if len(parts) > 1 {
@@ -209,14 +210,15 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}
 	}
 	stopBeats()
-	return r.recordAudit(ctx, t, pr, commit, res, scrub), nil
+	return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
 }
 
 // recordAudit scrubs the item and why of res's findings, the model's and
 // the errors', of the diff's secret values and the generic shapes (a
 // model's file is scrubbed where it is read, a pre-check hit's path is
-// the diff's own), settles its verdict and puts it on the timeline.
-func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, res AuditResult, scrub *redact.Scrubber) AuditResult {
+// the diff's own), settles its verdict and puts it on the timeline;
+// beside: the audit ran beside the checks wait (besideEnd).
+func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, beside bool, res AuditResult, scrub *redact.Scrubber) AuditResult {
 	for i, f := range res.Findings {
 		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
 			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
@@ -225,7 +227,7 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	if len(res.Findings) > 0 {
 		res.Verdict = AuditFindings
 	}
-	r.record(ctx, t.ID, "audit", gateEnd(t, GateAudit, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
+	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
 		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings}))
 	return res
 }

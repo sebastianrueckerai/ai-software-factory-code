@@ -1755,8 +1755,9 @@ func fixtureVersion(t *testing.T) policy.Version {
 }
 
 // TaskConfig reads the task's project in the pinned version and takes its
-// process and lane ready; a report task runs its own class's session. The
-// version in force differs, and is never read.
+// process and lane ready, and whether the project switches the audit on;
+// a report task runs its own class's session. The version in force
+// differs, and is never read.
 func TestTaskConfigFromProcess(t *testing.T) {
 	pinned := fixtureVersion(t)
 	current := pinned
@@ -1769,14 +1770,17 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
-				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute}},
+				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, NoAudit: true}},
 		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
+			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, NoAudit: true}},
+		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute}},
 		"presort report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort,
 			RequiredCapabilities: []string{policy.ClassAnalyzer}},
 			TaskConfig{Process: "maintenance", Class: policy.ClassAnalyzer, Session: policy.SessionReport,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, NoAudit: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _, _ := newActivityRunner(t, tc.task, &prForgejo{})

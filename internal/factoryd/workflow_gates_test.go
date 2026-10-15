@@ -30,10 +30,10 @@ type gateHarness struct {
 	earlier      [][]Review    // the earlier reviews each ModelReview call was given
 	rounds       []int         // the round each ModelReview call was given
 	reviewGates  []GateResults // the gates each ModelReview call was given
-	reviewMu     sync.Mutex    // review calls can overlap: one beside the checks, one cancelled still finishing
+	besideMu     sync.Mutex    // review and audit calls can overlap: beside the checks, or cancelled still finishing
 	audits       []AuditResult // in order, the last repeating; empty: clear
 	auditErr     error
-	auditPins    []int64
+	auditGates   []GateResults // the gates each GateAudit call was given
 	screened     int           // Screen calls
 	judged       []string      // JudgeScreening verdicts
 	merge        []MergeResult // in order, the last repeating
@@ -44,6 +44,7 @@ type gateHarness struct {
 	policyDelay   time.Duration
 	reviewErr     error
 	reviewDelay   time.Duration
+	auditDelay    time.Duration
 	mergeDelay    time.Duration
 	reproDelay    time.Duration
 	gapDelay      time.Duration // how long AwaitSessionGap takes
@@ -97,8 +98,8 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			// still finishes in the test env (the real one is cut at its
 			// next heartbeat and posts no comment), so calls can overlap
 			// and share these slices under the lock
-			g.reviewMu.Lock()
-			defer g.reviewMu.Unlock()
+			g.besideMu.Lock()
+			defer g.besideMu.Unlock()
 			g.steps = append(g.steps, "review "+commit)
 			g.earlier, g.rounds = append(g.earlier, earlier), append(g.rounds, round)
 			g.reviewGates = append(g.reviewGates, gates)
@@ -108,11 +109,14 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return g.review, g.reviewErr
 		})
 	a := 0
-	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
+	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.auditDelay).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
+			// the audit runs beside the checks wait, as the review does
+			g.besideMu.Lock()
+			defer g.besideMu.Unlock()
 			a++
 			g.steps = append(g.steps, "audit "+commit)
-			g.auditPins = append(g.auditPins, pin)
+			g.auditGates = append(g.auditGates, gates)
 			if len(g.audits) == 0 {
 				return AuditResult{Verdict: AuditClear}, g.auditErr
 			}

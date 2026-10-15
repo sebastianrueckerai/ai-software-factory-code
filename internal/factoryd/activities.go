@@ -288,8 +288,8 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 }
 
 // SetGate moves the task's row to gate since, for a gate the workflow
-// enters after its activity's schedule: the review beside the checks wait,
-// once the review stage awaits it (activityBeside).
+// enters after its activity's schedule: a gate beside the checks wait
+// (the review, the audit), once its stage awaits it (activityBeside).
 func (r *Runner) SetGate(ctx context.Context, taskID, gate string, since time.Time) error {
 	return r.store.SetGate(ctx, taskID, gate, since)
 }
@@ -1164,6 +1164,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.StrongerAfter = 1
 	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
+	tc.NoAudit = !project.Audit
 	return tc, nil
 }
 

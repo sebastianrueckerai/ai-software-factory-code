@@ -170,7 +170,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCloseNotReproduced: func(ctx context.Context, taskID string) error { return nil },
 		ActivityRollCommit:         func(ctx context.Context, taskID string) (string, error) { return "", nil },
 		ActivityRerunChecks:        func(ctx context.Context, taskID, sha string) (string, error) { return "", nil },
-		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, pin int64) (AuditResult, error) {
+		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (AuditResult, error) {
 			return AuditResult{}, nil
 		},
 		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },

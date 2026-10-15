@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"slices"
@@ -105,7 +106,7 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 		deployment: "zai/glm-5.3"}
 	r, objects := newAuditRunner(t, fj, ll, true)
 	from := time.Now()
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	want := []AuditFinding{
 		{Item: "secret in the diff: " + "password, secret or token assigned a literal", File: "internal/x/x_test.go", Line: 4,
@@ -138,11 +139,30 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 	startedWithin(t, objects, "audit", from)
 }
 
+// An audit beside the checks wait leaves the task's row in gate checks,
+// which the wait holds; its step starts at its own schedule.
+func TestGateAuditBesideTheChecksStartsAtItsSchedule(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	r, objects := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}, true)
+	if err := r.store.SetGate(context.Background(), "t1", GateChecks, time.Now().Add(-time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	from := time.Now()
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{Beside: true})
+	if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear {
+		t.Fatalf("audit = %+v", res)
+	}
+	if got, _, err := r.store.Task(context.Background(), "t1"); err != nil || got.Gate != GateChecks {
+		t.Fatalf("task in gate %q (%v), want checks: the audit beside the wait opens none", got.Gate, err)
+	}
+	startedWithin(t, objects, "audit", from)
+}
+
 func TestGateAuditClear(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
 	ll := &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}
 	r, _ := newAuditRunner(t, fj, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear || len(res.Findings) != 0 {
 		t.Fatalf("audit = %+v", res)
 	}
@@ -169,7 +189,7 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 				v.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", Audit: true}
 				r.cfg.Policy = func() policy.Version { return v }
 			}
-			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 			res := getInto[AuditResult](t, val, err)
 			if res.Verdict != AuditFindings || len(res.Findings) != 1 || res.Findings[0].Item != auditNoVerdict || !strings.Contains(res.Findings[0].Why, tc.why) {
 				t.Fatalf("audit = %+v, want the no-verdict finding with %q", res, tc.why)
@@ -184,7 +204,7 @@ func TestGateAuditCutDiffIsAFinding(t *testing.T) {
 	big := "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,5000 @@\n" + strings.Repeat("+0123456789abcdef\n", 5000)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: big}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	want := []AuditFinding{{Item: "not audited in full", Why: "1 file, 88 KiB; the audit reads at most 3 parts of 48 KiB (a.txt alone is 88 KiB)"}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
@@ -211,7 +231,7 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 		`{"verdict":"findings","findings":[{"item":"network egress","file":"a.go","line":1,"why":"a new host"}]}`,
 		`{"verdict":"findings","findings":[{"item":"RBAC and ServiceAccounts","file":"b.go","line":1,"why":"a new Role"}]}`}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	want := []AuditFinding{{Item: "network egress", File: "a.go", Line: 1, Why: "a new host"}, {Item: "RBAC and ServiceAccounts", File: "b.go", Line: 1, Why: "a new Role"}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 2 {
@@ -242,7 +262,7 @@ func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
 	ll := &fakeLiteLLM{contents: []string{"LGTM", `{"verdict":"findings","findings":[{"item":"secrets","file":"b.go","line":1,"why":"w"}]}`}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 2 || res.Findings[0].Item != auditNoVerdict || !strings.HasPrefix(res.Findings[0].Why, "part 1 of 2: the answer is not one JSON object") ||
 		res.Findings[1] != (AuditFinding{Item: "secrets", File: "b.go", Line: 1, Why: "w"}) {
@@ -256,7 +276,7 @@ func TestGateAuditBeyondItsReachIsNotAuditedInFull(t *testing.T) {
 	diff := diffFile("a_test.go", 40<<10, "\tpassword = \"hunter2hunter2\"") + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	want := []AuditFinding{
 		{Item: "secret in the diff: password, secret or token assigned a literal", File: "a_test.go", Line: 1,
@@ -273,7 +293,7 @@ func TestGateAuditBeyondItsReachIsNotAuditedInFull(t *testing.T) {
 func TestGateAuditSkipsAProjectWithoutIt(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, objects := newAuditRunner(t, &gateForgejo{}, ll, false)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if res.Skipped != auditNotSwitchedOn || res.Verdict != "" || len(ll.chats) != 0 {
 		t.Fatalf("audit = %+v, calls %d", res, len(ll.chats))
@@ -295,7 +315,7 @@ func TestGateAuditNeverShowsThePlantedSecret(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			ll := &fakeLiteLLM{content: content}
 			r, objects := newAuditRunner(t, &gateForgejo{diff: secretTestDiff}, ll, true)
-			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+			val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 			res := getInto[AuditResult](t, val, err)
 			b, _ := json.Marshal(res)
 			if res.Verdict != AuditFindings || len(res.Findings) != 2 || strings.Contains(string(b), "hunter2") {
@@ -314,7 +334,7 @@ func TestGateAuditCapsThePreCheck(t *testing.T) {
 	diff := "diff --git a/f.env b/f.env\n--- a/f.env\n+++ b/f.env\n@@ -0,0 +1,60 @@\n" + strings.Repeat("+PASSWORD=envpass0001\n", 60)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 51 || res.Findings[49].Line != 50 ||
 		res.Findings[50] != (AuditFinding{Item: "secret in the diff: 10 more pre-check hits", Why: "the card lists the first 50"}) {
@@ -328,7 +348,7 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	diff := "diff --git a/k8s/hunter2hunter2.yaml b/k8s/hunter2hunter2.yaml\n--- /dev/null\n+++ b/k8s/hunter2hunter2.yaml\n@@ -0,0 +1 @@\n+password: \"hunter2hunter2\"\n"
 	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[{"item":"secrets","file":"k8s/hunter2hunter2.yaml","line":1,"why":"a password"}]}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
-	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", int64(0))
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 2 || res.Findings[0].File != "k8s/hunter2hunter2.yaml" || res.Findings[1].File != "k8s/[redacted].yaml" {
 		t.Fatalf("findings = %+v", res.Findings)

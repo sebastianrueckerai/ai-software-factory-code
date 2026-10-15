@@ -91,9 +91,10 @@ type GateResults struct {
 	// ChecksPassed: the checks stage ran and was green; the auto merge
 	// needs it.
 	ChecksPassed bool `json:",omitempty"`
-	// Beside: the review runs beside the checks wait
-	// (versionReviewSupervised) and opens no gate on the task's row, which
-	// the wait holds until the review stage awaits the review.
+	// Beside: the gate runs beside the checks wait (the review from
+	// versionReviewSupervised, the audit from versionAuditBeside) and
+	// opens no gate on the task's row, which the wait holds until the
+	// gate's stage awaits it.
 	Beside bool `json:",omitempty"`
 	// Audit is the audit stage's verdict (ruling 188); nil: not run.
 	Audit *AuditResult `json:",omitempty"`
@@ -935,14 +936,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	// a review beside the checks wait opened no gate on the task's row:
-	// its own schedule starts its gate
 	reviewEnd := func(detail map[string]any) map[string]any {
-		if !gates.Beside {
-			return gateEnd(t, GateReview, detail)
-		}
-		detail["started"] = rfc3339(activity.GetInfo(ctx).ScheduledTime)
-		return detail
+		return besideEnd(ctx, t, GateReview, gates.Beside, detail)
 	}
 	if t.Source == SourceRoll {
 		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"}

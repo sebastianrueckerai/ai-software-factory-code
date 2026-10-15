@@ -187,6 +187,10 @@ type TaskConfig struct {
 	// StrongerAfter overrides WorkflowConfig's for the task when above 0:
 	// 1 for a medium or large card (roadmap 222, item 5)
 	StrongerAfter int
+	// NoAudit: the task's project does not switch the audit on (ruling
+	// 188), so the audit stage is skipped at its turn and starts nothing
+	// beside the checks (versionAuditBeside).
+	NoAudit bool
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -432,6 +436,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.redRestage = workflow.GetVersion(ctx, "red-head-restage", workflow.DefaultVersion, versionRedHeadRestage)
 	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
 	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
+	run.auditBeside = workflow.GetVersion(ctx, "audit-beside", workflow.DefaultVersion, versionAuditBeside)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -807,6 +812,16 @@ const (
 	// before the change routes trips by the activity's name and leaves a
 	// dropped trip's alert open.
 	versionTripRouting workflow.Version = 1
+	// versionAuditBeside (change id "audit-beside", roadmap 222): the
+	// checks wait schedules the security audit beside it as a future on
+	// its head under the review's rule (scheduleBeside). The audit stage
+	// takes its result at its turn, so the findings keep their order, and
+	// supervises its trips then; red checks cancel it with the review. A
+	// project that does not switch the audit on skips the stage at its
+	// turn (TaskConfig.NoAudit), the call never made. Runs from before the
+	// change keep the sequential audit, which finds the project's switch
+	// itself.
+	versionAuditBeside workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -894,6 +909,7 @@ type taskRun struct {
 	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
 	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
 	tripRouting       workflow.Version // trips route by their run's activity id (versionTripRouting)
+	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
@@ -913,9 +929,9 @@ type taskRun struct {
 	// versionChecksRerun
 	redHead   string // the last head whose checks failed
 	rerunHead string // the head the last RerunChecks made
-	// flight is the model review scheduled beside the checks wait
-	// (versionReviewParallel), nil while none runs
-	flight *reviewInFlight
+	// beside are the gates scheduled beside the checks wait, in their
+	// stages' order (versionReviewParallel, versionAuditBeside)
+	beside []*besideRun
 	// drops are the DropTrip calls endTrips joins (versionTripRouting)
 	drops []workflow.Future
 }
@@ -2050,8 +2066,8 @@ func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
 func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	supervised := t.v12 >= versionGateSupervisor
 	if supervised {
-		// trips of runs that ended before this one: none is its own; the
-		// review beside the checks wait keeps its own, the rest are dropped
+		// trips of runs that ended before this one: none is its own; a
+		// gate beside the checks wait keeps its own, the rest are dropped
 		var trip GateTrip
 		for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
 			t.keepTrip(trip)
@@ -2146,8 +2162,8 @@ func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (ve
 }
 
 // gateRun is one run of a long gate's activity: the call, the trips kept
-// for it while the workflow awaited another activity (the review beside
-// the checks wait), and what it used of the gate supervisor.
+// for it while the workflow awaited another activity (a gate beside the
+// checks wait), and what it used of the gate supervisor.
 type gateRun struct {
 	activity        string
 	opts            workflow.ActivityOptions

@@ -1093,9 +1093,10 @@ var plantedFinding = AuditFinding{Item: "secret in the diff: password, secret or
 	Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"}
 
 // A clear audit passes to the approval as before: on auto, the merge
-// needs no card.
+// needs no card. (The audit runs beside the checks with the review and
+// answers a minute after it.)
 func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates)
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) { g.auditDelay = time.Minute })
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	if final := g.run(t); final != "done" {
@@ -1104,8 +1105,8 @@ func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
 	if want := []string{"policy", "repro c1", "review c1", "audit c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
-	if len(g.approvals) != 0 || len(g.autoNotes) != 1 || !slices.Equal(g.auditPins, []int64{7}) {
-		t.Fatalf("approvals %d, auto notes %v, audit pins %v", len(g.approvals), g.autoNotes, g.auditPins)
+	if len(g.approvals) != 0 || len(g.autoNotes) != 1 || len(g.auditGates) != 1 || g.auditGates[0].Pin != 7 {
+		t.Fatalf("approvals %d, auto notes %v, audit gates %+v", len(g.approvals), g.autoNotes, g.auditGates)
 	}
 }
 
@@ -1174,12 +1175,14 @@ func TestStagesFailedAuditIsAFinding(t *testing.T) {
 	}
 }
 
-// A project the audit skips: no finding, the auto merge goes on; a
-// disabled audit stage is skipped on the timeline without a call.
+// A project the audit skips: no finding, the auto merge goes on (a run
+// from before versionAuditBeside learns the skip from the audit's call);
+// a disabled audit stage is skipped on the timeline without a call.
 func TestStagesAuditSkipped(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), autoGates, func(g *gateHarness) {
 		g.audits = []AuditResult{{Skipped: auditNotSwitchedOn}}
 	})
+	g.env.OnGetVersion("audit-beside", workflow.DefaultVersion, versionAuditBeside).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	if final := g.run(t); final != "done" || len(g.autoNotes) != 1 || len(g.approvals) != 0 {
@@ -1198,6 +1201,202 @@ func TestStagesAuditSkipped(t *testing.T) {
 	}
 	if got := g.skipped(); !slices.Contains(got, "audit: disabled") {
 		t.Fatalf("skipped = %v", got)
+	}
+}
+
+// A project that does not switch the audit on (TaskConfig.NoAudit)
+// skips the stage at its turn, once the 10-minute checks are green and
+// the review answered, as any skipped stage is: no call beside the
+// checks, the timeline's step at 10 min in the stages' order, and the
+// auto merge goes on.
+func TestStagesAuditOffIsSkippedAtItsTurn(t *testing.T) {
+	g := besideAudit(t, 10*time.Minute, nil, autoGates)
+	g.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: stagesWorkflow(3, withAudit).Config().Stages, Queue: policy.QueueNone, NoAudit: true}
+
+	if final := g.run(t); final != "done" || len(g.autoNotes) != 1 || len(g.approvals) != 0 {
+		t.Fatalf("final = %q, auto notes %v, approvals %d", final, g.autoNotes, len(g.approvals))
+	}
+	if len(g.auditGates) != 0 || !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "merge"}) {
+		t.Fatalf("audit calls %+v, steps %v: want no audit call", g.auditGates, g.steps)
+	}
+	var at []time.Duration
+	for _, r := range g.recorded {
+		if r.step == "stage_skipped" && r.detail["stage"] == policy.StageAudit && r.detail["reason"] == auditNotSwitchedOn {
+			at = append(at, r.at.Sub(g.started))
+		}
+	}
+	if !slices.Equal(at, []time.Duration{10 * time.Minute}) {
+		t.Fatalf("audit skipped at %v, want once at 10m0s", at)
+	}
+}
+
+// besideAudit is a stages harness with the audit stage whose checks wait
+// takes checks; setup adjusts the gates first.
+func besideAudit(t *testing.T, checks time.Duration, edit func(w *policy.Process), setup ...func(*gateHarness)) *gateHarness {
+	g := newGateHarnessWith(t, stagesWorkflow(3, func(w *policy.Process) {
+		withAudit(w)
+		if edit != nil {
+			edit(w)
+		}
+	}), setup...)
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(checks).Return(ChecksResult{State: ChecksSuccess}, nil)
+	return g
+}
+
+// The audit runs beside the checks wait as the review does (roadmap
+// 222): with checks of 10 min, a review of 6 and an audit of 4, the
+// audit answers first, yet its stage takes it at its turn, after the
+// review's, so the card lists the review's finding before the audit's;
+// the approval is asked at 10 min, when the checks are green. The
+// audit's gates mark it beside the checks, which had not answered.
+func TestStagesAuditRunsBesideTheChecksWait(t *testing.T) {
+	g := besideAudit(t, 10*time.Minute, func(w *policy.Process) {
+		setStage(w, "review", func(s *policy.Stage) { s.OnFindings = policy.FindingsHuman })
+	}, func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "one concern", Findings: []string{"r1"}}
+		g.reviewDelay, g.auditDelay = 6*time.Minute, 4*time.Minute
+		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding}}}
+	})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"policy", "repro c1", "audit c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	want := []string{"review: r1", "audit: the security audit reports 1 finding for a human"}
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, want) || g.requested[0].Sub(g.started) != 10*time.Minute {
+		t.Fatalf("approvals %+v asked at %v, want one at 10m0s with why human %q", g.approvals, g.requested, want)
+	}
+	if len(g.auditGates) != 1 || !g.auditGates[0].Beside || g.auditGates[0].ChecksPassed || g.auditGates[0].Pin != 7 {
+		t.Fatalf("audit gates %+v: want one call on pin 7 beside the checks, before their answer", g.auditGates)
+	}
+}
+
+// Ten minutes of checks and a four-minute audit: beside the checks the
+// audit ends within them and the approval is asked at 10 min, when they
+// are green; a run from before the change (versionAuditBeside) audits
+// after the green checks and asks at 14 min, and so does a process that
+// lists the local gates after the checks, as the review's rule keeps
+// both gates there sequential. An audit that outlasts the checks is
+// awaited by its stage, the task's row in gate audit from 10 min since
+// the audit's schedule, and the approval waits for its answer.
+func TestStagesAuditBesideTheChecksSavesItsTime(t *testing.T) {
+	checksFirst := func(w *policy.Process) {
+		i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+		checks := w.Stages[i]
+		w.Stages = slices.Insert(slices.Delete(w.Stages, i, i+1), 1, checks)
+	}
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		edit    func(w *policy.Process)
+		audit   time.Duration
+		asked   time.Duration
+		beside  bool // the audit's call
+		review  bool // the review's call
+		gates   []string
+	}{
+		{"beside the checks", versionAuditBeside, nil, 4 * time.Minute, 10 * time.Minute, true, true, nil},
+		{"a run from before the change", workflow.DefaultVersion, nil, 4 * time.Minute, 14 * time.Minute, false, true, nil},
+		{"the local gates after the checks", versionAuditBeside, checksFirst, 4 * time.Minute, 14 * time.Minute, false, false, nil},
+		{"outlasting the checks", versionAuditBeside, nil, 14 * time.Minute, 14 * time.Minute, true, true, []string{"audit since 0s at 10m0s"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideAudit(t, 10*time.Minute, tc.edit, func(g *gateHarness) { g.auditDelay = tc.audit })
+			g.env.OnGetVersion("audit-beside", workflow.DefaultVersion, versionAuditBeside).Return(tc.version)
+			gates := g.onSetGate()
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if len(g.requested) != 1 || g.requested[0].Sub(g.started) != tc.asked {
+				t.Fatalf("approval asked at %v, want once at %s", g.requested, tc.asked)
+			}
+			if len(g.auditGates) != 1 || g.auditGates[0].Beside != tc.beside || g.auditGates[0].ChecksPassed == tc.beside {
+				t.Fatalf("audit gates %+v: want one call, beside the checks %v", g.auditGates, tc.beside)
+			}
+			if len(g.reviewGates) != 1 || g.reviewGates[0].Beside != tc.review {
+				t.Fatalf("review gates %+v: want one call, beside the checks %v", g.reviewGates, tc.review)
+			}
+			if !slices.Equal(*gates, tc.gates) {
+				t.Fatalf("gates set = %q, want %q", *gates, tc.gates)
+			}
+		})
+	}
+}
+
+// Red checks cancel the audit beside their wait before their findings
+// return to the agent: the next session starts at 20 min without waiting
+// out the red head's hour-long audit, and the next head's own audit runs
+// beside its checks from then, so the approval is asked at 1h20m. A late
+// trip of the cancelled audit, GateAudit-1 at 30 min, reaches no later
+// audit (versionTripRouting): it is dropped then, its alert resolved, and
+// the supervisor is never asked.
+func TestStagesRedChecksCancelTheAuditBesideThem(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.auditDelay = time.Hour })
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
+		Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	var cancelled []string
+	g.env.SetOnActivityCanceledListener(func(info *activity.Info) { cancelled = append(cancelled, info.ActivityID) })
+	calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
+	drops := g.onDropTrip(0)
+	g.runTripAfter(30*time.Minute, ActivityGateAudit, 1, 3)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) {
+		t.Fatalf("sessions = %+v", g.sessions)
+	}
+	if !slices.Equal(cancelled, []string{"GateAudit-1"}) {
+		t.Fatalf("cancelled %q, want the red head's audit alone", cancelled)
+	}
+	if len(*calls) != 0 || !slices.Equal(*drops, []string{"alert 3 at 30m0s"}) {
+		t.Fatalf("supervisor calls %+v, drops %q; want none, the late trip dropped at 30m0s", *calls, *drops)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || g.requested[0].Sub(g.started) != 80*time.Minute {
+		t.Fatalf("approvals %+v asked at %v, want one on c2 at 1h20m0s", g.approvals, g.requested)
+	}
+}
+
+// The review and the audit beside the checks each keep their own trips
+// for their stage (versionTripRouting): the review's at 15 min and the
+// audit's at 16 min both come during the checks wait; the review stage
+// asks the supervisor about the review's alone at 20 min, when it awaits
+// the review, and lets it wait; the audit stage asks about the audit's at
+// 30 min, once the review answered, and the supervisor's cancel fails the
+// task then, not at the audit's own end three hours in.
+func TestStagesTripsOfTheGatesBesideTheChecksReachOnlyTheirRuns(t *testing.T) {
+	g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) { g.reviewDelay, g.auditDelay = 30*time.Minute, 3*time.Hour })
+	decisions := []GateDecision{{Action: ActionWait, Diagnosis: "the review model is slow"}, {Action: ActionCancel, Diagnosis: "the audit model does not answer"}}
+	var asked []string
+	g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
+			asked = append(asked, fmt.Sprintf("%s at %s", in.Trip.ActivityID, g.env.Now().Sub(g.started)))
+			return decisions[min(len(asked), len(decisions))-1], nil
+		})
+	g.tripAfter(15*time.Minute, ActivityModelReview, 1)
+	g.tripAfter(16*time.Minute, ActivityGateAudit, 2)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "failed" || g.finals[0][1] != "the gate supervisor cancelled GateAudit: the audit model does not answer" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"ModelReview-1 at 20m0s", "GateAudit-1 at 30m0s"}; !slices.Equal(asked, want) {
+		t.Fatalf("supervisor asked %q, want %q", asked, want)
+	}
+	if end := g.finishAt.Sub(g.started); end != 30*time.Minute {
+		t.Fatalf("finished %s after the start, want 30m0s", end)
 	}
 }
 
