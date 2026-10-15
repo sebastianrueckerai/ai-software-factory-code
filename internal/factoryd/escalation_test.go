@@ -375,7 +375,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
-	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedMonthCap, Reason: refusal}}
+	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: refusal}}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil {
@@ -393,6 +393,33 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil || res.Outcome != OutcomeNoPush {
 		t.Fatalf("result without a month cap refusal = %+v, %v, want no_push", res, err)
+	}
+}
+
+// A session the gateway refused at the day cap (card #784, 2026-10-14
+// 20:43Z) ends day_cap: its card names the refusal and waits for the UTC
+// day to turn, the next 00:00 UTC after the refusal, when the cap resets.
+func TestRunSessionWaitsForTheDayCap(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
+	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal},
+		At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC)}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		resultLine(false, "the model call failed: 402 refused_day_cap"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	question := "the day cap is reached: the gateway refused this task's spend (refused_day_cap): the card waits for the UTC day to turn " +
+		"and resumes on its own at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml and answer to resume it sooner, or close the card."
+	if res.Outcome != OutcomeDayCap || !res.Until.Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) || res.Reason != question+"\n"+refusal {
+		t.Fatalf("result = %+v, want day_cap until 2026-10-15 00:00 UTC with the refusal", res)
+	}
+	if got := escalationQuestion(res.Reason); got != question {
+		t.Fatalf("question row = %q, want %q", got, question)
+	}
+	if got := escalationSource(res.Reason); got != "day_cap" {
+		t.Fatalf("escalation source = %q, want day_cap", got)
 	}
 }
 
@@ -433,7 +460,7 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 	// the month cap is the factory's own refusal: a human raises it
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	store.providerRefusals = map[string]string{"t1": "upstream 429"}
-	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedMonthCap, Reason: "spent"}}
+	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}}
 	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(false, said)); err != nil || res.Outcome != OutcomeEscalate {
 		t.Fatalf("month cap and a provider refusal = %+v, %v, want escalate", res, err)
 	}
@@ -569,7 +596,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom -0.000100 EUR (task 1.900000, day 19.000000, month 49.000000, project -0.000100) fits 0 output tokens after at most 4000 input tokens, below the minimum call of 1024; " +
 		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
-	store.monthRefusals = map[string]policy.Refusal{"t1": {Decision: policy.RefusedProjectCap, Reason: refusal}}
+	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil {

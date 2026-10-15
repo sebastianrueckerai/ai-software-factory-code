@@ -79,6 +79,8 @@ func escalationSource(reason string) string {
 		return SourceMonthCap
 	case strings.HasPrefix(reason, projectCapReached):
 		return "project_cap"
+	case strings.HasPrefix(reason, dayCapReached):
+		return "day_cap"
 	case strings.HasPrefix(reason, providerRefused):
 		return "provider"
 	case strings.HasPrefix(reason, budgetRefused):

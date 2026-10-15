@@ -31,6 +31,32 @@ func capRefused(r policy.Refusal) string {
 	return monthCapReached + r.Reason
 }
 
+// CapRefusal is the gateway's refusal of a task's spend at the day's, the
+// month's or the project's cap, and when its audit row was written.
+type CapRefusal struct {
+	policy.Refusal
+	At time.Time
+}
+
+// dayCapReached opens the reason of a session the gateway refused at the
+// day cap.
+const dayCapReached = "the day cap is reached: the gateway refused this task's spend (refused_day_cap)"
+
+// dayTurn is when the UTC day of at ends: the day cap counts the ledger's
+// UTC day (budget.day_eur), so it resets then.
+func dayTurn(at time.Time) time.Time {
+	y, m, d := at.UTC().Date()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
+}
+
+// dayCapRefused is the reason of a session the gateway refused at the day
+// cap, which resets at until: its first line is the card's question row
+// (escalationQuestion), with the actions.
+func dayCapRefused(r policy.Refusal, until time.Time) string {
+	return fmt.Sprintf("%s: the card waits for the UTC day to turn and resumes on its own at %s. "+
+		"Raise budget.day_eur in policy.yaml and answer to resume it sooner, or close the card.\n%s", dayCapReached, stamp(until), r.Reason)
+}
+
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
 // first refused_month_cap of a model call ("" for none): the gateway's

@@ -431,7 +431,7 @@ func (s *accBatchStore) SetTaskPR(ctx context.Context, id string, number int64) 
 func (s *accBatchStore) SetAgentSummary(ctx context.Context, id, summary string) error {
 	panic("unused")
 }
-func (s *accBatchStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error) {
+func (s *accBatchStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*factoryd.CapRefusal, error) {
 	panic("unused")
 }
 func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error) {

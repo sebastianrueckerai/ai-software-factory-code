@@ -540,14 +540,20 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})
 	}
 	if res.Outcome != OutcomePushed {
-		// no later session could spend: a human raises the cap or waits
-		// for the month to end
-		refused, err := r.store.MonthCapRefusal(ctx, t.ID, startedAt)
+		// no later session could spend: at a month cap a human raises it
+		// or waits for the month to end; at the day cap the card waits for
+		// the day to turn
+		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
 		}
-		if refused != nil {
-			res.Outcome, res.Reason = OutcomeEscalate, capRefused(*refused)
+		switch {
+		case refused == nil:
+		case refused.Decision == policy.RefusedDayCap:
+			res.Outcome, res.Until = OutcomeDayCap, dayTurn(refused.At)
+			res.Reason = dayCapRefused(refused.Refusal, res.Until)
+		default:
+			res.Outcome, res.Reason = OutcomeEscalate, capRefused(refused.Refusal)
 		}
 	}
 	if res.Outcome == OutcomeNoPush {
@@ -765,6 +771,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if strings.HasPrefix(reason, budgetRefused) {
 		// no answer can run (ruling 322): the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
+	}
+	if strings.HasPrefix(reason, dayCapReached) {
+		next = "The task resumes on its own when the day turns, as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to fail the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
 		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."

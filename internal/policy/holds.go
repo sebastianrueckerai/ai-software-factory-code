@@ -79,10 +79,14 @@ func HeadroomBound(task, day, month, project float64) (float64, string) {
 	case month < min(task, day):
 		return month, RefusedMonthCap
 	case day < task:
-		return day, "refused_day_cap"
+		return day, RefusedDayCap
 	}
 	return task, "refused_budget"
 }
+
+// RefusedDayCap is the refusal of a call the UTC day's headroom cannot
+// fit.
+const RefusedDayCap = "refused_day_cap"
 
 // RefusedMonthCap is the refusal of a call the month's headroom cannot fit.
 const RefusedMonthCap = "refused_month_cap"

@@ -385,7 +385,7 @@ func (s *acceptanceStore) SetAgentSummary(_ context.Context, id, summary string)
 	return nil
 }
 
-func (s *acceptanceStore) MonthCapRefusal(context.Context, string, time.Time) (*policy.Refusal, error) {
+func (s *acceptanceStore) CapRefusal(context.Context, string, time.Time) (*factoryd.CapRefusal, error) {
 	return nil, nil
 }
 

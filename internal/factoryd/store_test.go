@@ -58,10 +58,9 @@ type fakeStore struct {
 	rolls        []RollRequest
 	liveSessions map[string]LiveSession
 	pauses       map[string]QueuePause
-	// monthSpend is MonthSpend's answer, monthRefusals MonthCapRefusal's
-	// by task
-	monthSpend    MonthSpend
-	monthRefusals map[string]policy.Refusal
+	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task
+	monthSpend  MonthSpend
+	capRefusals map[string]CapRefusal
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	// held are TaskFree's outstanding holds by task (Held, Holds, Expires)
@@ -733,8 +732,8 @@ func (s *fakeStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, e
 	return s.monthSpend, nil
 }
 
-func (s *fakeStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error) {
-	if r, ok := s.monthRefusals[taskID]; ok {
+func (s *fakeStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error) {
+	if r, ok := s.capRefusals[taskID]; ok {
 		return &r, nil
 	}
 	return nil, nil
@@ -1936,26 +1935,45 @@ func TestPGStoreMonthCap(t *testing.T) {
 	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "the month" {
 		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's first", m, err)
 	}
-	if r, err := s.MonthCapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 35, 0, 0, time.UTC)); err != nil || r == nil || *r != (policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "later"}) {
+	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 35, 0, 0, time.UTC)); err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "later"}) {
 		t.Fatalf("t's refusal since 00:35 = (%+v, %v), want later", r, err)
 	}
-	if r, err := s.MonthCapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 45, 0, 0, time.UTC)); err != nil || r != nil {
+	// the month's cap before the day's, which resets on its own
+	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 15, 0, 0, time.UTC)); err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "later"}) {
+		t.Fatalf("t's refusal since 00:15 = (%+v, %v), want later", r, err)
+	}
+	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 45, 0, 0, time.UTC)); err != nil || r != nil {
 		t.Fatalf("t's refusal since 00:45 = %+v, %v, want none", r, err)
 	}
-	if r, err := s.MonthCapRefusal(ctx, "r", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r == nil || !strings.Contains(r.Reason, "reservation") {
+	if r, err := s.CapRefusal(ctx, "r", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r == nil || !strings.Contains(r.Reason, "reservation") {
 		t.Fatalf("r's refusal = (%+v, %v), want the reservation's", r, err)
 	}
-	if r, err := s.MonthCapRefusal(ctx, "v", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r != nil {
+	if r, err := s.CapRefusal(ctx, "v", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r != nil {
 		t.Fatalf("v's refusal = %+v, %v, want none", r, err)
 	}
-	// the project's cap is read beside the month's, the newer of the two
+	// the project's cap is read beside the month's, the newer of the two,
+	// and before a newer day cap's
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, ts) VALUES
 		('p', 'refused_month_cap', 'the month', '2026-10-01 00:50:00Z'), ('p', 'refused_project_cap', 'the project', '2026-10-01 00:55:00Z'),
-		('p', 'refused_budget', 'the task', '2026-10-01 00:58:00Z')`); err != nil {
+		('p', 'refused_budget', 'the task', '2026-10-01 00:58:00Z'), ('p', 'refused_day_cap', 'the day', '2026-10-01 00:59:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if r, err := s.MonthCapRefusal(ctx, "p", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r == nil || *r != (policy.Refusal{Decision: policy.RefusedProjectCap, Reason: "the project"}) {
+	if r, err := s.CapRefusal(ctx, "p", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)); err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedProjectCap, Reason: "the project"}) {
 		t.Fatalf("p's refusal = (%+v, %v), want the project's", r, err)
+	}
+	// a task the day cap alone refused: its newest, with its time, whose
+	// UTC day turns at 2026-10-02 00:00 UTC though the session's zone is
+	// still on 2026-10-01 16:20
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, ts) VALUES
+		('d', 'refused_day_cap', 'first', '2026-10-01 23:10:00Z'), ('d', 'refused_day_cap', 'second', '2026-10-01 23:20:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.CapRefusal(ctx, "d", time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedDayCap, Reason: "second"}) || !r.At.Equal(time.Date(2026, 10, 1, 23, 20, 0, 0, time.UTC)) {
+		t.Fatalf("d's refusal = (%+v, %v), want the day cap's second at 23:20 UTC", r, err)
+	}
+	if got := dayTurn(r.At); !got.Equal(time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("the day of %v turns at %v, want 2026-10-02 00:00 UTC", r.At, got)
 	}
 	month := m.Month
 	// one alert per month and percent

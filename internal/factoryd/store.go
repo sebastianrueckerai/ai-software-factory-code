@@ -290,9 +290,10 @@ type Store interface {
 	// SetAgentSummary records the agent's last message of its latest
 	// pushed session.
 	SetAgentSummary(ctx context.Context, id, summary string) error
-	// MonthCapRefusal is the task's newest refused_month_cap or
-	// refused_project_cap audit row since since, nil for none.
-	MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error)
+	// CapRefusal is the task's newest refused_month_cap or
+	// refused_project_cap audit row since since, else its newest
+	// refused_day_cap, nil for none.
+	CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error)
 	// ProviderRefusal is the reason of the task's agent's first model call
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
@@ -737,11 +738,12 @@ func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-func (s *PGStore) MonthCapRefusal(ctx context.Context, taskID string, since time.Time) (*policy.Refusal, error) {
-	var r policy.Refusal
+func (s *PGStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error) {
+	var r CapRefusal
 	err := s.db.QueryRowContext(ctx,
-		`SELECT decision, reason FROM audit WHERE task_id = $1 AND decision IN ($2, $3) AND ts >= $4 ORDER BY ts DESC, id DESC LIMIT 1`,
-		taskID, policy.RefusedMonthCap, policy.RefusedProjectCap, since).Scan(&r.Decision, &r.Reason)
+		`SELECT decision, reason, ts FROM audit WHERE task_id = $1 AND decision IN ($2, $3, $4) AND ts >= $5
+		 ORDER BY decision = $4, ts DESC, id DESC LIMIT 1`,
+		taskID, policy.RefusedMonthCap, policy.RefusedProjectCap, policy.RefusedDayCap, since).Scan(&r.Decision, &r.Reason, &r.At)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

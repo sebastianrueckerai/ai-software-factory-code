@@ -211,6 +211,9 @@ const (
 	// first call and every one after (ruling 267); the session never
 	// worked, so it is no attempt.
 	OutcomeProviderRefused SessionOutcome = "provider_refused"
+	// OutcomeDayCap: the gateway refused the session's spend at the day
+	// cap, which resets when the UTC day turns (SessionResult.Until).
+	OutcomeDayCap SessionOutcome = "day_cap"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -277,6 +280,8 @@ type SessionResult struct {
 	// 0 (roadmap 208), when it ran one; a card it proves closes done on
 	// the fact, no model verdict and no human's answer owed.
 	Acceptance *AcceptanceHit
+	// Until is when a day_cap session's day cap resets.
+	Until time.Time `json:",omitzero"`
 }
 
 type PullRequest struct {
@@ -439,6 +444,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.auditBeside = workflow.GetVersion(ctx, "audit-beside", workflow.DefaultVersion, versionAuditBeside)
 	run.burstAccept = workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
 	run.queueTurns = workflow.GetVersion(ctx, "queue-turns", workflow.DefaultVersion, versionQueueTurns)
+	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -836,6 +842,12 @@ const (
 	// re-runs' budget in turns, moves too, and bounds only the turns whose
 	// sync moved nothing.
 	versionQueueTurns workflow.Version = 1
+	// versionDayCap (change id "day-cap", roadmap 240): a session the
+	// gateway refused at the day cap is no attempt and takes no agent
+	// time: the card escalates with the refusal and runs the next session
+	// on its own when the UTC day turns and the cap resets, or sooner on
+	// a human's answer. A run from before the change takes it as no push.
+	versionDayCap workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -927,6 +939,7 @@ type taskRun struct {
 	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
+	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1258,6 +1271,18 @@ func (t *taskRun) lifecycle() (string, error) {
 			attempt--
 			continue
 		}
+		if t.dayCap >= versionDayCap && err == nil && !decided && res.Outcome == OutcomeDayCap && res.Acceptance == nil {
+			parent, own = res.SessionID, res.Findings
+			if workflow.Now(t.ctx).Before(res.Until) {
+				final, why, answer := t.awaitHumanUntil(res.Reason, escalationQuestion(res.Reason), nil, res.Until)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings = append(findings, answer...)
+			}
+			attempt--
+			continue
+		}
 		if !res.StartFailed {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
@@ -1331,7 +1356,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				t.sessionReturn(res, attempt, last)
 			}
 			continue
-		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused:
+		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap:
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
@@ -2410,8 +2435,20 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 // change requests; the human's answers go to t.answers (versionAnswers),
 // or into answer before it.
 func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, why string, answer []string) {
+	return t.awaitHumanUntil(reason, question, choices, time.Time{})
+}
+
+// awaitHumanUntil is awaitHuman that also resumes, with no answer, at
+// until when it is not zero (versionDayCap).
+func (t *taskRun) awaitHumanUntil(reason, question string, choices []string, until time.Time) (final, why string, answer []string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
+	}
+	var resume workflow.Future
+	if !until.IsZero() {
+		timerCtx, cancel := workflow.WithCancel(t.ctx)
+		defer cancel()
+		resume = workflow.NewTimer(timerCtx, max(until.Sub(workflow.Now(t.ctx)), 0))
 	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
 	// at is where the wait's next answer goes in t.answers, newest first:
@@ -2440,16 +2477,20 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 		return heard, false
 	}
 	for {
+		resumed := false
 		sel := workflow.NewSelector(t.ctx)
 		for _, n := range wake {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+		}
+		if resume != nil {
+			sel.AddFuture(resume, func(workflow.Future) { resumed = true })
 		}
 		sel.Select(t.ctx)
 		heard, stop := pass()
 		if stop || len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
 		}
-		if len(heard) > 0 || len(answer) > 0 {
+		if len(heard) > 0 || len(answer) > 0 || resumed {
 			return "", "", answer
 		}
 	}
