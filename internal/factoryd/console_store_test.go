@@ -99,7 +99,9 @@ func TestPGStoreBoardTasks(t *testing.T) {
 }
 
 // BoardTasks reads only the repository it is asked for: none of another
-// repository's open cards, however urgent, all of its own. Requires a
+// repository's open cards, however urgent, all of its own — and a card
+// that waits on another repository's card still names its issue, its
+// chips reading the dependency itself, not the other board. Requires a
 // disposable Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 	ctx := context.Background()
@@ -113,15 +115,19 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 	}
 	for _, tk := range []Task{
 		{ID: "mine-low", Priority: 0, Status: "queued"},
+		{ID: "mine-waits", Priority: 1, Status: "waiting-deps", IssueNumber: 4},
 		{ID: "mine-high", Priority: 3, Status: "running"},
 		{ID: "mine-done", Priority: 5, Status: "done"},
 		{ID: "mine-chat", Priority: 5, Status: "running", Kind: KindChat},
-		{ID: "theirs", Priority: 5, Status: "queued", Repository: "sf/other"},
+		{ID: "theirs", Priority: 5, Status: "queued", IssueNumber: 9, Repository: "sf/other"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, cmp.Or(tk.Repository, "sf/r"), cmp.Or(tk.Kind, "agent")
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO task_deps (task_id, depends_on) VALUES ('mine-waits', 'theirs')`); err != nil {
+		t.Fatalf("cross-repository dependency: %v", err)
 	}
 	ids := func(tasks []BoardTask) []string {
 		var out []string
@@ -132,8 +138,10 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 	}
 	// the other repository's open card never shows, this one's own open
 	// cards all do, most urgent first; its finished and chat tasks do not
-	if got, err := s.BoardTasks(ctx, "sf/r"); err != nil || !slices.Equal(ids(got), []string{"mine-high", "mine-low"}) {
-		t.Fatalf("BoardTasks(sf/r) = %v, %v; want mine-high, mine-low", ids(got), err)
+	if got, err := s.BoardTasks(ctx, "sf/r"); err != nil || !slices.Equal(ids(got), []string{"mine-high", "mine-waits", "mine-low"}) {
+		t.Fatalf("BoardTasks(sf/r) = %v, %v; want mine-high, mine-waits, mine-low", ids(got), err)
+	} else if got[1].WaitingOn != "#9" || got[1].Dependencies != "#9" {
+		t.Fatalf("the waiting card reads %q, %q; want the other repository's #9 on both chips", got[1].WaitingOn, got[1].Dependencies)
 	}
 	if got, err := s.BoardTasks(ctx, "sf/other"); err != nil || !slices.Equal(ids(got), []string{"theirs"}) {
 		t.Fatalf("BoardTasks(sf/other) = %v, %v; want theirs", ids(got), err)

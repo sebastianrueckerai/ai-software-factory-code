@@ -186,6 +186,11 @@ func TestQueueOneAtATime(t *testing.T) {
 		if err := s.SetGate(ctx, "a2", GateMergeQueue, time.Now()); err != nil {
 			t.Fatal(err)
 		}
+		// one board per repository (roadmap 269); QueueAhead counts a
+		// task's queue entries per project (o.project = me.project), so
+		// merging the boards observes the same values one board over
+		// every project's cards would: a2 stays behind a1, b1's own
+		// queue stays empty ahead of it
 		ahead := map[string]int{}
 		for _, repo := range []string{"linkshort/linkshort", "sf/other"} {
 			board, err := s.BoardTasks(ctx, repo)
