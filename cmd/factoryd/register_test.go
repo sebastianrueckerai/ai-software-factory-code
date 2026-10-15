@@ -168,14 +168,14 @@ func TestFactorydPodReapsGitHelpers(t *testing.T) {
 	}
 }
 
-// factoryd's ClusterRole lists the cluster's CronJobs for the Resources
-// page and does nothing else with them.
-func TestFactorydOnlyListsCronJobs(t *testing.T) {
+// factoryd's ClusterRole lists the cluster's CronJobs and CNPG's
+// ScheduledBackups for the Resources page and does nothing else with them.
+func TestFactorydOnlyListsTheClustersJobs(t *testing.T) {
 	b, err := os.ReadFile("../../k8s/factoryd.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var verbs []string
+	verbs := map[string][]string{}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	for {
 		var doc struct {
@@ -194,12 +194,16 @@ func TestFactorydOnlyListsCronJobs(t *testing.T) {
 			continue
 		}
 		for _, r := range doc.Rules {
-			if slices.Contains(r.APIGroups, "batch") && slices.Contains(r.Resources, "cronjobs") {
-				verbs = append(verbs, r.Verbs...)
+			for _, g := range r.APIGroups {
+				for _, res := range r.Resources {
+					verbs[g+"/"+res] = append(verbs[g+"/"+res], r.Verbs...)
+				}
 			}
 		}
 	}
-	if !slices.Equal(verbs, []string{"list"}) {
-		t.Fatalf("factoryd's ClusterRole grants %v on cronjobs, want [list]", verbs)
+	for _, res := range []string{"batch/cronjobs", "postgresql.cnpg.io/scheduledbackups"} {
+		if !slices.Equal(verbs[res], []string{"list"}) {
+			t.Errorf("factoryd's ClusterRole grants %v on %s, want [list]", verbs[res], res)
+		}
 	}
 }

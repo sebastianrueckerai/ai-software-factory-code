@@ -67,8 +67,8 @@ type fakeKube struct {
 	nsDelay     time.Duration // every CreateNamespace takes this long
 	pvs         []PersistentVolume
 	deletedPVs  []string
-	cronJobs    map[string][]CronJobState // namespace → its CronJobs
-	cronJobsErr map[string]error          // namespace → injected CronJobs failure
+	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
+	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
 }
@@ -489,12 +489,26 @@ func (k *fakeKube) DeletePersistentVolume(ctx context.Context, name string) erro
 }
 
 func (k *fakeKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
+	return k.jobsOf(KindCronJob, namespace)
+}
+
+func (k *fakeKube) ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error) {
+	return k.jobsOf(KindScheduledBackup, namespace)
+}
+
+func (k *fakeKube) jobsOf(kind, namespace string) ([]CronJobState, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if err := k.cronJobsErr[namespace]; err != nil {
+	if err := k.cronJobsErr[kind+" "+namespace]; err != nil {
 		return nil, err
 	}
-	return slices.Clone(k.cronJobs[namespace]), nil
+	var out []CronJobState
+	for _, j := range k.cronJobs[namespace] {
+		if j.Kind == kind {
+			out = append(out, j)
+		}
+	}
+	return out, nil
 }
 
 var _ Kube = (*fakeKube)(nil)

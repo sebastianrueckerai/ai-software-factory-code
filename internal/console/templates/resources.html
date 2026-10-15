@@ -29,11 +29,11 @@
 <h3 id="jobs">Jobs of the cluster</h3>
 {{if .Failed}}<p>The cluster did not answer.</p>
 {{else}}<table>
-<caption>The cluster's CronJobs, read-only</caption>
-<thead><tr><th scope="col">Name</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th></tr></thead>
+<caption>The cluster's scheduled jobs by namespace</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th></tr></thead>
 <tbody>
-{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Namespace}}</td><td>{{schedule .Schedule}}</td>{{template "age" .LastScheduled}}{{template "age" .LastSuccessful}}<td>{{if .Suspended}}yes{{else}}no{{end}}</td></tr>
-{{else}}<tr><td colspan="6">No jobs.</td></tr>{{end}}
+{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.Namespace}}</td><td title="{{.Schedule}}">{{schedule .Schedule}}</td>{{template "age" .LastScheduled}}{{if .RecordsSuccess}}{{template "age" .LastSuccessful}}{{else}}<td>not reported</td>{{end}}<td>{{if .Suspended}}yes{{else}}no{{end}}</td></tr>
+{{else}}<tr><td colspan="7">No jobs.</td></tr>{{end}}
 </tbody>
 </table>
 {{end}}</section>

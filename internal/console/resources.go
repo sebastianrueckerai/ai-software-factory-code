@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -71,6 +72,24 @@ type projectView struct {
 type jobsView struct {
 	Rows   []factoryd.CronJobState
 	Failed bool
+}
+
+// jobSchedule is a job's cron in words, as a routine's card says it; a
+// ScheduledBackup's six-field cron loses its seconds first when they are
+// 0.
+func jobSchedule(cron string) string {
+	if f := strings.Fields(cron); len(f) == 6 && f[0] == "0" {
+		cron = strings.Join(f[1:], " ")
+	}
+	return policy.Trigger{Cron: cron}.Words()
+}
+
+// jobAge is how long ago t was, coarse; never when t is zero.
+func jobAge(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return coarse(time.Since(t)) + " ago"
 }
 
 // resources lists the agent project's commissions by project and task,

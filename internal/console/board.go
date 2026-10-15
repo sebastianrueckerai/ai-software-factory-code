@@ -48,9 +48,9 @@ var funcs = template.FuncMap{
 		return fmt.Sprintf("%d min", minutes)
 	},
 	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
-	"ago": func(t time.Time) string { return coarse(time.Since(t)) + " ago" },
-	// schedule is a cron in words, as a routine's card says it
-	"schedule": func(cron string) string { return policy.Trigger{Cron: cron}.Words() },
+	// ago and schedule word a cluster job's last runs and cron
+	"ago":      jobAge,
+	"schedule": jobSchedule,
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct":    pct,

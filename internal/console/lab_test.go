@@ -424,8 +424,9 @@ func (r *rig) labSeed(name string) (string, error) {
 		return t
 	}
 	r.c.cfg.Jobs = fakeJobs{rows: []factoryd.CronJobState{
-		{Namespace: "platform", Name: "cnpg-backup", Schedule: "0 2 * * *", LastScheduled: nightly(0), LastSuccessful: nightly(0)},
-		{Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *", LastScheduled: nightly(30), LastSuccessful: nightly(30).AddDate(0, 0, -1)},
+		{Kind: factoryd.KindScheduledBackup, Namespace: "platform", Name: "sf-cluster-daily", Schedule: "0 0 2 * * *", LastScheduled: nightly(0)},
+		{Kind: factoryd.KindCronJob, Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *", LastScheduled: nightly(30),
+			LastSuccessful: nightly(30).AddDate(0, 0, -1)},
 	}}
 	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
 	r.c.turns = newTurnGate()
