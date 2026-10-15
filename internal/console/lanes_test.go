@@ -170,6 +170,37 @@ func TestBoardColumnsFromLanes(t *testing.T) {
 	}
 }
 
+// A plan's card can name a plan the board's own read does not list: one
+// of another project, open (before roadmap 269 the board read it among
+// every project's cards), or a finished one. The card's chip still names
+// the plan's issue — planIssue reads the parent itself — while the board
+// shows none of the other project's cards.
+func TestBoardPlanParentOutsideItsCards(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "queued", Lane: "plan", Process: "spec", Objective: "Link shortener",
+			Repository: "sf/code", IssueNumber: 1}},
+		{Task: factoryd.Task{ID: "t-c", Kind: "agent", Status: "running", Lane: "ready", Process: "spec", Objective: "build the API",
+			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if !strings.Contains(body, `<span class="chip plan">from plan #1</span>`) {
+		t.Errorf("the card's chip does not name its plan, a card of another project:\n%s", body)
+	}
+	if strings.Contains(body, "Link shortener") {
+		t.Errorf("the board shows the other project's plan card:\n%s", body)
+	}
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span>`) {
+		t.Errorf("the drawer does not name the plan either:\n%s", d)
+	}
+	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if !strings.Contains(code, "Link shortener") || strings.Contains(code, "build the API") {
+		t.Errorf("the code project's board does not show its own plan card, or shows linkshort's card:\n%s", code)
+	}
+}
+
 // moveForms are the lanes the move buttons of card id offer, in order.
 func moveForms(body, id string) []string {
 	var lanes []string
