@@ -1437,7 +1437,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 		for _, e := range pending {
-			st.Findings = append(st.Findings, changeRequested(e.Author, e.Body))
+			st.Findings = append(st.Findings, changeRequested(e.Author, e.Body, e.CreatedAt))
 		}
 	}
 	events, err := r.store.IntakeEvents(ctx, taskID)
@@ -1570,7 +1570,7 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 			continue
 		}
 		if a := answerOf(anchors, e.CommentID); a != nil {
-			got = append(got, answer{answerKey{a.comment, e.CommentID}, answerText(e.Author, a.question, e.Body)})
+			got = append(got, answer{answerKey{a.comment, e.CommentID}, answerText(e.Author, a.question, e.Body, e.CreatedAt)})
 		}
 	}
 	slices.SortStableFunc(got, func(x, y answer) int { return x.key.compare(y.key) })

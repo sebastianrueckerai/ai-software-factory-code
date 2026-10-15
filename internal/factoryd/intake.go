@@ -1354,7 +1354,7 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 // whether it is a decision that ends the task. A pull request decision
 // carries its own pull request (its CommentID), a change request pr.
 func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bool) {
-	sig = TaskSignal{Author: e.Author, Body: e.Body}
+	sig = TaskSignal{Author: e.Author, Body: e.Body, At: e.CreatedAt}
 	switch e.Kind {
 	case "issue_comment":
 		name, sig.Comment = SignalHumanComment, e.CommentID

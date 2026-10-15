@@ -2792,3 +2792,39 @@ func TestAlertCardClosesItselfBeforeFirstModelCall(t *testing.T) {
 		t.Fatalf("firing: sessions = %d, want the card's session", len(h2.sessions))
 	}
 }
+
+func TestAnswersAndChangeRequestsCarryTheirDate(t *testing.T) {
+	at := time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)
+	if got, want := answerText("sebastian", "which file?", "docs/a.txt", at), `sebastian (2026-10-15), to "which file?": docs/a.txt`; got != want {
+		t.Errorf("answer = %q, want %q", got, want)
+	}
+	if got, want := answerText("sebastian", "which file?", "docs/a.txt", time.Time{}), `sebastian, to "which file?": docs/a.txt`; got != want {
+		t.Errorf("undated answer = %q, want %q", got, want)
+	}
+	if got, want := changeRequested("sebastian", "rename it", at), "reviewer sebastian requested changes (2026-10-15): rename it"; got != want {
+		t.Errorf("change request = %q, want %q", got, want)
+	}
+	late := time.Date(2026, 10, 16, 1, 30, 0, 0, time.FixedZone("CEST", 2*3600))
+	if got := changeRequested("a", "b", late); got != "reviewer a requested changes (2026-10-15): b" {
+		t.Errorf("a time in another zone = %q, want its UTC date, 2026-10-15", got)
+	}
+}
+
+// A live answer is tagged with its comment's date and the question it answered.
+func TestWorkflowAnswerReachesTheSessionDated(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.refusedThenFunded(1)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	at := time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602, At: at})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.escalated) != 1 || len(h.sessions) != 1 {
+		t.Fatalf("final = %q, escalations %q, sessions %d", final, h.escalated, len(h.sessions))
+	}
+	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", escalationQuestion(h.escalated[0]))
+	if !slices.Equal(h.sessions[0].Answers, []string{want}) {
+		t.Fatalf("answers = %q, want %q", h.sessions[0].Answers, want)
+	}
+}

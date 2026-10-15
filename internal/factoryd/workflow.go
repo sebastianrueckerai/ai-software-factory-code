@@ -66,7 +66,8 @@ type TaskSignal struct {
 	Author  string
 	Body    string
 	PR      int64
-	Comment int64 // the issue comment's id, for human_comment
+	Comment int64     // the issue comment's id, for human_comment
+	At      time.Time // when the comment or review was made; zero for a signal from before dates
 	// Revision and SHA256 are the plan revision plan_accepted accepts,
 	// Revision and Index the plan question plan_answered answers.
 	Revision int
@@ -2730,8 +2731,8 @@ func (t *taskRun) decide(name string, sig TaskSignal) (final, reason string, ok 
 
 // changeRequested phrases a reviewer's change request as a finding, the
 // same way from a signal and from Reconcile so the two coincide.
-func changeRequested(author, body string) string {
-	return "reviewer " + author + " requested changes: " + body
+func changeRequested(author, body string, at time.Time) string {
+	return "reviewer " + author + " requested changes" + dated(at) + ": " + body
 }
 
 // drainChanges coalesces every pending change request (one review with
@@ -2741,7 +2742,7 @@ func (t *taskRun) drainChanges() []string {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(&sig) {
 		if t.counted(SignalChangesRequested, sig) {
-			out = append(out, changeRequested(sig.Author, sig.Body))
+			out = append(out, changeRequested(sig.Author, sig.Body, sig.At))
 		}
 	}
 	return out
@@ -2835,10 +2836,10 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 				continue
 			}
 			if t.besideLadder >= versionBesideLadder {
-				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body))
+				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
 				continue
 			}
-			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body))
+			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}
@@ -3167,7 +3168,7 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 	case SignalIssueClosed:
 		return t.issueClosed()
 	}
-	return "", "", []string{"reviewer " + sig.Author + " requested changes: " + sig.Body}
+	return "", "", []string{changeRequested(sig.Author, sig.Body, sig.At)}
 }
 
 // finish is the one exit of every path. It retries for a day (backoff
@@ -3247,7 +3248,15 @@ func escalationQuestion(reason string) string {
 }
 
 // answerText is one human answer as the sessions get it, tagged with the
-// question it answers.
-func answerText(author, question, body string) string {
-	return fmt.Sprintf("%s, to %q: %s", author, textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+// question it answers and its date.
+func answerText(author, question, body string, at time.Time) string {
+	return fmt.Sprintf("%s%s, to %q: %s", author, dated(at), textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+}
+
+// dated is " (YYYY-MM-DD)" in UTC, "" for no time.
+func dated(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return " (" + at.UTC().Format("2006-01-02") + ")"
 }

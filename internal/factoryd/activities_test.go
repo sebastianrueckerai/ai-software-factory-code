@@ -1348,7 +1348,7 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
 			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes (2026-10-15): rename it"}}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
 			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
@@ -1359,13 +1359,13 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
 		if len(tc.want.Findings) > 0 {
-			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Now().Add(-time.Hour)})
+			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)})
 			// an untrusted one, one never signalled and one an earlier session already took up count for nothing
 			for _, e := range []IntakeEvent{
-				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "rename it", CommentID: 90, Trusted: true, Signalled: true},
+				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "rename it", CommentID: 90, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 				{TaskID: "t1", Kind: "pull_request_comment", Author: "reader", Body: "drive-by", CommentID: 91},
 				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "not yet signalled", CommentID: 92, Trusted: true},
-				{TaskID: "t1", Kind: "pull_request_review_rejected", Author: "sebastian", Body: "taken up", Trusted: true, Signalled: true, CreatedAt: time.Now().Add(-2 * time.Hour)},
+				{TaskID: "t1", Kind: "pull_request_review_rejected", Author: "sebastian", Body: "taken up", Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)},
 			} {
 				store.InsertIntakeEvent(context.Background(), e)
 			}
@@ -1409,11 +1409,11 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	for _, e := range []IntakeEvent{
 		{Kind: "issue_comment", Author: "sebastian", Body: "before", CommentID: 500, Trusted: true, Signalled: true},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which file?\nWhy: open", CommentID: 600},
-		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)},
 		{Kind: "issue_comment", Author: "reader", Body: "spam", CommentID: 602},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603, Choices: []string{"hello", "bye"}},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 604},
-		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 	} {
 		e.TaskID = "t1"
 		store.InsertIntakeEvent(context.Background(), e)
@@ -1423,7 +1423,7 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	if err != nil || val.Get(&got) != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}
+	want := []string{`sebastian (2026-10-15), to "Which text?": ok`, `sebastian (2026-10-14), to "Which file?": a.txt`}
 	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || !slices.Equal(got.Choices, []string{"hello", "bye"}) || got.Screening {
 		t.Fatalf("answers = %q, question = %q, choices %q, screening %v; want %q, Which text?, hello and bye", got.Answers, got.Question, got.Choices, got.Screening, want)
 	}

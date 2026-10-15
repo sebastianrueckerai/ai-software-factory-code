@@ -705,20 +705,24 @@ func TestOpencodeToolCallCarriesArguments(t *testing.T) {
 	}
 }
 
-// Ruling 118: the human's answers are their own section, ahead of the
-// objective, newest first, and say the questions are settled.
-func TestBriefPutsTheHumansAnswersFirst(t *testing.T) {
+// The findings, a request for changes among them, stand above the human's
+// answers, so an old answer cannot outrank a newer request; each answer says
+// its date and the question it answered.
+func TestBriefPutsTheFindingsAboveTheAnswers(t *testing.T) {
 	got := briefText(harness.TaskBrief{
 		Objective: "Write the note; ask the human for its name first.",
-		Answers:   []string{"sebastian: write ok", "sebastian: docs/a.txt"},
-		Findings:  []string{"ran x"},
+		Answers:   []string{`sebastian (2026-10-14), to "which file?": change nothing`},
+		Findings:  []string{"reviewer sebastian requested changes (2026-10-15): change the name"},
 	}, "T")
-	want := "The human has answered this task's escalations (newest first). These answers settle those questions: act on them and do not escalate them again.\n" +
-		"- sebastian: write ok\n- sebastian: docs/a.txt\n\n" +
-		"The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\nWrite the note; ask the human for its name first.\nISSUE-T>>>" +
-		"\nFindings from earlier attempts:\n- ran x\n\n" + workGuide(nil)
+	want := "The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>.\n<<<ISSUE-T\nWrite the note; ask the human for its name first.\nISSUE-T>>>" +
+		"\nFindings from earlier attempts:\n- reviewer sebastian requested changes (2026-10-15): change the name" +
+		"\n\n" + answersHeading + "\n- sebastian (2026-10-14), to \"which file?\": change nothing" +
+		"\n\n" + workGuide(nil)
 	if got != want {
 		t.Fatalf("objective =\n%s\nwant\n%s", got, want)
+	}
+	if !strings.Contains(answersHeading, "replaces the older answer") {
+		t.Fatalf("heading = %q, want it to say that a newer finding replaces an older answer", answersHeading)
 	}
 }
 

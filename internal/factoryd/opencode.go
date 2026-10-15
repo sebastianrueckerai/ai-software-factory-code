@@ -642,13 +642,6 @@ func randomTag() string {
 // briefText is the brief with the author's text between markers tagged tag.
 func briefText(brief harness.TaskBrief, tag string) string {
 	var b strings.Builder
-	if len(brief.Answers) > 0 {
-		b.WriteString("The human has answered this task's escalations (newest first). These answers settle those questions: act on them and do not escalate them again.\n")
-		for _, a := range brief.Answers {
-			fmt.Fprintf(&b, "- %s\n", a)
-		}
-		b.WriteString("\n")
-	}
 	if len(brief.LeftOut) > 0 {
 		b.WriteString("factoryd left out of this brief what is past its bounds; the issue and the card keep it:\n")
 		for _, n := range brief.LeftOut {
@@ -715,6 +708,12 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
 	}
+	if len(brief.Answers) > 0 {
+		b.WriteString("\n\n" + answersHeading)
+		for _, a := range brief.Answers {
+			fmt.Fprintf(&b, "\n- %s", a)
+		}
+	}
 	if brief.Map != "" {
 		b.WriteString("\n\n" + brief.Map)
 	}
@@ -733,6 +732,15 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	b.WriteString(guide)
 	return b.String()
 }
+
+// answersHeading opens the brief's section of the human's answers, which
+// stands below the findings: a finding dated after an answer, a request for
+// changes among them, replaces it, and a newer answer replaces an older one to
+// the same question.
+const answersHeading = "The human has answered this task's escalations (newest first, each with its date and the question it answered). " +
+	"These answers settle those questions: act on them and do not escalate them again. " +
+	"A finding above that is dated after an answer, a request for changes among them, replaces the older answer, " +
+	"and a newer answer replaces the older answer to the same question."
 
 // toolsLine names where the factory's tools come from; which are open and
 // when to call each, the MCP server's tool list says.

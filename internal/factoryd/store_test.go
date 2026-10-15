@@ -1896,7 +1896,7 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
 	for _, e := range []IntakeEvent{
 		{TaskID: "t-wd", Kind: IntakeEscalation, Author: FactoryDecider, Body: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs", CommentID: 601},
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true},
+		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 		withdrawal, withdrawal,
 		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 750, Trusted: true},
 	} {
@@ -1917,7 +1917,7 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 		t.Fatalf("intake events = %q, want %q", got, want)
 	}
 	answers, _, _ := answersFrom(events)
-	if want := []string{`sebastian, to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
+	if want := []string{`sebastian (2026-10-15), to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
 	}
 }
