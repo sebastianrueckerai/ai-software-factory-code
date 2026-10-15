@@ -437,6 +437,17 @@ func (a *AcceptanceRig) Task(_ context.Context, id string) (factoryd.Task, bool,
 	return factoryd.Task{}, false, nil
 }
 
+func (a *AcceptanceRig) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, t := range a.tasks {
+		if t.Repository == repository && t.IssueNumber == issue {
+			return t.Task, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 func (a *AcceptanceRig) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

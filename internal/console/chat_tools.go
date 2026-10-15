@@ -13,7 +13,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
@@ -220,24 +219,22 @@ func (tool chatTool) normalized(args string) string {
 }
 
 // byTaskID names in's cards by their task ids: a card named by its issue
-// number, "#5" or 5, is the chat project's card of that issue among those
-// the board reads.
+// number, "#5" or 5, is the chat project's card of that issue.
 func (t *turn) byTaskID(in *toolInput) error {
 	for _, id := range []*string{&in.TaskID, &in.DependsOn} {
 		n, err := strconv.ParseInt(strings.TrimPrefix(*id, "#"), 10, 64)
 		if err != nil || n <= 0 {
 			continue
 		}
-		bts, err := t.c.cfg.Tasks.BoardTasks(t.r.Context(), time.Now().Add(-finishedSince), boardLimit)
-		if err != nil {
-			log.Printf("console: the cards of %s: %v", t.p.Name, err)
-			return refuse(http.StatusInternalServerError, "cannot read the cards")
+		k, ok, err := t.c.cfg.Tasks.TaskByIssue(t.r.Context(), t.p.Repository, n)
+		switch {
+		case err != nil:
+			log.Printf("console: card #%d of %s: %v", n, t.p.Name, err)
+			return refuse(http.StatusInternalServerError, "cannot read the task")
+		case !ok:
+			return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: the board read lists its cards.", t.p.Name, n))
 		}
-		i := slices.IndexFunc(bts, func(bt factoryd.BoardTask) bool { return bt.Repository == t.p.Repository && bt.IssueNumber == n })
-		if i < 0 {
-			return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no open or recent card #%d: the board read lists its cards, and an older card takes its task id.", t.p.Name, n))
-		}
-		*id = bts[i].ID
+		*id = k.ID
 	}
 	return nil
 }
@@ -285,8 +282,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
 	}
-	if in.BacklogCap > 0 {
-		parts = append(parts, fmt.Sprintf("backlog cap %d", in.BacklogCap))
+	if tool.name == "set_autonomy" {
+		if in.BacklogCap > 0 {
+			parts = append(parts, fmt.Sprintf("backlog cap %d", in.BacklogCap))
+		} else {
+			v, _ := t.c.inForce(t.r.Context())
+			parts = append(parts, fmt.Sprintf("backlog cap %d stays", v.Tree.BacklogCapOf(t.p.Repository)))
+		}
 	}
 	if tool.name == "tell_card" {
 		branch, k, _, err := t.tellRoute(*in)
@@ -978,7 +980,7 @@ var tools = []chatTool{
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
 		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
-			"backlog_cap": fallback(policy.DefaultBacklogCap, map[string]any{"type": "integer", "description": "how many cards may wait unstarted", "minimum": 1})},
+			"backlog_cap": map[string]any{"type": "integer", "description": "how many cards may wait unstarted, unset keeps it", "minimum": 1}},
 		required: []string{"autonomy"},
 		about:    "Set the project's autonomy state and backlog cap through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

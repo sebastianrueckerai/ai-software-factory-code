@@ -801,7 +801,7 @@ func TestChatToolSentences(t *testing.T) {
 		[]any{[]any{"title"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
 	equal(t, "the schemas' defaults", []any{defaults["new_card lane"], defaults["deny_merge action"], defaults["github_export mode"],
 		defaults["set_autonomy backlog_cap"], defaults["history n"], defaults["session_step from"]},
-		[]any{"backlog", "request_changes", "mirror", float64(8), float64(20), float64(1)})
+		[]any{"backlog", "request_changes", "mirror", nil, float64(20), float64(1)})
 
 	r, _, g = newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
@@ -851,14 +851,21 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 }
 
 // A card is named by its task id or its issue number, "#5" or 5, which
-// the tool resolves among the project's cards: the reads answer the card,
-// a proposal stores and names its task id, a dependency's card resolves
-// too, and an unknown number is refused with the next step.
+// the tool resolves through the store among the project's cards, however
+// old: the reads answer the card, one finished a month ago included,
+// which the board no longer lists; a proposal stores and names its task
+// id, a dependency's card resolves too, and an unknown number is refused
+// with the next step.
 func TestChatNamesACardByItsIssue(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "card_history", `{"task_id":"#5"}`, "card_history", `{"task_id":5}`, "card", `{"task_id":"#99"}`,
-		"move_card", `{"task_id":"#5","lane":"ready"}`, "set_dependency", `{"task_id":"5","depends_on":11}`)}}
+	finished := time.Now().Add(-30 * 24 * time.Hour)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "sf/code",
+		IssueNumber: 3, Objective: "Add the schema.", FinishedAt: &finished}})
+	r.tasks.mu.Unlock()
+	g.replies = [][]string{{call(1, "card_history", `{"task_id":"#5"}`, "card_history", `{"task_id":5}`, "card_history", `{"task_id":"#3"}`,
+		"card", `{"task_id":"#99"}`, "move_card", `{"task_id":"#5","lane":"ready"}`, "set_dependency", `{"task_id":"5","depends_on":11}`)}}
 	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
 		IssueNumber: 5, Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton})
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
@@ -866,8 +873,8 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
 		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
-		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no open or recent card #99: ` +
-			`the board read lists its cards, and an older card takes its task id."}`,
+		`tool {"arguments":{"n":20,"task_id":"#3"},"duration_ms":0,"name":"card_history","result":"No events."}`,
+		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no card #99: the board read lists its cards."}`,
 		`proposal {"arguments":{"task_id":"t-m","lane":"ready"},"description":"Move a card, #5 t-m \"Fix the cache. It drops entries.\", lane ready","id":"TOKEN","tool":"move_card"}`,
 		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
 			`depends on #11 t-r \"Speed up the board.\"","id":"TOKEN","tool":"set_dependency"}`,

@@ -157,6 +157,17 @@ func (s *accBatchTasks) TaskByPR(_ context.Context, repository string, pr int64)
 	return factoryd.Task{}, false, nil
 }
 
+func (s *accBatchTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.IssueNumber == issue {
+			return t.Task, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 // BoardTasks lists the cards, as the store does, in its order: a chat
 // task is none.
 func (s *accBatchTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {

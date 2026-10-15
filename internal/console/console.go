@@ -53,6 +53,8 @@ const (
 // Tasks is the task state the board reads.
 type Tasks interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
+	// TaskByIssue is repository's card of issue number issue.
+	TaskByIssue(ctx context.Context, repository string, issue int64) (factoryd.Task, bool, error)
 	// BoardTasks lists at most limit tasks: those not done or failed
 	// first, then those finished after since, each with its latest
 	// escalation's reason.

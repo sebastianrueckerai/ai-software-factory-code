@@ -293,15 +293,19 @@ func TestChatNewCardLaneDefaultsToBacklog(t *testing.T) {
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
 }
 
-// set_autonomy's backlog_cap defaults to 8: a call without it is proposed
-// naming the cap, which the change writes back to its default.
-func TestChatSetAutonomyProposesTheDefaultCap(t *testing.T) {
+// set_autonomy without a backlog cap keeps the project's: its proposal
+// names the cap that stays, 5 from the project file, and carries none;
+// with a cap it names the new one.
+func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 	r, g := newWritesRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", BacklogCap: 5}}
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`)}}
+	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","backlog_cap":3}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
-	equal(t, "proposal", events, []string{`proposal {"arguments":{"autonomy":"assisted","backlog_cap":8},` +
-		`"description":"Set the autonomy level, autonomy assisted, backlog cap 8","id":"TOKEN","tool":"set_autonomy"}`, `done {}`})
+	equal(t, "proposals", events, []string{
+		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, backlog cap 5 stays","id":"TOKEN","tool":"set_autonomy"}`,
+		`proposal {"arguments":{"autonomy":"assisted","backlog_cap":3},"description":"Set the autonomy level, autonomy assisted, backlog cap 3","id":"TOKEN","tool":"set_autonomy"}`,
+		`done {}`})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason

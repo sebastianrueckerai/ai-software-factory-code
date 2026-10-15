@@ -50,7 +50,8 @@ func TestChatRecordsTheDecider(t *testing.T) {
 }
 
 // The selector's two keys land in the project file, comments kept, the
-// cap only away from the default.
+// cap only away from the default; a cap of 0 keeps the file's, and the
+// default takes the key off.
 func TestEditProjectFile(t *testing.T) {
 	raw := []byte("# the code project\nrepository: sf/code\nmerge_rule: human\n")
 	out, err := editProjectFile(raw, policy.AutonomyAssisted, 0)
@@ -80,8 +81,13 @@ func TestEditProjectFile(t *testing.T) {
 	if got = string(out); !strings.Contains(got, "backlog_cap: 5\n") {
 		t.Errorf("editProjectFile = %s, want backlog_cap: 5 unquoted", got)
 	}
-	out, err = editProjectFile(out, policy.AutonomyManual, 0)
-	if err != nil {
+	if out, err = editProjectFile(out, policy.AutonomyManual, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got = string(out); !strings.Contains(got, "autonomy: manual") || !strings.Contains(got, "backlog_cap: 5\n") {
+		t.Errorf("editProjectFile = %s, want manual with cap 5 kept", got)
+	}
+	if out, err = editProjectFile(out, policy.AutonomyManual, policy.DefaultBacklogCap); err != nil {
 		t.Fatal(err)
 	}
 	if got = string(out); strings.Contains(got, "backlog_cap") {

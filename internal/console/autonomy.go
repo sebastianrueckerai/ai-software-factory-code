@@ -56,11 +56,11 @@ func autonomyRefusal(state string, backlogCap int) string {
 	return ""
 }
 
-// doSetAutonomy writes project name's autonomy state and backlog cap
-// into its project file on the configuration repository's main as the
-// member, an approver, through the path a project's filing takes: the
-// file judged the loader's way, a branch with the one change, its pull
-// request and its merge. Full auto writes autonomous with merge_rule
+// doSetAutonomy writes project name's autonomy state and backlog cap, 0
+// for the file's own, into its project file on the configuration
+// repository's main as the member, an approver, through the path a
+// project's filing takes: the file judged the loader's way, a branch with
+// the one change, its pull request and its merge. Full auto writes autonomous with merge_rule
 // auto, autonomous merge_rule human; manual and assisted leave the rule.
 // The change records one event naming the member.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlogCap int, a actor) error {
@@ -156,8 +156,8 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 // editProjectFile is the project file at autonomy state with backlog_cap
 // set, its comments and key order kept: full auto is autonomous with
 // merge_rule auto, autonomous takes merge_rule human, manual and assisted
-// keep the rule; backlog_cap lands only away from the default, and an
-// existing key at the default comes off.
+// keep the rule; a cap of 0 keeps the file's, another lands only away
+// from the default, and an existing key set to the default comes off.
 func editProjectFile(raw []byte, state string, backlogCap int) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(raw, &doc); err != nil {
@@ -196,7 +196,8 @@ func editProjectFile(raw []byte, state string, backlogCap int) ([]byte, error) {
 		set("autonomy", state)
 	}
 	switch {
-	case backlogCap > 0 && backlogCap != policy.DefaultBacklogCap:
+	case backlogCap == 0:
+	case backlogCap != policy.DefaultBacklogCap:
 		if i := index("backlog_cap"); i >= 0 {
 			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(backlogCap), "!!int", 0
 		} else {

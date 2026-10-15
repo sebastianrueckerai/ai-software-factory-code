@@ -231,6 +231,17 @@ func (s *acceptTasks) Task(_ context.Context, id string) (factoryd.Task, bool, e
 	return factoryd.Task{}, false, nil
 }
 
+func (s *acceptTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.IssueNumber == issue {
+			return t.Task, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 // BoardTasks lists the cards, as the store does, in its order: a chat
 // task is none.
 func (s *acceptTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
