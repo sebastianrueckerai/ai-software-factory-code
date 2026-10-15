@@ -507,8 +507,8 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	switch p.Objects {
 	case ObjectsFactory:
-		if strings.HasPrefix(name, "factory-") || name == "flux-system" || name == "sf" {
-			bad("objects factory: the name is its Forgejo organisation's, not factory-*, flux-system or sf")
+		if strings.HasPrefix(name, "factory-") || name == "flux-system" || name == "sf" || name == "upstream" {
+			bad("objects factory: the name is its Forgejo organisation's, not factory-*, flux-system, sf or upstream (the store of outside images)")
 		}
 		if p.Repository != name+"/"+name {
 			bad("objects factory: repository %q: a project is its own organisation, its repository %s/%s", p.Repository, name, name)

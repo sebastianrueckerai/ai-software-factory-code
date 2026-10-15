@@ -13,6 +13,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build the CI runner image on the layer cache
         run: docker build -f Dockerfile.runner -t ci-runner:test --cache-from type=registry,ref=$CACHE/ci-runner:main,registry.insecure=true .
       - name: the whole suite with the race detector

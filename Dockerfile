@@ -1,4 +1,9 @@
-FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS build
+# Every outside image comes from the factory's store by the digest
+# upstream-images.txt pins (roadmap 203). A pull request's build VM holds no
+# login to the store, so pr.yml passes UPSTREAM= and the VM pulls the same
+# digests from their upstreams.
+ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
+FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
 # builds the same digest at any wall-clock time.
@@ -15,7 +20,7 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
  && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
 
-FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+FROM ${UPSTREAM}docker.io/library/alpine:3.22@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 # One image, both control-plane binaries; each deployment sets its command.
 COPY --from=build /out/factory-gateway /usr/local/bin/factory-gateway

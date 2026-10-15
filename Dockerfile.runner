@@ -5,7 +5,12 @@ ARG GOSEC_VERSION=2.29.0
 ARG CRANE_VERSION=0.22.1
 ARG COSIGN_VERSION=3.1.3
 
-FROM golang:1.26.9@sha256:37cfcca63222ec499bec5e8ad7aad52dbf7529db36d5812b8eae2f0621aa92d6 AS go-toolchain
+# Every outside image comes from the factory's store by the digest
+# upstream-images.txt pins (roadmap 203). A pull request's build VM holds no
+# login to the store, so pr.yml passes UPSTREAM= and the VM pulls the same
+# digests from their upstreams.
+ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
+FROM ${UPSTREAM}docker.io/library/golang:1.26.9@sha256:cf7e928cb9edc2ed8b3cc6fe77ee1ee30b9fea28149564c8840097321a7600ea AS go-toolchain
 
 # The archives the image unpacks, and cosign for the stage below, each
 # checked against its sha256 before a layer holds it. The image's steps
@@ -30,7 +35,7 @@ ADD --checksum=sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9e
 FROM scratch AS cosign
 COPY --from=downloads /cosign /cosign
 
-FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 # Task 41 (ruling 78/89/90): the untrusted PR runner. Host executor inside
 # an unprivileged, gVisor-isolated pod — no docker CLI, no socket, no

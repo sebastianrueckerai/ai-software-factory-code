@@ -1,0 +1,61 @@
+# Every image the factory uses and does not build (roadmaps 203 and 242),
+# one per line: its upstream name and tag, pinned by its linux/amd64
+# digest. scripts/upstream-copy copies each into the factory's store,
+# git.aisoftwarefactory.world/upstream/<the name>, by that digest, and CI's
+# upstream job runs it on every push to main. Every reference names the
+# copy, git.aisoftwarefactory.world/upstream/<the line>: this repository's
+# Dockerfiles and workflows, and the infra repository's manifests, its
+# HelmReleases' values and its runner's job image. A line marked bootstrap
+# is referenced at its upstream: Forgejo serves the store, so what Forgejo,
+# its database and the cluster's start run on cannot come from it.
+# The weekly upstream card bumps these lines.
+
+# the images' builds
+docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb
+docker.io/library/golang:1.26.9@sha256:cf7e928cb9edc2ed8b3cc6fe77ee1ee30b9fea28149564c8840097321a7600ea
+docker.io/library/alpine:3.22@sha256:3e9b4b680bfc9fb5269227cffbd6d42be39fbf7c0b908123913864aa4447e764
+docker.io/library/node:22-bookworm-slim@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2
+docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
+docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
+
+# main CI's job image and runner
+docker.io/catthehacker/ubuntu:act-22.04@sha256:a03f9d3c8f0930dbf586cf375d09ff2a3718ee794a77d2b635f1a0dd79095488
+code.forgejo.org/forgejo/runner:12.7.3@sha256:4b0d1075b1ef22f9180776734d4a9f8f5f52eea836a28eec4c9c74429e4d6b2a
+docker.io/library/docker:29.5.2-dind@sha256:392437eb2d6e54f9ae2be9c0aac2cbca95e3f5eb9854b0f0b1d664d473856633
+
+# the platform
+docker.io/library/registry:3@sha256:21078ecfcba8a0cd7e1a384f75b3509899661dd21823bf1da21b5a4674aaceb9
+docker.io/alpine/kubectl:1.36.1@sha256:2d03606ac3a584cc425218e563f4d1ea109eeccd9229c24e9f2eedaeda8f5c23
+docker.io/alpine/k8s:1.36.1@sha256:51865f04b31c2f1d18db2c0964f4186d359007beedb9e478d342a7e504c0a3f3
+docker.io/amazon/aws-cli:2.28.5@sha256:990624088b305b99f55ee777e3a2c4964a57cb811e78f7f1d6b59e03215b4965
+quay.io/openbao/openbao:2.6.3@sha256:99c8dd178200d9a5f1a0420d6b1923514280e31e9271bdd92c69f765738c42aa
+ghcr.io/berriai/litellm:1.102.4@sha256:76ea408529343acce6a359f31fa4fe910e9fdda82d0c9fc1b0441ccf9cef0ec3
+docker.io/temporalio/server:1.32.0@sha256:ca47d4de249b9cc28137628dba77ae5e75e8b313ebb5c801c64615c1c99cbb09
+docker.io/temporalio/admin-tools:1.32.0@sha256:8bb84e24db4336de48031a66dbda25a7477d300736fe825893e467042135da1f
+docker.io/temporalio/ui:2.54.1@sha256:1f950ff598c810f371c60f1bf16de742caa6b8f60e0cdba05526a434e09b6d43
+docker.io/signoz/signoz:v0.143.0@sha256:c0ffe2e61d8152f87be0637b5e66d775fe155920ffe80f0a2422f48d9c1c1bf6
+docker.io/signoz/signoz-otel-collector:v0.144.11@sha256:c9fe68529e7a035dac786cb755d901049d475347567e3080fa87e8092369fa48
+docker.io/signoz/zookeeper:3.7.1@sha256:1e6c92e8656c299818acfaf72f11e59d68a92bfe39fc1b1137cd78d6ab6741aa
+docker.io/clickhouse/clickhouse-server:25.12.5@sha256:10f54f04de6c61b756c4eaf9f1d17464a4ac3e1f94b5b410e0dec92a24dbeda8
+docker.io/library/alpine:3.18.2@sha256:25fad2a32ad1f6f510e528448ae1ec69a28ef81916a004d3629874104f8a7f70
+docker.io/altinity/clickhouse-operator:0.21.2@sha256:f972ef4aec9959313a4d4407a83803c75f0be215af4a6811b3f2b890c15ba893
+docker.io/altinity/metrics-exporter:0.21.2@sha256:084a75d8ab0ba5c31ed9d923d301745d24f0e8a3cadf54cdbfe298443eda8da9
+docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c
+
+# Forgejo's path, referenced at the upstream
+code.forgejo.org/forgejo/forgejo:15.0.9-rootless@sha256:e0950cca25a2344f0f519b9aff894bcfa80b53601b24f07066d6625033597b55 bootstrap
+ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:b0f9805bd5f98592e7320b5ea624dd10a7a6ef8e477df5650655c94f0b242497 bootstrap
+ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:4c43fe40a7315223ff869fe6519520c4776fce5097b54e0bc6e0eb2c79c702b6 bootstrap
+ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.0@sha256:fe3bad8f38ef45e53e18b8b85fd0427b8b25c09bcd4e2068a04f3ff493ce1afc bootstrap
+ghcr.io/cloudnative-pg/plugin-barman-cloud-sidecar:v0.15.0@sha256:7b3069c61e5678a2fd05dd937ef47e0337bfbac1c05f1e1051901b9a7d54b391 bootstrap
+quay.io/jetstack/cert-manager-controller:v1.21.2@sha256:57bb397c639e0e94184ba67848e5dad04284f24645e521e764a0ee5f5002f286 bootstrap
+quay.io/jetstack/cert-manager-cainjector:v1.21.2@sha256:aa2bc58725d92a643f5069dde58abc93b65566ded8951348873ac9ee7efef66c bootstrap
+quay.io/jetstack/cert-manager-webhook:v1.21.2@sha256:b929259301ee75270ab4651d5e6bd4ba7b6624b1ce48ba767d064295a9312101 bootstrap
+quay.io/jetstack/cert-manager-acmesolver:v1.21.2@sha256:dc5c5b8456d1a50af47a240987e85afce352b5c1155a8a4698b7c91eac19f407 bootstrap
+quay.io/jetstack/cert-manager-startupapicheck:v1.21.2@sha256:ed347b0ab607058f139b83f41567109456b9776330b63da8086a120afb7f1729 bootstrap
+docker.io/rancher/local-path-provisioner:v0.0.31@sha256:5fb0394abf87407a27cc56db94334eb0c92d0b5de2636683a7ec51f38143dfc9 bootstrap
+docker.io/library/busybox:1.38.0@sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4 bootstrap
+ghcr.io/fluxcd/source-controller:v1.9.5@sha256:b2ac269f9d13d82514bcbf0e7057a4ae1d98504058b9353cead7e2452a64384f bootstrap
+ghcr.io/fluxcd/kustomize-controller:v1.9.5@sha256:ed11ebded23c9e9fe475f7d54b08cc34697e8f01bcd5cfd144fd5aef7b5d8f0d bootstrap
+ghcr.io/fluxcd/helm-controller:v1.6.4@sha256:2ba739b5c0df833dcd463fc1984673f506a5fd0aff64c2f8b28d528b0796f066 bootstrap
+ghcr.io/fluxcd/notification-controller:v1.9.4@sha256:69e484e937549694240d5754541feed0993a162000dbc07e7e262b9f41340348 bootstrap

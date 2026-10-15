@@ -493,7 +493,7 @@ func TestDockerfilesBuildWithOneGo(t *testing.T) {
 	if m := regexp.MustCompile(`(?m)^toolchain go(\S+)$`).FindAllStringSubmatch(string(mod), -1); len(m) != 1 || m[0][1] != "1.26.9" {
 		t.Errorf("go.mod: toolchain lines %v, want one at go1.26.9", m)
 	}
-	from := regexp.MustCompile(`(?m)^FROM golang:([0-9.]+)(-alpine)?@sha256:[0-9a-f]{64}\b`)
+	from := regexp.MustCompile(`(?m)^FROM \$\{UPSTREAM\}docker\.io/library/golang:([0-9.]+)(-alpine)?@sha256:[0-9a-f]{64}\b`)
 	want := map[string]string{"Dockerfile": "1.26.9", "Dockerfile.sandbox": "1.26.9", "Dockerfile.runner": "1.26.9"}
 	for file, version := range want {
 		b, err := os.ReadFile(filepath.Join("..", "..", file))

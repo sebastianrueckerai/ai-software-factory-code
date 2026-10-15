@@ -238,10 +238,13 @@ jobs:
               reason=$(tail -n 1 "$logdir/$df.crane" 2>/dev/null)
               echo "no cache for ${image:-$df}, building without it: ${reason:-no cache name for $df, or the fetch timed out}"
             fi
-            # bounded: a build that never ends fails the job with its log
+            # bounded: a build that never ends fails the job with its log.
+            # UPSTREAM= takes the outside images from their upstreams at
+            # the digests the store holds: the VM has no login to the store,
+            # and the store's token service is out of this pod's reach.
             timeout 2700 buildctl --tlsdir "$BUILDKIT_TLS_DIR" --tlsservername "$BUILDKIT_TLS_SERVERNAME" \
               build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \
-              --opt filename="$df" --output type=oci,dest=/dev/null "${import[@]}"
+              --opt filename="$df" --opt build-arg:UPSTREAM= --output type=oci,dest=/dev/null "${import[@]}"
           }
           declare -A pid_for
           for df in $images; do

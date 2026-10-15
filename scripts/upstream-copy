@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# scripts/upstream-copy [list] copies every image of the list
+# (upstream-images.txt by default) into the factory's store,
+# git.aisoftwarefactory.world/upstream/<its name>, with the bytes of its
+# digest, so the copy's digest is the upstream's. Each copy's tag is its
+# upstream tag and the digest's first 12 hex digits: Forgejo deletes a
+# version named only by its digest after a day, and one tag per digest
+# never moves off a digest a reference names. A copy the store holds
+# already is left alone, so only a new line touches its upstream. crane
+# reads the store's login from its docker config.
+set -euo pipefail
+list=${1:-upstream-images.txt}
+store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}
+status=0
+while read -r ref _; do
+  case "$ref" in '' | '#'*) continue ;; esac
+  image=${ref%@*}
+  name=${image%:*}
+  tag=${image##*:}
+  digest=${ref#*@}
+  if [ "$image" = "$ref" ] || [ "$name" = "$image" ] || [ "${digest#sha256:}" = "$digest" ]; then
+    echo "upstream-copy: $ref: want name:tag@sha256:<digest>" >&2
+    status=1
+    continue
+  fi
+  if crane manifest "$store/$name@$digest" >/dev/null 2>&1; then
+    continue
+  fi
+  hex=${digest#sha256:}
+  if crane copy "$name@$digest" "$store/$name:$tag-${hex:0:12}"; then
+    echo "copied $ref"
+  else
+    echo "upstream-copy: $ref: the copy failed" >&2
+    status=1
+  fi
+done < "$list"
+exit "$status"

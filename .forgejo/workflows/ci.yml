@@ -21,8 +21,29 @@ env:
   GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal
   SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance
-  BUILDKIT: moby/buildkit:v0.33.0@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+  BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
 jobs:
+  upstream:
+    # Every outside image of upstream-images.txt into the store before
+    # anything builds from it (roadmap 203). A copy the store holds is left
+    # alone, so only a new line reaches its upstream. crane runs in the CI
+    # runner image factoryd pins; the job's docker is the runner's dind,
+    # which cannot see the job's files, so the list and the script travel
+    # as a tar stream.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+      - name: copy the outside images into the store
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          runner=$(sed -n '/name: CI_RUNNER_IMAGE/{n;s/.*value: //p}' k8s/factoryd.yaml)
+          tar -c upstream-images.txt scripts/upstream-copy | docker run -i --rm -e REGISTRY_USER -e REGISTRY_PASSWORD --entrypoint bash "$runner" \
+            -c 'set -euo pipefail; cd "$(mktemp -d)"; tar -x; printf %s "$REGISTRY_PASSWORD" | crane auth login git.aisoftwarefactory.world -u "$REGISTRY_USER" --password-stdin; scripts/upstream-copy'
   test:
     # The warm Go caches of a main job live in docker named volumes on this
     # runner's own dind, which only ubuntu-latest jobs reach — untrusted PR
@@ -32,11 +53,14 @@ jobs:
     # image itself — the same image the PR jobs test in, Go and PG 17
     # preinstalled — built from this commit's Dockerfile.runner on the layer
     # cache main's image job writes (ruling 111: main writes that cache).
+    needs: upstream
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
       - name: build the CI runner image on the layer cache
         # roadmap 232: the runner image's epoch, the one its image job
         # builds with, so the layers after its ARG come from the cache

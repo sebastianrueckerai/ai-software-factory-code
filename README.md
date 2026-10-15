@@ -1866,9 +1866,20 @@ admin's token; for the cache tests also the CA, and the cluster runs
 infra `k8s/platform/local-path` with its `factory-cache` class). The
 revocation test runs only with the `FACTORYD_LIVE_*` variables set
 against the live cluster. CI (`.forgejo/workflows/ci.yml`) runs on push
-to protected `main` only, on the privileged dind runner, tests, then
+to protected `main` only, on the privileged dind runner: it copies the
+outside images into the store, tests, then
 builds the factory image, the sandbox image and the CI runner image
-into the Forgejo registry. Each build imports and exports (`mode=max`)
+into the Forgejo registry. Every image the factory uses and does not
+build is a line of `upstream-images.txt`, pinned by its linux/amd64
+digest (roadmaps 203 and 242); the `upstream` job runs
+`scripts/upstream-copy`, which copies each line the store lacks to
+`git.aisoftwarefactory.world/upstream/<its name>` with that digest, and
+every Dockerfile, workflow and infra manifest names the copy. The
+Dockerfiles take their bases from the store through `ARG UPSTREAM`; a
+pull request's build VM holds no login to the store, so `pr.yml` sets
+it empty and the VM pulls the same digests from their upstreams. Debian
+packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
+PostgreSQL's from apt-archive.postgresql.org at exact versions. Each build imports and exports (`mode=max`)
 its image's layer cache in the in-cluster build cache,
 `build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra
 `k8s/platform/build-cache`, ruling 111), which the pull-request builds

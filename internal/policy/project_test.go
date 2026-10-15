@@ -232,13 +232,14 @@ func TestProjectConfigValidate(t *testing.T) {
 		change func(*ProjectConfig)
 		want   string
 	}{
-		"name upper":   {"Demo", func(p *ProjectConfig) {}, "the file name"},
-		"name factory": {"factory-x", func(p *ProjectConfig) { p.Repository = "factory-x/factory-x" }, "not factory-*"},
-		"name flux":    {"flux-system", func(p *ProjectConfig) { p.Repository = "flux-system/flux-system" }, "not factory-*, flux-system or sf"},
-		"name sf":      {"sf", func(p *ProjectConfig) { p.Repository = "sf/sf" }, "not factory-*, flux-system or sf"},
-		"too long":     {strings.Repeat("a", 38), func(p *ProjectConfig) {}, "the file name"},
-		"repository":   {"demo-app", func(p *ProjectConfig) { p.Repository = "demo-app" }, "owner/name in lower case"},
-		"in sf":        {"demo-app", func(p *ProjectConfig) { p.Repository = "sf/demo-app" }, "its own organisation"},
+		"name upper":    {"Demo", func(p *ProjectConfig) {}, "the file name"},
+		"name factory":  {"factory-x", func(p *ProjectConfig) { p.Repository = "factory-x/factory-x" }, "not factory-*"},
+		"name flux":     {"flux-system", func(p *ProjectConfig) { p.Repository = "flux-system/flux-system" }, "not factory-*, flux-system, sf or upstream"},
+		"name sf":       {"sf", func(p *ProjectConfig) { p.Repository = "sf/sf" }, "not factory-*, flux-system, sf or upstream"},
+		"name upstream": {"upstream", func(p *ProjectConfig) { p.Repository = "upstream/upstream" }, "not factory-*, flux-system, sf or upstream"},
+		"too long":      {strings.Repeat("a", 38), func(p *ProjectConfig) {}, "the file name"},
+		"repository":    {"demo-app", func(p *ProjectConfig) { p.Repository = "demo-app" }, "owner/name in lower case"},
+		"in sf":         {"demo-app", func(p *ProjectConfig) { p.Repository = "sf/demo-app" }, "its own organisation"},
 		// review-task65 I2: Forgejo folds case, so this would name the infra repo
 		"folded":            {"demo-app", func(p *ProjectConfig) { p.Repository = "sf/AI-Software-Factory-Infra" }, "owner/name in lower case"},
 		"kube namespace":    {"demo-app", func(p *ProjectConfig) { p.Namespaces = []string{"kube-system"}; p.Environments = nil }, `namespace "kube-system"`},
