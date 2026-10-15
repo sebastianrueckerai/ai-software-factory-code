@@ -909,6 +909,17 @@ func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineR
 	return run, true, nil
 }
 
+func (s *fakeStore) RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error {
+	runs := s.routineRuns[project+"/"+routine]
+	for i := range runs {
+		if runs[i].Run == run && runs[i].Ended.IsZero() {
+			runs[i].Outcome, runs[i].TaskID, runs[i].Issue = "filed", taskID, issue
+			return nil
+		}
+	}
+	return fmt.Errorf("routine run %s/%s #%d: %w", project, routine, run, ErrNotFound)
+}
+
 func (s *fakeStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
 	runs := s.routineRuns[project+"/"+routine]
 	for i := range runs {

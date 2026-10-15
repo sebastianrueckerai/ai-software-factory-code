@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,19 +18,69 @@ type routineCardStore interface {
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 }
 
-func TestPGStoreRoutineRuns(t *testing.T) {
+func TestPGStoreRoutineRuns(t *testing.T) { checkRoutineStore(t, routinePGStore(t)) }
+
+// Two runs of a routine with a state row that begin at the same time: the
+// same due begins once, and two dues take the numbers 1 and 2.
+func TestPGStoreRoutineRunsBeginConcurrently(t *testing.T) {
+	s := routinePGStore(t)
+	due := time.Date(2026, 10, 13, 4, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		routine string
+		dues    [2]time.Time
+	}{
+		{"same-due", [2]time.Time{due, due}},
+		{"two-dues", [2]time.Time{due, due.Add(time.Hour)}},
+	} {
+		if _, err := s.RoutineState(t.Context(), "linkshort", tc.routine); err != nil {
+			t.Fatal(err)
+		}
+		var runs [2]RoutineRun
+		var began [2]bool
+		var errs [2]error
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for i := range 2 {
+			wg.Go(func() {
+				<-start
+				runs[i], began[i], errs[i] = s.BeginRoutineRun(t.Context(), RoutineRun{Project: "linkshort", Routine: tc.routine, Due: tc.dues[i], Trigger: "cron"})
+			})
+		}
+		close(start)
+		wg.Wait()
+		if err := errors.Join(errs[:]...); err != nil {
+			t.Fatalf("%s: %v", tc.routine, err)
+		}
+		numbers := map[int]bool{runs[0].Run: true, runs[1].Run: true}
+		switch tc.routine {
+		case "same-due":
+			if began[0] == began[1] || len(numbers) != 1 || !numbers[1] {
+				t.Fatalf("the same due: began %v, runs %+v", began, runs)
+			}
+		case "two-dues":
+			if !began[0] || !began[1] || len(numbers) != 2 || !numbers[1] || !numbers[2] {
+				t.Fatalf("two dues: began %v, runs %+v", began, runs)
+			}
+		}
+	}
+}
+
+// routinePGStore is the Postgres store on its own database, its routine
+// rows and tasks wiped and its merge cursor at 0.
+func routinePGStore(t *testing.T) *PGStore {
+	t.Helper()
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_routines"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.Close()
+	t.Cleanup(func() { s.Close() })
 	if _, err := s.db.Exec(`TRUNCATE routine_state, routine_runs, tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`UPDATE routine_merge_cursor SET last_event_id = 0`); err != nil {
 		t.Fatal(err)
 	}
-	checkRoutineStore(t, s)
+	return s
 }
 
 // The fake answers as the Postgres store does, so the tests that run on it
@@ -80,31 +132,37 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 		t.Fatalf("state after the skip: %+v", st)
 	}
 
-	if err := s.EndRoutineRun(ctx, "linkshort", "weekly-bump", 1, "filed", "", "t-1", 790, 1.25); err != nil {
+	if err := s.RoutineRunFiled(ctx, "linkshort", "weekly-bump", 1, "t-1", 790); err != nil {
 		t.Fatal(err)
 	}
 	runs, err := s.RoutineRuns(ctx, "linkshort", "weekly-bump", 10)
 	if err != nil || len(runs) != 2 || runs[0].Run != 2 || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v %v", runs, err)
 	}
-	if r := runs[1]; r.TaskID != "t-1" || r.Issue != 790 || r.Outcome != "filed" || r.CostEUR != 1.25 || r.Ended.IsZero() || r.Started.IsZero() {
-		t.Fatalf("the ended run %+v", r)
+	if r := runs[1]; r.Run != 1 || r.TaskID != "t-1" || r.Issue != 790 || r.Outcome != "filed" || !r.Ended.IsZero() || r.Started.IsZero() {
+		t.Fatalf("the filed run %+v", r)
 	}
 	if last, err := s.RoutineRuns(ctx, "linkshort", "weekly-bump", 1); err != nil || len(last) != 1 || last[0].Run != 2 {
 		t.Fatalf("the last run %+v %v", last, err)
 	}
-	if err := s.EndRoutineRun(ctx, "linkshort", "weekly-bump", 9, "filed", "", "", 0, 0); err == nil {
-		t.Fatal("a run that never began ended")
+	if err := s.RoutineRunFiled(ctx, "linkshort", "weekly-bump", 9, "t-9", 799); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a run that never began filed: %v", err)
+	}
+	if err := s.EndRoutineRun(ctx, "linkshort", "weekly-bump", 9, "done", "", "", 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a run that never began ended: %v", err)
 	}
 
 	// a later run held by the open card names it too, the run that filed it stays its run
-	if r3, ok := begin(due.Add(2 * week)); !ok || r3.Run != 3 {
+	if r3, ok := begin(due.Add(2 * week)); !ok || r3.Run != 3 || r3.Outcome != "" {
 		t.Fatalf("third: %+v %v", r3, ok)
 	}
 	if err := s.EndRoutineRun(ctx, "linkshort", "weekly-bump", 3, "held", "held: #790 is still open", "t-1", 790, 0); err != nil {
 		t.Fatal(err)
 	}
-	if got, ok, err := s.RoutineRunOfTask(ctx, "t-1"); err != nil || !ok || got.Run != 1 || got.Routine != "weekly-bump" || got.Project != "linkshort" {
+	if err := s.RoutineRunFiled(ctx, "linkshort", "weekly-bump", 3, "t-3", 791); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an ended run filed: %v", err)
+	}
+	if got, ok, err := s.RoutineRunOfTask(ctx, "t-1"); err != nil || !ok || got.Run != 1 || got.Routine != "weekly-bump" || got.Project != "linkshort" || !got.Ended.IsZero() {
 		t.Fatalf("the run of t-1: %+v %v %v", got, ok, err)
 	}
 	if _, ok, err := s.RoutineRunOfTask(ctx, "t-none"); err != nil || ok {
@@ -128,6 +186,12 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 	}
 	if _, ok, err := s.OpenRoutineTask(ctx, "linkshort", "weekly-bump"); err != nil || ok {
 		t.Fatalf("a done task is open: %v %v", ok, err)
+	}
+	if err := s.EndRoutineRun(ctx, "linkshort", "weekly-bump", 1, "merged", "", "t-1", 790, 1.25); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.RoutineRunOfTask(ctx, "t-1"); err != nil || !ok || got.Run != 1 || got.Outcome != "merged" || got.Ended.IsZero() || got.CostEUR != 1.25 || got.TaskID != "t-1" || got.Issue != 790 {
+		t.Fatalf("the ended run of t-1: %+v %v %v", got, ok, err)
 	}
 
 	if st := state("linkshort", "audit"); st != (RoutineState{Project: "linkshort", Routine: "audit"}) {

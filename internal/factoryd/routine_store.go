@@ -54,6 +54,9 @@ type RoutineStore interface {
 	// A pending Skip once is consumed: the new run's outcome is "skipped"
 	// with the note "skipped once by <SkipBy>".
 	BeginRoutineRun(ctx context.Context, r RoutineRun) (run RoutineRun, began bool, err error)
+	// RoutineRunFiled records the card a run filed and leaves the run open
+	// until EndRoutineRun. ErrNotFound for a run that never began or ended.
+	RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error
 	EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error
 	// RoutineRuns are the routine's last limit runs, newest first.
 	RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error)
@@ -91,19 +94,27 @@ func (s *PGStore) routineStates(ctx context.Context, query string, args ...any) 
 	return out, rows.Err()
 }
 
-// routineState reads the routine's row through db, creating it at zero
-// first. FOR UPDATE holds the row to the end of BeginRoutineRun's
-// transaction.
-func routineState(ctx context.Context, db sqlRunner, project, routine string) (RoutineState, error) {
-	if _, err := db.ExecContext(ctx, `INSERT INTO routine_state (project, routine) VALUES ($1, $2) ON CONFLICT DO NOTHING`, project, routine); err != nil {
+// routineState reads the routine's row in tx, creating it at zero first,
+// and holds the row to the end of tx.
+func routineState(ctx context.Context, tx *sql.Tx, project, routine string) (RoutineState, error) {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO routine_state (project, routine) VALUES ($1, $2) ON CONFLICT DO NOTHING`, project, routine); err != nil {
 		return RoutineState{}, err
 	}
-	return scanRoutineState(db.QueryRowContext(ctx, `SELECT `+routineStateColumns+` FROM routine_state
+	return scanRoutineState(tx.QueryRowContext(ctx, `SELECT `+routineStateColumns+` FROM routine_state
 		WHERE project = $1 AND routine = $2 FOR UPDATE`, project, routine).Scan)
 }
 
 func (s *PGStore) RoutineState(ctx context.Context, project, routine string) (RoutineState, error) {
-	return routineState(ctx, s.db, project, routine)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return RoutineState{}, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	st, err := routineState(ctx, tx, project, routine)
+	if err != nil {
+		return RoutineState{}, err
+	}
+	return st, tx.Commit()
 }
 
 func (s *PGStore) RoutineStates(ctx context.Context, project string) ([]RoutineState, error) {
@@ -175,9 +186,20 @@ func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun
 	return run, true, nil
 }
 
+func (s *PGStore) RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET outcome = 'filed', task_id = $4, issue_number = $5
+		WHERE project = $1 AND routine = $2 AND run = $3 AND ended IS NULL`, project, routine, run, taskID, issue)
+	return routineRunChanged(res, err, project, routine, run)
+}
+
 func (s *PGStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET ended = now(), outcome = $4, note = $5, task_id = $6, issue_number = $7, cost_eur = $8
 		WHERE project = $1 AND routine = $2 AND run = $3`, project, routine, run, outcome, note, taskID, issue, costEUR)
+	return routineRunChanged(res, err, project, routine, run)
+}
+
+// routineRunChanged is the update's error, ErrNotFound when no run matched.
+func routineRunChanged(res sql.Result, err error, project, routine string, run int) error {
 	if err != nil {
 		return err
 	}
