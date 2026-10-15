@@ -308,6 +308,9 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// ModelAnswered reports whether the task's agent got a model answer
+	// since since: the gateway booked one of its calls allowed.
+	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -826,6 +829,14 @@ func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time
 		return "", false, nil
 	}
 	return reason, err == nil, err
+}
+
+func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	var answered bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
+		taskID, gateway.AuditKindAgent, since).Scan(&answered)
+	return answered, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar

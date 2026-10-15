@@ -1509,6 +1509,32 @@ func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	}
 }
 
+// SessionAnswered writes the session_started record of a session that got a
+// model answer, and none for one that did not.
+func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	in := SessionAnswerInput{TaskID: "t2", SessionID: "s1", Model: "factory/coding-cheap", Attempt: 2, Since: time.Now().Add(-time.Minute)}
+
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || ok {
+		t.Fatalf("starved session = (%v, %v), want false", ok, err)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	if strings.Contains(string(tl), "session_started") {
+		t.Fatalf("timeline = %s, want no session_started for a starved session", tl)
+	}
+	store.answered = map[string]bool{"t2": true}
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("answered session = (%v, %v), want true", ok, err)
+	}
+	tl, _ = objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	for _, want := range []string{`"event":"session_started"`, `"session":"s1"`, `"model":"coding-cheap"`, `"attempt":2`} {
+		if !strings.Contains(string(tl), want) {
+			t.Errorf("timeline lacks %s:\n%s", want, tl)
+		}
+	}
+}
+
 // What a session that ended without a push did reaches its result.
 func TestRunSessionResultCarriesFindings(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})

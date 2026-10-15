@@ -65,6 +65,7 @@ type fakeStore struct {
 	daySpent    float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
+	answered         map[string]bool // ModelAnswered's answer by task
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -770,6 +771,10 @@ func (s *fakeStore) CapRefusal(ctx context.Context, taskID string, since time.Ti
 		return &r, nil
 	}
 	return nil, nil
+}
+
+func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	return s.answered[taskID], nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
@@ -2330,6 +2335,37 @@ func TestPGStoreMonthCap(t *testing.T) {
 	for range 2 {
 		if id, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", Fingerprint: month + "/50"}); err != nil || id == 0 {
 			t.Fatalf("SigNoz alert = %d, %v", id, err)
+		}
+	}
+}
+
+// A session got a model answer when the gateway booked one of its agent's
+// calls allowed: a supervisor's call, a refused call and an earlier session's
+// do not count.
+func TestPGStoreModelAnswered(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_answered"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, ts) VALUES
+		('a', 'allowed', '', 'supervisor', '2026-10-15 10:00:00Z'),
+		('b', 'refused_budget', 'the task', 'agent', '2026-10-15 10:00:00Z'),
+		('c', 'allowed', '', 'agent', '2026-10-15 10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 15, h, m, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		task  string
+		since time.Time
+		want  bool
+	}{
+		{"a", at(9, 0), false}, {"b", at(9, 0), false}, {"c", at(9, 0), true}, {"c", at(10, 1), false}, {"nobody", at(9, 0), false},
+	} {
+		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
+			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
 		}
 	}
 }

@@ -117,6 +117,8 @@ const (
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
 	ActivityAttemptFunded               = "AttemptFunded"
+	ActivitySessionFunded               = "SessionFunded"
+	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityDayResume                   = "DayResume"
 )
 
@@ -235,6 +237,14 @@ type ProviderWait struct {
 	Status  int
 	Reason  string
 	Backoff time.Duration
+}
+
+// SessionAnswerInput asks whether the session that began at Since got a
+// model answer (versionSessionLadder); the rest is its record.
+type SessionAnswerInput struct {
+	TaskID, SessionID, Model string
+	Attempt                  int
+	Since                    time.Time
 }
 
 // SessionInput is one attempt: StartRef is the commit the worker starts

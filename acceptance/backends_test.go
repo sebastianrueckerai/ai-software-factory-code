@@ -415,6 +415,10 @@ func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (s
 	return "", false, nil
 }
 
+func (s *acceptanceStore) ModelAnswered(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -129,6 +129,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityProviderWait:                r.ProviderWait,
 		ActivityAlertPreCheck:               r.AlertPreCheck,
 		ActivityAttemptFunded:               r.AttemptFunded,
+		ActivitySessionFunded:               r.SessionFunded,
+		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
 		ActivityRunSplit:                    r.RunSplit,
 		ActivityFileSplit:                   r.FileSplit,
@@ -433,6 +435,19 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	return r.funded(ctx, taskID, model, true)
 }
 
+// SessionAnswered reports whether the session of a task that began at in.Since
+// got a model answer, and records the session_started event of one that did:
+// a pod that started and made no answered call is no session. The ledger, not
+// the timeline, is the fact the session cap counts.
+func (r *Runner) SessionAnswered(ctx context.Context, in SessionAnswerInput) (bool, error) {
+	answered, err := r.store.ModelAnswered(ctx, in.TaskID, in.Since)
+	if err != nil || !answered {
+		return false, err
+	}
+	r.timeline.recordEvent(ctx, in.TaskID, EventSessionStarted, map[string]any{"session": in.SessionID, "model": aliasOf(in.Model), "attempt": in.Attempt})
+	return true, nil
+}
+
 // price is alias's price with its output limit (policy.Document.Limited).
 func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) {
 	p, err := r.cfg.Prices.Price(ctx, alias)
@@ -698,7 +713,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		r.record(ctx, t.ID, "session_start", map[string]any{
 			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
 			"poster_info": s.posterInfo})
-		r.timeline.recordEvent(ctx, t.ID, EventSessionStarted, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt})
 	} else {
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, time.Until(live.Deadline)), live.StartedAt
 		r.record(ctx, t.ID, "session_reattached", map[string]any{"session": s.id, "pod": live.Pod, "lines": live.Lines, "attempt": in.Attempt})
