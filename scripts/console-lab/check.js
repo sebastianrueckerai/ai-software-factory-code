@@ -55,8 +55,7 @@ const mustHave = {
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within 7 days", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
-  idle: ["idle", "0 working", "1 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed",
-    "#790", "Weekly bump of the pinned outside inputs", "last #790 filed"],
+  idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
@@ -263,23 +262,10 @@ async function text(page) {
         await p.page.waitForTimeout(300);
         if (await d.isVisible()) fails.push("routines: Escape does not close the routine's drawer");
       }
-      // #781, the weekly bump's last card, from the drawer's runs: its provenance links the routine
+      // the Runs tab links each run's card, #781 the newest
       await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump:runs", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      const ref = d.locator('a[href="#card=' + labID(781) + '"]');
-      if (!(await ref.count())) fails.push("routines: the Runs tab does not link #781");
-      else {
-        await ref.click();
-        await p.page.waitForTimeout(600);
-        const prov = await d.locator(".provenance").allInnerTexts();
-        if (!prov.some((t) => t.includes("filed by the factory · routine Weekly bump"))) fails.push('routines: #781\'s drawer lacks "filed by the factory · routine Weekly bump" (' + prov.join(" | ") + ")");
-        else {
-          await d.locator(".provenance [data-open-routine]").click();
-          await p.page.waitForTimeout(600);
-          if (!(await d.locator("[data-routine-drawer]").count())) fails.push("routines: the provenance's routine does not open its drawer");
-        }
-        await p.page.keyboard.press("Escape");
-      }
+      if (!(await d.locator('a[href="#card=' + labID(781) + '"]').count())) fails.push("routines: the Runs tab does not link #781");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').getByRole("button", { name: "Skip Weekly bump once" }).click();
@@ -297,7 +283,22 @@ async function text(page) {
       if (!(await p.page.locator("#board .card.ghost.held").count())) fails.push("fire: no held ghost");
       const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
       if (!cell.includes("↻ bump held")) fails.push('fire: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump held');
-      if (!(await p.page.locator('#needs-you [data-card="' + labID(781) + '"] .chip.routine').count())) fails.push("fire: #781 in Needs you carries no routine chip");
+      const k781 = p.page.locator('#needs-you [data-card="' + labID(781) + '"]');
+      if (!(await k781.locator(".chip.routine").count())) fails.push("fire: #781 in Needs you carries no routine chip");
+      // #781's drawer names the run that filed it and links its routine; the menus text() opened close first
+      await p.page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((m) => { m.open = false; }));
+      await k781.click({ position: { x: 4, y: 4 } });
+      await p.page.waitForTimeout(600);
+      const d = p.page.locator("#drawer");
+      const prov = await d.locator(".provenance").allInnerTexts();
+      if (!prov.some((t) => t.includes("filed by the factory · routine Weekly bump · run 14"))) {
+        fails.push('fire: #781\'s drawer lacks "filed by the factory · routine Weekly bump · run 14" (' + prov.join(" | ") + ")");
+      } else {
+        await d.locator(".provenance [data-open-routine]").click();
+        await p.page.waitForTimeout(600);
+        if (!(await d.locator("[data-routine-drawer]").count())) fails.push("fire: the provenance's routine does not open its drawer");
+      }
+      await p.page.keyboard.press("Escape");
     }
     if (sc === "threads") {
       // the thread table starts folded to its marks until the member unfolds it

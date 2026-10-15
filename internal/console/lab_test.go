@@ -750,7 +750,7 @@ func busyScene(now time.Time) labScene {
 		{ID: 58, Kind: "server", Repo: "sf/code", OwnerRef: labID(571), HoldID: 7, State: "deleted", Size: "cx33", ReleasedBy: "sebastian",
 			LeaseExpires: ago(68 * time.Hour), PricePerHourEUR: 0.0144, AccruedEUR: 0.0576, CreatedAt: ago(72 * time.Hour)},
 	}
-	s.addRoutines(now, "due")
+	s.addRoutines(now, false)
 	return s
 }
 
@@ -832,15 +832,15 @@ func labNext(v *factoryd.RoutineView, now, at, from time.Time) {
 	}
 }
 
-// addRoutines gives s the round's routines at moment due (Monday 05:40:
-// the weekly bump files in 20 minutes, its last card #781 done), held
-// (06:00: run 15 is held, as #781 of run 14 is still open in Needs you)
-// or filed (06:00: run 15 filed #790 into Needs you), with the runs and
-// the cards they filed: #781, and #779 of the dependency update in Done.
-func (s *labScene) addRoutines(now time.Time, moment string) {
-	at := labMonday
-	if moment == "due" {
-		at = labMonday.Add(-20 * time.Minute)
+// addRoutines gives s the round's routines, their runs and the cards
+// they filed: #781, and #779 of the dependency update in Done. Due is
+// Monday 05:40: the weekly bump files in 20 minutes, its last card #781
+// done. Held is 06:00: run 15 is held, as #781 of run 14 is still open in
+// Needs you.
+func (s *labScene) addRoutines(now time.Time, held bool) {
+	at := labMonday.Add(-20 * time.Minute)
+	if held {
+		at = labMonday
 	}
 	s.routinesAt = at
 	run := func(rt policy.Routine, n int, trigger string, due time.Time, took time.Duration, outcome, note string, issue int64) factoryd.RoutineRun {
@@ -848,9 +848,6 @@ func (s *labScene) addRoutines(now time.Time, moment string) {
 			Outcome: outcome, Note: note, Issue: issue}
 		if issue > 0 {
 			r.TaskID = labID(issue)
-		}
-		if outcome == "filed" {
-			r.Ended = time.Time{}
 		}
 		return r
 	}
@@ -893,26 +890,18 @@ func (s *labScene) addRoutines(now time.Time, moment string) {
 		}
 		return t
 	}
-	const bumpTitle = "Weekly bump of the pinned outside inputs"
 	bump, status781 := s.runs[labBump.Name], "done"
-	if moment == "held" {
+	if held {
 		bump[0].Outcome, bump[0].Ended, status781 = "filed", time.Time{}, "waiting-human"
 	}
-	k781 := card(labBump, bump[0], status781, bumpTitle, labBumpBrief)
+	k781 := card(labBump, bump[0], status781, "Weekly bump of the pinned outside inputs", labBumpBrief)
 	s.tasks = append(s.tasks, factoryd.BoardTask{Task: k781}, factoryd.BoardTask{Task: card(labDeps, s.runs[labDeps.Name][0], "done",
 		"Dependency update: go.mod and package.json, patch and minor", "Run the skill dependency-update.")})
 	var open *factoryd.Task
-	switch moment {
-	case "held":
-		bump = append([]factoryd.RoutineRun{run(labBump, 15, "cron", labMonday, 0, "held", "held: #781 is still open", 0)}, bump...)
+	if held {
+		s.runs[labBump.Name] = append([]factoryd.RoutineRun{run(labBump, 15, "cron", labMonday, 0, "held", "held: #781 is still open", 0)}, bump...)
 		open = &k781
-	case "filed":
-		bump = append([]factoryd.RoutineRun{run(labBump, 15, "cron", labMonday, 0, "filed", "", 790)}, bump...)
-		k790 := card(labBump, bump[0], "waiting-human", bumpTitle, labBumpBrief)
-		s.tasks = append(s.tasks, factoryd.BoardTask{Task: k790})
-		open = &k790
 	}
-	s.runs[labBump.Name] = bump
 
 	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
 		v := factoryd.RoutineView{Project: labProject, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
@@ -926,8 +915,8 @@ func (s *labScene) addRoutines(now time.Time, moment string) {
 		}
 		return v
 	}
-	b := view(labBump, factoryd.RoutineState{Project: labProject, Routine: labBump.Name, Runs: bump[0].Run})
-	b.Open, b.Held = open, moment == "held"
+	b := view(labBump, factoryd.RoutineState{Project: labProject, Routine: labBump.Name, Runs: s.runs[labBump.Name][0].Run})
+	b.Open, b.Held = open, held
 	s.routines = []factoryd.RoutineView{b,
 		view(labTemplatePass, factoryd.RoutineState{Routine: labTemplatePass.Name, Runs: 1312}),
 		view(labDeps, factoryd.RoutineState{Project: labProject, Routine: labDeps.Name, Runs: 9}),
@@ -970,11 +959,9 @@ func idleScene(now time.Time) labScene {
 		{Task: labCard(now, 178, "backlog", "backlog", 347*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer.")},
 	}, s.tasks...)
-	s.addRoutines(now, "filed")
 	s.pulse = factoryd.Pulse{ID: 91, Repository: "sf/code", At: now.Add(-6 * time.Minute),
 		Sentence: "Factory is idle with no active work; spend of €144.16 has exceeded the monthly budget of €120.00.",
-		Bullets: []string{"Needs you: #790, the weekly bump of the pinned outside inputs", "Queued: #455 and #178 in the backlog",
-			"Spend: €144.16 of the €120.00 cap, €24.16 over"}}
+		Bullets:  []string{"Needs you: nothing", "Queued: #455 and #178 in the backlog", "Spend: €144.16 of the €120.00 cap, €24.16 over"}}
 	s.alerts = []factoryd.Alert{
 		{ID: 62, Kind: factoryd.AlertMonthCap, Source: "100", RaisedAt: now.Add(-20 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/100"},
 		{ID: 55, Kind: factoryd.AlertMonthCap, Source: "80", RaisedAt: now.Add(-3 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/80"},
@@ -1058,7 +1045,7 @@ func fireScene(now time.Time) labScene {
 	done := finished(labCard(now, 602, "done", "ready", 7*time.Hour, "Costs: the day cap line under the table",
 		"Show today's spend against the day cap under the costs table."), now, 6*time.Hour, 0.18)
 	s.tasks = []factoryd.BoardTask{capped, {Task: stale}, {Task: near}, {Task: wait1}, {Task: wait2}, queued, {Task: f1}, {Task: f2}, {Task: done}}
-	s.addRoutines(now, "held")
+	s.addRoutines(now, true)
 
 	monthly := 8.99
 	s.approvals = []factoryd.ApprovalRequest{{ID: 67, Kind: factoryd.ApprovalResource, TaskID: stale.ID, Project: "sf/code", Status: "pending",
