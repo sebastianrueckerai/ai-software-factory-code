@@ -328,7 +328,7 @@ func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
 // answer runs the reproduction again on the same commit: no new session,
 // and the review sees the run that started.
 func TestWorkflowReproductionThatCannotStartAsksTheHuman(t *testing.T) {
-	const reason = "the session cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
+	const reason = "the sandbox cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
 		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" +
 		"start failed: egress probe: direct IP 1.1.1.1:443 answered: connected to 1.1.1.1:443"
 	for name, staged := range map[string]bool{"staged": true, "before stages": false} {

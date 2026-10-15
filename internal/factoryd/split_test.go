@@ -417,7 +417,7 @@ func TestSplitFailsTwiceThenAsksAHuman(t *testing.T) {
 // start failure and the split's own way on, instead of a second session
 // that would fail the same way; the approval wait goes on.
 func TestSplitThatCannotStartAsksAHumanAtOnce(t *testing.T) {
-	ask := "the session cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+	ask := "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
 		"then split the pull request again, or approve or deny it.\nstart failed: image pull: container clone waits with ErrImagePull: not found"
 	g, calls := newSplitHarness(t, PlanResult{Escalate: ask, StartFailed: true})
 	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})

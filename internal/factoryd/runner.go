@@ -1137,7 +1137,7 @@ func workerStartFailure(res harness.Result) error {
 }
 
 // startRefused opens the escalation of a session that cannot start.
-const startRefused = "the session cannot start at "
+const startRefused = "the sandbox cannot start at "
 
 // The ways on a start failure's escalation: a code or plan session's, and
 // a split's, which a split of the pull request starts again.

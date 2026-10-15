@@ -1587,7 +1587,7 @@ const imageNotFound = `rpc error: code = NotFound desc = failed to pull and unpa
 // startEscalation is a start failure's escalation reason, by hand: the
 // step on the question row with its action, the failure below.
 func startEscalation(step, act, summary string) string {
-	return "the session cannot start at " + step + ", and no session can fix it: " + act +
+	return "the sandbox cannot start at " + step + ", and no session can fix it: " + act +
 		", then answer to start a session again, or close the card.\n" + summary
 }
 

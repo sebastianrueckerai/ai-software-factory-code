@@ -1000,7 +1000,7 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	}()
 	scriptReproPods(kube, "agent-worker: probing\n"+failed(open, false))
 	<-done
-	want := "the session cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
+	want := "the sandbox cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
 		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" + open
 	if err != nil || res != (ReproResult{Escalate: want}) || escalationSource(res.Escalate) != "start" {
 		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", res, err, want)
@@ -1033,7 +1033,7 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	}
 	r, _, _ = newTestRunner(t, task, kube, &fakeObjectStore{})
 	val, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
-	want = "the session cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+	want = "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
 		"then answer to run the reproduction again, or close the card.\nstart failed: image pull: container fetch waits with ErrImagePull: " + imageNotFound
 	if res := getInto[ReproResult](t, val, err); res != (ReproResult{Escalate: want}) {
 		t.Fatalf("result = %+v, want the start escalation:\n%s", res, want)
