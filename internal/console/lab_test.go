@@ -55,7 +55,7 @@ func TestLab(t *testing.T) {
 	// the project's documents (roadmap 277): sf/docs over the lab's Forgejo,
 	// the roadmap and the two plans it names; the writer token is minted,
 	// as the factory mints its tokens, never a literal
-	_, docs := docsOver(t, forgejo.URL, labDocs)
+	docsFake, docs := docsOver(t, forgejo.URL, labDocs)
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
@@ -93,6 +93,19 @@ func TestLab(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
+	// the editor's slow save (the 2026-10-15 plan, item 7): commits take
+	// ~1.8 s, so the saving… state and a second save queued behind it show;
+	// ?on=0 sets the save quick again
+	mux.HandleFunc("POST /lab/docs-slow", func(w http.ResponseWriter, req *http.Request) {
+		slow := 1800 * time.Millisecond
+		if req.URL.Query().Get("on") == "0" {
+			slow = 0
+		}
+		docsFake.mu.Lock()
+		docsFake.slow = slow
+		docsFake.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /lab/scenario/{name}", func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()

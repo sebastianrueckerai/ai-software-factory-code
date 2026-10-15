@@ -806,6 +806,36 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
    bubble by the link */
 .doc-peek { position: fixed; z-index: 60; max-width: 320px; max-height: 140px; overflow: hidden; padding: 8px 10px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; line-height: 1.5; color: var(--text); pointer-events: none; }
 .doc-peek:empty { display: none; }
+
+/* the editor and the draft (the 2026-10-15 plan, item 3): the dot from
+   the first keystroke to the save that lands — on the path line, the
+   pins, Recent and the Documents button; the amber reason a save
+   refused; the note line with the restored draft and its ask */
+.doc-dot { color: var(--accent); font: 11px/1 var(--font-ui); }
+.doc-refused { color: var(--need-text); }
+.doc-saved::before { content: "✓ "; color: var(--st-done); }
+.doc-note { flex: none; margin: 0; padding: 5px 24px 5px 10px; border-bottom: 1px solid var(--line); color: var(--text-muted); font: 11.5px/1.6 var(--font-mono); }
+.doc-note .linkbtn { font-size: 11.5px; }
+.doc-confirm { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.doc-confirm-q { margin-right: 2px; color: var(--text); font-size: 12.5px; }
+.doc-confirm button { height: 22px; padding: 0 8px; font-size: 12px; }
+.doc-vh { position: absolute; width: 1px; height: 1px; margin: -1px; clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+/* a new document: docs/<name>.md under the head */
+#doc-new-form { flex-wrap: wrap; }
+.doc-new-l { margin-right: 2px; color: var(--text-muted); font-size: 12px; white-space: nowrap; }
+.doc-name { width: 18ch; max-width: none; padding: 3px 6px; font-family: var(--font-mono); font-size: 12.5px; }
+.doc-new-at { color: var(--text-faint); font: 11.5px var(--font-mono); }
+.doc-sm { height: 24px; padding: 0 10px; font-size: 12px; }
+/* the editor: a mono textarea with the row under it — Save as commit,
+   Cancel, Discard, and what the text is based on */
+.doc-edit { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 8px; padding: 12px 18px 20px; max-width: 70ch; font: 13px var(--font-mono); }
+.doc-view.wide .doc-edit { margin-left: auto; margin-right: auto; }
+#doc-editor { flex: 2 1 0; min-height: 120px; width: 100%; padding: 10px 12px; border: 1px solid var(--btn-line); border-radius: 2px; background: var(--bg); color: var(--text); font: 13px/1.6 var(--font-mono); resize: none; }
+[data-theme=light] #doc-editor { background: var(--bg-card); }
+#doc-editor:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.doc-edit-row { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.doc-discard { font-size: 12.5px; }
+.doc-base { margin-left: auto; color: var(--text-faint); font: 11.5px var(--font-mono); }
 @keyframes tick { to { transform: translateX(-50%); } }
 @media (min-width: 1700px) {
   #screen { gap: 14px; padding: 14px 18px; }
@@ -889,7 +919,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .doc-view { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
   .doc-view.wide { left: 0; }
   /* the document head in rows: the nav and × first, the path line with the
-     Forgejo link second, Read|Edit third, so every control fits 390 px */
+     Forgejo link second, Read|Edit with New document at the row's right
+     end, so every control fits 390 px */
   .doc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
   .doc-row { display: contents; }
   .doc-row .xs { width: 44px; height: 44px; justify-content: center; font-size: 14px; }
@@ -899,8 +930,22 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .doc-pathline { order: 2; flex: 1 1 200px; padding: 4px 4px 4px 10px; }
   .doc-path { white-space: normal; overflow-wrap: anywhere; }
   .doc-forgejo { order: 3; display: inline-flex; align-items: center; min-height: 44px; padding: 0 8px; font-size: 13px; }
-  .doc-mode { order: 4; margin: 4px 0 4px 4px; }
+  .doc-mode, .doc-gap { order: 4; }
+  .doc-mode { margin: 4px 0 4px 4px; }
   .doc-mode button { height: 44px; padding: 0 18px; font-size: 13px; }
+  #doc-new { order: 5; width: auto; flex: none; height: 44px; padding: 0 14px; font-size: 13px; white-space: nowrap; }
+  #doc-new-form { padding: 4px 8px 8px 4px; }
+  #doc-new-form .doc-new-l { flex-basis: 100%; margin: 4px 0 2px 6px; }
+  #doc-name { height: 44px; }
+  #doc-new-form .doc-sm, #doc-new-form #doc-new-cancel { height: 44px; padding: 0 16px; font-size: 13px; }
+  .doc-note { padding: 7px 16px 5px 10px; }
+  .doc-note .doc-confirm button { height: 44px; padding: 0 16px; font-size: 13px; }
+  .doc-edit { padding: 12px 14px 20px; }
+  #doc-editor { min-height: 180px; font-size: 14px; }
+  .doc-edit-row { flex-direction: column; align-items: stretch; }
+  .doc-edit-row > button { width: 100%; height: 44px; font-size: 14px; }
+  .doc-edit-row .doc-discard { justify-content: center; min-height: 44px; }
+  .doc-edit-row .doc-base { margin-left: 0; text-align: center; }
   #doc-wide { display: none; }
   .doc-pins { padding: 0 6px; }
   .doc-pin, .doc-pin-add { height: 44px; }

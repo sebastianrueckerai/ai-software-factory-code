@@ -20,7 +20,8 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
   ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
   ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
-  ".doc-path, .doc-facts, .doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
+  ".doc-path, .doc-facts, .doc-refused, .doc-dot, .doc-base, .doc-note, .doc-confirm-q, .doc-new-l, .doc-discard, #doc-new, " +
+  ".doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
 
 // ghostEl are the routines' text (C16), measured as contrastEl is
 const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.ghost .held, .card.ghost .run, .card.ghost .acts button, " +
@@ -209,6 +210,109 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       if (!(await doc.isVisible()) || !(await doc.innerText()).includes("The documents in the screen"))
         fails.push("docs: ?doc= does not open the document on load");
+      // the editor and the draft (the 2026-10-15 plan, item 3): Edit opens
+      // the mono editor with its row; a keystroke is a draft — the dot on
+      // the path line, the pin, the Documents button; Ctrl+S saves and the
+      // dot goes; a reload restores the draft with its note and Discard
+      // asks; three Ctrl+S in a slow save make two commits (item 7)
+      await p.page.goto(base + "/?doc=docs/roadmap.md", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.locator("#doc-mode-edit").click();
+      await p.page.waitForTimeout(600);
+      const ed = p.page.locator("#doc-editor");
+      if (!(await ed.isVisible())) fails.push("editor: Edit opens no editor");
+      else {
+        const row = (await p.page.locator("#doc-edit-row").innerText()).replace(/\s+/g, " ");
+        for (const w of ["Save as commit", "Cancel", "based on c0ffee"]) if (!row.includes(w)) fails.push('editor: the row lacks "' + w + '" (' + row + ")");
+        await p.page.keyboard.type("The editor check wrote this. ");
+        await p.page.waitForTimeout(300);
+        if (!(await p.page.locator("#doc-dot").isVisible())) fails.push("editor: a keystroke shows no dot");
+        if (!(await p.page.locator('.doc-pin[data-doc="docs/roadmap.md"]').innerText()).includes("●")) fails.push("editor: the pin carries no dot");
+        if (!(await p.page.locator("#documents").innerText()).includes("●")) fails.push("editor: the Documents button carries no dot");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => document.querySelector("#doc-facts") && /Saved: \S{7} on master/.test(document.querySelector("#doc-facts").textContent), null, { timeout: 5000 });
+        if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the dot stays after a landed save");
+        // a landed save with nothing typed since returns to Read, the saved
+        // version rendered, the path line keeping its Saved line
+        if (await p.page.locator("#doc-edit").isVisible()) fails.push("editor: a landed save stays in the editor");
+        await p.page.waitForFunction(() => (document.getElementById("doc-article").innerText || "").includes("The editor check wrote this."), null, { timeout: 5000 })
+          .catch(() => fails.push("editor: the landed save does not render"));
+        // the control marks Read again the moment the save lands
+        if ((await p.page.locator("#doc-mode-read").getAttribute("aria-pressed")) !== "true" ||
+          (await p.page.locator("#doc-mode-edit").getAttribute("aria-pressed")) !== "false")
+          fails.push("editor: a landed save leaves the mode control on Edit");
+        // a draft outlives the reload: the note says restored, Discard asks
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForTimeout(300);
+        await p.page.keyboard.type("A draft. ");
+        await p.page.waitForTimeout(300);
+        await p.page.reload({ waitUntil: "load" });
+        await p.page.waitForTimeout(900);
+        const note = p.page.locator("#doc-note");
+        const noteText = await note.innerText().catch(() => "");
+        if (!(await note.isVisible()) || !noteText.includes("draft from") || !noteText.includes("restored · discard"))
+          fails.push('editor: a reload restores no draft note ("' + noteText + '")');
+        else {
+          if (!((await ed.inputValue()).includes("A draft."))) fails.push("editor: the restored draft lost its text");
+          await p.page.locator('#doc-note [data-act="discard"]').click();
+          await p.page.waitForTimeout(300);
+          const ask = p.page.locator("#doc-view .doc-confirm").first();
+          if (!(await ask.count()) || !(await ask.innerText()).includes("Discard your changes?")) fails.push("editor: Discard asks no confirm");
+          else {
+            if (!(await ask.getByRole("button", { name: "Keep" }).count())) fails.push("editor: the ask has no Keep");
+            await p.page.locator('[data-act="discard-yes"]').click();
+            await p.page.waitForTimeout(600);
+            if (await p.page.locator("#doc-edit").isVisible()) fails.push("editor: Discard does not return to the read view");
+            if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the dot stays after Discard");
+          }
+        }
+        // a save that refuses (the roadmap's structure): only the reason
+        // keeps the refusal colour, retry is its own button the keyboard
+        // reaches, and it sends the save again
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
+        await p.page.keyboard.press("Control+A");
+        await p.page.keyboard.type("The refusal check wrote this.");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => document.querySelector("#doc-facts .doc-refused"), null, { timeout: 5000 });
+        const refText = (await p.page.locator("#doc-facts .doc-refused").innerText()).trim();
+        if (!refText.startsWith("not saved:")) fails.push('editor: the refusal does not read not saved: ("' + refText + '")');
+        if (refText.includes("retry")) fails.push('editor: the refusal reason carries the retry too ("' + refText + '")');
+        const retry = p.page.locator('#doc-facts [data-act="retry"]');
+        if ((await retry.count()) !== 1 || (await retry.evaluate((e) => e.tagName)) !== "BUTTON")
+          fails.push("editor: the retry is not its own button");
+        else {
+          await retry.focus();
+          if (!(await p.page.evaluate(() => { const e = document.activeElement; return !!e && e.dataset && e.dataset.act === "retry"; })))
+            fails.push("editor: the keyboard cannot reach the retry");
+          await p.page.keyboard.press("Enter");
+          await p.page.waitForTimeout(700);
+          if (!(await p.page.locator("#doc-facts .doc-refused").count())) fails.push("editor: the retry does not send the save again");
+        }
+        await p.page.locator('#doc-view [data-act="discard"]').first().click();
+        await p.page.waitForTimeout(300);
+        await p.page.locator('[data-act="discard-yes"]').click();
+        await p.page.waitForTimeout(600);
+        if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the refused draft's dot stays after Discard");
+        // the slow save (item 7): three Ctrl+S with typing between them
+        // leave exactly two commits, and the path line says saving…
+        const count = await p.page.evaluate(async (u) => (await (await fetch(u)).json()).filter((e) => e.kind === "doc_written").length, base + "/projects/ai-software-factory-code/events");
+        await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-slow");
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForTimeout(400);
+        await p.page.keyboard.type("Slow. ");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForTimeout(400);
+        const saving = (await p.page.locator("#doc-facts").innerText()).trim();
+        if (saving !== "· saving…") fails.push('editor: the slow save does not say "· saving…" ("' + saving + '")');
+        await p.page.keyboard.type("More. ");
+        await p.page.keyboard.press("Control+S");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => document.querySelector("#doc-dot") && document.querySelector("#doc-dot").hidden, null, { timeout: 8000 });
+        await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-slow?on=0");
+        const after = await p.page.evaluate(async (u) => (await (await fetch(u)).json()).filter((e) => e.kind === "doc_written").length, base + "/projects/ai-software-factory-code/events");
+        if (after !== count + 2) fails.push("editor: three Ctrl+S in a slow save left " + (after - count) + " commits, want 2");
+      }
     }
     if (sc === "busy") {
       // the find (C13): ?q= narrows every column, the counts read "n of m", the × clears
@@ -441,6 +545,10 @@ async function text(page) {
         .filter((b) => b.offsetParent).map((b) => [b.id || b.className, Math.round(b.getBoundingClientRect().left), Math.round(b.getBoundingClientRect().right)])
         .filter((x) => x[1] < 0 || x[2] > 390));
       if (cut.length) fails.push("phone: a document head control is cut off at 390: " + cut.map((x) => x[0] + " " + x[1] + ".." + x[2]).join(", "));
+      // New document shows its whole text in the Read/Edit row, not a
+      // clipped word in a square box
+      const nb = await pp.page.evaluate(() => { const b = document.getElementById("doc-new"); return { t: b.innerText.trim(), w: b.scrollWidth - b.clientWidth, h: b.scrollHeight - b.clientHeight }; });
+      if (nb.t !== "New document" || nb.w > 1 || nb.h > 1) fails.push('phone: New document does not show its whole text ("' + nb.t + '", ' + nb.w + "x" + nb.h + "px over)");
       const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
       if (psw > 390) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + ")");
       await pp.page.keyboard.press("Escape");
@@ -463,7 +571,15 @@ async function text(page) {
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();
       if (act === "palette") { await cp.page.locator("#chat-input").click(); await cp.page.keyboard.type("/"); }
       if (act === "level") await cp.page.locator("#level-btn").click();
-      if (act === "docs") { await cp.page.locator("#documents").click(); await cp.page.waitForTimeout(600); }
+      if (act === "docs") {
+        await cp.page.locator("#documents").click();
+        await cp.page.waitForTimeout(600);
+        // the editor with its row and the dot of a draft
+        await cp.page.locator("#doc-mode-edit").click();
+        await cp.page.waitForTimeout(400);
+        await cp.page.keyboard.type("a");
+        await cp.page.waitForTimeout(200);
+      }
       await cp.page.waitForTimeout(200);
       const low = await cp.page.evaluate((sel) => {
         const cv = document.createElement("canvas").getContext("2d", { willReadFrequently: true });

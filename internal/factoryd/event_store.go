@@ -16,6 +16,9 @@ const (
 	ViaChat     = "chat"
 	ViaFactoryd = "factoryd"
 	ViaWebhook  = "webhook"
+	// ViaConsole is the documents' editor: a member's save in the
+	// console, neither a button nor the chat (roadmap 277)
+	ViaConsole = "console"
 )
 
 // The kinds a human's action in the console leaves behind, one per
@@ -70,6 +73,11 @@ const (
 	// "note" when the run has one and "poke", the inbox's words, when the
 	// run tells the inbox, which the Poker writes.
 	EventRoutineRan = "routine_ran"
+
+	// EventDocWritten is one write of a document through the door,
+	// whatever wrote it: the chat's write_doc, a close-out, the member's
+	// save in the console's editor. Detail {"path", "hash", "commit"}.
+	EventDocWritten = "doc_written"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

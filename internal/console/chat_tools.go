@@ -1030,7 +1030,7 @@ var tools = []chatTool{
 		required: []string{"path"},
 		about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
+			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, t.p.Repository, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
 			return note, nil, err
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,

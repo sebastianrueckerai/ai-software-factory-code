@@ -96,6 +96,7 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/chat/conversations": rProject,
 	"GET /projects/{name}/pulse":              rMember,
 	"GET /projects/{name}/docs/{path...}":     rMember, // docRead judges the project's sight, as the stream does
+	"POST /projects/{name}/docs/{path...}":    rMember, // docWrite judges the project's sight; Forgejo the member's commit
 
 	// POST routes
 	"POST /logout":                              rMember,

@@ -200,6 +200,35 @@ async function main() {
           await p.idle();
         }, false);
         await shot("docs-390.png", phone, "/", openDocs, false);
+        // the editor and its states (the 2026-10-15 plan, item 3): the
+        // draft with its dot and its row, saving… on the slow save, the
+        // landed commit, and the draft on the phone
+        const openEditor = async (p) => {
+          await openDocs(p);
+          await p.page.locator("#doc-mode-edit").click();
+          await p.idle();
+          await p.page.keyboard.type("The draft in the editor, one keystroke at a time. ");
+        };
+        await shot("docs-edit-1440.png", desk, "/", async (p) => {
+          await openEditor(p);
+          await p.page.waitForTimeout(300);
+        }, false);
+        await shot("docs-saving-1440.png", desk, "/", async (p) => {
+          await openEditor(p);
+          await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-slow");
+          await p.page.keyboard.press("Control+S");
+          await p.page.waitForTimeout(700);
+        }, false);
+        await shot("docs-saved-1440.png", desk, "/", async (p) => {
+          await openEditor(p);
+          await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-slow?on=0");
+          await p.page.keyboard.press("Control+S");
+          await p.page.waitForFunction(() => document.querySelector("#doc-facts") && /Saved: \S{7} on master/.test(document.querySelector("#doc-facts").textContent), null, { timeout: 5000 });
+        }, false);
+        await shot("docs-draft-390.png", phone, "/", async (p) => {
+          await openEditor(p);
+          await p.page.waitForTimeout(300);
+        }, false);
         for (const pg of pages) await shot(pg + "-1440.png", desk, "/" + pg);
         await shot("timeline-1440.png", desk, "/tasks/" + drawer + "/timeline");
         await shot("new-task-1440.png", desk, "/tasks/new");

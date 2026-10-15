@@ -397,6 +397,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/archive", http.HandlerFunc(c.chatArchive), nil},
 		{"POST /projects/{name}/chat/delete", http.HandlerFunc(c.chatDelete), nil},
 		{"POST /projects/{name}/chat/answer", http.HandlerFunc(c.chatAnswer), nil},
+		{"POST /projects/{name}/docs/{path...}", http.HandlerFunc(c.docWrite), nil},
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
 		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},
 		{"POST /projects/{name}/autonomy", http.HandlerFunc(c.autonomyButton), nil},
