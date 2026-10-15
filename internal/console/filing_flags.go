@@ -19,7 +19,7 @@ import (
 var (
 	// a closing keyword before an issue reference, which the sanitiser
 	// neutralises as "(fixes) #12" so nothing closes
-	filedClosing = regexp.MustCompile(`(?i)(^|[^\pL\pN])(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(:?[ \t]+)((?:[\w.-]+/[\w.-]+)?#\d+)`)
+	filedClosing = regexp.MustCompile(`(?i)(^|[^\p{L}\p{N}])(close[sd]?|fix(?:e[sd])?|resolve[sd]?)(:?[ \t]+)((?:[\w.-]+/[\w.-]+)?#\d+)`)
 	// a mention of a user or a team, which the sanitiser widens as "＠name"
 	// so nobody is notified
 	filedMention = regexp.MustCompile(`(^|[^A-Za-z0-9@./-])@([A-Za-z0-9][\w.-]*(?:/[\w.-]+)?)`)

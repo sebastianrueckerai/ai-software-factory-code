@@ -109,6 +109,36 @@ func TestChatNewCardRefusesFlaggedText(t *testing.T) {
 			Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
 }
 
+// new_card refuses a flagged title as it refuses a flagged body: the
+// finding names line 1, and the rewritten title alone is filed (roadmap
+// 125).
+func TestChatNewCardRefusesFlaggedTitle(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	bad := `{"title":"Fixes #12","body":"The cache drops entries.","lane":"backlog"}`
+	good := `{"title":"Fix the cache","body":"The cache drops entries.","lane":"backlog"}`
+	g.replies = [][]string{{call(1, "new_card", bad, "new_card", good)}, {say("Done.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
+	refusal := "Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
+		`line 1: "Fixes #12" a closing keyword before an issue reference; the sanitiser neutralises it as "(fixes) #12" so nothing closes` +
+		". Rewrite those and file the card again."
+	filed := "Filed sf/code#41 in lane backlog."
+	said, _ := json.Marshal(refusal)
+	equal(t, "stream", events, []string{
+		`tool {"arguments":` + bad + `,"duration_ms":0,"name":"new_card","result":` + string(said) + `}`,
+		`tool {"arguments":` + good + `,"duration_ms":0,"name":"new_card","result":"` + filed + `"}`,
+		`applied {"result":"` + filed + `","tool":"new_card"}`,
+		`text {"text":"Done."}`, `done {}`})
+	if len(r.fg.issues) != 1 || r.fg.issues[0]["title"] != "Fix the cache" {
+		t.Fatalf("issues %v, want the rewritten title filed alone", r.fg.issues)
+	}
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
+			Detail: map[string]any{"lane": "backlog", "title": "Fix the cache", "thread": int64(1)}})
+}
+
 // The New task form's first submit of flagged text answers the findings
 // above the form with the text kept, and only its File as written button
 // files the text as written, for a human may mean it (roadmap 125).
@@ -161,4 +191,34 @@ func TestNewTaskFilesFlaggedTextAsWritten(t *testing.T) {
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardFiled, repo: "sf/code",
 		detail: map[string]any{"lane": "backlog", "title": "Fix the cache", "size": "small"}})
+}
+
+// The form the findings answer keeps the member's text escaped: the
+// console renders its templates with html/template, so a title or body
+// written as HTML cannot run in the browser when the form shows them
+// again (roadmap 125).
+func TestNewTaskAnsweredFormEscapesText(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	ck, s := r.loggedIn(t)
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"title": {"<script>alert(1)</script> fixes #12"}, "body": {"It <em>drops</em> entries.\nThis fixes #12."},
+		"lane": {"backlog"}, "size": {"small"}}
+	rec := r.do(post("/tasks", form), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the first submit = %d: %s", rec.Code, rec.Body)
+	}
+	page := rec.Body.String()
+	for _, raw := range []string{"<script>alert(1)</script>", "<em>drops</em>"} {
+		if strings.Contains(page, raw) {
+			t.Errorf("the answered form renders %q unescaped:\n%s", raw, page)
+		}
+	}
+	for _, want := range []string{"&lt;script&gt;alert(1)&lt;/script&gt; fixes #12", "&lt;em&gt;drops&lt;/em&gt;", "a closing keyword before an issue reference"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("the answered form lacks %q:\n%s", want, page)
+		}
+	}
+	if len(r.fg.issues) != 0 || ev.count() != 0 {
+		t.Fatalf("the first submit filed %v", r.fg.issues)
+	}
 }
