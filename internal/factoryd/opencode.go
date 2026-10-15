@@ -734,12 +734,11 @@ func briefText(brief harness.TaskBrief, tag string) string {
 }
 
 // answersHeading opens the brief's section of the human's answers, which
-// stands below the findings: a finding dated after an answer, a request for
-// changes among them, replaces it, and a newer answer replaces an older one to
-// the same question.
+// stands below the findings: a request for changes dated after an answer
+// replaces it, and a newer answer replaces an older one to the same question.
 const answersHeading = "The human has answered this task's escalations (newest first, each with its date and the question it answered). " +
 	"These answers settle those questions: act on them and do not escalate them again. " +
-	"A finding above that is dated after an answer, a request for changes among them, replaces the older answer, " +
+	"A request for changes above that is dated after an answer replaces the older answer, " +
 	"and a newer answer replaces the older answer to the same question."
 
 // toolsLine names where the factory's tools come from; which are open and

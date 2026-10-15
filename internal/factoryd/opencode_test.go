@@ -721,8 +721,8 @@ func TestBriefPutsTheFindingsAboveTheAnswers(t *testing.T) {
 	if got != want {
 		t.Fatalf("objective =\n%s\nwant\n%s", got, want)
 	}
-	if !strings.Contains(answersHeading, "replaces the older answer") {
-		t.Fatalf("heading = %q, want it to say that a newer finding replaces an older answer", answersHeading)
+	if !strings.Contains(answersHeading, "A request for changes above that is dated after an answer replaces the older answer") {
+		t.Fatalf("heading = %q, want it to say that a newer request for changes replaces an older answer", answersHeading)
 	}
 }
 
