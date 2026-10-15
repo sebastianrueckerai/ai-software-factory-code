@@ -29,6 +29,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -1230,19 +1231,16 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 }
 
 // Histories recorded live on the cluster replay without a nondeterminism
-// error, and every activity input they record decodes into today's
-// activity of that name: a roll retries an activity in flight with the
-// input the old worker recorded. A deliberate retype rolls while no task
-// runs the activity; the histories it fails leave with it, and after the
-// roll a task's history that ran the activity takes their place:
-//
-//	kubectl exec -n platform deploy/temporal-admintools -- temporal workflow show --workflow-id task-<task> --output json > internal/factoryd/testdata/history-<task>-<what>.json
+// error, and the newest input each activity recorded across them decodes
+// into today's activity of that name: a roll retries an activity in
+// flight with the input the old worker recorded. Older inputs are history
+// the rolls since have passed and keep only their replay.
 func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/history-*.json")
 	if len(files) == 0 {
 		t.Fatal("no recorded histories")
 	}
-	params := activityParams()
+	newest := map[string]recordedInput{}
 	for _, f := range files {
 		replayer := worker.NewWorkflowReplayer()
 		replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
@@ -1257,33 +1255,61 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
-		for _, bad := range undecodableInputs(hist, params) {
-			t.Errorf("%s: %s", f, bad)
-		}
+		newestInputs(newest, f, hist)
+	}
+	for _, bad := range undecodableInputs(newest, activityParams(), retyped) {
+		t.Error(bad)
 	}
 }
 
-// An audit recorded before audit-beside passed the pin where GateAudit now
-// takes the GateResults: in flight across that roll, it does not decode.
-func TestUndecodableInputsNamesARetypedArgument(t *testing.T) {
-	scheduled := func(id int64, args ...any) *historypb.HistoryEvent {
-		input, err := converter.GetDefaultDataConverter().ToPayloads(args...)
+// retyped lists each activity whose parameters a commit changed on
+// purpose, so that an input recorded before it does not decode. Such a
+// commit rolls only while no task runs the activity, and the activity's
+// decode waits for a history recorded after it. Once a task has run the
+// activity after the roll, add its history and remove the entry:
+//
+//	kubectl exec -n platform deploy/temporal-admintools -- temporal workflow show --workflow-id task-<task> --output json > internal/factoryd/testdata/history-<task>-<what>.json
+var retyped []retype
+
+// retype is an activity whose parameters the commit, made at, changed.
+type retype struct {
+	activity, commit string
+	at               time.Time
+}
+
+// The newest GateAudit input decides: one recorded before audit-beside
+// passed the pin where GateAudit now takes the GateResults. Undeclared it
+// fails; declared it waits for a history after the declaration, and one
+// still with the pin fails again.
+func TestUndecodableInputsDecodeTheNewestInput(t *testing.T) {
+	audit := func(id int64, at time.Time, last any) *historypb.History {
+		input, err := converter.GetDefaultDataConverter().ToPayloads("t1", PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}, "c1", last)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return &historypb.HistoryEvent{EventId: id, EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+		return &historypb.History{Events: []*historypb.HistoryEvent{{EventId: id, EventTime: timestamppb.New(at), EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
 			Attributes: &historypb.HistoryEvent_ActivityTaskScheduledEventAttributes{ActivityTaskScheduledEventAttributes: &historypb.ActivityTaskScheduledEventAttributes{
-				ActivityType: &commonpb.ActivityType{Name: ActivityGateAudit}, Input: input}}}
+				ActivityType: &commonpb.ActivityType{Name: ActivityGateAudit}, Input: input}}}}}
 	}
-	pr := PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}
-	hist := &historypb.History{Events: []*historypb.HistoryEvent{
-		scheduled(5, "t1", pr, "c1", int64(656)),
-		scheduled(6, "t1", pr, "c1", GateResults{Pin: 656}),
-	}}
-
-	want := []string{"event 5: GateAudit argument 4 does not decode into factoryd.GateResults: unable to decode: json: cannot unmarshal number into Go value of type factoryd.GateResults"}
-	if got := undecodableInputs(hist, activityParams()); !slices.Equal(got, want) {
-		t.Fatalf("undecodable = %q, want %q", got, want)
+	day := time.Date(2026, 10, 15, 6, 0, 0, 0, time.UTC)
+	pinFails := []string{"pin.json event 5: GateAudit argument 4 does not decode into factoryd.GateResults: unable to decode: json: cannot unmarshal number into Go value of type factoryd.GateResults"}
+	for _, tc := range []struct {
+		name           string
+		pinAt, gatesAt time.Time
+		retyped        []retype
+		want           []string
+	}{
+		{"undeclared", day, day.Add(-time.Hour), nil, pinFails},
+		{"declared", day, day.Add(-time.Hour), []retype{{ActivityGateAudit, "5c250e7", day.Add(time.Hour)}}, nil},
+		{"declared before a newer pin", day, day.Add(-time.Hour), []retype{{ActivityGateAudit, "5c250e7", day.Add(-time.Minute)}}, pinFails},
+		{"refreshed", day, day.Add(time.Hour), nil, nil},
+	} {
+		newest := map[string]recordedInput{}
+		newestInputs(newest, "pin.json", audit(5, tc.pinAt, int64(656)))
+		newestInputs(newest, "gates.json", audit(7, tc.gatesAt, GateResults{Pin: 656}))
+		if got := undecodableInputs(newest, activityParams(), tc.retyped); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: undecodable = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -1307,31 +1333,53 @@ func (r activityRegistry) RegisterActivityWithOptions(fn any, o activity.Registe
 	r[o.Name] = reflect.TypeOf(fn)
 }
 
-// undecodableInputs names each activity input hist schedules that the
-// worker would fail to decode on a retry: payload i into argument i
-// through the SDK's data converter, extra payloads ignored as the SDK
-// ignores them.
-func undecodableInputs(hist *historypb.History, params map[string][]reflect.Type) []string {
-	dc := converter.GetDefaultDataConverter()
-	var bad []string
+// recordedInput is the input a history's ActivityTaskScheduled event
+// recorded.
+type recordedInput struct {
+	file     string
+	event    int64
+	at       time.Time
+	payloads []*commonpb.Payload
+}
+
+// newestInputs keeps in newest, for each activity hist schedules, the
+// input recorded last.
+func newestInputs(newest map[string]recordedInput, file string, hist *historypb.History) {
 	for _, e := range hist.GetEvents() {
 		a := e.GetActivityTaskScheduledEventAttributes()
 		if a == nil {
 			continue
 		}
 		name := a.GetActivityType().GetName()
-		args, ok := params[name]
-		if !ok {
-			bad = append(bad, fmt.Sprintf("event %d: no activity %s is registered", e.GetEventId(), name))
+		if at := e.GetEventTime().AsTime(); at.After(newest[name].at) {
+			newest[name] = recordedInput{file, e.GetEventId(), at, a.GetInput().GetPayloads()}
+		}
+	}
+}
+
+// undecodableInputs names each newest input the worker would fail to
+// decode on a retry: payload i into argument i through the SDK's data
+// converter, extra payloads ignored as the SDK ignores them. An activity
+// in retypes is skipped while its newest input is older than the retype.
+func undecodableInputs(newest map[string]recordedInput, params map[string][]reflect.Type, retypes []retype) []string {
+	dc := converter.GetDefaultDataConverter()
+	var bad []string
+	for name, in := range newest {
+		if slices.ContainsFunc(retypes, func(r retype) bool { return r.activity == name && in.at.Before(r.at) }) {
 			continue
 		}
-		payloads := a.GetInput().GetPayloads()
-		for i, p := range payloads[:min(len(payloads), len(args))] {
+		args, ok := params[name]
+		if !ok {
+			bad = append(bad, fmt.Sprintf("%s event %d: no activity %s is registered", in.file, in.event, name))
+			continue
+		}
+		for i, p := range in.payloads[:min(len(in.payloads), len(args))] {
 			if err := dc.FromPayload(p, reflect.New(args[i]).Interface()); err != nil {
-				bad = append(bad, fmt.Sprintf("event %d: %s argument %d does not decode into %s: %v", e.GetEventId(), name, i+1, args[i], err))
+				bad = append(bad, fmt.Sprintf("%s event %d: %s argument %d does not decode into %s: %v", in.file, in.event, name, i+1, args[i], err))
 			}
 		}
 	}
+	slices.Sort(bad)
 	return bad
 }
 
