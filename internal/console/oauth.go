@@ -187,14 +187,20 @@ func (c *Console) token(ctx context.Context, s *session, form url.Values) error 
 }
 
 // accessToken returns the session's access token, refreshed when it
-// expires within a minute (Forgejo issues 1 h tokens with rotating refresh
-// tokens and invalidates a refresh token on use). The refresh runs under
+// expires within a minute (tokenFor).
+func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
+	return c.tokenFor(ctx, s, time.Minute)
+}
+
+// tokenFor returns the session's access token, refreshed when it expires
+// within margin (Forgejo issues 1 h tokens with rotating refresh tokens
+// and invalidates a refresh token on use). The refresh runs under
 // refreshMu from the row: a newer pair there is another request's refresh
 // of the same login, taken instead of a second grant. s holds the newer
 // pair only when storing its own last refresh failed.
-func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
+func (c *Console) tokenFor(ctx context.Context, s *session, margin time.Duration) (string, error) {
 	s.mu.Lock()
-	if time.Until(s.expiry) > time.Minute {
+	if time.Until(s.expiry) > margin {
 		defer s.mu.Unlock()
 		return s.access, nil
 	}
@@ -220,7 +226,7 @@ func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
 			return "", err
 		}
 		s.access, s.refresh, s.expiry = access, refresh, row.TokenExpiry
-		if time.Until(s.expiry) > time.Minute {
+		if time.Until(s.expiry) > margin {
 			return s.access, nil
 		}
 	}

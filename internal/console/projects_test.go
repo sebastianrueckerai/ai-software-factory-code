@@ -250,11 +250,15 @@ type infraFake struct {
 	pullsStatus int              // the pull request's opening; 0: 201
 	open        []map[string]any // GET pulls?state=open
 	// branches, when set, are infra's branches besides main: a new branch
-	// that exists is refused, a deleted one goes. branchDeletes are the
+	// that exists is refused, a deleted one goes; unset, no branch exists.
+	// branchReads are the reads' Authorization, branchDeletes the
 	// deletions, branchStatus their answer, 0: 204.
 	branches      map[string]bool
+	branchReads   []string
 	branchDeletes []recorded
 	branchStatus  int
+	// contentsAfter answers a commit once its branch is made; 0: 201
+	contentsAfter int
 	// merges and closes are the calls on a pull request, its path theirs;
 	// closeStatus answers a close, 0: 201
 	merges, closes []recorded
@@ -317,6 +321,10 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 				}
 				f.branches[branch] = true
 			}
+			if f.contentsAfter != 0 {
+				w.WriteHeader(f.contentsAfter)
+				return
+			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":
@@ -330,6 +338,14 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/infra/pulls" && req.URL.Query().Get("state") == "open":
 			f.pullAuth = append(f.pullAuth, req.Header.Get("Authorization"))
 			json.NewEncoder(w).Encode(append([]map[string]any{}, f.open...))
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"):
+			f.branchReads = append(f.branchReads, req.Header.Get("Authorization"))
+			name := strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/")
+			if !f.branches[name] {
+				http.Error(w, `{"message":"branch does not exist"}`, http.StatusNotFound)
+				return
+			}
+			json.NewEncoder(w).Encode(map[string]string{"name": name})
 		case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"):
 			f.branchDeletes = append(f.branchDeletes, rec())
 			if f.branchStatus != 0 {
@@ -767,6 +783,84 @@ func TestFailedFilingDeletesItsBranch(t *testing.T) {
 	defer infra.mu.Unlock()
 	if len(infra.contents) != 2 || len(infra.pulls) != 2 || !infra.branches["project-linkshort"] {
 		t.Errorf("%d contents and %d pull calls, branches %v; want two each and project-linkshort", len(infra.contents), len(infra.pulls), infra.branches)
+	}
+}
+
+// A filing whose commit errs after Forgejo made its branch deletes that
+// branch as the human, read with the config token first, so the name can
+// be filed again; one that finds the branch already there, an earlier
+// filing's, commits nothing and leaves the branch.
+func TestFailedCommitDeletesItsBranch(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	infra.mu.Lock()
+	infra.branches = map[string]bool{"project-linkshort": true}
+	infra.mu.Unlock()
+	rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+	if body := rec.Body.String(); rec.Code != http.StatusUnprocessableEntity ||
+		!strings.Contains(body, "name: infra has branch project-linkshort from an earlier filing; delete it to file the name again") {
+		t.Fatalf("an earlier filing's branch: POST /projects = %d:\n%s", rec.Code, body)
+	}
+	infra.mu.Lock()
+	if len(infra.contents) != 0 || len(infra.branchDeletes) != 0 || !infra.branches["project-linkshort"] {
+		t.Errorf("an earlier filing's branch: %d commits, %d deletes, branches %v; want none, none and the branch kept",
+			len(infra.contents), len(infra.branchDeletes), infra.branches)
+	}
+	infra.branches, infra.contentsAfter = map[string]bool{}, http.StatusInternalServerError
+	infra.mu.Unlock()
+	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
+	if body := rec.Body.String(); rec.Code != http.StatusBadGateway || !strings.Contains(body, "Forgejo refused to commit the project's file; the filing was undone") {
+		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the filing was undone", rec.Code, body)
+	}
+	infra.mu.Lock()
+	deletes, reads := slices.Clone(infra.branchDeletes), slices.Clone(infra.branchReads)
+	infra.contentsAfter = 0
+	infra.mu.Unlock()
+	if len(deletes) != 1 || deletes[0].path != "/api/v1/repos/sf/infra/branches/project-linkshort" || deletes[0].auth != "Bearer access-1" {
+		t.Errorf("branch deletes %+v, want project-linkshort deleted as the human", deletes)
+	}
+	if !slices.Equal(reads, []string{"Bearer config-token", "Bearer config-token", "Bearer config-token"}) {
+		t.Errorf("branch reads %q, want three with the config token", reads)
+	}
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the filing after: POST /projects = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+}
+
+// A filing is several writes as the human, so it starts only on a token
+// that outlasts them (filingTime): one that runs out sooner, though not
+// within the minute every read refreshes at, is refreshed before the
+// first write, and a refresh Forgejo refuses sends the human to /login
+// with nothing written and the session ended.
+func TestFilingRefreshesTheSessionFirst(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	r.setTokenExpiry(t, ck, time.Now().Add(2*time.Minute))
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/projects/linkshort/status" {
+		t.Fatalf("POST /projects = %d to %q, want 303 to the panel", rec.Code, rec.Header().Get("Location"))
+	}
+	if g := r.fg.grants[len(r.fg.grants)-1]; g.Get("grant_type") != "refresh_token" {
+		t.Errorf("last grant %v, want the refresh", g)
+	}
+	infra.mu.Lock()
+	if len(infra.contents) != 1 || infra.contents[0].auth != "Bearer access-2" {
+		t.Errorf("commits %+v, want one with the refreshed token", infra.contents)
+	}
+	infra.mu.Unlock()
+
+	r.fg.refuse = true
+	r.setTokenExpiry(t, ck, time.Now().Add(2*time.Minute))
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("a refused refresh: POST /projects = %d to %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+	infra.mu.Lock()
+	defer infra.mu.Unlock()
+	if len(infra.contents) != 1 || len(r.sessions.rows) != 0 {
+		t.Errorf("a refused refresh: %d commits, %d sessions; want the one before and none", len(infra.contents), len(r.sessions.rows))
 	}
 }
 

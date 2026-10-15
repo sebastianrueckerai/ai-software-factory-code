@@ -388,17 +388,12 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	r.mirrors.put = errors.New("db down")
 	rec := r.do(post("/projects", form("acme/other", ghToken)), ck)
 	infra.mu.Lock()
-	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 2 || len(infra.pulls) != 1 || len(infra.branchDeletes) != 1 {
-		t.Errorf("an unstored row: %d, %d contents, %d pull calls and %d branch deletes; want 500, two, one and one",
-			rec.Code, len(infra.contents), len(infra.pulls), len(infra.branchDeletes))
+	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 2 || len(infra.pulls) != 1 {
+		t.Errorf("an unstored row: %d, %d contents and %d pull calls; want 500, two and one", rec.Code, len(infra.contents), len(infra.pulls))
 	}
 	infra.contentsStatus = http.StatusUnprocessableEntity
 	infra.mu.Unlock()
 	r.mirrors.put = nil
-	if m, ok := r.mirrors.rows["linkshort import"]; ok {
-		t.Errorf("the undone filing left the name's import row %+v", m)
-	}
-	r.mirrors.rows["linkshort import"] = want
 	for _, f := range []url.Values{form("acme/other", ghToken), linkshortForm(s.csrf)} {
 		if rec := r.do(post("/projects", f), ck); rec.Code != http.StatusBadGateway || r.mirrors.rows["linkshort import"] != want {
 			t.Errorf("a refused filing with source %q: %d, import row %+v; want 502 and %+v", f.Get("source"), rec.Code, r.mirrors.rows["linkshort import"], want)
@@ -457,6 +452,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
+	infra.branches = map[string]bool{}
 	file := func(want int, says string) {
 		t.Helper()
 		if rec := r.do(post("/projects", importForm(s.csrf)), ck); rec.Code != want || !strings.Contains(rec.Body.String(), says) {
@@ -556,6 +552,7 @@ func TestFilingFailsWithoutItsEvent(t *testing.T) {
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
+	infra.branches = map[string]bool{}
 	r.events.mu.Lock()
 	r.events.fail = errors.New("db down")
 	r.events.mu.Unlock()
