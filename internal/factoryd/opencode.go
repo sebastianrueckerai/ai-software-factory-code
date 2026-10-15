@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -179,7 +180,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 				}
 			}
 		},
-		tooLong: func() {},
+		tooLong: func([]byte, int) {},
 	}
 	cmd := exec.CommandContext(ctx, o.binary(), "serve", "--hostname", "127.0.0.1", "--port", "0") // #nosec G204 -- exec.CommandContext, no shell, fixed argv
 	cmd.Dir = o.WorkDir
@@ -308,7 +309,9 @@ func (o *Opencode) serve(ctx context.Context, base, text string, p *opencodePars
 				cancel()
 			}
 		},
-		tooLong: func() { p.fail("opencode output line exceeds 1 MiB") },
+		// a line past maxOutputLine (one large tool output) is dropped,
+		// not the session: the note is its record on the timeline
+		tooLong: func(head []byte, size int) { emit(skippedLineNote(head, size)) },
 	}
 	go func() {
 		select {
@@ -487,12 +490,15 @@ const maxOutputLine = 1 << 20
 
 // lineWriter hands each complete line to line; flush parses a final line
 // that lacks its newline. A line past maxOutputLine is dropped up to its
-// newline, unbuffered, and reported once to tooLong.
+// newline, unbuffered, and reported once to tooLong at its end, with the
+// head it had buffered (at most maxOutputLine bytes) and its size.
 type lineWriter struct {
 	buf      []byte
+	head     []byte // a dropped line's buffered start, kept for its report
+	size     int    // a dropped line's size so far
 	skipping bool
 	line     func([]byte)
-	tooLong  func()
+	tooLong  func(head []byte, size int)
 }
 
 func (w *lineWriter) Write(b []byte) (int, error) {
@@ -504,16 +510,24 @@ func (w *lineWriter) Write(b []byte) (int, error) {
 			part = b[:i]
 		}
 		if !w.skipping && len(w.buf)+len(part) > maxOutputLine {
-			w.skipping, w.buf = true, nil
-			w.tooLong()
+			// the head is copied: buf's backing array must not carry both
+			// the dropped line's head and a later line's bytes
+			w.skipping, w.size = true, len(w.buf)
+			w.head = append([]byte(nil), w.buf...)
+			w.buf = nil
 		}
-		if !w.skipping {
+		if w.skipping {
+			w.size += len(part)
+		} else {
 			w.buf = append(w.buf, part...)
 		}
 		if i < 0 {
 			break
 		}
-		if !w.skipping {
+		if w.skipping {
+			w.tooLong(w.head, w.size)
+			w.head = nil
+		} else {
 			w.flush()
 		}
 		w.skipping, w.buf = false, nil
@@ -523,10 +537,40 @@ func (w *lineWriter) Write(b []byte) (int, error) {
 }
 
 func (w *lineWriter) flush() {
+	if w.skipping {
+		w.tooLong(w.head, w.size)
+		w.head, w.size, w.skipping = nil, 0, false
+		return
+	}
 	if l := bytes.TrimSpace(w.buf); len(l) > 0 {
 		w.line(l)
 	}
 	w.buf = nil
+}
+
+// The head of a dropped event line names its event type and part id ahead
+// of the payload that outgrew the cap; where it does not, the note leaves
+// them out.
+var (
+	headEventType = regexp.MustCompile(`"type":"([^"]*)"`)
+	headPartID    = regexp.MustCompile(`"part":\{"id":"([^"]*)"`)
+)
+
+// skippedLineNote is the note one dropped too-long event line leaves on
+// the session's timeline: the line's size, and its event type and part id
+// where the line's first bytes show them.
+func skippedLineNote(head []byte, size int) harness.Event {
+	detail := map[string]any{"bytes": size}
+	if data, ok := bytes.CutPrefix(head, []byte("data:")); ok {
+		head = data
+	}
+	if m := headEventType.FindSubmatch(head); m != nil {
+		detail["event"] = string(m[1])
+	}
+	if m := headPartID.FindSubmatch(head); m != nil {
+		detail["part"] = string(m[1])
+	}
+	return harness.Event{Time: time.Now(), Kind: harness.EventNote, Detail: detail}
 }
 
 // capWriter keeps the first max bytes written to it and drops the rest.
