@@ -2187,7 +2187,7 @@ func TestDayResume(t *testing.T) {
 	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "agent", TaskID: "t1"},
 		{ID: 3, Kind: AlertEscalation, Source: "day_cap", TaskID: "t2"}}
 	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}}}}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5}}, Policy: func() policy.Version { return v }}}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}, Policy: func() policy.Version { return v }}}
 	ctx := context.Background()
 	verdicts := func() []string {
 		var out []string
@@ -2260,7 +2260,7 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 // call fits. Swept instead, the hold is booked in full: spent is 5.00,
 // nothing is free and no hold is left to wait for, so only the raise fits.
 func TestAttemptFundedNetsTheHolds(t *testing.T) {
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83}); err != nil {
 		t.Fatal(err)
@@ -2327,7 +2327,7 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 		VALUES ('t-756', 'model', 'coding-frontier', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
 	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "coding-frontier", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
 	agree := func(stage, wantWhy string, fits bool) {
@@ -2379,7 +2379,7 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 // 0.36864 = 0.781352 EUR, which 0.86 funds. With no opening on the alias
 // the floor measures every alias's; with none at all, the cheapest call.
 func TestSessionFundedPricesASessionsOpening(t *testing.T) {
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-704", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.89}); err != nil {
 		t.Fatal(err)
@@ -2436,7 +2436,7 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 // escalation counts as one for money; the day cap's is DayCapped, which
 // the workflow waits out and the console's answer passes.
 func TestAttemptFloorsCheckTheCaps(t *testing.T) {
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2}); err != nil {
 		t.Fatal(err)
@@ -2516,7 +2516,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		('t-x', 'model', 'coding-frontier', 's-x', now() - interval '1 second', now(), 24576, 0.02, 11000, 50, 48000)`); err != nil {
 		t.Fatal(err)
 	}
-	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
+	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
 	agree := func(stage string, budget float64, refusal, opens string) {
 		t.Helper()
@@ -2564,10 +2564,10 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 // The attempt grant's floor is the hold machinery's own minimum (ruling
 // 322): policy.Fit at the task's remaining budget refuses an attempt whose
 // cheapest call cannot fit policy.MinCallTokens output tokens, and the
-// refusal names the state and the way out. A model that cannot be priced
-// fails open: the per-call hold still guards the money.
+// refusal names the state and the way out. A model that cannot be priced,
+// or has no output limit, refuses the attempt: no hold of it is bounded.
 func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
-	cheap := policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6}
+	cheap := policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}
 	// the floor itself: MinCallTokens output tokens at the output price
 	if floor := float64(policy.MinCallTokens) * cheap.Out; floor != 0.004096 {
 		t.Fatalf("floor = %v, want 1024 output tokens at 4e-6 EUR", floor)
@@ -2602,6 +2602,13 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
 		why != "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model" {
 		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
+	}
+	limitless := cheap
+	limitless.MaxOutput = 0
+	r.cfg.Prices = stubPrices{price: limitless}
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
+		why != "the attempt's floor on coding-cheap cannot be read: coding-cheap has no output limit: no deployment publishes max_output_tokens, and prices.max_output_tokens in policy.yaml names none" {
+		t.Fatalf("limitless: (%q, %v), want the refusal naming the missing limit", why, err)
 	}
 	// the price is read for the alias LiteLLM knows, not the prefixed name
 	asked := &askedPrices{price: cheap}

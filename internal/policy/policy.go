@@ -729,6 +729,23 @@ type ToolPrices struct {
 	Replicate ReplicatePrices `yaml:"replicate,omitempty" json:"replicate"`
 	// Fal bounds fal_run.
 	Fal FalPrices `yaml:"fal,omitempty" json:"fal"`
+	// MaxOutputTokens is a model alias's output limit where none of its
+	// LiteLLM deployments publishes max_output_tokens (Document.Limited).
+	MaxOutputTokens map[string]int `yaml:"max_output_tokens,omitempty" json:"max_output_tokens,omitempty"`
+}
+
+// Limited is alias's price p with its output limit: the largest its
+// deployments publish, else prices.max_output_tokens. An alias with
+// neither is refused like an unpriced one: no hold may take all the free
+// headroom.
+func (d Document) Limited(alias string, p Price) (Price, error) {
+	if p.MaxOutput <= 0 {
+		p.MaxOutput = d.Prices.MaxOutputTokens[alias]
+	}
+	if p.MaxOutput <= 0 {
+		return Price{}, fmt.Errorf("%s has no output limit: no deployment publishes max_output_tokens, and prices.max_output_tokens in policy.yaml names none", alias)
+	}
+	return p, nil
 }
 
 // FirecrawlPrices: a call costs its creditsUsed at EURPerCredit; the
@@ -790,6 +807,11 @@ func (d Document) Validate() error {
 	}
 	if b.TaskDefaultEUR > b.TaskMaxEUR {
 		return fmt.Errorf("policy: budget.task_default_eur %g exceeds task_max_eur %g", b.TaskDefaultEUR, b.TaskMaxEUR)
+	}
+	for alias, n := range d.Prices.MaxOutputTokens {
+		if n <= 0 {
+			return fmt.Errorf("policy: prices.max_output_tokens of %s must be positive", alias)
+		}
 	}
 	if err := d.Limits.validate(); err != nil {
 		return err

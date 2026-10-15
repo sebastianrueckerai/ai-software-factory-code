@@ -134,8 +134,10 @@ type Usage struct {
 	PromptTokens, CachedTokens, OutputTokens, BodyBytes int
 }
 
-// Fit clamps a call's output limit to what the free task, day, month and
-// project headroom can pay for, or refuses it. Calibrated by an earlier
+// Fit clamps a call's output limit, what it asked (WantOut) up to the
+// alias's limit (Price.MaxOutput, Document.Limited), the limit alone when
+// it asked none, to what the free task, day, month and project headroom
+// can pay for, or refuses it. Calibrated by an earlier
 // call (ruling 274), the prompt is about Bytes times that call's tokens per
 // byte. Of the part up to that call's prompt tokens, the share the
 // provider's measured floor vouches for (CacheFloor) is at the cache-read
@@ -157,10 +159,7 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 		// the epsilon keeps an exact quotient (0.009/4e-6) from flooring low
 		outFit = int(math.Min(math.Floor(left/r.Price.Out+1e-9), math.MaxInt32))
 	}
-	maxOut := outFit
-	if r.Price.MaxOutput > 0 {
-		maxOut = min(maxOut, r.Price.MaxOutput)
-	}
+	maxOut := min(outFit, r.Price.MaxOutput)
 	if r.WantOut > 0 {
 		maxOut = min(maxOut, r.WantOut)
 	}
@@ -319,8 +318,7 @@ type Opening struct {
 // Hold is what the holds of the largest opening take for a session of r's
 // task on r's ref at r's price, and that opening: each call's hold as Fit
 // prices it with the headroom unbounded, its prompt and the output it
-// asked for (the price's MaxOutput when it asked none, MinCallTokens when
-// neither bounds it), summed. 0 and nil without a session.
+// asked for up to the price's limit, summed. 0 and nil without a session.
 func (o Opening) Hold(r HoldRequest) (float64, []OpeningCall) {
 	inf := math.Inf(1)
 	r.Earlier, r.CacheFloor = o.Earlier, o.CacheFloor
@@ -330,9 +328,6 @@ func (o Opening) Hold(r HoldRequest) (float64, []OpeningCall) {
 		var eur float64
 		for _, c := range calls {
 			r.Bytes, r.WantOut = c.Bytes, c.WantOut
-			if r.WantOut == 0 && r.Price.MaxOutput == 0 {
-				r.WantOut = MinCallTokens
-			}
 			h, _ := Fit(Free{Task: inf, Day: inf, Month: inf, Project: inf}, r)
 			eur += h.EUR
 		}

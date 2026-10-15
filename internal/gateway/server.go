@@ -280,6 +280,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	price, err := s.opts.Prices.Price(ctx, chatReq.Model)
+	if err == nil {
+		price, err = pv.Document.Limited(chatReq.Model, price)
+	}
 	if err != nil {
 		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, chatReq.Model, err)
 		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")

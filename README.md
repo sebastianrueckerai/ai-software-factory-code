@@ -914,11 +914,13 @@ The caps hold on the call itself. Prices per alias come from LiteLLM's
 `GET /model/info` (the figures it bills with), read every 5 minutes: per
 alias the maximum over its deployments of every per-token input rate
 (base, long-context `*_above_*_tokens`, service tiers, cache writes,
-`tiered_pricing`), every output and reasoning rate, and the output limit.
+`tiered_pricing`), every output and reasoning rate, and the output limit
+(`max_output_tokens`; where no deployment publishes one, the policy's
+`prices.max_output_tokens` per alias).
 A deployment with any other cost field set (per query, second, image,
 character) or without an input and output rate makes its alias unpriced,
-and an alias the policy allows but LiteLLM cannot price is refused (503
-`error_price`, logged as `PRICE MISSING`). While refreshes fail the last
+and an alias the policy allows but LiteLLM cannot price, or without an
+output limit, is refused (503 `error_price`, logged as `PRICE MISSING`). While refreshes fail the last
 table is used for up to three TTLs, then every call is refused. A call's input is bounded by its body's byte length (a
 token covers at least one byte). Under one Postgres advisory lock, in one
 transaction, the headroom left after spend and every outstanding hold is
@@ -926,7 +928,8 @@ computed (task: budget minus spent; day: `day_eur` minus today's ledger
 total; month: `month_eur` minus the ledger total since the 1st, UTC;
 project: its file's `budget.month_eur` minus the month's ledger rows of
 the tasks of its repository and their outstanding holds; standing lines
-count for none), the output limit (`max_tokens` or `max_completion_tokens`) is
+count for none), the output limit (`max_tokens` or `max_completion_tokens`,
+at most the alias's, the alias's when the caller set none) is
 clamped to what that pays for, and a `holds` row takes the worst case.
 Fewer than 1024 output tokens (a floor any model needs room to fill,
 reasoning or answer) is refused unless the caller asked for fewer. After the

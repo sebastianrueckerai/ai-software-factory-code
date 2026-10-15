@@ -407,6 +407,15 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	return r.funded(ctx, taskID, model, true)
 }
 
+// price is alias's price with its output limit (policy.Document.Limited).
+func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) {
+	p, err := r.cfg.Prices.Price(ctx, alias)
+	if err != nil {
+		return policy.Price{}, err
+	}
+	return r.cfg.Policy().Document.Limited(alias, p)
+}
+
 // funded is the attempt floors' read. The gateway's hold math itself
 // decides — what the holds take (policy.Fit, policy.Opening.Hold) against
 // the free task, day, month and project headroom the gateway grants
@@ -426,7 +435,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		return "", nil
 	}
 	alias := aliasOf(model)
-	price, err := r.cfg.Prices.Price(ctx, alias)
+	price, err := r.price(ctx, alias)
 	if err != nil {
 		// a model nobody can price is a hold nobody can bound: the
 		// attempt is refused (roadmap 222, item 5)
@@ -528,7 +537,7 @@ func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned boo
 		if r.cfg.Prices == nil {
 			return false, nil
 		}
-		price, err := r.cfg.Prices.Price(ctx, aliasOf(model))
+		price, err := r.price(ctx, aliasOf(model))
 		if err != nil {
 			return false, nil
 		}

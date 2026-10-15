@@ -1377,6 +1377,54 @@ func TestAgentCallsOnlyItsSessionAlias(t *testing.T) {
 	}
 }
 
+// A call that asks for no output limit is held and forwarded at its
+// alias's: the one its deployments publish, else the policy's; an alias
+// with neither is refused like an unpriced one. Hand-derived at 1e-6 in,
+// 4e-6 out per token, the body's bytes plus 64 at most its prompt tokens.
+func TestCallAskingNoLimitTakesTheAliasLimit(t *testing.T) {
+	unpublished := testPrice
+	unpublished.MaxOutput = 0
+	prices := fakePrices{"coding-cheap": testPrice, "coding-frontier": unpublished}
+	for _, tc := range []struct {
+		name, model string
+		configured  map[string]int
+		wantStatus  int
+		wantLimit   int
+		wantEUR     float64
+	}{
+		// 38 bytes: 102 prompt tokens 0.000102, 32768 output tokens 0.131072
+		{name: "the published limit", model: "coding-cheap", wantStatus: http.StatusOK, wantLimit: 32768, wantEUR: 0.131174},
+		// 41 bytes: 105 prompt tokens 0.000105, 8192 output tokens 0.032768
+		{name: "the configured limit", model: "coding-frontier", configured: map[string]int{"coding-frontier": 8192}, wantStatus: http.StatusOK, wantLimit: 8192, wantEUR: 0.032873},
+		{name: "no limit at all", model: "coding-frontier", wantStatus: http.StatusServiceUnavailable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.001"}})
+			store := newMemStore(Task{Classes: coder, ModelAlias: tc.model, ID: "42", BudgetEUR: 10, Status: "running"})
+			v := testPolicy(1, 20)
+			v.Document.Prices.MaxOutputTokens = tc.configured
+			store.setPolicy(v)
+			s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "42", SAUID: "sa"}}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: prices})
+			body := `{"messages":[],"model":"` + tc.model + `"}`
+			rr := doChat(t, s.Routes("test"), body)
+			_, bodies, _ := stub.seen()
+			a := store.auditRows()
+			last := a[len(a)-1]
+			if tc.wantLimit == 0 {
+				if rr.Code != tc.wantStatus || last.Decision != "error_price" || !strings.Contains(last.Reason, "coding-frontier has no output limit") || len(bodies) != 0 {
+					t.Fatalf("%d %s, audit %+v, %d upstream calls; want 503 error_price for the missing limit", rr.Code, rr.Body.String(), last, len(bodies))
+				}
+				return
+			}
+			if rr.Code != tc.wantStatus || last.Decision != "allowed" || len(bodies) != 1 ||
+				bodies[0] != withMaxTokens(t, body, tc.wantLimit) || *last.OutputLimit != tc.wantLimit || math.Abs(*last.HoldEUR-tc.wantEUR) > 1e-12 {
+				t.Fatalf("%d %s, audit %+v, upstream %q; want max_tokens %d held at %g EUR", rr.Code, rr.Body.String(), last, bodies, tc.wantLimit, tc.wantEUR)
+			}
+		})
+	}
+}
+
 // A settled call books LiteLLM's cost with the provider's usage and the
 // bytes of the body sent upstream: a stream's usage from its final chunk,
 // any other call's from its body, its cost from the header.

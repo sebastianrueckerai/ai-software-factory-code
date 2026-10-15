@@ -222,7 +222,10 @@ func TestLedgerCosts(t *testing.T) {
 	}
 }
 
-var testPrice = Price{In: 1e-6, Out: 4e-6}
+var testPrice = Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}
+
+// unbound is an alias's output limit no test's headroom reaches.
+const unbound = 1 << 30
 
 func TestHolds(t *testing.T) {
 	db := testDB(t)
@@ -358,7 +361,7 @@ func TestModelHoldCalibrates(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('c', 5, 'running'), ('d', 5, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "c", Kind: KindModel, Ref: "coding-cheap", Bytes: 480000, Price: Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6},
+	req := HoldRequest{TaskID: "c", Kind: KindModel, Ref: "coding-cheap", Bytes: 480000, Price: Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: unbound},
 		WantOut: 4096, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
 	// 480,000 × 0.30e-6 + 4,096 × 1.50e-6
 	h, err := TakeHold(ctx, db, req)
@@ -480,7 +483,7 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	}
 
 	h, err := TakeHold(ctx, db, HoldRequest{TaskID: "o", Kind: KindModel, Ref: "coding-held", Session: "s-h", Bytes: 44342,
-		Price: Price{In: 3e-6, Out: 1.5e-5}, WantOut: 24576, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
+		Price: Price{In: 3e-6, Out: 1.5e-5, MaxOutput: unbound}, WantOut: 24576, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
 	if err != nil || h.Session != "s-h" || h.WantOut != 24576 {
 		t.Fatalf("hold = (%+v, %v), want s-h's asking 24576", h, err)
 	}

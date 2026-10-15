@@ -100,6 +100,7 @@ func TestParseRejects(t *testing.T) {
 			"prices: {replicate: {max_seconds: 9, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
 		"replicate fractional max_seconds": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 30.5, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
+		"zero output limit":  {valid + "prices: {max_output_tokens: {coding-frontier: 0}}\n", "prices.max_output_tokens of coding-frontier must be positive"},
 		"fal unbounded":      {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
 		"two documents":      {valid + "---\nversion: 1\n", "more than one YAML document"},
 		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
@@ -253,7 +254,7 @@ func TestFitResource(t *testing.T) {
 		!strings.Contains(ref.Reason, "the tool call's worst case exceeds the month's remaining headroom (budget.month_eur)") {
 		t.Fatalf("tool call past the month = %v, want its own reason", err)
 	}
-	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0.001, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0.001, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}}); !errors.As(err, &ref) ||
 		!strings.Contains(ref.Reason, "the month cap budget.month_eur in policy.yaml is spent") {
 		t.Fatalf("model call past the month = %v, want the cap spent", err)
 	}
@@ -270,12 +271,12 @@ func TestFitResource(t *testing.T) {
 		!strings.HasSuffix(ref.Reason, "; the tool call's worst case exceeds the project's remaining month headroom (budget.month_eur in projects/linkshort.yaml), and only a human raises it, by a commit") {
 		t.Fatalf("tool call past the project's month = %v", err)
 	}
-	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, Project: "linkshort"}); !errors.As(err, &ref) ||
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: 0.001}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}, Project: "linkshort"}); !errors.As(err, &ref) ||
 		ref.Reason != "free headroom 0.001000 EUR (task 1.000000, day 1.000000, month 1.000000, project 0.001000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024; "+
 			"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit" {
 		t.Fatalf("model call past the project's month = %v", err)
 	}
-	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &ref) ||
+	if _, err := Fit(Free{Task: 0.001, Day: 1, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}}); !errors.As(err, &ref) ||
 		ref.Reason != "free headroom 0.001000 EUR (task 0.001000, day 1.000000, month 1.000000) fits 250 output tokens after a request of 0 bytes (at most 0 prompt tokens), below the minimum call of 1024" {
 		t.Fatalf("model call past the task's budget without a project cap = %v", err)
 	}
@@ -286,22 +287,26 @@ var inf = math.Inf(1)
 // An opening's hold sums its calls' holds as Fit prices them with the
 // headroom unbounded, at 3e-6 in and 1.5e-5 out: s1's 44,342 × 3e-6 +
 // 24,576 × 1.5e-5 = 0.501666 and 7,031 × 3e-6 + 0.36864 = 0.389733 make
-// 0.891399, more than s2's 43,683 × 3e-6 + 0.36864 = 0.499689. A call
-// asking no limit takes the price's MaxOutput: 1,000 × 3e-6 + 8,192 ×
-// 1.5e-5 = 0.12588; without one, MinCallTokens: 0.003 + 0.01536 = 0.01836.
+// 0.891399, more than s2's 43,683 × 3e-6 + 0.36864 = 0.499689, all under
+// the alias's limit of 32,768. A call asking no limit takes the limit:
+// 1,000 × 3e-6 + 32,768 × 1.5e-5 = 0.49452; under a limit of 8,192, it and
+// a call asking 50,000 take 8,192: 0.003 + 0.12288 = 0.12588.
 func TestOpeningHoldSumsWhatTheHoldsTake(t *testing.T) {
 	s1, s2 := []OpeningCall{{Bytes: 44342, WantOut: 24576}, {Bytes: 7031, WantOut: 24576}}, []OpeningCall{{Bytes: 43683, WantOut: 24576}}
-	r := HoldRequest{Kind: KindModel, Price: Price{In: 3e-6, Out: 1.5e-5}}
+	r := HoldRequest{Kind: KindModel, Price: Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
 	if eur, calls := (Opening{Sessions: [][]OpeningCall{s2, s1}}).Hold(r); !near(eur, 0.891399) || !reflect.DeepEqual(calls, s1) {
 		t.Fatalf("hold = (%v, %v), want s1's 0.891399", eur, calls)
 	}
-	unbounded := Opening{Sessions: [][]OpeningCall{{{Bytes: 1000}}}}
-	if eur, _ := unbounded.Hold(r); !near(eur, 0.01836) {
-		t.Fatalf("hold without a limit = %v, want 0.01836", eur)
+	unasked := Opening{Sessions: [][]OpeningCall{{{Bytes: 1000}}}}
+	if eur, _ := unasked.Hold(r); !near(eur, 0.49452) {
+		t.Fatalf("hold of a call asking no limit = %v, want the limit's 0.49452", eur)
 	}
 	r.Price.MaxOutput = 8192
-	if eur, _ := unbounded.Hold(r); !near(eur, 0.12588) {
-		t.Fatalf("hold under MaxOutput = %v, want 0.12588", eur)
+	if eur, _ := unasked.Hold(r); !near(eur, 0.12588) {
+		t.Fatalf("hold of a call asking no limit = %v, want 0.12588 under 8192", eur)
+	}
+	if eur, _ := (Opening{Sessions: [][]OpeningCall{{{Bytes: 1000, WantOut: 50000}}}}).Hold(r); !near(eur, 0.12588) {
+		t.Fatalf("hold of a call asking past the limit = %v, want 0.12588 under 8192", eur)
 	}
 	if eur, calls := (Opening{}).Hold(r); eur != 0 || calls != nil {
 		t.Fatalf("hold without a session = (%v, %v), want none", eur, calls)
@@ -337,7 +342,7 @@ func TestDayCapZeroStopsSpend(t *testing.T) {
 		t.Fatalf("day_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
 	}
 	var r *Refusal
-	if _, err := Fit(Free{Task: 1, Day: 0, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
+	if _, err := Fit(Free{Task: 1, Day: 0, Month: 1, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}}); !errors.As(err, &r) || r.Decision != "refused_day_cap" {
 		t.Fatalf("Fit under a day cap of 0 = %v, want refused_day_cap", err)
 	}
 }
@@ -348,7 +353,7 @@ func TestMonthCapZeroStopsSpend(t *testing.T) {
 		t.Fatalf("month_eur 0 = (%+v, %v), want a valid kill switch", d.Budget, err)
 	}
 	var r *Refusal
-	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6}, WantOut: 1}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
+	if _, err := Fit(Free{Task: 1, Day: 1, Month: 0, Project: inf}, HoldRequest{Price: Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}, WantOut: 1}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
 		t.Fatalf("Fit under a month cap of 0 = %v, want refused_month_cap", err)
 	}
 	if _, err := FitResource(Free{Task: 1, Day: 1, Month: 0, Project: inf}, HoldRequest{EUR: 0.0001}); !errors.As(err, &r) || r.Decision != "refused_month_cap" {
@@ -358,7 +363,7 @@ func TestMonthCapZeroStopsSpend(t *testing.T) {
 
 // Hand-derived: in 1e-6, out 4e-6 per token, 1000 input tokens cost 0.001.
 func TestFit(t *testing.T) {
-	p := Price{In: 1e-6, Out: 4e-6}
+	p := Price{In: 1e-6, Out: 4e-6, MaxOutput: unbound}
 	for _, tc := range []struct {
 		name            string
 		task, day       float64
@@ -382,7 +387,7 @@ func TestFit(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := p
-			pr.MaxOutput = tc.maxOutput
+			pr.MaxOutput = cmp.Or(tc.maxOutput, p.MaxOutput)
 			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{Bytes: 1000, Price: pr, WantOut: tc.want})
 			if tc.refused != "" {
 				var r *Refusal
@@ -395,6 +400,37 @@ func TestFit(t *testing.T) {
 				t.Fatalf("Fit = (%+v, %v), want %d tokens for %g EUR", h, err, tc.wantOut, tc.wantEUR)
 			}
 		})
+	}
+}
+
+// An alias's output limit is the one its deployments publish, else the
+// policy's; with neither, no call of it can be held.
+func TestLimited(t *testing.T) {
+	d, err := Parse([]byte(valid + "prices: {max_output_tokens: {coding-frontier: 8192}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		alias     string
+		published int
+		want      int
+		err       string
+	}{
+		{alias: "coding-frontier", published: 32768, want: 32768},
+		{alias: "coding-frontier", want: 8192},
+		{alias: "coding-cheap", published: 4096, want: 4096},
+		{alias: "coding-cheap", err: "coding-cheap has no output limit"},
+	} {
+		p, err := d.Limited(tc.alias, Price{In: 1e-6, Out: 4e-6, MaxOutput: tc.published})
+		if tc.err != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.err) {
+				t.Fatalf("Limited(%s, published %d) = (%+v, %v), want %q", tc.alias, tc.published, p, err, tc.err)
+			}
+			continue
+		}
+		if err != nil || p != (Price{In: 1e-6, Out: 4e-6, MaxOutput: tc.want}) {
+			t.Fatalf("Limited(%s, published %d) = (%+v, %v), want a limit of %d", tc.alias, tc.published, p, err, tc.want)
+		}
 	}
 }
 
@@ -411,7 +447,7 @@ func TestFit(t *testing.T) {
 // task holds the 495,000 bytes as tokens at the input price: 0.1485 +
 // 0.006144.
 func TestFitCalibrated(t *testing.T) {
-	p := Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6}
+	p := Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: unbound}
 	earlier := Usage{PromptTokens: 135000, CachedTokens: 131600, OutputTokens: 900, BodyBytes: 480000}
 	free := Free{Task: 1, Day: 5, Month: 5, Project: inf}
 	for _, tc := range []struct {
