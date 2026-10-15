@@ -1290,7 +1290,7 @@ func TestAllChildrenDoneEvent(t *testing.T) {
 		c.Status = "done"
 		store.tasks[c.ID] = c
 		// what Finish runs once the card turned final
-		taskEnded(context.Background(), r.timeline, store, r.forgejo, nil, c, "done")
+		taskEnded(context.Background(), r.timeline, store, r.forgejo, nil, c, "done", "")
 		got := events(t, objects, "t-plan")
 		if i < 3 && len(got) != 0 {
 			t.Fatalf("after %s: plan events %v", key, got)

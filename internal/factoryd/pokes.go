@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -190,7 +191,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		case t.Kind != "agent":
 			return m, false
 		case str("state") == "failed":
-			m.Content = fmt.Sprintf("%s failed: %s.", ref, CardTitle(t))
+			m.Content = fmt.Sprintf("%s failed: %s.", ref, strings.TrimSuffix(FirstLine(str("reason")), "."))
 			m.Choices = []string{"Retry", "Leave it"}
 		case str("state") == "done" && t.Parent == "":
 			m.Content = fmt.Sprintf("%s is done: %s. €%.2f in all.", ref, CardTitle(t), t.SpentEUR)

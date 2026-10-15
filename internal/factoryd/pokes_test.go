@@ -1,8 +1,10 @@
 package factoryd
 
 import (
+	"encoding/json"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -43,8 +45,13 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessageEscalation, Content: "Merge PR #612 of #603 waits for you: risk class high.", Choices: []string{"Approve"}}, true},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your acceptance: revision 2, 6 cards.`, Choices: []string{"Accept"}}, true},
-		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 failed: Session store: pick the table's store.", Choices: []string{"Retry", "Leave it"}}, true},
+		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
+			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "#603 failed: policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml.",
+				Choices: []string{"Retry", "Leave it"}}, true},
+		{"a failure's reason of many lines", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
+			"reason": "checks: the checks failed on c1.\noutput tail:\nFAIL TestStore"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "#603 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 is done: Session store: pick the table's store. €0.21 in all."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
@@ -202,6 +209,38 @@ func TestPGStorePokes(t *testing.T) {
 	rows, _ = s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10)
 	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 is done: Session store. €0.00 in all." || line.landed["sebastian"] != nil {
 		t.Fatalf("sebastian's newest row = %+v, landed %v: want the poke at once", last, line.landed["sebastian"])
+	}
+}
+
+// A failed card's poke tells the reason its issue comment carries: Finish
+// records it on the task_ended event the poke is made from, so a policy
+// gate's refusal reads in the inbox as on the issue.
+func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+	task := prTask
+	task.Kind = "agent"
+	r, _, objects := newActivityRunner(t, task, fj)
+	reason := "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", reason); err != nil {
+		t.Fatal(err)
+	}
+	if want := "factoryd: task t1 failed: " + reason; len(fj.comments) != 1 || fj.comments[0] != want {
+		t.Fatalf("the issue's comments = %q, want %q", fj.comments, want)
+	}
+	b, err := objects.Get(t.Context(), "sessions/t1/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail map[string]any
+	for line := range strings.Lines(string(b)) {
+		var e map[string]any
+		if err := json.Unmarshal([]byte(line), &e); err == nil && e["event"] == EventTaskEnded {
+			detail = e
+		}
+	}
+	m, ok := pokeOf(Event{Kind: EventTaskEnded, TaskID: "t1", Detail: detail}, task)
+	if want := "#4 failed: " + reason + "."; !ok || m.Content != want {
+		t.Fatalf("the poke = %+v, %t, want %q", m, ok, want)
 	}
 }
 

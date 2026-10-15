@@ -1015,7 +1015,7 @@ func (in *Intake) closeBacklogCard(ctx context.Context, t Task) error {
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "")
 	return nil
 }
 
@@ -1060,7 +1060,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) er
 	}
 	countOutcome(ctx, in.Metrics, in.Store, t, "done")
 	mirrorTaskState(ctx, in.Forgejo, t, "done")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "done")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "done", "")
 	return nil
 }
 

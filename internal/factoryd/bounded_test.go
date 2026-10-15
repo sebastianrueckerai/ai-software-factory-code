@@ -178,7 +178,7 @@ func TestTaskEndedHandsTheFreedSlotToTheOldestQueuedCard(t *testing.T) {
 	store, rec, bounded := boundedFixture(t, 1,
 		Task{ID: "t-done", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "done", CreatedAt: base},
 		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Lane: "ready", Status: "queued", CreatedAt: base.Add(time.Minute)})
-	taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, bounded, store.tasks["t-done"], "done")
+	taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, bounded, store.tasks["t-done"], "done", "")
 	if !slices.Equal(rec.starts, []string{"t-q"}) {
 		t.Fatalf("starts = %v, want the freed slot to start the queued card", rec.starts)
 	}

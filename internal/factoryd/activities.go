@@ -1987,13 +1987,14 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 		return err
 	}
 	r.forgetNamespace(ctx, taskID)
-	msg := "factoryd: task " + taskID + " failed: " + r.untrusted(t, reason)
+	why := r.untrusted(t, reason)
+	msg := "factoryd: task " + taskID + " failed: " + why
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	if repoErr == nil {
 		if final != "done" {
 			if final == "closed" {
-				msg = "factoryd: task " + taskID + " closed: " + r.untrusted(t, reason)
+				msg = "factoryd: task " + taskID + " closed: " + why
 			}
 			if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, msg)); err != nil {
 				return err
@@ -2042,7 +2043,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
 	// after the final state, never ahead of an end that may not come; a
 	// crash between the two loses only this record
-	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final)
+	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final, why)
 	return nil
 }
 
