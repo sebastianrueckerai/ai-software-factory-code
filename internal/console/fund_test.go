@@ -17,9 +17,8 @@ import (
 // and lands in the event spine as its own row. The answer box is
 // unchanged: the card resumes on the next answer, now with headroom.
 
-// budgetRefusal is what the floors answer for a card whose remaining
-// budget cannot fund a call (factoryd's Runner.AttemptFunded and
-// Runner.SessionFunded).
+// budgetRefusal is what the floor answers for a card whose remaining
+// budget cannot fund a call (factoryd's Runner.SessionFunded).
 const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
 // cappedCard is a waiting card of sf/code whose remaining budget cannot
@@ -28,19 +27,17 @@ func cappedCard(r *rig, t *testing.T) {
 	t.Helper()
 	r.tasks.set(budgetRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
-	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
 }
 
-// Card #704 (roadmap 243): its remaining budget funds the answer path's
-// cheapest call but not a session's opening calls, so the answer box stays
-// and the Fund action is offered beside it, and a raise goes through.
+// Card #704 (roadmap 243): its remaining budget cannot fund a session's
+// opening calls, so the answer box stays and the Fund action is offered
+// beside it, and a raise goes through.
 func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	var asked string
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return "", nil }
 	r.c.cfg.SessionFunded = func(_ context.Context, taskID, model string) (string, error) {
 		asked = taskID + " " + model
 		return budgetRefusal, nil
@@ -97,8 +94,7 @@ func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	const unpriced = "the attempt's floor on factory/coding-cheap cannot be read: no price for coding-cheap"
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
-	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
 		t.Error("the board offers Fund for a card no budget lets start, or lost its answer box")
@@ -174,8 +170,8 @@ func TestFundWritesTheAuditRow(t *testing.T) {
 		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
 	}
 	rows := r.events.rows
-	if len(rows) != 1 {
-		t.Fatalf("the raise wrote %d event rows, want one", len(rows))
+	if len(rows) != 2 || rows[1].Kind != factoryd.EventQuestionAnswered {
+		t.Fatalf("the raise wrote %d event rows, want the raise and the answer it carries", len(rows))
 	}
 	e := rows[0]
 	switch {
@@ -223,5 +219,32 @@ func TestFundRefusesACardThatIsNotWaiting(t *testing.T) {
 		if rec := r.do(post("/tasks/t-r/fund", form), ck); rec.Code != http.StatusBadRequest {
 			t.Fatalf("fund with %v = %d: %s", form, rec.Code, rec.Body)
 		}
+	}
+}
+
+// Fund takes a note and resumes the card in one step (plan A): the note is
+// posted on the issue as the member's answer, so a fund is the answer and no
+// second form is owed. A note over the answer bound is refused before the budget moves.
+func TestFundIsTheAnswer(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "funded; the fix is in store.go" {
+		t.Fatalf("issue comment = %q, want the note as the answer", got)
+	}
+	if rows := r.events.rows; len(rows) != 2 || rows[0].Kind != factoryd.EventCardFunded || rows[1].Kind != factoryd.EventQuestionAnswered {
+		t.Fatalf("event rows = %+v, want card_funded then question_answered", rows)
+	}
+
+	r = newRig(t)
+	ck, s = r.loggedIn(t)
+	cappedCard(r, t)
+	rec = r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {strings.Repeat("x", factoryd.MaxAnswer+1)}}), ck)
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); rec.Code != http.StatusBadRequest || task.BudgetEUR != 2 || len(r.fg.comments) != 0 {
+		t.Fatalf("fund with a long note = %d, budget %v, %d comments; want 400, 2, none", rec.Code, task.BudgetEUR, len(r.fg.comments))
 	}
 }

@@ -500,7 +500,6 @@ func main() {
 		Kustomization:  kube.KustomizationState,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
-		AttemptFunded:  runner.AttemptFunded,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		Notes:          store,

@@ -1543,7 +1543,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	refusal := "the remaining budget cannot fund a call: 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and the cheapest call needs more. " +
 		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 	var asked string
-	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		asked = taskID + " " + model
 		return refusal, nil
 	}
@@ -1558,7 +1558,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
 	}
 	// a failed read is no refusal: the workflow's grant still guards the attempt
-	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		return "", errors.New("the price book is down")
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther {
@@ -1574,7 +1574,7 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
 	}...)
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) {
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
 		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
 			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}

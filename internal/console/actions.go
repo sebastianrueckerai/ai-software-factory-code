@@ -841,18 +841,27 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if why := c.unfundedAnswer(ctx, t); why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
+	if err := c.answerCard(ctx, a, t, text); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+}
+
+// answerCard posts text as the member's answer to card t's escalation; at the
+// session cap the answer is a grant, and its event session_granted.
+func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, text string) error {
 	kind := factoryd.EventQuestionAnswered
 	if c.capFactsOf(ctx, t).capped {
 		kind = factoryd.EventSessionGranted
 	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
-		return "", &forgejoRefusal{"post the answer", err}
+		return &forgejoRefusal{"post the answer", err}
 	}
 	c.answerWhole(ctx, a, t, posted)
 	log.Printf("console: %s answered the escalation of %s via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, commentDetail(posted))
-	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+	return nil
 }
 
 // doGrantSession grants card id, waiting at its session cap, one more
@@ -906,31 +915,27 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 	}
 }
 
-// unfundedAnswer is the answer path's floor (ruling 322): the refusal a
-// card's remaining budget owes an answer, "" when one can run. A card
-// with no session yet (no model to price) and a failed read answer as
-// before: the workflow's grant refuses the attempt anyway. An answer at
-// the day cap is taken: its attempt waits for the day on its own.
+// unfundedAnswer is the answer path's floor: the refusal a card's remaining
+// budget owes an answer, the session it would start being unfunded
+// (SessionFunded), "" when one can run. A card with no session yet (no model
+// to price) and a failed read answer as before: the workflow's floor refuses
+// the session anyway. An answer at the day cap is taken: its session waits
+// for the day on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
-	if why := c.unfunded(ctx, t, c.cfg.AttemptFunded); !factoryd.DayCapped(why) {
+	if why := c.unfundedSession(ctx, t); !factoryd.DayCapped(why) {
 		return why
 	}
 	return ""
 }
 
-// unfundedSession is the fund's floor (roadmap 243): the refusal a card's
-// remaining budget owes a session's opening calls, "" when they can run.
+// unfundedSession is the refusal a card's remaining budget owes a session's
+// opening calls (SessionFunded), "" when they can run or the card cannot be
+// judged.
 func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
-	return c.unfunded(ctx, t, c.cfg.SessionFunded)
-}
-
-// unfunded is floor's refusal of card t, "" when it funds the card or
-// cannot judge it.
-func (c *Console) unfunded(ctx context.Context, t factoryd.Task, floor func(ctx context.Context, taskID, model string) (string, error)) string {
-	if floor == nil || t.ModelAlias == "" {
+	if c.cfg.SessionFunded == nil || t.ModelAlias == "" {
 		return ""
 	}
-	why, err := floor(ctx, t.ID, t.ModelAlias)
+	why, err := c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
 	if err != nil {
 		log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		return ""
@@ -942,21 +947,22 @@ func (c *Console) unfunded(ctx context.Context, t factoryd.Task, floor func(ctx 
 // waiting on a human after a budget refusal (roadmap 210): one store
 // transaction raises budget_eur, and the event row is the raise's audit
 // trail — the actor, the card, the old and the new budget and the stated
-// reason. The card keeps waiting as it was; the next answer resumes it,
-// now with headroom (the answer box is unchanged).
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, reason string) (string, error) {
-	reason = strings.TrimSpace(reason)
+// reason. The note is the member's answer to the card's question, posted as
+// doAnswer posts it, so the raise resumes the card in one step.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
+	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
 		return "", refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
-	case reason == "" || len(reason) > 64<<10:
-		return "", refuse(http.StatusBadRequest, "a reason of up to 64 KiB is required")
+	}
+	if err := answerFits(note); err != nil {
+		return "", err
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
-	if t.Kind != "agent" || t.Status != "waiting-human" {
+	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
 	}
 	switch why := c.unfundedSession(ctx, t); {
@@ -973,10 +979,14 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, r
 		log.Printf("console: %s funds %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
 	}
-	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, reason)
+	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded,
-		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": reason})
-	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f; it resumes on the next answer.", t.IssueNumber, eur, to), nil
+		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
+	if err := c.answerCard(ctx, a, t, note); err != nil {
+		log.Printf("console: %s funded %s, the answer failed: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f, but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, eur, to))
+	}
+	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer; the card resumes.", t.IssueNumber, eur, to), nil
 }
 
 // doClose closes card id's issue as the member, its note commented first
