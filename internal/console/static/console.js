@@ -1,7 +1,9 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
 // choice changed) or a fold or a disclosure in it is open, so a swap of el
 // would wipe or close it. The card drawer sits outside the board, so an
-// open drawer does not hold the board's swaps: the ages keep ticking.
+// open drawer does not hold the board's swaps: the ages keep ticking. The
+// find's text is no such form: it applies as you type, and its form
+// outlives every swap of the board (hx-preserve).
 function busy(el) {
   if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
   if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
@@ -9,7 +11,7 @@ function busy(el) {
   var fields = el.querySelectorAll("input, textarea");
   for (var i = 0; i < fields.length; i++) {
     var f = fields[i];
-    if (f.type === "hidden") continue;
+    if (f.type === "hidden" || f.id === "q") continue;
     if ((f.type === "radio" || f.type === "checkbox") ? f.checked !== f.defaultChecked : f.value !== f.defaultValue) return true;
   }
   return false;
@@ -21,8 +23,10 @@ document.addEventListener("htmx:beforeRequest", function (e) {
 });
 // A board that loaded more finished cards keeps them: what answers the
 // board, a swap or an action, reads as many of each column's as it shows.
+// The find reads the board anew, as its Enter does, and its URL is the
+// one it pushes.
 document.addEventListener("htmx:configRequest", function (e) {
-  if (!e.detail.target || e.detail.target.id !== "board") return;
+  if (!e.detail.target || e.detail.target.id !== "board" || e.detail.elt.id === "find") return;
   document.querySelectorAll("#board [data-finished]").forEach(function (col) {
     e.detail.parameters[col.dataset.finished + "-shown"] = col.querySelectorAll("[data-card]").length;
   });
@@ -85,11 +89,30 @@ function offerLanes() {
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
   // a setting applies at once, with no button to press: the board's
-  // project, a column's order and show, a card's accent
+  // project, a column's order and show, the routines shown, a card's
+  // accent; a change of the routines' period chooses within
   var f = e.target.form;
-  if (f && f.classList.contains("auto-submit")) f.requestSubmit();
+  if (!f || !f.classList.contains("auto-submit")) return;
+  if (e.target.name === "within" || e.target.name === "unit") f.querySelector('input[name=routines][value=within]').checked = true;
+  f.requestSubmit();
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
+
+// The find narrows the board as you type: its form swaps the board around
+// itself, which it outlives (hx-preserve), and pushes its query; Back
+// reloads the board of the URL it returns to, as htmx keeps no snapshot
+// (layout.html). A browser without moveBefore (Safari) takes the form out
+// and puts it back, which drops its focus: the box takes it back.
+(function () {
+  var focused = false;
+  document.addEventListener("htmx:beforeSwap", function () {
+    focused = document.activeElement !== null && document.activeElement.id === "q";
+  });
+  document.addEventListener("htmx:afterSwap", function () {
+    var q = document.getElementById("q");
+    if (focused && q && document.activeElement !== q) q.focus();
+  });
+})();
 
 // Theme selector (C15): the moon sets dark, the default, the sun sets
 // light; the choice is remembered in localStorage, which theme.js applies

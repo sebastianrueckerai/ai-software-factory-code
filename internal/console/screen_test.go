@@ -1019,7 +1019,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	}
 	body := page("t-run")
 	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`,
-		`data-query="?project=ai-software-factory-code&amp;q=t-run"`, `<form class="find on" id="find" role="search" method="get" action="/">`,
+		`data-query="?project=ai-software-factory-code&amp;q=t-run"`, findForm,
 		`<input id="q" name="q" type="text" value="t-run" placeholder="Find: a word, #612, plan:558"`,
 		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`} {
 		if !strings.Contains(body, want) {
@@ -1040,18 +1040,24 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 			t.Errorf("the escalation's forms lack %s", want)
 		}
 	}
+	// without a find the × is in place for the box's text to show it (CSS)
 	plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<form class="find" id="find"`, `>Needs you <span class="count">5</span></h3>`} {
+	for _, want := range []string{findForm, `<input id="q" name="q" type="text" value="" placeholder="Find: a word, #612, plan:558"`,
+		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`, `>Needs you <span class="count">5</span></h3>`} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("without a find the board lacks %s", want)
 		}
 	}
-	for _, none := range []string{"find-x", "none match", " of "} {
-		if strings.Contains(col(t, plain, "Done"), none) || none == "find-x" && strings.Contains(plain, none) {
+	for _, none := range []string{"none match", " of "} {
+		if strings.Contains(col(t, plain, "Done"), none) {
 			t.Errorf("without a find the board shows %q", none)
 		}
 	}
 }
+
+// findForm is the find's form: as you type it swaps the board around
+// itself and pushes its query.
+const findForm = `<form class="find" id="find" role="search" method="get" action="/" hx-get="/" hx-trigger="input changed delay:250ms" hx-target="#board" hx-select="#board" hx-swap="outerHTML" hx-push-url="true" hx-preserve>`
 
 // The filter's query carries the find, trimmed, beside the project and
 // the view.
@@ -1144,7 +1150,7 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 		`<input type="radio" name="queued-only" value="plan:7"><span>from plan #7</span>`,
 		`data-query="?project=ai-software-factory-code&amp;queued=oldest&amp;queued-only=blocked"`,
 		// the find's form keeps the menus' choices, a menu's form the rest of the filter
-		`<form class="find" id="find" role="search" method="get" action="/"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><label`,
+		findForm + `<input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><label`,
 		`<form method="get" action="/" class="menu-pop auto-submit"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><fieldset><legend>Order</legend><label><input type="radio" name="done" value="" checked>`,
 	} {
 		if !strings.Contains(body, want) {

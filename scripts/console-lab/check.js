@@ -4,8 +4,9 @@
 // mechanic that does not work: the drawer docked at the right edge and
 // never over the chat, Escape closing it, Do it becoming an applied line,
 // the routines' ghosts at the foot of their lanes with their control and
-// drawer, the chat above the board at 390 px, no horizontal scroll at 1440
-// or 390. Exit 1 and one line per failure.
+// drawer and their period, the find narrowing the board as you type, the
+// chat above the board at 390 px, no horizontal scroll at 1440 or 390.
+// Exit 1 and one line per failure.
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -54,7 +55,7 @@ const mustHave = {
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
-    "↻ routines", "within 7 days", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
+    "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
@@ -82,6 +83,64 @@ async function open(browser, viewport, folded) {
   page.on("pageerror", (e) => errors.push(String(e)));
   page.on("response", (r) => { if (r.url().startsWith(base) && r.status() >= 400) errors.push(r.url() + " " + r.status()); });
   return { ctx, page, errors };
+}
+
+// findAsYouType types word into the find of the busy board under query
+// without Enter and checks that after the pause the board, and nothing
+// else, shows only the cards that say word, the URL holds q=word beside
+// the board's other fields, and the box keeps its focus, its text and its
+// caret; that emptying the box makes the board whole again; that Back
+// returns to the find, the box holding word; and that the × shows while
+// the box holds text and clears the find and the URL.
+async function findAsYouType(p, query, word, label, fails) {
+  const page = p.page, cards = "#board [data-card]";
+  await page.goto(base + "/" + query, { waitUntil: "load" });
+  await page.waitForTimeout(600);
+  const whole = await page.locator(cards).count(), kept = new URL(page.url()).searchParams;
+  if (await page.locator("#find .find-x").isVisible()) fails.push(label + ": the × shows while the box is empty");
+  await page.evaluate(() => { window.labPage = true; window.labBox = document.getElementById("q"); });
+  await page.locator("#q").click();
+  await page.keyboard.type(word, { delay: 40 });
+  await page.waitForTimeout(1200);
+  const at = new URL(page.url()).searchParams;
+  if (at.get("q") !== word) fails.push(label + ": the URL holds q=" + at.get("q") + ", want " + word + " (" + page.url() + ")");
+  for (const [k, v] of kept) if (at.get(k) !== v) fails.push(label + ": the find drops " + k + "=" + v + " (" + page.url() + ")");
+  if ([...at.keys()].some((k) => k.endsWith("-shown"))) fails.push(label + ": the URL carries a column's shown count (" + page.url() + ")");
+  const texts = await page.locator(cards).allInnerTexts();
+  if (!texts.length || texts.length >= whole) fails.push(label + ": " + word + " shows " + texts.length + " of the board's " + whole + " cards");
+  const off = texts.filter((t) => !t.toLowerCase().includes(word));
+  if (off.length) fails.push(label + ": " + word + " shows cards that do not say it: " + off.map((t) => t.slice(0, 40)).join(" | "));
+  const box = () => page.evaluate(() => {
+    const q = document.getElementById("q");
+    return { focus: document.activeElement === q, value: q.value, caret: q.selectionStart, same: window.labPage === true, box: window.labBox === q };
+  });
+  let b = await box();
+  if (!b.same) fails.push(label + ": typing reloads the page");
+  if (!b.box) fails.push(label + ": the swap replaces the find's box");
+  if (!b.focus || b.value !== word || b.caret !== word.length) fails.push(label + ": after the swap the box has focus " + b.focus + ", text " + JSON.stringify(b.value) + ", caret " + b.caret);
+  if (!(await page.locator("#find .find-x").isVisible())) fails.push(label + ": no × while the box holds text");
+  await page.keyboard.press("Control+A");
+  await page.keyboard.press("Backspace");
+  await page.waitForTimeout(1200);
+  b = await box();
+  if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": the emptied box leaves q in the URL (" + page.url() + ")");
+  if ((await page.locator(cards).count()) !== whole) fails.push(label + ": the emptied box shows " + (await page.locator(cards).count()) + " cards, not the whole " + whole);
+  if (!b.focus || b.value !== "") fails.push(label + ": the emptied box has focus " + b.focus + ", text " + JSON.stringify(b.value));
+  if (await page.locator("#find .find-x").isVisible()) fails.push(label + ": the × stays on the emptied box");
+  await page.goBack();
+  await page.waitForTimeout(1500);
+  await page.waitForLoadState("load");
+  await page.waitForTimeout(600);
+  const back = { q: new URL(page.url()).searchParams.get("q"), box: await page.locator("#q").inputValue(), cards: await page.locator(cards).count() };
+  if (back.q !== word || back.box !== word || back.cards !== texts.length) {
+    fails.push(label + ": Back reads q=" + back.q + ", the box " + JSON.stringify(back.box) + " and " + back.cards + " cards, want " + word + " and " + texts.length);
+  }
+  if (!(await page.locator("#find .find-x").isVisible())) return fails.push(label + ": no × to clear the find after Back");
+  await page.locator("#find .find-x").click();
+  await page.waitForLoadState("load");
+  await page.waitForTimeout(600);
+  if (new URL(page.url()).searchParams.has("q")) fails.push(label + ": the × leaves q in the URL (" + page.url() + ")");
+  if ((await page.locator(cards).count()) !== whole || (await page.locator("#q").inputValue()) !== "") fails.push(label + ": the × does not make the board whole again");
 }
 
 async function text(page) {
@@ -327,8 +386,19 @@ async function text(page) {
       if (!counts.some((c) => /\d+ of \d+/.test(c))) fails.push("find: no count reads n of m under ?q=is:failed (" + counts.join(" | ") + ")");
       const faces = await p.page.locator("#board [data-card]").count(), failed = await p.page.locator("#board [data-card]").filter({ hasText: "failed" }).count();
       if (!faces || faces !== failed) fails.push("find: ?q=is:failed shows " + faces + " cards, " + failed + " of them failed");
-      if (!(await p.page.locator("#find.on .find-x").count())) fails.push("find: no × while a find is on");
+      if (!(await p.page.locator("#find .find-x").isVisible())) fails.push("find: no × while a find is on");
       if ((await p.page.locator("#board").getAttribute("data-query") || "").indexOf("q=is%3Afailed") < 0) fails.push("find: the board's query does not carry q");
+      // the find as you type (2026-10-15), with the board's other fields in the URL, and so
+      // in a browser without moveBefore (Safari), where htmx's hx-preserve takes the find's
+      // form out of the page and puts it back
+      await findAsYouType(p, "?queued=oldest&routines=within&within=2&unit=hours", "export", "find as you type", fails);
+      const nm = await open(browser, { width: 1440, height: 900 });
+      await nm.ctx.addInitScript(() => { delete Element.prototype.moveBefore; });
+      await nm.page.goto(base + "/", { waitUntil: "load" });
+      if (await nm.page.evaluate(() => "moveBefore" in Element.prototype)) fails.push("find without moveBefore: the lab could not take moveBefore away");
+      else await findAsYouType(nm, "", "export", "find without moveBefore", fails);
+      if (nm.errors.length) fails.push("find without moveBefore: " + nm.errors.join("; "));
+      await nm.ctx.close();
       // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
       await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -355,6 +425,11 @@ async function text(page) {
       }
       const radios = await p.page.locator("#board .board-head details.col-menu input[type=radio][name=routines]").count();
       if (radios !== 3) fails.push("routines: the control has " + radios + " radios named routines, not 3");
+      const period = await p.page.evaluate(() => {
+        const n = document.querySelector("#board .routines-ctl input[type=number][name=within]"), u = document.querySelector("#board .routines-ctl select[name=unit]");
+        return n && u ? [n.min, n.max, n.value, Array.from(u.options).map((o) => o.value).join(","), u.value].join(" ") : "";
+      });
+      if (period !== "1 999 1 days,hours days") fails.push('routines: the control\'s number and unit read "' + period + '", want min 1, max 999, 1, days or hours, days');
       const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
       if (!cell.includes("↻ bump in 20 min")) fails.push('routines: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump in 20 min');
       if (!(await p.page.locator('#board [data-card="' + labID(779) + '"] .chip.routine').count())) fails.push("routines: #779 in Done carries no routine chip");
@@ -386,6 +461,46 @@ async function text(page) {
       if (await p.page.locator("#board .card.ghost").count()) fails.push("routines: ?routines=none leaves a ghost");
       const hidden = await p.page.locator("#board .ghosts-hidden").allInnerTexts();
       if (!hidden.some((t) => t.includes("routines hidden"))) fails.push("routines: ?routines=none does not say routines hidden (" + hidden.join(" | ") + ")");
+      // the period (2026-10-15): choosing within, a number or a unit applies at once; the
+      // dependency update runs in 3 d 0 h 20 min, the bump and the template pass in under
+      // half an hour, the audit after merges, so 1 day, 2 hours and 3 days hide the
+      // dependency update and 4 days none; a number changed under all chooses within
+      await seed("busy");
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const ctl = p.page.locator("#board .routines-ctl");
+      const ghosts = async () => (await p.page.locator("#board [data-ghost]").evaluateAll((g) => g.map((x) => x.dataset.ghost.split("/")[1]))).sort().join(",");
+      const all = "audit,dependency-update,template-pass,weekly-bump", soon = "audit,template-pass,weekly-bump";
+      for (const [what, act, want, shown, line] of [
+        ["choosing within", () => ctl.locator("input[name=routines][value=within]").check(), { routines: "within", within: "1", unit: "days" }, soon, "1 routine hidden"],
+        ["a number of 4", async () => { await ctl.locator("input[name=within]").fill("4"); await ctl.locator("input[name=within]").press("Tab"); },
+          { routines: "within", within: "4", unit: "days" }, all, ""],
+        ["within 2 hours", async () => { await ctl.locator("input[name=within]").fill("2"); await ctl.locator("select[name=unit]").selectOption("hours"); },
+          { routines: "within", within: "2", unit: "hours" }, soon, "1 routine hidden"],
+        ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: "all" }, all, ""],
+        ["a number of 3 under all", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
+          { routines: "within", within: "3", unit: "days" }, soon, "1 routine hidden"],
+      ]) {
+        await ctl.locator("summary").click();
+        await act();
+        try {
+          await p.page.waitForURL((u) => Object.entries(want).every(([k, v]) => u.searchParams.get(k) === v), { timeout: 5000 });
+        } catch (e) {
+          fails.push("routines: " + what + " does not apply (" + p.page.url() + ")");
+          continue;
+        }
+        await p.page.waitForLoadState("load");
+        await p.page.waitForTimeout(600);
+        const got = await ghosts(), hid = (await p.page.locator("#board .ghosts-hidden").allInnerTexts()).join(" | ");
+        if (got !== shown) fails.push("routines: " + what + " shows the ghosts " + got + ", want " + shown);
+        if (hid !== line) fails.push("routines: " + what + ' says "' + hid + '" hidden, want "' + line + '"');
+      }
+      const kept = await p.page.evaluate(() => {
+        const c = document.querySelector("#board .routines-ctl");
+        return [c.querySelector("input[name=routines]:checked").value, c.querySelector("input[name=within]").value, c.querySelector("select[name=unit]").value,
+          c.querySelector("summary").getAttribute("aria-label")].join(" | ");
+      });
+      if (kept !== "within | 3 | days | Routines on the board: within 3 days") fails.push('routines: the control does not keep within 3 days ("' + kept + '")');
     }
     if (sc === "fire") {
       // the held run (C16): the ghost and the strip's cell in amber, #781 in Needs you with the chip
@@ -631,6 +746,17 @@ async function text(page) {
   if (!(await ph.page.locator(".routines-ctl > summary").first().isVisible())) fails.push("phone: the routines control is not shown");
   const smallGhost = ghostTargets.filter((x) => x[1] < 43.5);
   if (smallGhost.length) fails.push("phone: routine targets under 44 px: " + smallGhost.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+  // the routines control open: its three choices, the period's number and its unit
+  await ph.page.locator(".routines-ctl > summary").first().click();
+  await ph.page.waitForTimeout(200);
+  const ctlTargets = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".routines-ctl .menu-pop label, .routines-ctl .menu-pop input[type=number], .routines-ctl .menu-pop select"))
+    .filter((b) => b.offsetParent).map((b) => [b.name || b.textContent.trim(), b.getBoundingClientRect().height, b.getBoundingClientRect().right]));
+  if (ctlTargets.length !== 5) fails.push("phone: the open routines control shows " + ctlTargets.length + " targets, want 3 choices, the number and the unit");
+  const smallCtl = ctlTargets.filter((x) => x[1] < 43.5);
+  if (smallCtl.length) fails.push("phone: routines control targets under 44 px: " + smallCtl.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+  const cutCtl = ctlTargets.filter((x) => x[2] > 390);
+  if (cutCtl.length) fails.push("phone: routines control targets cut off at 390: " + cutCtl.map((x) => x[0] + " to " + Math.round(x[2])).join(", "));
+  await ph.page.locator(".routines-ctl > summary").first().click();
   const order = await ph.page.evaluate(() => {
     const c = document.querySelector("#chat"), b = document.querySelector("#board");
     const vis = (e) => e && e.getClientRects().length > 0;

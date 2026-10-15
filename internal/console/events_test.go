@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os/exec"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -1077,7 +1078,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 			t.Errorf("the board page lacks %s", want)
 		}
 	}
-	if strings.Contains(body, "hx-trigger") {
+	if regexp.MustCompile(`hx-trigger="[^"]*\bevery\b`).MatchString(body) {
 		t.Error("the board page still polls")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil), ck).Body.String()
