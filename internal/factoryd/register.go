@@ -78,6 +78,10 @@ type Registrar struct {
 	// Mirrors are the projects' GitHub mirror rows, whose state each poll
 	// reads from Forgejo; nil reads none.
 	Mirrors MirrorStore
+	// Infra is the configuration's repository, where the console files a
+	// project: each poll reads there the pull request a waiting import row
+	// records; nil reads none.
+	Infra *ForgejoConfig
 	// Tasks files a card for a pull request factoryd opened outside any
 	// card's workflow (roadmap 187): a Sync from GitHub gets one through
 	// FileFactoryPRTask; nil files none. Workflows starts its workflow
@@ -140,10 +144,6 @@ const (
 	// Kustomization's name and namespace.
 	fluxNameLabel      = "kustomize.toolkit.fluxcd.io/name"
 	fluxNamespaceLabel = "kustomize.toolkit.fluxcd.io/namespace"
-	// staleImport is how long an import row not imported, of a filing whose
-	// pull request never merged or a project whose file went, keeps its
-	// token: a week, so a review over a weekend keeps its import.
-	staleImport = 7 * 24 * time.Hour
 )
 
 // ProjectHookEvents are every issue and pull request event, and pushes
@@ -270,8 +270,11 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 
 // poll keeps, between the reconciles, what must not wait for the next:
 // each ready factory project's staging secrets, so a Secret Flux applies
-// reaches CI within the poll, and the import rows of filings whose pull
-// request closed unmerged.
+// reaches CI within the poll, and the import rows of projects no file
+// names: a row's infra pull request closed unmerged deletes the row with
+// its token; open or merged, it keeps the row for registration. A row
+// that records no pull request, or whose pull request cannot be read,
+// stays and is reported.
 func (r *Registrar) poll(ctx context.Context) {
 	ps, err := r.Store.Projects(ctx)
 	if err != nil {
@@ -287,15 +290,30 @@ func (r *Registrar) poll(ctx context.Context) {
 			r.refreshStaging(ctx, p)
 		}
 	}
-	if r.Mirrors == nil {
+	if r.Mirrors == nil || r.Infra == nil {
 		return
 	}
-	gone, err := r.Mirrors.DeleteStaleImports(ctx, files, time.Now().Add(-staleImport))
+	waiting, err := r.Mirrors.WaitingImports(ctx, files)
 	if err != nil {
 		log.Printf("projects: import rows: %v", err)
 	}
-	for _, m := range gone {
-		log.Printf("project %s: import row of github.com/%s deleted: %s over 7 days, and no file projects/%s.yaml", m.Project, m.Remote, m.State, m.Project)
+	for _, m := range waiting {
+		if m.PR == 0 {
+			log.Printf("project %s: import row of github.com/%s kept: it records no pull request on %s, so none tells its filing merged or closed",
+				m.Project, m.Remote, r.Infra.Repo)
+			continue
+		}
+		pr, err := r.Infra.PullRequest(ctx, m.PR)
+		switch {
+		case err != nil:
+			log.Printf("project %s: import row of github.com/%s kept: %s#%d unread: %v", m.Project, m.Remote, r.Infra.Repo, m.PR, err)
+		case pr.State == "closed" && !pr.Merged:
+			if err := r.Mirrors.DeleteImport(ctx, m.Project, m.PR); err != nil {
+				log.Printf("project %s: import row of github.com/%s: %v", m.Project, m.Remote, err)
+			} else {
+				log.Printf("project %s: import row of github.com/%s deleted: %s#%d closed unmerged", m.Project, m.Remote, r.Infra.Repo, m.PR)
+			}
+		}
 	}
 }
 

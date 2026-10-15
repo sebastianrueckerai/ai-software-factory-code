@@ -200,3 +200,64 @@ func TestEventsAnswerOnceMigration(t *testing.T) {
 		t.Fatal("a third row of comment 7 was stored; the unique index is missing")
 	}
 }
+
+// The import-pr migration gives each import row the pull request of its
+// project's last project_filed event when that event names the row's
+// remote. A row whose last filing named another remote, a row with no
+// filing, one that records a pull request already and an export row keep
+// theirs.
+func TestImportPRMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "importpr")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO project_mirrors (project, direction, remote, username, token, state, pr) VALUES
+		 ('filed', 'import', 'acme/app', '', 'ghp_x', 'pending', 0),
+		 ('refiled', 'import', 'acme/new', '', '', 'pending', 0),
+		 ('moved', 'import', 'acme/old', '', '', 'pending', 0),
+		 ('unfiled', 'import', 'acme/none', '', '', 'pending', 0),
+		 ('linked', 'import', 'acme/linked', '', '', 'pending', 7),
+		 ('filed', 'export', 'acme/app', 'u', 'ghp-e', 'created', 0)`,
+		`INSERT INTO events (repository, kind, actor, via, detail) VALUES
+		 ('filed/filed', 'project_filed', 'alice', 'button', '{"name": "filed", "pr": 35, "source": "acme/app"}'),
+		 ('filed/filed', 'project_merged', 'alice', 'button', '{"name": "filed", "pr": 36}'),
+		 ('refiled/refiled', 'project_filed', 'alice', 'button', '{"name": "refiled", "pr": 40, "source": "acme/old"}'),
+		 ('refiled/refiled', 'project_filed', 'alice', 'button', '{"name": "refiled", "pr": 41, "source": "acme/new"}'),
+		 ('moved/moved', 'project_filed', 'alice', 'button', '{"name": "moved", "pr": 50, "source": "acme/old"}'),
+		 ('moved/moved', 'project_filed', 'alice', 'button', '{"name": "moved", "pr": 51, "source": "acme/new"}'),
+		 ('linked/linked', 'project_filed', 'alice', 'button', '{"name": "linked", "pr": 60, "source": "acme/linked"}')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261015091000_import_pr.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the unlinked rows: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT project || ' ' || direction, pr FROM project_mirrors`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	got := map[string]int64{}
+	for rows.Next() {
+		var row string
+		var pr int64
+		if err := rows.Scan(&row, &pr); err != nil {
+			t.Fatal(err)
+		}
+		got[row] = pr
+	}
+	want := map[string]int64{"filed import": 35, "refiled import": 41, "moved import": 0, "unfiled import": 0, "linked import": 7, "filed export": 0}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("pull requests %v, want %v", got, want)
+	}
+}

@@ -221,7 +221,8 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 // against infra's head, and files it as the human: a new branch
 // project-<name> off main with the one file, and its pull request. A
 // GitHub repository to start from is the name's import row, with its
-// token, put once the branch exists, before the pull request.
+// token, put once the branch exists, before the pull request, which it
+// records once open.
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
 		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
@@ -296,6 +297,11 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		http.StatusCreated, &pull); err != nil {
 		c.forgejoFailed(w, r, "open the pull request", err)
 		return
+	}
+	if p.Source != "" {
+		if err := c.cfg.Mirrors.SetImportPR(r.Context(), p.Name, pull.Number); err != nil {
+			log.Printf("console: the GitHub import of %s: record %s#%d: %v", p.Name, c.cfg.InfraRepo, pull.Number, err)
+		}
 	}
 	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
 	detail := map[string]any{"name": p.Name, "pr": pull.Number}
@@ -392,11 +398,6 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 			merged.State, merged.Detail = stepRunning, "Merged; the factory loads it within 30 seconds."
 		case pr.State != "open":
 			pulled.State, pulled.Detail, pulled.Link = stepFailed, fmt.Sprintf("#%d was closed without merging.", pr.Number), pr.HTMLURL
-			if c.cfg.Mirrors != nil {
-				if err := c.cfg.Mirrors.DeleteMirror(ctx, name, factoryd.MirrorImport); err != nil {
-					log.Printf("console: delete import row of project-%s: %v", name, err)
-				}
-			}
 		default:
 			pulled.State, pulled.Detail, pulled.Link = stepDone, fmt.Sprintf("#%d, filed by %s", pr.Number, pr.User.Login), pr.HTMLURL
 			merged.Detail = fmt.Sprintf("Waiting for an approver to merge #%d.", pr.Number)

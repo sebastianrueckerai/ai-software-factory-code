@@ -158,6 +158,7 @@ type Mirrors interface {
 	Mirror(ctx context.Context, project, direction string) (factoryd.Mirror, bool, error)
 	MirrorToken(ctx context.Context, project, direction string) (factoryd.Mirror, bool, error)
 	PutMirror(ctx context.Context, m factoryd.Mirror) error
+	SetImportPR(ctx context.Context, project string, pr int64) error
 	DeleteMirror(ctx context.Context, project, direction string) error
 	PushMirrors(ctx context.Context, repo factoryd.Repo) ([]factoryd.PushMirror, error)
 	AddPushMirror(ctx context.Context, repo factoryd.Repo, address, username, token string) error

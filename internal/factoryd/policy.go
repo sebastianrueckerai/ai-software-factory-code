@@ -371,6 +371,11 @@ func (c *ForgejoConfig) call(ctx context.Context, path string) ([]byte, error) {
 	return c.Forgejo.tokenCall(c.Token)(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/%s", c.Repo.Owner, c.Repo.Name, path), nil, http.StatusOK)
 }
 
+// PullRequest reads Repo's pull request number: open, closed or merged.
+func (c *ForgejoConfig) PullRequest(ctx context.Context, number int64) (PullRequestRef, error) {
+	return c.Forgejo.As("", c.Token).PullRequestState(ctx, c.Repo.Owner, c.Repo.Name, number)
+}
+
 func (c *ForgejoConfig) Head(ctx context.Context) (string, error) {
 	body, err := c.call(ctx, "branches/"+url.PathEscape(c.Branch))
 	if err != nil {

@@ -1696,8 +1696,9 @@ branch `project-<name>` and opens its pull request. The status panel
 The form may name a GitHub repository (owner/name) to start from, with a
 token for a private one. The console stores it as the name's
 `project_mirrors` row (direction `import`, state `pending`) before the pull
-request; the file, the pull request and the `project_filed` event never
-hold the token. Registration then makes the repository with Forgejo's
+request, and the pull request's number on the row (`pr`) once it opens;
+the file, the pull request and the `project_filed` event never hold the
+token. Registration then makes the repository with Forgejo's
 migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
 mirror) in place of the empty create. The migrate runs in a goroutine of
 its own, one per project at most, so no other project's reconcile waits
@@ -1729,10 +1730,16 @@ started and fails while the row still reads copying. The seed gives a source
 whose default branch is not `main` a `main` from it, seeds an empty one
 whole, and otherwise commits only the template's `.forgejo/` files and `AGENTS.md` that the copy lacks,
 with the template's `deploy/` when the copy has none ("Factory workflows",
-"Factory workflows and manifests"). An import row still pending,
-copying or failed 7 days after its last write whose project no file names
-(a pull request closed unmerged, a file removed before the import) is
-deleted with its token at the next poll. The panel
+"Factory workflows and manifests"). The row lives until registration
+consumes it or its pull request closes unmerged, however long the review
+takes: each poll, every minute, reads with the `forgejo-config` token the
+pull request of every import row not imported whose project no file
+names. Closed unmerged, the row is deleted with its token; open or
+merged, it stays for the registration the merge's load starts. A row
+that records no pull request, or whose pull request Forgejo does not
+answer, stays and is logged at every poll. Rows put before the `pr`
+column take the pull request of their project's last `project_filed`
+event that names their remote. The panel
 shows a fifth step, "Imported from GitHub", between the repository and
 `ready_at`.
 

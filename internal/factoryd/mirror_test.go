@@ -204,12 +204,6 @@ func (m *memMirrors) SetMirrorState(_ context.Context, project, direction, state
 	return nil
 }
 
-// DeleteStaleImports keeps every row: the rows' age is Postgres's, so
-// TestPollDeletesStaleImports runs on it.
-func (m *memMirrors) DeleteStaleImports(context.Context, []string, time.Time) ([]Mirror, error) {
-	return nil, nil
-}
-
 func (m *memMirrors) SetMirrorToken(_ context.Context, project, direction, token string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -802,52 +796,114 @@ func TestImportedManifests(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): the poll
-// deletes, with one log line each, an import row still pending, copying
-// or failed 7 days after its last write whose project no file names, and
-// its token with it; it keeps a younger one, a filed project's, an
-// imported one and an export row.
-func TestPollDeletesStaleImports(t *testing.T) {
+// reads, with the config token, the infra pull request each import row of
+// a project no file names records, whatever the row's age. Closed
+// unmerged, it deletes the row and its token with one log line; open or
+// merged, it keeps the row. A pull request Forgejo does not answer keeps
+// its row, reported, as does a row that records none. A filed project's
+// row and an imported one are not read.
+func TestPollDeletesImportsOfClosedFilings(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	logs := captureLog(t)
+	var mu sync.Mutex
+	var reads []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		mu.Lock()
+		reads = append(reads, req.Method+" "+req.URL.Path+" "+req.Header.Get("Authorization"))
+		mu.Unlock()
+		switch req.URL.Path {
+		case "/api/v1/repos/sf/infra/pulls/11":
+			io.WriteString(w, `{"number":11,"state":"closed","merged":false}`)
+		case "/api/v1/repos/sf/infra/pulls/12":
+			io.WriteString(w, `{"number":12,"state":"open","merged":false}`)
+		case "/api/v1/repos/sf/infra/pulls/13":
+			io.WriteString(w, `{"number":13,"state":"closed","merged":true}`)
+		default:
+			http.Error(w, "boom", http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
 	rows := []struct {
 		m    Mirror
-		age  string
 		gone bool
 	}{
-		{Mirror{Project: "gone", Direction: MirrorImport, Remote: "acme/gone", Token: "ghp_g0neT0ken", State: "pending"}, "169 hours", true},
-		{Mirror{Project: "cut", Direction: MirrorImport, Remote: "acme/cut", Token: "ghp_cutT0ken", State: "copying since 2026-10-01 10:00 UTC"}, "169 hours", true},
-		{Mirror{Project: "gone", Direction: MirrorExport, Remote: "acme/gone", Username: "u", Token: "ghp-exp0rt", State: "created"}, "169 hours", false},
-		{Mirror{Project: "young", Direction: MirrorImport, Remote: "acme/young", State: "pending"}, "167 hours", false},
-		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending"}, "169 hours", false},
-		{Mirror{Project: "broken", Direction: MirrorImport, Remote: "acme/broken", Token: "ghp_br0kenT0ken", State: "failed: x"}, "169 hours", true},
-		{Mirror{Project: "done", Direction: MirrorImport, Remote: "acme/done", State: "imported 2026-10-01 10:00 UTC"}, "169 hours", false},
+		{Mirror{Project: "closed", Direction: MirrorImport, Remote: "acme/closed", Token: "ghp_cl0sedT0ken", State: "pending", PR: 11}, true},
+		{Mirror{Project: "closed", Direction: MirrorExport, Remote: "acme/closed", Username: "u", Token: "ghp-exp0rt", State: "created"}, false},
+		{Mirror{Project: "open", Direction: MirrorImport, Remote: "acme/open", Token: "ghp_0penT0ken", State: "pending", PR: 12}, false},
+		{Mirror{Project: "merged", Direction: MirrorImport, Remote: "acme/merged", State: "pending", PR: 13}, false},
+		{Mirror{Project: "unread", Direction: MirrorImport, Remote: "acme/unread", State: "pending", PR: 14}, false},
+		{Mirror{Project: "unlinked", Direction: MirrorImport, Remote: "acme/unlinked", State: "pending"}, false},
+		{Mirror{Project: "filed", Direction: MirrorImport, Remote: "acme/filed", State: "pending", PR: 11}, false},
+		{Mirror{Project: "done", Direction: MirrorImport, Remote: "acme/done", State: "imported 2026-10-01 10:00 UTC", PR: 11}, false},
 	}
 	for _, r := range rows {
 		if err := s.PutMirror(ctx, r.m); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { s.DeleteMirror(ctx, r.m.Project, r.m.Direction) })
-		if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET updated_at = now() - $3::interval WHERE project = $1 AND direction = $2`,
-			r.m.Project, r.m.Direction, r.age); err != nil {
+		if _, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET updated_at = now() - interval '30 days' WHERE project = $1 AND direction = $2`,
+			r.m.Project, r.m.Direction); err != nil {
 			t.Fatal(err)
 		}
 	}
-	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s}
+	r := &Registrar{Store: &memProjects{m: map[string]Project{"filed": {Name: "filed", File: true}}}, Mirrors: s,
+		Infra: &ForgejoConfig{Forgejo: &Forgejo{BaseURL: srv.URL}, Token: "config-tok", Repo: Repo{"sf", "infra"}}}
 	r.poll(ctx)
 	for _, row := range rows {
 		if _, ok, err := s.Mirror(ctx, row.m.Project, row.m.Direction); err != nil || ok == row.gone {
 			t.Errorf("%s %s row kept %v, %v; want %v", row.m.Project, row.m.Direction, ok, err, !row.gone)
 		}
 	}
-	lines := []string{"project gone: import row of github.com/acme/gone deleted: pending over 7 days, and no file projects/gone.yaml\n",
-		"project cut: import row of github.com/acme/cut deleted: copying over 7 days, and no file projects/cut.yaml\n",
-		"project broken: import row of github.com/acme/broken deleted: failed over 7 days, and no file projects/broken.yaml\n"}
+	const pulls = "GET /api/v1/repos/sf/infra/pulls/"
+	mu.Lock()
+	defer mu.Unlock()
+	if want := []string{pulls + "11 token config-tok", pulls + "13 token config-tok", pulls + "12 token config-tok", pulls + "14 token config-tok"}; !slices.Equal(reads, want) {
+		t.Errorf("Forgejo reads %q, want %q", reads, want)
+	}
+	lines := []string{"project closed: import row of github.com/acme/closed deleted: sf/infra#11 closed unmerged\n",
+		"project unlinked: import row of github.com/acme/unlinked kept: it records no pull request on sf/infra, so none tells its filing merged or closed\n",
+		"project unread: import row of github.com/acme/unread kept: sf/infra#14 unread: "}
 	for _, line := range lines {
 		if !strings.Contains(logs.String(), line) {
 			t.Errorf("log lacks %q", line)
 		}
 	}
-	if strings.Count(logs.String(), "import row") != 3 || strings.Contains(logs.String(), "T0ken") {
+	if strings.Count(logs.String(), "import row") != 3 || strings.Contains(logs.String(), "T0ken") || strings.Contains(logs.String(), "exp0rt") {
 		t.Fatalf("log:\n%s\nwant only the lines %q, no token", logs, lines)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): an import
+// row records the pull request that files it. A filing of the name again
+// puts its row without one, so the earlier pull request's close deletes
+// nothing; the new pull request, once recorded, deletes it. With no row
+// there is nothing to record.
+func TestImportRowFiledByItsPullRequest(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	m := Mirror{Project: "refiled", Direction: MirrorImport, Remote: "acme/app", Token: "ghp_t0ken", State: "pending"}
+	t.Cleanup(func() { s.DeleteMirror(ctx, m.Project, m.Direction) })
+	if err := errors.Join(s.PutMirror(ctx, m), s.SetImportPR(ctx, "refiled", 11)); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Mirror(ctx, "refiled", MirrorImport); err != nil || !ok || got.PR != 11 {
+		t.Fatalf("filed row %+v, %v, %v; want #11", got, ok, err)
+	}
+	if err := s.PutMirror(ctx, m); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.MirrorToken(ctx, "refiled", MirrorImport); err != nil || !ok || got.PR != 0 || got.Token != "ghp_t0ken" {
+		t.Fatalf("refiled row %+v, %v, %v; want no pull request, its token", got, ok, err)
+	}
+	if err := s.DeleteImport(ctx, "refiled", 11); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteImport of #11 = %v, want not found", err)
+	}
+	if err := errors.Join(s.SetImportPR(ctx, "refiled", 12), s.DeleteImport(ctx, "refiled", 12)); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.Mirror(ctx, "refiled", MirrorImport); err != nil || ok {
+		t.Fatalf("row after #12's delete: %v, %v; want none", ok, err)
+	}
+	if err := s.SetImportPR(ctx, "refiled", 13); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetImportPR without a row = %v, want not found", err)
 	}
 }

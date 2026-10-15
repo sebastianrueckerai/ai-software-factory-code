@@ -491,6 +491,8 @@ func (m *acceptMirrors) PutMirror(_ context.Context, mm factoryd.Mirror) error {
 	return nil
 }
 
+func (m *acceptMirrors) SetImportPR(_ context.Context, _ string, _ int64) error { return nil }
+
 func (m *acceptMirrors) DeleteMirror(_ context.Context, project, direction string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

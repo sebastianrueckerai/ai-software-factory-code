@@ -21,7 +21,9 @@ const (
 	// registration copies into its Forgejo repository once; its token,
 	// empty for a public one, is forgotten after the copy. Its state is
 	// pending, copying since the copy's start, then imported or failed;
-	// its last update the copy's start, then an import's end.
+	// its last update the copy's start, then an import's end. It lives
+	// until registration consumes it or the infra pull request that files
+	// its project, its PR, closes unmerged.
 	MirrorImport = "import"
 	// ModeMirror is an export Forgejo keeps as a push mirror of every
 	// branch and tag; ModePullRequests one that takes each card merged
@@ -35,24 +37,26 @@ const (
 // Token is set only by MirrorToken, the registrar's and the chat export's
 // read. Mode is an export's; Since when the row was put with its remote
 // and mode; Synced the GitHub default branch's head the last GitHubSync
-// brought back, SyncResult what the last one answered.
+// brought back, SyncResult what the last one answered. PR is an import's
+// infra pull request, 0 before it opens.
 type Mirror struct {
 	Project, Direction, Remote, Username, Token, State, LastError, Mode, Synced, SyncResult string
 	LastUpdate, Since                                                                       time.Time
+	PR                                                                                      int64
 }
 
 // PutMirror stores m as its project's mirror of its direction, a new
-// token and mode (default ModeMirror) with no sync yet; a row of the same
-// remote and mode keeps its since and its last GitHubSync.
+// token, mode (default ModeMirror) and pull request with no sync yet; a
+// row of the same remote and mode keeps its since and its last GitHubSync.
 func (s *PGStore) PutMirror(ctx context.Context, m Mirror) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state, mode)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (project, direction) DO UPDATE SET remote = $3, username = $4, token = $5, state = $6, mode = $7,
+	_, err := s.db.ExecContext(ctx, `INSERT INTO project_mirrors (project, direction, remote, username, token, state, mode, pr)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (project, direction) DO UPDATE SET remote = $3, username = $4, token = $5, state = $6, mode = $7, pr = $8,
 			last_error = '', last_update = NULL, updated_at = now(),
 			since = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.since ELSE now() END,
 			synced = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.synced ELSE '' END,
 			sync_result = CASE WHEN project_mirrors.remote = $3 AND project_mirrors.mode = $7 THEN project_mirrors.sync_result ELSE '' END`,
-		m.Project, m.Direction, m.Remote, m.Username, m.Token, m.State, cmp.Or(m.Mode, ModeMirror))
+		m.Project, m.Direction, m.Remote, m.Username, m.Token, m.State, cmp.Or(m.Mode, ModeMirror), m.PR)
 	return err
 }
 
@@ -71,9 +75,9 @@ func (s *PGStore) MirrorToken(ctx context.Context, project, direction string) (M
 func (s *PGStore) mirror(ctx context.Context, project, direction, token string) (Mirror, bool, error) {
 	m := Mirror{Project: project, Direction: direction}
 	var last sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT remote, username, `+token+`, state, last_error, last_update, mode, synced, sync_result, since
+	err := s.db.QueryRowContext(ctx, `SELECT remote, username, `+token+`, state, last_error, last_update, mode, synced, sync_result, since, pr
 		FROM project_mirrors WHERE project = $1 AND direction = $2`, project, direction).
-		Scan(&m.Remote, &m.Username, &m.Token, &m.State, &m.LastError, &last, &m.Mode, &m.Synced, &m.SyncResult, &m.Since)
+		Scan(&m.Remote, &m.Username, &m.Token, &m.State, &m.LastError, &last, &m.Mode, &m.Synced, &m.SyncResult, &m.Since, &m.PR)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Mirror{}, false, nil
 	}
@@ -94,6 +98,14 @@ func (s *PGStore) SetMirrorToken(ctx context.Context, project, direction, token 
 	_, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET token = $3, updated_at = now() WHERE project = $1 AND direction = $2`,
 		project, direction, token)
 	return err
+}
+
+// SetImportPR records pr as the infra pull request that files project's
+// import row.
+func (s *PGStore) SetImportPR(ctx context.Context, project string, pr int64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE project_mirrors SET pr = $2, updated_at = now() WHERE project = $1 AND direction = 'import'`,
+		project, pr)
+	return oneRow(res, err, "import row of "+project)
 }
 
 // SetMirrorSynced records sha as the GitHub head project's export last
@@ -133,26 +145,32 @@ func (s *PGStore) DeleteMirror(ctx context.Context, project, direction string) e
 	return err
 }
 
-// DeleteStaleImports deletes the import rows still pending, copying or
-// failed, last written before before, of projects not in files, and
-// answers them without their tokens, their state its first word.
-func (s *PGStore) DeleteStaleImports(ctx context.Context, files []string, before time.Time) ([]Mirror, error) {
-	rows, err := s.db.QueryContext(ctx, `DELETE FROM project_mirrors WHERE direction = 'import' 
-		AND (state = 'pending' OR state LIKE 'copying %' OR state LIKE 'failed:%') AND updated_at < $1 AND project <> ALL($2::text[])
-		RETURNING project, remote, rtrim(split_part(state, ' ', 1), ':')`, before, files)
+// WaitingImports are the import rows not imported of projects not in
+// files, by project, without their tokens: filings not loaded yet, or
+// projects whose file went before their import.
+func (s *PGStore) WaitingImports(ctx context.Context, files []string) ([]Mirror, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT project, remote, state, pr FROM project_mirrors
+		WHERE direction = 'import' AND state NOT LIKE 'imported%' AND project <> ALL($1::text[]) ORDER BY project`, files)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var gone []Mirror
+	var out []Mirror
 	for rows.Next() {
 		m := Mirror{Direction: MirrorImport}
-		if err := rows.Scan(&m.Project, &m.Remote, &m.State); err != nil {
+		if err := rows.Scan(&m.Project, &m.Remote, &m.State, &m.PR); err != nil {
 			return nil, err
 		}
-		gone = append(gone, m)
+		out = append(out, m)
 	}
-	return gone, rows.Err()
+	return out, rows.Err()
+}
+
+// DeleteImport deletes project's import row, with its token, while pull
+// request pr still files it.
+func (s *PGStore) DeleteImport(ctx context.Context, project string, pr int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM project_mirrors WHERE project = $1 AND direction = 'import' AND pr = $2`, project, pr)
+	return oneRow(res, err, fmt.Sprintf("import row of %s filed by #%d", project, pr))
 }
 
 // MirrorStore is what the registrar reads and writes of the mirror rows
@@ -161,7 +179,8 @@ type MirrorStore interface {
 	MirrorToken(ctx context.Context, project, direction string) (Mirror, bool, error)
 	SetMirrorState(ctx context.Context, project, direction, state, lastError string, lastUpdate time.Time) error
 	SetMirrorToken(ctx context.Context, project, direction, token string) error
-	DeleteStaleImports(ctx context.Context, files []string, before time.Time) ([]Mirror, error)
+	WaitingImports(ctx context.Context, files []string) ([]Mirror, error)
+	DeleteImport(ctx context.Context, project string, pr int64) error
 	SetMirrorSynced(ctx context.Context, project, sha, result string) error
 	GitHubCards(ctx context.Context, repository string, since time.Time) ([]Task, error)
 	SetGitHubPR(ctx context.Context, id string, number int64, url, state string) error
