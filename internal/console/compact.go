@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -48,6 +49,21 @@ func (t *turn) window() int { return cmp.Or(t.cfg.Window, policy.DefaultChatWind
 // estimate is text's tokens as a compaction counts them: four characters
 // a token.
 func estimate(text string) int { return (len(text) + 3) / 4 }
+
+// weight is the estimated tokens of summary and rows as the turn's
+// context carries them (replay): this turn's reads whole, an earlier
+// turn's as its line.
+func (t *turn) weight(summary string, rows []factoryd.ChatMessage) int {
+	var b strings.Builder
+	b.WriteString(summary)
+	for _, m := range t.replay(rows) {
+		b.WriteString(m.Content)
+		for _, c := range m.ToolCalls {
+			b.WriteString(c.Name + c.Arguments)
+		}
+	}
+	return estimate(b.String())
+}
 
 // liveRows are thread th's rows after its summary, the queued left out.
 func liveRows(th factoryd.ChatConversation, rows []factoryd.ChatMessage) []factoryd.ChatMessage {
@@ -156,8 +172,8 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 			return false, fmt.Errorf("the summariser answered nothing")
 		}
 	}
-	before := estimate(th.Summary + transcript(rows))
-	after := estimate(summary + transcript(rows[start:]))
+	before := t.weight(th.Summary, rows)
+	after := t.weight(summary, rows[start:])
 	if err := t.c.cfg.Chat.SaveSummary(ctx, t.p.Repository, t.a.s.user, t.conv,
 		factoryd.ThreadSummary{Text: summary, Model: policy.PulseModel, Upto: rows[start-1].ID, Before: before, After: after}); err != nil {
 		return false, err
@@ -195,7 +211,7 @@ func (t *turn) presetCompact(taskID string) {
 		if projected > 0 {
 			projected += estimate(newest.Content)
 		} else {
-			projected = estimate(th.Summary + transcript(rows))
+			projected = t.weight(th.Summary, rows)
 		}
 	}
 	if projected*10 <= t.window()*8 && len(rows) <= chatContextMax {
@@ -209,6 +225,7 @@ func (t *turn) presetCompact(taskID string) {
 // compactByHand is /compact: the thread's turn compacts it and answers
 // what it folded.
 func (t *turn) compactByHand(taskID string) {
+	t.freshRead = time.Now()
 	done, err := t.compact(taskID, keepTurns)
 	switch {
 	case err != nil:

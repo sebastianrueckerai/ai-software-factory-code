@@ -78,8 +78,9 @@ func TestChatCompactsOnTheContextRefusal(t *testing.T) {
 	equal(t, "the folded rows", compactedRows(t, events), []int{4, 2})
 	equal(t, "the stream's end", events[len(events)-2:], []string{`text {"text":"the answer"}`, `done {}`})
 	calls := g.calls()
-	equal(t, "the first call", contents(t, calls[0]), []string{"user a1", "assistant a2", "user b1", "assistant b2", "user c1", "assistant c2", "user d1"})
-	equal(t, "the first retry", contents(t, calls[1]), []string{"user c1", "assistant c2", "user d1"})
+	equal(t, "the first call", contents(t, calls[0]), []string{"user a1", "assistant " + earlier("a2"), "user b1", "assistant " + earlier("b2"),
+		"user c1", "assistant " + earlier("c2"), "user d1"})
+	equal(t, "the first retry", contents(t, calls[1]), []string{"user c1", "assistant " + earlier("c2"), "user d1"})
 	equal(t, "the second retry", contents(t, calls[2]), []string{"user d1"})
 	if !strings.HasSuffix(systemOf(t, calls[1]), "summarised:\nsummary 1") || !strings.HasSuffix(systemOf(t, calls[2]), "summarised:\nsummary 2") {
 		t.Errorf("the retries' system prompts do not end with their summaries")
@@ -127,7 +128,7 @@ func TestChatCompactsBeforeAProjectedOverflow(t *testing.T) {
 	chat.tokens[thread] = 8000
 	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"e1"}})
 	equal(t, "the compaction past 80 percent", compactedRows(t, events), []int{6})
-	equal(t, "the call after it", contents(t, g.calls()[1]), []string{"user d1", "assistant d2", "user e1"})
+	equal(t, "the call after it", contents(t, g.calls()[1]), []string{"user d1", "assistant " + earlier("d2"), "user e1"})
 }
 
 // /compact by hand folds the thread before its last two turns and calls
@@ -175,6 +176,29 @@ func TestChatCompactionLeavesReadsOut(t *testing.T) {
 	}
 	equal(t, "the summariser's turns", messages(t, g.compacts[0])[1]["content"], "The summary so far:\n(none yet)\n\nThe turns after it:\n"+
 		"the member: a1\nthe agent read board {}\n"+`the agent called set_accent {"task_id":"t-m","accent":"red"}: The accent of #5 is set.`+"\nthe agent: a2\n")
+}
+
+// A forced compaction weighs the rows it keeps as the context carries
+// them: the turn's own board read whole, its call's name and arguments,
+// four characters a token.
+func TestChatCompactionWeighsTheTurnsReads(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b")
+	g.replies = [][]string{{call(1, "board", `{}`)}, {refuseContext}, {refuseContext}, {say("done")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c1"}})
+	equal(t, "the folded rows", compactedRows(t, events), []int{2, 2})
+	var last struct{ After int }
+	for _, e := range events {
+		if data, ok := strings.CutPrefix(e, "compacted "); ok {
+			if err := json.Unmarshal([]byte(data), &last); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// the second summary, the member's c1, the call's board and {}, and
+	// its result
+	equal(t, "the kept rows' estimate", last.After, (len("summary 2"+"c1"+"board"+"{}"+boardText)+3)/4)
 }
 
 // A command of the config tree's sends its message: the turn stores and

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -571,6 +572,7 @@ const chatPath = "/projects/ai-software-factory-code/chat"
 var (
 	durationField = regexp.MustCompile(`"duration_ms":\d+`)
 	tokenField    = regexp.MustCompile(`"(id|undo)":"[A-Za-z0-9_-]{43}"`)
+	saidAge       = regexp.MustCompile(`^(\[said at 2026-10-11 09:30 UTC, )\d+( min ago\] )`)
 )
 
 // chatPost posts form, the session's CSRF token added, to path on a real
@@ -643,14 +645,24 @@ func chatRows(t *testing.T, ev *fakeEvents, before int, login string, wants ...f
 	}
 }
 
+// messages are a model call's messages, the earlier turn's words the fake
+// store dated aged N minutes: its fixed clock leaves their age to the day
+// the test runs.
 func messages(t *testing.T, req map[string]any) []map[string]any {
 	t.Helper()
 	var out []map[string]any
 	for _, m := range req["messages"].([]any) {
-		out = append(out, m.(map[string]any))
+		m := maps.Clone(m.(map[string]any))
+		if content, ok := m["content"].(string); ok {
+			m["content"] = saidAge.ReplaceAllString(content, "${1}N${2}")
+		}
+		out = append(out, m)
 	}
 	return out
 }
+
+// earlier is content as a later turn replays the fake store's row of it.
+func earlier(content string) string { return "[said at 2026-10-11 09:30 UTC, N min ago] " + content }
 
 func equal(t *testing.T, what string, got, want any) {
 	t.Helper()
@@ -1259,12 +1271,12 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	read := rows[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
 	equal(t, "the next turn's conversation", shape, []string{
 		`user "summarize #5"`,
-		`assistant "Let me look." calls call_1 board {}`,
+		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
 		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
-		`assistant "Setting it." calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`,
+		fmt.Sprintf(`assistant %q calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`, earlier("Setting it.")),
 		`tool call_2 "The summary of #5 is set. The member may undo it."`,
-		`assistant "Done."`,
-		`assistant "Undo of set_summary: The summary of #5 is back to \"\"."`,
+		fmt.Sprintf("assistant %q", earlier("Done.")),
+		fmt.Sprintf("assistant %q", earlier(`Undo of set_summary: The summary of #5 is back to "".`)),
 		`user "and now?"`,
 	})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
@@ -1824,8 +1836,8 @@ func TestChatReplayDropsClaims(t *testing.T) {
 	g.replies = [][]string{{say("fine")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what now?"}})
 	equal(t, "the replay", messages(t, g.calls()[0])[1:], []map[string]any{
-		{"role": "assistant", "content": "The board has 3 cards"},
-		{"role": "assistant", "content": "Reading the proposal's card.", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
+		{"role": "assistant", "content": earlier("The board has 3 cards")},
+		{"role": "assistant", "content": earlier("Reading the proposal's card."), "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
 		{"role": "tool", "content": "[read at " + read.UTC().Format("2006-01-02 15:04 UTC") +
 			", 10 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]", "tool_call_id": "call_1"},
@@ -2047,7 +2059,7 @@ func TestChatScrubsAGitHubToken(t *testing.T) {
 		[]string{"export to acme/app, my token is [token]", notice, "Noted."})
 	chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"done?"}})
 	equal(t, "the next turn's messages after the system's", messages(t, g.calls()[1])[1:], []map[string]any{scrubbed,
-		{"role": "assistant", "content": notice}, {"role": "assistant", "content": "Noted."}, {"role": "user", "content": "done?"}})
+		{"role": "assistant", "content": earlier(notice)}, {"role": "assistant", "content": earlier("Noted.")}, {"role": "user", "content": "done?"}})
 	said, _ := json.Marshal([]any{g.calls(), chat.msgs, events})
 	if strings.Contains(string(said)+logs.String(), token) {
 		t.Fatalf("the token was kept or sent:\n%s\n%s", said, logs.String())
@@ -2134,21 +2146,24 @@ func TestChatToolResultCarriesReadAt(t *testing.T) {
 }
 
 // TestChatTurnContextHasFreshStatus proves the system message holds the
-// status line read at the turn's start and no earlier turn's read stands
-// as the project now: two turns with a card started between them; the
-// second turn's status line counts it working, the first turn's board
-// read is replayed as its time, age and the call to read again, without
-// the old board, and its write's result is replayed whole.
+// status line read at the turn's start and nothing of an earlier turn
+// stands as the project now: two turns with a card started between them;
+// the second turn's status line counts it working, the first turn's
+// board read is replayed as its time, age and the call to read again,
+// without the old board, its write's result whole, and its answer with
+// when it was said and its age.
 func TestChatTurnContextHasFreshStatus(t *testing.T) {
-	r, chat, g := newChatRig(t)
+	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "board", `{}`, "set_accent", `{"task_id":"t-m","accent":"red"}`)}, {say("first answer")}}
+	g.replies = [][]string{{call(1, "board", `{}`, "set_accent", `{"task_id":"t-m","accent":"red"}`)}, {say("#5 waits in the backlog.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is on the board?"}})
+	then := time.Now().Add(-2 * time.Hour)
 	r.chat.mu.Lock()
 	key := "sf/code sebastian"
 	for i := range r.chat.msgs[key] {
+		r.chat.msgs[key][i].At = then
 		for j := range r.chat.msgs[key][i].ToolCalls {
-			r.chat.msgs[key][i].ToolCalls[j].ReadAt = r.chat.msgs[key][i].ToolCalls[j].ReadAt.Add(-2 * time.Hour)
+			r.chat.msgs[key][i].ToolCalls[j].ReadAt = then
 		}
 	}
 	r.chat.mu.Unlock()
@@ -2179,33 +2194,30 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 3 need you; ") {
 		t.Errorf("the second turn's status line counts no 2 working:\n%s", secondSystem)
 	}
-	results := map[string]string{}
+	var oldBoard string
 	for _, m := range messages(t, calls[1]) {
-		if m["role"] == "tool" {
-			results[m["tool_call_id"].(string)], _ = m["content"].(string)
+		if m["tool_call_id"] == "call_1" {
+			oldBoard, _ = m["content"].(string)
 		}
 	}
-	oldBoard := results["call_1"]
 	if !strings.Contains(oldBoard, "Backlog (1):\n  #5 t-m ") {
 		t.Fatalf("the first turn's board read holds no #5 in the backlog:\n%s", oldBoard)
 	}
-	stored, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
-	if err != nil {
-		t.Fatal(err)
-	}
-	readAt := stored[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
-	replayed := map[string]string{}
-	for _, m := range secondMsgs {
+	stamp := then.UTC().Format("2006-01-02 15:04 UTC") + ", 120 min ago"
+	var replayed []string
+	for _, m := range secondMsgs[1:] {
 		content, _ := m["content"].(string)
 		if strings.Contains(content, "Backlog (1):") {
 			t.Errorf("the second turn's %s message holds the old board read:\n%s", m["role"], content)
 		}
-		if m["role"] == "tool" {
-			replayed[m["tool_call_id"].(string)] = content
-		}
+		replayed = append(replayed, fmt.Sprintf("%v %v", m["role"], content))
 	}
-	equal(t, "the second turn's replayed results", replayed, map[string]string{
-		"call_1": "[read at " + readAt + ", 120 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
-		"call_2": "The accent of #5 is set. The member may undo it.",
+	equal(t, "the second turn's replay", replayed, []string{
+		"user what is on the board?",
+		"assistant ",
+		"tool [read at " + stamp + ", in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
+		"tool The accent of #5 is set. The member may undo it.",
+		"assistant [said at " + stamp + "] #5 waits in the backlog.",
+		"user how many cards are open?",
 	})
 }

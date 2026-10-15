@@ -622,12 +622,9 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 
 // context is the turn's conversation for the model: the system prompt with
 // the project's status line and pulse read at this turn's start, the
-// thread's summary, then its rows after the summary, each tool call
-// followed by its result; the board and the events are the tools'. An
-// earlier turn's read is replayed without its result (replayed). An
-// assistant row with no tool calls whose content claims an action is
-// dropped from the replay. The turn stamps every tool result it stores
-// with the time of this read.
+// thread's summary, then its rows after the summary as the turn replays
+// them; the board and the events are the tools'. The turn stamps every
+// tool result it stores with the time of this read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	status, _, _, err := t.snapshot()
 	if err != nil {
@@ -645,12 +642,24 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if th.Summary != "" {
 		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
 	}
-	msgs := []factoryd.OperatorMessage{{Role: "system", Content: system}}
-	for _, m := range liveRows(th, history) {
+	return append([]factoryd.OperatorMessage{{Role: "system", Content: system}}, t.replay(liveRows(th, history))...), nil
+}
+
+// replay is rows as the turn's context holds them, each tool call
+// followed by its result (replayed). An earlier turn's assistant words
+// carry when they were said and their age, so they do not read as the
+// present either. An assistant row with no tool calls whose content
+// claims an action is dropped.
+func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
+	var msgs []factoryd.OperatorMessage
+	for _, m := range rows {
 		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
 			continue
 		}
 		om := factoryd.OperatorMessage{Role: m.Role, Content: m.Content}
+		if m.Role == "assistant" && m.Content != "" && m.At.Before(t.freshRead) {
+			om.Content = "[said at " + t.since(m.At) + "] " + m.Content
+		}
 		for _, call := range m.ToolCalls {
 			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: objectArgs(call.Arguments)})
 		}
@@ -659,7 +668,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: t.replayed(call)})
 		}
 	}
-	return msgs, nil
+	return msgs
 }
 
 // replayed is a stored tool result as the turn's context holds it: a
@@ -671,9 +680,14 @@ func (t *turn) replayed(call factoryd.ChatToolCall) string {
 	if !isRead(call.Name) || !call.ReadAt.Before(t.freshRead) {
 		return call.Result
 	}
-	age := int(t.freshRead.Sub(call.ReadAt).Round(time.Minute) / time.Minute)
-	return fmt.Sprintf("[read at %s, %d min ago, in an earlier turn: its result is left out, as the project may have changed since; call %s again for the present]",
-		call.ReadAt.UTC().Format("2006-01-02 15:04 UTC"), age, call.Name)
+	return "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
+		call.Name + " again for the present]"
+}
+
+// since is at as a replayed row shows it: its time and its age at the
+// turn's start.
+func (t *turn) since(at time.Time) string {
+	return fmt.Sprintf("%s, %d min ago", at.UTC().Format("2006-01-02 15:04 UTC"), int(t.freshRead.Sub(at).Round(time.Minute)/time.Minute))
 }
 
 // prompt is the agent's standing instructions.

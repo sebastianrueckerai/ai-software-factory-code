@@ -80,7 +80,7 @@ func TestChatTurnsSerialise(t *testing.T) {
 	}
 	equal(t, "the thread", order, []string{"user :first", "assistant :first answer", "user :second", "assistant :second answer"})
 	equal(t, "the second turn's messages", messages(t, g.calls()[1])[1:], []map[string]any{
-		{"role": "user", "content": "first"}, {"role": "assistant", "content": "first answer"}, {"role": "user", "content": "second"}})
+		{"role": "user", "content": "first"}, {"role": "assistant", "content": earlier("first answer")}, {"role": "user", "content": "second"}})
 	if r.c.turns.working(threadKey("sf/code", "sebastian", 1)) {
 		t.Fatal("the thread still shows a turn in flight after both ended")
 	}
@@ -189,7 +189,7 @@ func TestChatThreadsByNumber(t *testing.T) {
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"again"}, "conversation": {"1"}})
 	equal(t, "the post to thread 1", []any{code, events}, []any{200, []string{`text {"text":"again reply"}`, `done {}`}})
 	equal(t, "the third turn's messages", messages(t, g.calls()[2])[1:], []map[string]any{
-		{"role": "user", "content": "hello"}, {"role": "assistant", "content": "first reply"}, {"role": "user", "content": "again"}})
+		{"role": "user", "content": "hello"}, {"role": "assistant", "content": earlier("first reply")}, {"role": "user", "content": "again"}})
 	one, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
 	if err != nil || len(one) != 4 {
 		t.Fatalf("thread 1 = %v, %v, want its four rows", one, err)
