@@ -418,15 +418,17 @@ func floorRefused(reason string) bool {
 // when the free headroom can fund the cheapest call of model, a call of
 // no prompt and policy.MinCallTokens output tokens, else the refusal the
 // waiting-human card carries. It guards every attempt the workflow
-// grants, and the console's answer (DayCapped).
+// grants, and the console's answer (DayCapped). Kept for runs from before
+// versionSessionLadder, which schedule it on replay; no new caller.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }
 
-// SessionFunded is the fund's floor (roadmap 243): "" when the free
-// headroom can fund a session's opening calls on model (policy.Opening),
-// else the refusal. A card the answer path's floor admits may still hold
-// too little to start a session; the console offers it the Fund action.
+// SessionFunded is the floor of every session's start (roadmap 243, plan
+// A): "" when the free headroom can fund a session's opening calls on
+// model and the policy's floor of its rung, else the refusal naming the
+// amount. A card the answer path's floor admits may still hold too little
+// to start a session; the console offers it the Fund action.
 func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, true)
 }
@@ -503,6 +505,15 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 				what = fmt.Sprintf("%d calls at once: %s", len(calls), strings.Join(asked, ", "))
 			}
 			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
+		}
+		frontier := r.cfg.Models.Stronger != "" && model == r.cfg.Models.Stronger
+		if floor := v.Document.Budget.SessionFloor(frontier); floor > need {
+			key := "budget.session_floor_cheap_eur"
+			if frontier {
+				key = "budget.session_floor_frontier_eur"
+			}
+			need, call, measure, then = floor, "a session on "+model, "the floor of its rung, "+key+" in policy.yaml",
+				"a session started now would end before it could push"
 		}
 	}
 	own, free, err := r.store.Free(ctx, req)

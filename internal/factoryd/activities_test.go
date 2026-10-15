@@ -2476,6 +2476,45 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	}
 }
 
+// A session needs more than its opening calls: the floor of its rung (budget.session_floor_*_eur)
+// is the least free budget it starts on. Card of 5 EUR with 4.50 spent has 0.50 free: the frontier
+// floor 0.60 refuses, naming 0.600000 EUR; the cheap floor 0.30 funds. At 4.80 spent (0.20 free) the
+// cheap floor refuses too. With the floor absent only the opening decides.
+func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}}}
+	ctx := context.Background()
+
+	why, err := r.SessionFunded(ctx, "t-1", "factory/coding-frontier")
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/coding-frontier needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	}
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("cheap at 0.50 free = (%q, %v), want funded", why, err)
+	}
+	raised := store.tasks["t-1"]
+	raised.SpentEUR = 4.8
+	store.tasks["t-1"] = raised
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil ||
+		!strings.Contains(why, "a session on factory/coding-cheap needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
+		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.300000 EUR floor named", why, err)
+	}
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("cheap without a floor at 0.20 free = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
+	}
+}
+
 // The floors check the day's, the month's and the project's month
 // headroom too, against the same call (roadmap 243): 3 EUR of the task's
 // budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's
