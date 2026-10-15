@@ -47,20 +47,34 @@ const (
 	filedCodeWhy    = "is not ASCII inside code; write its escape so the fixture reads the same on its way"
 )
 
-// filingFlag is one finding in a card's title or body: the line the text
-// sits on (the title is line 1, the body's lines follow it), the text
-// itself and why it changes on its way to the agent.
+// the two fields a finding names: the title, and the description with
+// its lines counted from 1
+const (
+	filedTitle       = "title"
+	filedDescription = "description"
+)
+
+// filingFlag is one finding in a card's title or body: the field it sits
+// in, the line within that field (the title's only line or the
+// description's own, counted from 1), the text itself and why it changes
+// on its way to the agent.
 type filingFlag struct {
-	Line int
-	Text string
-	Why  string
-	col  int // where the text sits on its line, for the reading order
+	Field string
+	Line  int
+	Text  string
+	Why   string
+	rank  int // the line over both fields, the title first, for the reading order
+	col   int // where the text sits on its line, for the reading order
 }
 
-// String is the finding on one line, its text quoted so an invisible
+// String is the finding on one line, its field and line named so the
+// reader looks at the right one, its text quoted so an invisible
 // character shows as its escape.
 func (f filingFlag) String() string {
-	return fmt.Sprintf("line %d: %q %s", f.Line, f.Text, f.Why)
+	if f.Field == filedTitle {
+		return fmt.Sprintf("title: %q %s", f.Text, f.Why)
+	}
+	return fmt.Sprintf("description, line %d: %q %s", f.Line, f.Text, f.Why)
 }
 
 // filingFlags are the findings in a card's title and body, in reading
@@ -68,38 +82,52 @@ func (f filingFlag) String() string {
 // to the agent (roadmap 125) — a closing keyword before an issue
 // reference, a mention of a user or a team, an HTML comment, an invisible
 // character, a non-ASCII character inside a fenced code block or inline
-// code — each with its line, the text and why it changes. Words are not
-// flagged: the provider's content filter cannot be predicted by a word
-// list.
+// code — each naming its field and line, the text and why it changes.
+// Words are not flagged: the provider's content filter cannot be
+// predicted by a word list.
 func filingFlags(title, body string) []filingFlag {
 	lines := append([]string{title}, strings.Split(body, "\n")...)
 	var out []filingFlag
-	add := func(line, col int, text, why string) {
-		out = append(out, filingFlag{Line: line, Text: text, Why: why, col: col})
+	add := func(field string, line, col int, text, why string) {
+		rank := line
+		if field == filedTitle {
+			rank = 0 // the title reads before every line of the body
+		}
+		out = append(out, filingFlag{Field: field, Line: line, Text: text, Why: why, rank: rank, col: col})
 	}
 	// the plain finds: every line, fences and code spans included, for
 	// the sanitiser changes them there too
 	for i, line := range lines {
+		field, n := filedTitle, 1
+		if i > 0 {
+			field, n = filedDescription, i // the body's line i, counted from 1
+		}
 		for _, m := range filedClosing.FindAllStringSubmatchIndex(line, -1) {
-			add(i+1, m[4], line[m[4]:m[9]], filedClosingWhy)
+			add(field, n, m[4], line[m[4]:m[9]], filedClosingWhy)
 		}
 		for _, m := range filedMention.FindAllStringSubmatchIndex(line, -1) {
-			add(i+1, m[3], line[m[3]:m[5]], filedMentionWhy) // from the @ to the name's end
+			add(field, n, m[3], line[m[3]:m[5]], filedMentionWhy) // from the @ to the name's end
 		}
 		for col, r := range line {
 			if why, ok := filedInvisible[r]; ok {
-				add(i+1, col, string(r), why+"; invisible, it rides the text unseen")
+				add(field, n, col, string(r), why+"; invisible, it rides the text unseen")
 			}
 		}
 	}
 	// an HTML comment may span lines; its finding sits where it starts
 	whole := strings.Join(lines, "\n")
 	for _, m := range filedComment.FindAllStringSubmatchIndex(whole, -1) {
-		before := whole[:m[0]]
-		add(1+strings.Count(before, "\n"), m[0]-strings.LastIndexByte(before, '\n')-1, whole[m[0]:m[1]], filedCommentWhy)
+		before, nls := whole[:m[0]], strings.Count(whole[:m[0]], "\n")
+		if nls == 0 {
+			add(filedTitle, 1, m[0], whole[m[0]:m[1]], filedCommentWhy)
+		} else {
+			add(filedDescription, nls, m[0]-strings.LastIndexByte(before, '\n')-1, whole[m[0]:m[1]], filedCommentWhy)
+		}
 	}
 	// non-ASCII inside code: an inline span anywhere, a fenced block whole
-	filedSpans(lines[0], 1, add) // the title opens no fence
+	addTitle := func(line, col int, text, why string) { add(filedTitle, line, col, text, why) }
+	addDescription := func(line, col int, text, why string) { add(filedDescription, line, col, text, why) }
+	filedSpans(lines[0], 1, addTitle) // the title opens no fence
 	fenced, fenceCh, fenceLen := false, byte(0), 0
 	for i := 1; i < len(lines); i++ {
 		line, open := lines[i], strings.TrimLeft(lines[i], " ")
@@ -108,18 +136,18 @@ func filingFlags(title, body string) []filingFlag {
 		switch {
 		case !fenced && indent <= 3 && ok:
 			fenced, fenceCh, fenceLen = true, ch, run
-			filedCode(line, i+1, 0, add) // the fence's own line is part of the block
+			filedCode(line, i, 0, addDescription) // the fence's own line is part of the block
 		case fenced && indent <= 3 && ok && ch == fenceCh && run >= fenceLen && strings.TrimSpace(open[run:]) == "":
 			fenced = false
-			filedCode(line, i+1, 0, add) // so is its closing fence
+			filedCode(line, i, 0, addDescription) // so is its closing fence
 		case fenced:
-			filedCode(line, i+1, 0, add)
+			filedCode(line, i, 0, addDescription)
 		default:
-			filedSpans(line, i+1, add)
+			filedSpans(line, i, addDescription)
 		}
 	}
 	slices.SortStableFunc(out, func(a, b filingFlag) int {
-		return cmp.Or(cmp.Compare(a.Line, b.Line), cmp.Compare(a.col, b.col))
+		return cmp.Or(cmp.Compare(a.rank, b.rank), cmp.Compare(a.col, b.col))
 	})
 	return out
 }
