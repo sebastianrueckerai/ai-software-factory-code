@@ -1,15 +1,16 @@
 // Package acceptance holds the acceptance tests of the fresh per-turn
 // context and the aged reads (plan #504, card fresh-context-acceptance):
 // each turn's system message holds the project's status line as read at
-// the turn's start and no card, which the reads give on demand, every
-// tool result carries the time it was read, which GET
-// /projects/{name}/chat answers as read_at, and a replayed result older
-// than one minute shows its age beside the current state. The rig is the
-// whole chat stack over the fixture stores with the operator model
-// scripted: the agent's move_card runs through the console's own action,
-// the fixture board takes the card into ready as factoryd would, and the
-// next turn's board read answers the new state while the conversation
-// still holds the old read — which shows its age.
+// the turn's start and no card, which the reads give on demand by the
+// card's issue number as well as its task id, every tool result carries
+// the time it was read, which GET /projects/{name}/chat answers as
+// read_at, and a replayed result older than one minute shows its age
+// beside the current state. The rig is the whole chat stack over the
+// fixture stores with the operator model scripted: the agent's move_card
+// runs through the console's own action, the fixture board takes the
+// card into ready as factoryd would, and the next turn's card read
+// answers the new state while the conversation still holds the old read
+// — which shows its age.
 package acceptance
 
 import (
@@ -30,13 +31,15 @@ const (
 	// movedNote is what the console's move answers; the member's undo of
 	// it rides the applied event, not the tool block.
 	movedNote = "Moved #5 to lane ready; it leaves the backlog once factoryd picks it up."
-	// queuedBoardLine is #5 as the board read holds it after the move into
-	// ready; the fixture files it with a budget of 3 EUR.
-	queuedBoardLine = "\n  #5 t-m \"Fix the cache.\" queued (waits for its session to start), €0.00 of €3.00\n"
-	// backlogCardHead is #5 as the card tool read it in the backlog.
+	// backlogCardHead and queuedCardHead are #5 as the card tool reads it
+	// in the backlog and after the move into ready; the fixture files it
+	// with a budget of 3 EUR.
 	backlogCardHead = `#5 t-m "Fix the cache." backlog (waits in the backlog until a member moves it into a lane), €0.00 of €3.00`
-	// statusHead opens the system message's status line.
-	statusHead = "\n\nThe project now:\nStatus: "
+	queuedCardHead  = `#5 t-m "Fix the cache." queued (waits for its session to start), €0.00 of €3.00`
+	// statusEnd ends every turn's system message: the code project's
+	// status line, #11 running and #5 waiting in the Queued column before
+	// and after its move, the chat's task no card.
+	statusEnd = "\n\nThe project now:\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
 )
 
 // freshRig is the chat rig of these tests: the fixture stores, the code
@@ -52,16 +55,16 @@ func freshRig(t *testing.T) *rig {
 
 // TestAcceptanceFreshContextPerTurn sends two messages with a card-state
 // change between them: the first turn moves #5 from the backlog into
-// ready through the agent's own tool and the fixture board, the second
-// reads the board. Each turn's system message holds the status line and
-// no card line; the second turn's board read answers the card in its new
-// state.
+// ready through the agent's own tool and the fixture board, naming it
+// "#5", the second reads it as 5, with no board read between. Each
+// turn's system message ends with the status line and holds no card; the
+// second turn's card read answers the card in its new state.
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
-		{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)},
+		{call(1, "move_card", `{"task_id":"#5","lane":"ready"}`)},
 		{say("moved it.")},
-		{call(2, "board", `{}`)},
+		{call(2, "card", `{"task_id":5}`)},
 		{say("it is in ready now.")},
 	}
 	if code, events := r.post("start #5"); code != http.StatusOK {
@@ -71,6 +74,8 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the second turn = %d %v", code, events)
+	} else if !hasToolResultPrefix(events, "card", queuedCardHead) {
+		t.Fatalf("the card read of 5 did not answer #5 in its new state; events:\n%s", strings.Join(events, "\n"))
 	}
 	calls := r.gateway.calls()
 	if len(calls) != 4 {
@@ -78,14 +83,9 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	}
 	for i, call := range calls {
 		sys, _ := messagesOf(call)[0]["content"].(string)
-		if !strings.HasPrefix(sys, "You are the project agent of project ai-software-factory-code") || !strings.Contains(sys, statusHead) ||
-			strings.Contains(sys, "#5 t-m") || strings.Contains(sys, "#11 t-r") {
+		if !strings.HasPrefix(sys, "You are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
 			t.Errorf("call %d's system message is not the prompt and the status line alone:\n%s", i, sys)
 		}
-	}
-	last := messagesOf(calls[3])
-	if board, _ := last[len(last)-1]["content"].(string); !strings.Contains(board, queuedBoardLine) {
-		t.Errorf("the second turn's board read lacks the card in its new state %q:\n%s", queuedBoardLine, board)
 	}
 }
 
@@ -167,19 +167,20 @@ func TestAcceptanceToolResultTimestamps(t *testing.T) {
 	}
 }
 
-// TestAcceptanceAgedReadShowsAge reads a card, mutates it through the
-// agent's own move, then sends another message once the read is older
-// than a minute: the replayed tool result carries its age prefix — when
-// it was read and how many minutes ago, beside the card text it read —
-// while the same turn's fresh board read already shows the new state.
+// TestAcceptanceAgedReadShowsAge reads a card by its issue number,
+// mutates it through the agent's own move, then sends another message
+// once the read is older than a minute: the replayed tool result carries
+// its age prefix — when it was read and how many minutes ago, beside the
+// card text it read — while the same turn's fresh read of "#5" already
+// shows the new state.
 func TestAcceptanceAgedReadShowsAge(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
-		{call(1, "card", `{"task_id":"t-m"}`)},
+		{call(1, "card", `{"task_id":"#5"}`)},
 		{say("read it.")},
-		{call(2, "move_card", `{"task_id":"t-m","lane":"ready"}`)},
+		{call(2, "move_card", `{"task_id":5,"lane":"ready"}`)},
 		{say("moved it.")},
-		{call(3, "board", `{}`)},
+		{call(3, "card", `{"task_id":"#5"}`)},
 		{say("it is in ready now.")},
 	}
 	if code, events := r.post("what about #5?"); code != http.StatusOK {
@@ -227,8 +228,8 @@ func TestAcceptanceAgedReadShowsAge(t *testing.T) {
 	if !strings.Contains(aged, backlogCardHead) {
 		t.Errorf("the aged result lost the card text it read:\n%s", aged)
 	}
-	if fresh, _ := last[len(last)-1]["content"].(string); !strings.Contains(fresh, queuedBoardLine) {
-		t.Errorf("the turn's fresh board read lacks the card's new state %q:\n%s", queuedBoardLine, fresh)
+	if fresh, _ := last[len(last)-1]["content"].(string); !strings.HasPrefix(fresh, queuedCardHead) {
+		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", queuedCardHead, fresh)
 	}
 }
 

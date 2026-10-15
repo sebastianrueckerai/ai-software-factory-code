@@ -729,10 +729,34 @@ func TestChatTextReply(t *testing.T) {
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
 
+// param is one parameter of a schema: its name, its description and its
+// default.
+type param struct {
+	name, about string
+	fallback    any
+}
+
+// phrases are schema's parameters, an array's items' included.
+func phrases(schema map[string]any) []param {
+	var out []param
+	props, _ := schema["properties"].(map[string]any)
+	for name, p := range props {
+		p := p.(map[string]any)
+		about, _ := p["description"].(string)
+		out = append(out, param{name, about, p["default"]})
+		if items, ok := p["items"].(map[string]any); ok {
+			out = append(out, phrases(items)...)
+		}
+	}
+	return out
+}
+
 // Every tool the agent is offered is one short sentence of at most 100
 // characters, what it reads or does; a tool the chat's confirm names
-// carries the suffix (needs OK) and no other does; a parameter with a
-// default is not required.
+// carries the suffix (needs OK) and no other does. Every parameter is one
+// short phrase of at most 60 characters; a parameter with a default
+// carries it in its schema and is not required, and answer's revision,
+// which only a plan's question takes, is not required either.
 func TestChatToolSentences(t *testing.T) {
 	offered := func(r *rig, g *chatGateway) []map[string]any {
 		t.Helper()
@@ -747,7 +771,7 @@ func TestChatToolSentences(t *testing.T) {
 	}
 	r, _, g := newChatRig(t)
 	var marked []string
-	required := map[string]any{}
+	required, defaults := map[string]any{}, map[string]any{}
 	for _, f := range offered(r, g) {
 		name, about := f["name"].(string), f["description"].(string)
 		sentence, ok := strings.CutSuffix(about, " (needs OK).")
@@ -760,12 +784,24 @@ func TestChatToolSentences(t *testing.T) {
 			t.Errorf("%s: %q is no short sentence", name, about)
 		}
 		required[name] = f["parameters"].(map[string]any)["required"]
+		for _, p := range phrases(f["parameters"].(map[string]any)) {
+			if len(p.about) > 60 || strings.Contains(p.about, ". ") || strings.ContainsAny(p.about, ";\n") {
+				t.Errorf("%s's %s: %q is no short phrase", name, p.name, p.about)
+			}
+			if p.fallback != nil {
+				defaults[name+" "+p.name] = p.fallback
+			}
+		}
 	}
 	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
 		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
 		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy"})
-	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"], required["session_step"]},
-		[]any{[]any{"title"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
+	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
+		required["session_step"], required["answer"]},
+		[]any{[]any{"title"}, []any{"task_id", "note"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}, []any{"task_id"}})
+	equal(t, "the schemas' defaults", []any{defaults["new_card lane"], defaults["deny_merge action"], defaults["github_export mode"],
+		defaults["set_autonomy backlog_cap"], defaults["history n"], defaults["session_step from"]},
+		[]any{"backlog", "request_changes", "mirror", float64(8), float64(20), float64(1)})
 
 	r, _, g = newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
@@ -812,6 +848,30 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		}
 		equal(t, c.who+"'s tools", got, c.want)
 	}
+}
+
+// A card is named by its task id or its issue number, "#5" or 5, which
+// the tool resolves among the project's cards: the reads answer the card,
+// a proposal stores and names its task id, a dependency's card resolves
+// too, and an unknown number is refused with the next step.
+func TestChatNamesACardByItsIssue(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "card_history", `{"task_id":"#5"}`, "card_history", `{"task_id":5}`, "card", `{"task_id":"#99"}`,
+		"move_card", `{"task_id":"#5","lane":"ready"}`, "set_dependency", `{"task_id":"5","depends_on":11}`)}}
+	r.events.Record(t.Context(), factoryd.Event{At: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC), Repository: "sf/code", TaskID: "t-m",
+		IssueNumber: 5, Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton})
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	moved := "2026-10-11 09:30 #5 t-m card_moved by sebastian via button"
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"n":20,"task_id":"#5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{"n":20,"task_id":"5"},"duration_ms":0,"name":"card_history","result":"` + moved + `"}`,
+		`tool {"arguments":{"task_id":"#99"},"duration_ms":0,"name":"card","result":"Refused: Project ai-software-factory-code has no open or recent card #99: ` +
+			`the board read lists its cards, and an older card takes its task id."}`,
+		`proposal {"arguments":{"task_id":"t-m","lane":"ready"},"description":"Move a card, #5 t-m \"Fix the cache. It drops entries.\", lane ready","id":"TOKEN","tool":"move_card"}`,
+		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
+			`depends on #11 t-r \"Speed up the board.\"","id":"TOKEN","tool":"set_dependency"}`,
+		`done {}`})
 }
 
 // The turn's opening context is the standing prompt and the project's
@@ -1262,7 +1322,7 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 		`tool {"arguments":{"task_id":"t-ls","query":"go"},"duration_ms":0,"name":"session_search","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","summary":"x"},"duration_ms":0,"name":"set_summary","result":"Refused: There is no card t-ls in this project."}`,
 		`tool {"arguments":{"task_id":"t-ls","lane":"ready"},"duration_ms":0,"name":"move_card","result":"Refused: There is no card t-ls in this project."}`,
-		`tool {"arguments":{"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
+		`tool {"arguments":{"n":20,"task_id":"` + chatTask + `"},"duration_ms":0,"name":"card_history","result":"Refused: There is no card ` + chatTask + ` in this project."}`,
 		`text {"text":"None is here."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.HumanSummary != "" || len(r.fg.labelled) != 0 {
@@ -1517,7 +1577,7 @@ func TestChatReads(t *testing.T) {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
 	equal(t, "stream history", events[0], `tool {"arguments":{"n":1},"duration_ms":0,"name":"history","result":"`+status+`"}`)
-	equal(t, "stream card_history", events[1], `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"`+moved+`"}`)
+	equal(t, "stream card_history", events[1], `tool {"arguments":{"n":20,"task_id":"t-m"},"duration_ms":0,"name":"card_history","result":"`+moved+`"}`)
 	equal(t, "stream costs", events[2], `tool {"arguments":{},"duration_ms":0,"name":"costs","result":"`+costs+`"}`)
 	if !strings.HasPrefix(events[3], `tool {"arguments":{"task_id":"t-r"},"duration_ms":0,"name":"diff","result":"diff --git a/cache.go b/cache.go`) {
 		t.Errorf("diff tool line prefix mismatch: %s", events[3])

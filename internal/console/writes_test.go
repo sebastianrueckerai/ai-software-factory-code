@@ -279,16 +279,29 @@ func TestChatNewCardSize(t *testing.T) {
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
 }
 
-// new_card's lane defaults to backlog: a call without one files the card
-// there.
+// new_card's lane defaults to backlog: a call without one is proposed
+// with it and files the card there.
 func TestChatNewCardLaneDefaultsToBacklog(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics"}`
-	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
-	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
+	stored := `{"lane":"backlog","title":"Cache metrics"}`
+	proposed, done, _ := proposeAndDo(t, r, g, "new_card", `{"title":"Cache metrics"}`)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + stored + `,"description":"File a card, title Cache metrics, lane backlog","id":"TOKEN","tool":"new_card"}`, `done {}`})
+	equal(t, "Do it", done, ran("new_card", stored, "Filed sf/code#41 in lane backlog."))
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
+}
+
+// set_autonomy's backlog_cap defaults to 8: a call without it is proposed
+// naming the cap, which the change writes back to its default.
+func TestChatSetAutonomyProposesTheDefaultCap(t *testing.T) {
+	r, g := newWritesRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
+	equal(t, "proposal", events, []string{`proposal {"arguments":{"autonomy":"assisted","backlog_cap":8},` +
+		`"description":"Set the autonomy level, autonomy assisted, backlog cap 8","id":"TOKEN","tool":"set_autonomy"}`, `done {}`})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason

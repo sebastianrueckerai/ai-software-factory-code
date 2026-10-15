@@ -302,7 +302,8 @@ func q2Line() string {
 }
 
 // The answer tool's params hold answers: an array whose items each carry
-// a question and a text; task_id and revision stay required.
+// a question and a text; task_id alone is required, since only a plan's
+// question takes a revision, which its answer refuses without.
 func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 	r := newRig(t)
 	tool, ok := r.c.chatTool("answer")
@@ -331,7 +332,7 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 			t.Errorf("answers item %q is %v, want %s", name, p["type"], want)
 		}
 	}
-	equal(t, "the required arguments", tool.required, []string{"task_id", "revision"})
+	equal(t, "the required arguments", tool.required, []string{"task_id"})
 	def := tool.def(false)
 	schema, _ := def.Parameters.(map[string]any)
 	params, ok := schema["properties"].(map[string]any)

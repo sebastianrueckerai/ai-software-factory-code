@@ -231,10 +231,12 @@ func (s *acceptTasks) Task(_ context.Context, id string) (factoryd.Task, bool, e
 	return factoryd.Task{}, false, nil
 }
 
+// BoardTasks lists the cards, as the store does, in its order: a chat
+// task is none.
 func (s *acceptTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := slices.Clone(s.tasks)
+	out := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat })
 	factoryd.SortBoardTasks(out)
 	return out[:min(limit, len(out))], nil
 }

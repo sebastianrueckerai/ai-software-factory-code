@@ -279,9 +279,6 @@ func roadmapFindings(content string) []string {
 	return out
 }
 
-// docPathWords name the document roots a document tool takes.
-const docPathWords = "the file's path under docs/ of the document repository: docs/roadmap.md, a file under docs/plans/ or docs/board/, or a new docs/<name>.md"
-
 // docFinds bounds the lines a find answers.
 const docFinds = 12
 

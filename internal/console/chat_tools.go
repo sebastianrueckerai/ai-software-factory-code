@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
@@ -137,11 +139,19 @@ func enum(about string, values ...string) map[string]any {
 	return map[string]any{"type": "string", "description": about, "enum": values}
 }
 
+// fallback is parameter p with its default v, which a call that leaves p
+// out or empty takes.
+func fallback(v any, p map[string]any) map[string]any {
+	p["default"] = v
+	return p
+}
+
 var (
-	taskParam = str("the card's task id, t-...")
-	nParam    = map[string]any{"type": "integer", "description": "how many, 1 to 100 (default 20)", "minimum": 1, "maximum": 100}
-	textParam = str("the text, as the member writes it")
-	sessionN  = stepParam("the session's number on the card, 1 the first (default the newest)")
+	taskParam = str("the card's task id or issue number")
+	nParam    = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
+	textParam = str("the text")
+	sessionN  = stepParam("the session's number")
+	docPath   = str("the file's path under docs/")
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
@@ -178,6 +188,58 @@ func (c *Console) chatTool(name string) (chatTool, bool) {
 // card is the tool's card, refused unless it is the chat project's.
 func (t *turn) card(in toolInput) (factoryd.Task, error) {
 	return t.c.cardIn(t.r.Context(), t.a, in.TaskID)
+}
+
+// normalized is a call's arguments as the tools read them: a number given
+// for a text parameter, an issue number say, as its text, and each
+// parameter with a default that the call leaves out or empty set to it.
+func (tool chatTool) normalized(args string) string {
+	var m map[string]any
+	if json.Unmarshal([]byte(cmp.Or(args, "{}")), &m) != nil || m == nil {
+		return args
+	}
+	changed := false
+	for k, p := range tool.params {
+		p, _ := p.(map[string]any)
+		v, set := m[k]
+		if n, ok := v.(float64); ok && p["type"] == "string" {
+			m[k], changed = strconv.FormatFloat(n, 'f', -1, 64), true
+		}
+		if d, ok := p["default"]; ok && (!set || v == nil || v == "") {
+			m[k], changed = d, true
+		}
+	}
+	if !changed {
+		return args
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return args
+	}
+	return string(b)
+}
+
+// byTaskID names in's cards by their task ids: a card named by its issue
+// number, "#5" or 5, is the chat project's card of that issue among those
+// the board reads.
+func (t *turn) byTaskID(in *toolInput) error {
+	for _, id := range []*string{&in.TaskID, &in.DependsOn} {
+		n, err := strconv.ParseInt(strings.TrimPrefix(*id, "#"), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		bts, err := t.c.cfg.Tasks.BoardTasks(t.r.Context(), time.Now().Add(-finishedSince), boardLimit)
+		if err != nil {
+			log.Printf("console: the cards of %s: %v", t.p.Name, err)
+			return refuse(http.StatusInternalServerError, "cannot read the cards")
+		}
+		i := slices.IndexFunc(bts, func(bt factoryd.BoardTask) bool { return bt.Repository == t.p.Repository && bt.IssueNumber == n })
+		if i < 0 {
+			return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no open or recent card #%d: the board read lists its cards, and an older card takes its task id.", t.p.Name, n))
+		}
+		*id = bts[i].ID
+	}
+	return nil
 }
 
 // describe is one line saying what a proposal of tool with in would do,
@@ -222,6 +284,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if in.BacklogCap > 0 {
+		parts = append(parts, fmt.Sprintf("backlog cap %d", in.BacklogCap))
 	}
 	if tool.name == "tell_card" {
 		branch, k, _, err := t.tellRoute(*in)
@@ -596,9 +661,9 @@ var tools = []chatTool{
 			return eventLines(events), nil, err
 		}},
 	{name: "costs", title: "Read the costs",
-		params: map[string]any{"by": enum("the whole ledger by day, by card (task) or by tier (model alias), for the factory's writers; none: the project's spend line", "day", "card", "tier"),
-			"from_date": str("the window's first UTC day, YYYY-MM-DD (default the current month's first day)"),
-			"to_date":   str("the window's last UTC day, YYYY-MM-DD (default today)")},
+		params: map[string]any{"by": enum("the whole ledger by day, card or tier", "day", "card", "tier"),
+			"from_date": str("the first UTC day, YYYY-MM-DD (default the month's first)"),
+			"to_date":   str("the last UTC day, YYYY-MM-DD (default today)")},
 		about: "The project's spend this month against its cap, or the whole ledger by day, card or tier.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			if in.By != "" {
@@ -615,12 +680,12 @@ var tools = []chatTool{
 		about: "The newest revision of a card's plan: its sha256, questions and cards.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.planText(in); return s, nil, err }},
 	{name: "pr", title: "Read a pull request",
-		params:   map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "add the diff's first 20 KB"}},
+		params:   map[string]any{"task_id": taskParam, "with_diff": map[string]any{"type": "boolean", "description": "add the diff"}},
 		required: []string{"task_id"},
 		about:    "A card's pull request: its checks, reviews, audit and changed files.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
 	{name: "file", title: "Read a file",
-		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path in the repository")},
+		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path")},
 		required: []string{"ref", "path"},
 		about:    "A file of the project's repository at a branch, tag or commit, its first 64 KB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
@@ -628,29 +693,29 @@ var tools = []chatTool{
 		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
 	{name: "session_steps", title: "List a session's steps",
-		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number (default 1)"),
-			"to": stepParam("the last step's number (default from + 99, at most 100 steps)")},
+		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
+			"to": stepParam("the last step (default and most: from + 99)")},
 		required: []string{"task_id"},
 		about:    "A session's steps, one line each.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
 	{name: "session_step", title: "Read a session's steps",
-		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": stepParam("the first step's number (default 1)"),
-			"to": stepParam("the last step's number (default from, at most 20 steps)")},
+		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
+			"to": stepParam("the last step (default from, most from + 19)")},
 		required: []string{"task_id"},
 		about:    "A session's steps in full.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
 	{name: "session_search", title: "Search a card's sessions",
-		params: map[string]any{"task_id": taskParam, "query": str("the text to find, 2 to 200 characters, any case"),
-			"n": stepParam("the session's number on the card (default every session)")},
+		params: map[string]any{"task_id": taskParam, "query": str("the text to find, any case"),
+			"n": stepParam("one session's number (default all)")},
 		required: []string{"task_id", "query"},
 		about:    "Search a card's sessions for a text, at most 20 hits.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.searchText(in); return s, nil, err }},
 	{name: "ci", title: "Read CI",
-		params: map[string]any{"ref": str("a branch (default main)"), "sha": str("a commit, 7 to 64 hex digits (default the ref's head)")},
+		params: map[string]any{"ref": fallback("main", str("a branch")), "sha": str("a commit (default the ref's head)")},
 		about:  "The CI result of main, a branch or a commit.",
 		run:    func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.ciText(in); return s, nil, err }},
 	{name: "alerts", title: "Read the alerts",
-		params: map[string]any{"state": enum("open for the alerts without a verdict (default), all for every alert the page lists", "open", "all")},
+		params: map[string]any{"state": fallback("open", enum("open: without a verdict, all: every alert", "open", "all"))},
 		about:  "The factory's alerts, newest first.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
@@ -675,7 +740,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "alert_verdict", title: "Judge an alert", write: true,
-		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id, from the alerts read", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
+		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
 		required: []string{"id", "verdict"},
 		about:    "Judge an open escalation alert real or noise.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -683,31 +748,30 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "promote_resource", title: "Make a resource standing", write: true,
-		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
 		about: "Make a leased resource standing, owned by its project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doPromoteResource(t.r.Context(), t.a, in.ID)
 			return note, nil, err
 		}},
 	{name: "release_resource", title: "Release a resource", write: true,
-		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id, from the resources read", "minimum": 1}}, required: []string{"id"},
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the resource's id", "minimum": 1}}, required: []string{"id"},
 		about: "End a resource's lease now, so the collector deletes it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doReleaseResource(t.r.Context(), t.a, in.ID)
 			return note, nil, err
 		}},
 	{name: "new_card", title: "File a card", write: true,
-		params: map[string]any{"title": str("one line, at most 255 characters"), "body": str("the description, Markdown"),
-			"lane":        enum("where the card starts (default backlog): backlog to wait, plan for a spec to plan, ready for an agent to work on now, human for a human", "backlog", "plan", "ready", "human"),
-			"size":        enum("the card's size, which sets its budget; none for the default budget", policy.CardSizes...),
-			"rung":        enum("the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text", factoryd.RungCheap, factoryd.RungFrontier),
-			"rung_reason": str("one line: why that rung, required with a rung")},
+		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
+			"lane":        fallback(policy.LaneBacklog, enum("where the card starts", "backlog", "plan", "ready", "human")),
+			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),
+			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
+			"rung_reason": str("why that rung, one line")},
 		required: []string{"title"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			lane := cmp.Or(in.Lane, policy.LaneBacklog)
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, lane, "", in.Size, in.Rung, in.RungReason)
-			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, lane), nil, err
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size, in.Rung, in.RungReason)
+			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
 		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
@@ -717,14 +781,14 @@ var tools = []chatTool{
 			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
-		"question": map[string]any{"type": "integer", "description": "a plan's open question by its number on the card", "minimum": 1},
-		"revision": map[string]any{"type": "integer", "description": "that plan's revision, from the plan tool", "minimum": 1},
-		"answers": map[string]any{"type": "array", "description": "every open question of a plan revision, answered at once",
+		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
+		"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
+		"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
 			"items": map[string]any{"type": "object", "properties": map[string]any{
-				"question": map[string]any{"type": "integer", "description": "the question's number on the plan card", "minimum": 1},
-				"text":     map[string]any{"type": "string", "description": "its answer, one line"}},
+				"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},
+				"text":     map[string]any{"type": "string", "description": "its answer"}},
 				"required": []string{"question", "text"}}}},
-		required: []string{"task_id", "revision"},
+		required: []string{"task_id"},
 		about:    "Answer the question a card waits on, or every open question of a plan at once.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
@@ -764,8 +828,8 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "accept_plan", title: "Accept a plan", write: true,
-		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the plan revision the member saw (default the newest)", "minimum": 1},
-			"sha256": str("that revision's sha256, from the plan tool (default the revision's)")},
+		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the revision the member saw (default the newest)", "minimum": 1},
+			"sha256": str("its sha256 (default the revision's)")},
 		required: []string{"task_id"},
 		about:    "Accept a plan's revision, which factoryd files as cards.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -801,7 +865,7 @@ var tools = []chatTool{
 		}},
 	{name: "deny_merge", title: "Deny a merge", write: true,
 		params: map[string]any{"task_id": taskParam, "note": str("why"),
-			"action": enum("request_changes (default) sends the card back to its agent, reject closes the pull request and fails the card", "request_changes", "reject")},
+			"action": fallback("request_changes", enum("request_changes returns it to its agent, reject fails it", "request_changes", "reject"))},
 		required: []string{"task_id", "note"},
 		about:    "Deny a card's pending merge request with a reason.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -809,11 +873,11 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, cmp.Or(in.Action, "request_changes"), in.Note)
+			note, err := t.c.doDeny(t.r.Context(), t.a, q.ID, in.Action, in.Note)
 			return note, nil, err
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
-		params:   map[string]any{"task_id": taskParam, "summary": str("one line of up to 255 characters; empty restores the generated title")},
+		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},
 		required: []string{"task_id"},
 		about:    "Set the one-line summary a card's face shows instead of its generated title.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -821,7 +885,7 @@ var tools = []chatTool{
 			return in.setNote("summary", was.IssueNumber, in.Summary), &inverse{"set_summary", toolInput{TaskID: in.TaskID, Summary: was.HumanSummary}}, err
 		}},
 	{name: "set_accent", title: "Set a card's accent", write: true,
-		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour; empty removes it", append([]string{""}, factoryd.Accents...)...)},
+		params:   map[string]any{"task_id": taskParam, "accent": enum("the colour, empty removes it", append([]string{""}, factoryd.Accents...)...)},
 		required: []string{"task_id"},
 		about:    "Set a card's colour label.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -837,7 +901,7 @@ var tools = []chatTool{
 		}},
 	{name: "github_export", title: "Export to GitHub", write: true,
 		params: map[string]any{"remote": str("the GitHub repository, owner/name"),
-			"mode": enum("mirror (default): Forgejo pushes every branch and tag; pull_requests: each merged card becomes a GitHub pull request", factoryd.ModeMirror, factoryd.ModePullRequests)},
+			"mode": fallback(factoryd.ModeMirror, enum("the export's mode", factoryd.ModeMirror, factoryd.ModePullRequests))},
 		required: []string{"remote"},
 		about:    "Export the project's repository to GitHub, in place of its last export.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -855,15 +919,15 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "close", title: "Close a card", write: true,
-		params: map[string]any{"task_id": taskParam, "note": str("why, commented on the issue before it closes; optional")}, required: []string{"task_id"},
+		params: map[string]any{"task_id": taskParam, "note": str("why, commented first")}, required: []string{"task_id"},
 		about: "Close a card's issue, which ends the card.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doClose(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
 		}},
 	{name: "edit", title: "Edit a card", write: true,
-		params: map[string]any{"task_id": taskParam, "title": str("the new title, at most 255 characters; empty keeps it"),
-			"body": str("the new description in Markdown, replacing the old; empty keeps it")},
+		params: map[string]any{"task_id": taskParam, "title": str("the new title, empty keeps it"),
+			"body": str("the new description, empty keeps it")},
 		required: []string{"task_id"},
 		about:    "Edit a card's issue title or description.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -878,8 +942,8 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "set_dependency", title: "Set a dependency", write: true,
-		params: map[string]any{"task_id": taskParam, "depends_on": str("the task id of the card it waits for"),
-			"remove": map[string]any{"type": "boolean", "description": "true removes the dependency"}},
+		params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for, by task id or issue number"),
+			"remove": map[string]any{"type": "boolean", "description": "removes the dependency"}},
 		required: []string{"task_id", "depends_on"},
 		about:    "Make an unstarted card wait for another until that one is done.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -893,8 +957,7 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "read_doc", title: "Read a document",
-		params: map[string]any{"path": str(docPathWords),
-			"find": str("a word or passage: answers only the lines holding it, each with its number, instead of the file's first 20 KiB")},
+		params:   map[string]any{"path": docPath, "find": str("only the lines holding this text")},
 		required: []string{"path"},
 		about:    "A document of the project's document repository with its base_sha256.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -902,11 +965,11 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "write_doc", title: "Write a document", write: true,
-		params: map[string]any{"path": str(docPathWords),
-			"old":         str("an edit's passage, exactly as read_doc answered it and once in the file"),
-			"new":         str("the passage that replaces old; empty removes it"),
-			"content":     str("a new file's full content; an existing file takes old and new"),
-			"base_sha256": str("the base_sha256 read_doc answered: an edit carries it, and a stale one refuses with the file's current hash")},
+		params: map[string]any{"path": docPath,
+			"old":         str("the passage to replace, as read"),
+			"new":         str("the passage that replaces old, empty removes it"),
+			"content":     str("a new file's content"),
+			"base_sha256": str("read_doc's base_sha256")},
 		required: []string{"path"},
 		about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -915,7 +978,7 @@ var tools = []chatTool{
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
 		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
-			"backlog_cap": map[string]any{"type": "integer", "description": "how many of the project's cards may wait unstarted, 1 or more (default 8)", "minimum": 1}},
+			"backlog_cap": fallback(policy.DefaultBacklogCap, map[string]any{"type": "integer", "description": "how many cards may wait unstarted", "minimum": 1})},
 		required: []string{"autonomy"},
 		about:    "Set the project's autonomy state and backlog cap through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -931,17 +994,17 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "notes_write", title: "Write the scratchpad", write: true,
-		params: map[string]any{"text": str("a note to append as its own paragraph"),
-			"old": str("a passage to replace, once in the scratchpad"), "new": str("the passage that replaces old; empty removes it")},
+		params: map[string]any{"text": str("a note to append"),
+			"old": str("a passage to replace"), "new": str("the passage that replaces old, empty removes it")},
 		about: "Append a note to the scratchpad, or replace one passage of it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.writeNotes(in.Text, in.Old, in.New)
 			return s, nil, err
 		}},
 	{name: "escalate", title: "Escalate to the members", write: true,
-		params: map[string]any{"ask": str("the question, its state and each option's consequence, at most 2000 characters"),
+		params: map[string]any{"ask": str("the question with its state and options"),
 			"choices": map[string]any{"type": "array", "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "at most 5 short answers the members may press, each at most 60 characters"}},
+				"description": "answers the members may press"}},
 		required: []string{"ask"},
 		about:    "Ask the project's members for a decision: a Needs you card, its choices as inbox buttons.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -998,6 +1061,8 @@ func (t *turn) diff(in toolInput) (string, error) {
 const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
+  new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
+  github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.

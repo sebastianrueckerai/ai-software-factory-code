@@ -17,11 +17,11 @@ import (
 
 // tellRig is the chat's rig with a fourth card of the code project: #15
 // t-g in review at its approval gate, holding pending merge request 6 of
-// pull request #12. It answers the rig and the number of event rows it
-// starts with.
-func tellRig(t *testing.T) (*rig, int) {
+// pull request #12. It answers the rig, its gateway and the number of
+// event rows it starts with.
+func tellRig(t *testing.T) (*rig, *chatGateway, int) {
 	t.Helper()
-	r, _, _ := newChatRig(t)
+	r, _, g := newChatRig(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "in-review",
 		Gate: factoryd.GateApproval, Lane: policy.LaneReady, Process: "maintenance", Repository: "sf/code", IssueNumber: 15,
@@ -31,7 +31,7 @@ func tellRig(t *testing.T) (*rig, int) {
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-g",
 		Project: "sf/code", PRNumber: 12, Status: "pending", Spec: json.RawMessage(`{"head_sha":"c0ffee1","risk_class":"low"}`)})
 	r.approvals.mu.Unlock()
-	return r, r.events.count()
+	return r, g, r.events.count()
 }
 
 // toldRun runs tool tell_card on in as the rig's member, outside a chat
@@ -72,7 +72,7 @@ func toldRefused(t *testing.T, r *rig, in toolInput) (string, int, string) {
 // A tell at a running card goes to its session as a steer does: the
 // member's message on factoryd's path, one card_steered row via chat.
 func TestTellCardRunning(t *testing.T) {
-	r, before := tellRig(t)
+	r, _, before := tellRig(t)
 	var steered []string
 	r.c.cfg.Steer = func(_ context.Context, taskID, user, text string) error {
 		steered = append(steered, taskID+" "+user+": "+text)
@@ -90,7 +90,7 @@ func TestTellCardRunning(t *testing.T) {
 // request with request_changes: the member's REQUEST_CHANGES review on
 // its pull request, the request denied, one merge_denied row via chat.
 func TestTellCardApprovalGate(t *testing.T) {
-	r, before := tellRig(t)
+	r, _, before := tellRig(t)
 	got := toldRun(t, r, toolInput{TaskID: "t-g", Text: "Drop the committed binary."})
 	equal(t, "the answer", got, `Told #15 (the text denies its merge request, changes requested): Denied pull request #12 (request changes).`)
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "Drop the committed binary." ||
@@ -106,19 +106,15 @@ func TestTellCardApprovalGate(t *testing.T) {
 }
 
 // deny_merge's action defaults to request_changes: a call without one
-// asks for changes as the tell at the approval gate does.
+// proposes and asks for changes as the tell at the approval gate does.
 func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {
-	r, before := tellRig(t)
-	_, s := r.loggedIn(t)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
-	tool, _ := r.c.chatTool("deny_merge")
-	out, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-g", Note: "Drop the committed binary."})
-	if err != nil {
-		t.Fatal(err)
-	}
-	equal(t, "the answer", out, "Denied pull request #12 (request changes).")
+	r, g, before := tellRig(t)
+	stored := `{"action":"request_changes","note":"Drop the committed binary.","task_id":"t-g"}`
+	proposed, done, _ := proposeAndDo(t, r, g, "deny_merge", `{"task_id":"t-g","note":"Drop the committed binary."}`)
+	equal(t, "proposal", proposed, []string{`proposal {"arguments":` + stored +
+		`,"description":"Deny a merge, #15 t-g \"Cache the board.\", action request_changes, note Drop the committed binary.","id":"TOKEN","tool":"deny_merge"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("deny_merge", stored, "Denied pull request #12 (request changes)."))
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" {
 		t.Fatalf("reviews = %+v, want one REQUEST_CHANGES", r.fg.reviews)
 	}
@@ -131,7 +127,7 @@ func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {
 // answer: the member's comment on its issue, which resumes it, one
 // question_answered row via chat.
 func TestTellCardWaitingHuman(t *testing.T) {
-	r, before := tellRig(t)
+	r, _, before := tellRig(t)
 	got := toldRun(t, r, toolInput{TaskID: "t-e", Text: "a shard"})
 	equal(t, "the answer", got, `Told #13 (the text answers the question it waits on): Answered #13.`)
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
@@ -145,7 +141,7 @@ func TestTellCardWaitingHuman(t *testing.T) {
 // A tell at a card in no telling state — here the backlog — is refused
 // 409 naming the states the routing knows; nothing is written.
 func TestTellCardWrongState(t *testing.T) {
-	r, before := tellRig(t)
+	r, _, before := tellRig(t)
 	out, status, msg := toldRefused(t, r, toolInput{TaskID: "t-m", Text: "Start now."})
 	if out != "" || status != http.StatusConflict {
 		t.Fatalf("a tell at a backlog card = %q, %d %q, want a 409 refusal", out, status, msg)
@@ -160,7 +156,7 @@ func TestTellCardWrongState(t *testing.T) {
 // so no branch fits it either: 409 names the approval gate as the state
 // it would take with one.
 func TestTellCardGateWithoutARequest(t *testing.T) {
-	r, _ := tellRig(t)
+	r, _, _ := tellRig(t)
 	r.approvals.mu.Lock()
 	for i := range r.approvals.rows {
 		if r.approvals.rows[i].ID == 6 {

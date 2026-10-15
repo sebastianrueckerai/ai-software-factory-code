@@ -157,10 +157,12 @@ func (s *accBatchTasks) TaskByPR(_ context.Context, repository string, pr int64)
 	return factoryd.Task{}, false, nil
 }
 
+// BoardTasks lists the cards, as the store does, in its order: a chat
+// task is none.
 func (s *accBatchTasks) BoardTasks(_ context.Context, _ time.Time, limit int) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := slices.Clone(s.tasks)
+	out := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat })
 	factoryd.SortBoardTasks(out)
 	return out[:min(limit, len(out))], nil
 }

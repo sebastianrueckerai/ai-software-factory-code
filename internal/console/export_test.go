@@ -145,9 +145,10 @@ func TestChatGithubExport(t *testing.T) {
 		{RemoteName: "remote_mirror_other", RemoteAddress: "https://github.com/acme/other.git"}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	const args = `{"remote":"acme/app"}`
+	// args is the agent's call, ran the call with the mode's default
+	const args, ran = `{"remote":"acme/app"}`, `{"mode":"mirror","remote":"acme/app"}`
 	tool := func(result string) string {
-		return `tool {"arguments":` + args + `,"duration_ms":0,"name":"github_export","result":"` + result + `"}`
+		return `tool {"arguments":` + ran + `,"duration_ms":0,"name":"github_export","result":"` + result + `"}`
 	}
 	none := "Refused: demo-app has no GitHub token for an export. Set the export's token on the project page: https://console.example/projects#export-demo-app"
 	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it first.")}}
@@ -161,8 +162,7 @@ func TestChatGithubExport(t *testing.T) {
 	}
 	equal(t, "the tool's parameters", params, map[string]any{"type": "object", "required": []any{"remote"},
 		"properties": map[string]any{"remote": map[string]any{"type": "string", "description": "the GitHub repository, owner/name"},
-			"mode": map[string]any{"type": "string", "enum": []any{"mirror", "pull_requests"},
-				"description": "mirror (default): Forgejo pushes every branch and tag; pull_requests: each merged card becomes a GitHub pull request"}}})
+			"mode": map[string]any{"type": "string", "enum": []any{"mirror", "pull_requests"}, "default": "mirror", "description": "the export's mode"}}})
 	equal(t, "Forgejo calls without a token", r.mirrors.took(), []string(nil))
 
 	r.mirrors.rows["demo-app export"] = factoryd.Mirror{Project: "demo-app", Direction: factoryd.MirrorExport, Remote: "acme/old",
@@ -170,7 +170,7 @@ func TestChatGithubExport(t *testing.T) {
 	g.replies = [][]string{{call(1, "github_export", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":` + args + `,"description":"Export to GitHub, remote acme/app","id":"TOKEN","tool":"github_export"}`, `done {}`})
+		`proposal {"arguments":` + ran + `,"description":"Export to GitHub, remote acme/app, mode mirror","id":"TOKEN","tool":"github_export"}`, `done {}`})
 	equal(t, "Forgejo calls before Do it", r.mirrors.took(), []string(nil))
 	_, done, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
 	set := "GitHub export of demo-app to acme/app is set: Forgejo pushes every branch and tag on each commit and every 8 h."
