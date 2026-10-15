@@ -899,7 +899,7 @@ func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
 }
 
 // unfundedSession is the fund's floor (roadmap 243): the refusal a card's
-// remaining budget owes a session's first call, "" when one can run.
+// remaining budget owes a session's opening calls, "" when they can run.
 func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
 	return c.unfunded(ctx, t, c.cfg.SessionFunded)
 }
@@ -941,7 +941,7 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, r
 	}
 	switch why := c.unfundedSession(ctx, t); {
 	case why == "":
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's first call: it needs no raise; answer it (answer).", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's opening calls: it needs no raise; answer it (answer).", t.IssueNumber))
 	case !factoryd.BudgetRefusal(why):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
 	}

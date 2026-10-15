@@ -1546,7 +1546,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the fund's floor refuses a
-		// session's first call for want of budget (roadmap 243): the same
+		// session's opening calls for want of budget (roadmap 243): the same
 		// card, to its project's approvers; a refusal no raise answers
 		// offers none
 		if v.approves(t.Repository) && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {

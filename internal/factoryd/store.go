@@ -307,8 +307,8 @@ type Store interface {
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
 	Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error)
-	// Opening is the request a session of the task is expected to open
-	// with on ref (policy.ReadOpening).
+	// Opening is how the newest sessions opened on ref, read for the task
+	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
 	// DayFree is the UTC day's free headroom under dayEUR now, every
 	// outstanding hold netted (policy.DayFree).

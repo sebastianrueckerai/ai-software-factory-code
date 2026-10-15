@@ -397,7 +397,7 @@ func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (strin
 }
 
 // SessionFunded is the fund's floor (roadmap 243): "" when the free
-// headroom can fund a session's first call on model (policy.Opening),
+// headroom can fund a session's opening calls on model (policy.Opening),
 // else the refusal. A card the answer path's floor admits may still hold
 // too little to start a session; the console offers it the Fund action.
 func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {

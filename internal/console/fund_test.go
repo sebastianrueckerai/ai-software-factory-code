@@ -33,7 +33,7 @@ func cappedCard(r *rig, t *testing.T) {
 }
 
 // Card #704 (roadmap 243): its remaining budget funds the answer path's
-// cheapest call but not a session's first call, so the answer box stays
+// cheapest call but not a session's opening calls, so the answer box stays
 // and the Fund action is offered beside it, and a raise goes through.
 func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	r := newRig(t)
@@ -134,7 +134,7 @@ func TestFundIsAnApproversAction(t *testing.T) {
 }
 
 // A raise on a card that is not capped is refused: one whose remaining
-// budget can fund a session's first call, and one the floor cannot judge
+// budget can fund a session's opening calls, and one the floor cannot judge
 // (no session yet).
 func TestFundRefusesACardThatIsNotCapped(t *testing.T) {
 	r := newRig(t)
@@ -147,7 +147,7 @@ func TestFundRefusesACardThatIsNotCapped(t *testing.T) {
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
 	for _, id := range []string{"t-e", "t-new"} {
 		rec := r.do(post("/tasks/"+id+"/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck)
-		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "can fund a session's first call") {
+		if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "can fund a session's opening calls") {
 			t.Fatalf("fund of %s = %d: %s", id, rec.Code, rec.Body)
 		}
 		task, _, _ := r.tasks.Task(t.Context(), id)
