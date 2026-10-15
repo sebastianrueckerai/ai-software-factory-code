@@ -1754,7 +1754,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		title := r.untrusted(t, c.Title)
 		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
-			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, false, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
+			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
 			Rung: c.Rung, Size: c.Size, Author: approver, AuthorWriter: true})
 		if err != nil {

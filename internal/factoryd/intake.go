@@ -672,13 +672,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 	}
 	size, eur := askedBudget(issue.Body)
+	rung := rungOf(issue.Body, size)
 	task := Task{
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, false, eur),
+		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
 		Size:         size,
-		Rung:         rungOf(issue.Body, size),
+		Rung:         rung,
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
