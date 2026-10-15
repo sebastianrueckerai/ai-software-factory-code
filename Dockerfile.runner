@@ -33,7 +33,9 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 ARG FORGEJO_RUNNER_VERSION
 # roadmap 232: the warm-cache go build below runs on the commit's clock, not
 # the build clock (ci.yml passes --build-arg SOURCE_DATE_EPOCH=<commit time>).
-ARG SOURCE_DATE_EPOCH
+# A build that passes none, pr.yml's image check or the nightly, dates the
+# warm step at 0: its touch and cache rewrite need a number.
+ARG SOURCE_DATE_EPOCH=0
 
 # PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
 # apt takes its packages only signed by the key of this fingerprint, and the

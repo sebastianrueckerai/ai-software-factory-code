@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -549,5 +550,20 @@ func TestDockerfileDownloadsCarryAChecksum(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// The warm step dates its source copy and rewrites the cache's times with
+// SOURCE_DATE_EPOCH, and pr.yml's image check and the nightly build the
+// runner without passing it: its ARG carries a number as default, or
+// "touch -d @" fails the build (main's nightly, run 1241).
+func TestRunnerEpochHasADefault(t *testing.T) {
+	final, _ := warmStep(t)
+	v, ok := final.args["SOURCE_DATE_EPOCH"]
+	if !ok {
+		t.Fatal("Dockerfile.runner's final stage: no ARG SOURCE_DATE_EPOCH")
+	}
+	if _, err := strconv.ParseInt(v, 10, 64); err != nil {
+		t.Errorf("Dockerfile.runner: ARG SOURCE_DATE_EPOCH defaults to %q, want a number a build without the arg can use", v)
 	}
 }
