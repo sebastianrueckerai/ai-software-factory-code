@@ -62,12 +62,15 @@ func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "t-card", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", IssueNumber: 4}); err != nil {
 		t.Fatal(err)
 	}
-	board, err := s.BoardTasks(ctx)
+	board, err := s.BoardTasks(ctx, "linkshort/linkshort")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(board) != 1 || board[0].ID != "t-card" {
 		t.Fatalf("board = %+v, want only t-card", board)
+	}
+	if other, err := s.BoardTasks(ctx, "sf/code"); err != nil || len(other) != 0 {
+		t.Fatalf("sf/code's board = %+v, %v: want no card, its open task is a chat's", other, err)
 	}
 	if _, ok, err := s.BoardTask(ctx, got.ID); ok || err != nil {
 		t.Fatalf("BoardTask(chat) = %v, %v: want none", ok, err)

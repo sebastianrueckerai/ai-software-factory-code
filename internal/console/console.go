@@ -55,9 +55,9 @@ type Tasks interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
 	// TaskByIssue is repository's card of issue number issue.
 	TaskByIssue(ctx context.Context, repository string, issue int64) (factoryd.Task, bool, error)
-	// BoardTasks lists the open tasks, each with its latest escalation's
-	// reason.
-	BoardTasks(ctx context.Context) ([]factoryd.BoardTask, error)
+	// BoardTasks lists repository's open tasks, each with its latest
+	// escalation's reason.
+	BoardTasks(ctx context.Context, repository string) ([]factoryd.BoardTask, error)
 	// FinishedTasks lists the page of a project's finished cards q asks
 	// for, and how many the read leaves from the page on.
 	FinishedTasks(ctx context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error)

@@ -62,13 +62,13 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	return b, unmarshalChoices(choices, &b.Choices)
 }
 
-// BoardTasks lists the open tasks for the console's board, most urgent
-// first; a chat task is no card. The escalation reason comes from the
-// escalation's intake event, so a poll reads no timeline object.
-func (s *PGStore) BoardTasks(ctx context.Context) ([]BoardTask, error) {
+// BoardTasks lists repository's open tasks for the console's board, most
+// urgent first; a chat task is no card. The escalation reason comes from
+// the escalation's intake event, so a poll reads no timeline object.
+func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
-		 ORDER BY priority DESC, finished_at DESC NULLS LAST, id`, IntakeEscalation, AlertEscalation, KindChat)
+		 WHERE repository = $4 AND kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
+		 ORDER BY priority DESC, finished_at DESC NULLS LAST, id`, IntakeEscalation, AlertEscalation, KindChat, repository)
 	if err != nil {
 		return nil, err
 	}
