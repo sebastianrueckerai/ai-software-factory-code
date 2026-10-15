@@ -829,12 +829,12 @@ const (
 	// acceptance, which before waited for the next plan wait.
 	versionBurstAccept workflow.Version = 1
 	// versionQueueTurns (change id "queue-turns", roadmap 202): a queue head
-	// red at its merge gets its maxRestages re-runs of its red checks
-	// whatever main did and takes at most maxTurns turns per queue entry,
-	// whether or not their sync moved the head, then leaves the queue on
-	// restage's escalation (leaveRed). A run from before the change counts
-	// the re-runs' budget in turns and bounds only the turns whose sync
-	// moved nothing.
+	// red at its merge gets its maxRestages re-runs, the turns on which main
+	// did not move, whatever main did on the others, and takes at most
+	// maxTurns turns per queue entry, then leaves the queue on restage's
+	// escalation (leaveRed). A run from before the change counts the
+	// re-runs' budget in turns, moves too, and bounds only the turns whose
+	// sync moved nothing.
 	versionQueueTurns workflow.Version = 1
 )
 

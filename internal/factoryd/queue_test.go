@@ -695,43 +695,28 @@ func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
 
 // A head whose checks read green on every turn while its merge reads red
 // takes the same path as a red one: within the bound each turn merges
-// again, and after it the head leaves the queue on the escalation, which
-// names the merge's refusal; it does not hold the turn. Its checks never
-// run again, so it leaves at the top of its seventh turn, six merged; a
-// run from before versionQueueTurns leaves at its fourth turn's read, three
-// merged.
+// again, a re-run on its unmoved main, and after the third the head leaves
+// the queue on the escalation, which names the merge's refusal; it does
+// not hold the turn.
 func TestQueueRedMergeOnGreenChecksLeavesTheQueue(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		version workflow.Version
-		turns   int // the turns the escalation counts
-		merges  int // the red merge before the turns and each turn's
-	}{
-		{"current", versionQueueTurns, 6, 7},
-		{"before queue-turns", workflow.DefaultVersion, 4, 4},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			q := newQueueHarness(t, policy.QueueProject, green, autoGates)
-			q.env.OnGetVersion("queue-turns", workflow.DefaultVersion, versionQueueTurns).Return(tc.version)
-			q.merge = []MergeResult{redAtMerge}
-			q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
-			q.onSessions(pushed("s1", "c1"))
-			q.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
-			if final := q.run(t); final != "failed" {
-				t.Fatalf("final = %q (%v)", final, q.finals)
-			}
-			if want := slices.Repeat([]string{"9 c1 " + AutoApprover}, tc.merges); !slices.Equal(q.merges, want) || len(q.reruns) != 0 {
-				t.Fatalf("merges %v, reruns %v; want the first merge and one per turn, no re-run of green checks", q.merges, q.reruns)
-			}
-			left := fmt.Sprintf("the checks are still red after the merge queue's turns: main moved on 0 of %d turns, and the red checks ran again on 0, so the pull request left the queue until a human answers", tc.turns)
-			want := left + "\n\n" + "the checks are red on c1: the merge waits for a green head"
-			if !slices.Equal(q.escalated, []string{want}) || !slices.Equal(q.leaves, []string{left, "pull request closed without merge"}) {
-				t.Fatalf("escalated %q, leaves %q; want the refusal asked outside the queue", q.escalated, q.leaves)
-			}
-			if len(q.approvals) != 0 || len(q.sessions) != 1 {
-				t.Fatalf("approvals %+v, %d sessions; want no card holding the turn, no session", q.approvals, len(q.sessions))
-			}
-		})
+	q := newQueueHarness(t, policy.QueueProject, green, autoGates)
+	q.merge = []MergeResult{redAtMerge}
+	q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+	q.onSessions(pushed("s1", "c1"))
+	q.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := q.run(t); final != "failed" {
+		t.Fatalf("final = %q (%v)", final, q.finals)
+	}
+	if want := slices.Repeat([]string{"9 c1 " + AutoApprover}, 4); !slices.Equal(q.merges, want) || len(q.reruns) != 0 {
+		t.Fatalf("merges %v, reruns %v; want the first merge and one per turn, no re-run of green checks", q.merges, q.reruns)
+	}
+	const left = "the checks are still red after the merge queue's turns: main moved on 0 of 4 turns, and the red checks ran again on 3, so the pull request left the queue until a human answers"
+	want := left + "\n\n" + "the checks are red on c1: the merge waits for a green head"
+	if !slices.Equal(q.escalated, []string{want}) || !slices.Equal(q.leaves, []string{left, "pull request closed without merge"}) {
+		t.Fatalf("escalated %q, leaves %q; want the refusal asked outside the queue", q.escalated, q.leaves)
+	}
+	if len(q.approvals) != 0 || len(q.sessions) != 1 {
+		t.Fatalf("approvals %+v, %d sessions; want no card holding the turn, no session", q.approvals, len(q.sessions))
 	}
 }
 

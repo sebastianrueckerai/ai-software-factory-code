@@ -341,9 +341,11 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	return t.runStage(policy.StageChecks, head, g, review)
 }
 
-// maxRestages bounds the re-runs of its red checks a queue head red at
-// its merge takes per queue entry, whatever main did (versionQueueTurns);
-// before, the turns, each with at most one re-run (versionRedHeadRestage).
+// maxRestages bounds the re-runs a queue head red at its merge takes per
+// queue entry, whatever main did on its other turns (versionQueueTurns): a
+// turn on which main did not move is one, whether RerunChecks runs the red
+// checks again or the head's merge reads them anew. Before, it bounded the
+// turns, each with at most one re-run (versionRedHeadRestage).
 const maxRestages = 3
 
 // maxTurns bounds every turn a queue head red at its merge takes per queue
@@ -377,16 +379,17 @@ func (t *taskRun) restageable() bool {
 // are waited on and the red ones run again on an empty commit
 // (RerunChecks); red checks that pass there, on the same tree, are flaky
 // (checks_flaky), never findings. A green head goes to the approval again.
-// A head still red after its maxRestages re-runs, or after maxTurns turns
-// whatever they did (versionQueueTurns), leaves the queue, so the cards
-// behind it merge, and waits outside it for a human, the escalation naming
-// its red checks or the merge's refusal: an answer puts it back at the
-// queue's end, a new entry with its turns afresh, and a change request
+// A turn on which main did not move is a re-run, one that merged main in a
+// move. A head still red on an unmoved main after its maxRestages re-runs,
+// its checks red or green there though its merge read red again, or any
+// head after maxTurns turns (versionQueueTurns), leaves the queue, so the
+// cards behind it merge, and waits outside it for a human, the escalation
+// naming its red checks or the merge's refusal: an answer puts it back at
+// the queue's end, a new entry with its turns afresh, and a change request
 // sends it to the agent, whose fix enters the queue anew. A run from before
-// versionQueueTurns leaves after maxRestages turns instead, also a head
-// green there though its merge read red again, and only a turn whose sync
-// moved nothing does. The re-staged head's own checks decide its merge
-// (no checkedHead).
+// versionQueueTurns counts maxRestages turns, moves too, and has no bound
+// on its moves. The re-staged head's own checks decide its merge (no
+// checkedHead).
 func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	refusal := ""     // the red merge that began this turn, "" after red checks
 	var last []string // what ended the last turn red: its checks, or its merge's refusal
@@ -434,14 +437,15 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 			n, refusal, moves, reruns = 0, "", 0, 0
 			continue
 		}
+		if !moved {
+			reruns++
+		}
 		refusal = ""
 		if moved || len(red) > 0 {
 			if moved {
 				commit, t.syncedHead = sync.To, sync.To
 			} else if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 				return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
-			} else {
-				reruns++
 			}
 			t.rerunHead, g.ChecksPassed = commit, false
 			findings, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review)
@@ -471,8 +475,8 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 
 // leaveRed takes a queue head still red after its turns out of the queue
 // and waits for a human: the escalation's first line says on how many of
-// them main moved and the red checks ran again, red follows it; stop ends
-// the stages with v.
+// them main moved and how many were re-runs, red follows it; stop ends the
+// stages with v.
 func (t *taskRun) leaveRed(turns, moves, reruns int, red []string) (v verdict, stop bool) {
 	why := fmt.Sprintf("%s: main moved on %d of %d turns, and the red checks ran again on %d, so the pull request left the queue until a human answers",
 		leftQueue, moves, turns, reruns)
