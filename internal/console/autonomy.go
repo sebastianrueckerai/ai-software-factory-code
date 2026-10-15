@@ -60,8 +60,9 @@ func autonomyRefusal(state string, backlogCap int) string {
 // for the file's own, into its project file on the configuration
 // repository's main as the member, an approver, through the path a
 // project's filing takes: the file judged the loader's way, a branch with
-// the one change, its pull request and its merge. Full auto writes autonomous with merge_rule
-// auto, autonomous merge_rule human; manual and assisted leave the rule.
+// the one change, its pull request and its merge. Full auto writes
+// autonomous with merge_rule auto, autonomous merge_rule human; manual and
+// assisted leave the rule.
 // The change records one event naming the member.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlogCap int, a actor) error {
 	if line := autonomyRefusal(state, backlogCap); line != "" {
