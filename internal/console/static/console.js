@@ -49,6 +49,22 @@ document.addEventListener("htmx:beforeSwap", function (e) {
     e.detail.isError = false;
   }
 });
+// An answer for a board that has left the page since it was asked for (a
+// find answered first) is dropped: htmx would still run hx-preserve on it
+// and move the live find into the content it then throws away. The guard
+// sits on the asking element and knows its answer by the request's xhr,
+// as the find's own answer bubbles through the board. The stream's reads
+// and the cards' forms aimed at the board pass here; the find lands on
+// the board in place instead.
+document.addEventListener("htmx:beforeRequest", function (e) {
+  var t = e.detail.target, elt = e.detail.elt, xhr = e.detail.xhr;
+  if (e.defaultPrevented || !t || t.id !== "board" || elt.id === "find") return;
+  elt.addEventListener("htmx:beforeOnLoad", function guard(ev) {
+    if (ev.detail.xhr !== xhr) return;
+    elt.removeEventListener("htmx:beforeOnLoad", guard);
+    if (!t.isConnected) ev.preventDefault();
+  });
+});
 document.addEventListener("htmx:beforeRequest", function (e) {
   var flash = document.getElementById("flash");
   if (flash && e.detail.elt.id !== "board") flash.hidden = true;
@@ -181,7 +197,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // fold or the drawer closes; the find's box, focused, holds none. A find
 // in flight holds them all until its answer is in, or its handling
 // failed, and a read of the board in flight holds the next, which runs
-// once it is in: htmx would queue it behind the first and drop it with the
+// once it is in or its handling failed (htmx then never settles its
+// promise): htmx would queue it behind the first and drop it with the
 // board the first replaced. A find that changes the board's query moves
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down.
@@ -206,13 +223,15 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   document.addEventListener("htmx:beforeRequest", function (e) {
     if (e.detail.elt.id === "find") finding = true;
   });
-  function found(e) {
-    if (e.detail.elt.id !== "find") return;
-    finding = false;
+  function released(e) {
+    var id = e.detail.elt.id;
+    if (id === "find") finding = false;
+    else if (id === "board" && e.type === "htmx:onLoadError") reading = false;
+    else return;
     retry();
   }
-  document.addEventListener("htmx:afterRequest", found);
-  document.addEventListener("htmx:onLoadError", found);
+  document.addEventListener("htmx:afterRequest", released);
+  document.addEventListener("htmx:onLoadError", released);
   document.addEventListener("htmx:afterSwap", function () {
     var b = board();
     if (es && b && b.dataset.query !== following) follow(b.dataset.project, b.dataset.query);

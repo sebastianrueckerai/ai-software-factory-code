@@ -1075,7 +1075,9 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // with its caret, and a card's swap after the focus moved on does not. A
 // find whose answer failed in its handling releases the hold too; two
 // reads of the board asked for during one in flight send one more after
-// it; the find's good answer writes its URL in place, with the open
+// it, and so does a read whose handling failed; an answer for a board
+// that left the page is dropped, the find's own answer through it not;
+// the find's good answer writes its URL in place, with the open
 // document, the drawer's hash and the entry's state, a failed one none;
 // and Back to an entry with another q puts it in the box and runs the find.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
@@ -1235,6 +1237,54 @@ await settle();
 out.reads.push(requests.length);
 await settle();
 out.reads.push(requests.length);
+// a read whose handling failed (htmx never settles its promise) releases
+// the next read too
+requests = [];
+event({id: 17, at: "2026-10-11T10:14:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+event({id: 18, at: "2026-10-11T10:14:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+pending.splice(0);
+fire("htmx:onLoadError", {elt: {id: "board"}});
+out.unsettled = requests.slice();
+await settle();
+// an answer for a board that has left the page is dropped; the find's own
+// answer bubbling through it is not; a board still in the page takes its
+// answer; the guard goes with its answer, and the find and other targets
+// get none
+function asker(id) {
+  var on = [];
+  return Object.assign(el({id: id, isConnected: true}), {
+    addEventListener: function (type, fn) { if (type === "htmx:beforeOnLoad") on.push(fn); },
+    removeEventListener: function (type, fn) { on = on.filter(function (f) { return f !== fn; }); },
+    answer: function (xhr) {
+      var ev = {type: "htmx:beforeOnLoad", detail: {xhr: xhr}, defaultPrevented: false, preventDefault: function () { this.defaultPrevented = true; }};
+      on.slice().forEach(function (fn) { fn(ev); });
+      return ev.defaultPrevented;
+    },
+    guards: function () { return on.length; }});
+}
+var stale = asker("board"), late = {}, form = asker("t-1-close"), kept = {}, finder = asker("find"), other = asker("x");
+fire("htmx:beforeRequest", {elt: stale, target: stale, xhr: late});
+out.guard = [stale.guards(), stale.answer({})];
+stale.isConnected = false;
+out.guard.push(stale.answer(late), stale.guards());
+fire("htmx:beforeRequest", {elt: form, target: asker("board"), xhr: kept});
+out.guard.push(form.answer(kept), form.guards());
+fire("htmx:beforeRequest", {elt: finder, target: asker("board"), xhr: {}});
+fire("htmx:afterRequest", {elt: finder});
+fire("htmx:beforeRequest", {elt: other, target: {id: "drawer"}, xhr: {}});
+out.guard.push(finder.guards(), other.guards());
+// the stream's read whose answer the guard drops still settles, and the
+// next read goes out after it
+requests = [];
+event({id: 19, at: "2026-10-11T10:15:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+var read = asker("board"), asked = {};
+fire("htmx:beforeRequest", {elt: read, target: read, xhr: asked});
+event({id: 20, at: "2026-10-11T10:15:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+read.isConnected = false;
+out.dropped = [read.answer(asked)];
+await settle();
+out.dropped.push(requests);
+await settle();
 // a swap that brings the board under a new query moves the stream to it,
 // once; the new stream's first open reads the board and the Chat again
 requests = [];
@@ -1293,7 +1343,8 @@ console.log(JSON.stringify(out));
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
-		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],` +
+		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],"unsettled":["GET /board?project=code","GET /board?project=code"],` +
+		`"guard":[1,false,true,0,false,0,0,0],"dropped":[true,["GET /board?project=code","GET /board?project=code"]],` +
 		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
 		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +
 		`"replaced":[[{"doc":"docs/a.md"},"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1"],[null,"/?project=code&q=exp"]],"popped":["[] input"]}`

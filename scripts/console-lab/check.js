@@ -150,6 +150,43 @@ async function findAsYouType(p, query, word, label, fails) {
   if ((await page.locator(cards).count()) !== whole || (await page.locator("#q").inputValue()) !== "") fails.push(label + ": the × does not make the board whole again");
 }
 
+// lateRead: on the busy board a read of the board goes out and its answer
+// is held 1.5 s, a find answers first, then the read answers. The read is
+// dropped and its promise settles; the box stays in the board with its
+// focus and text, and the board is the find's.
+async function lateRead(page, label, fails) {
+  await page.goto(base + "/", { waitUntil: "load" });
+  await page.waitForTimeout(600);
+  let held = false;
+  const slow = (u) => u.pathname === "/board" && !u.searchParams.get("q");
+  const hold = async (r) => {
+    if (held) return r.continue();
+    held = true;
+    await new Promise((ok) => setTimeout(ok, 1500));
+    await r.continue();
+  };
+  await page.route(slow, hold);
+  await page.evaluate(() => {
+    window.labRead = "pending";
+    htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" })
+      .then(() => { window.labRead = "settled"; }, () => { window.labRead = "failed"; });
+  });
+  await page.locator("#q").click();
+  await page.keyboard.type("export", { delay: 40 });
+  await page.waitForTimeout(2500);
+  await page.unroute(slow, hold);
+  const after = await page.evaluate(() => {
+    const q = document.getElementById("q"), b = document.getElementById("board");
+    return { inBoard: !!q && b.contains(q), box: q && q.value, focus: !!q && document.activeElement === q, query: b.dataset.query, read: window.labRead,
+      off: Array.from(b.querySelectorAll("[data-card]")).filter((k) => !k.innerText.toLowerCase().includes("export")).length };
+  });
+  if (!after.inBoard || after.box !== "export" || !after.focus) {
+    fails.push(label + ": after a late read the box is " + (after.inBoard ? "in the board" : "gone") + ", text " + JSON.stringify(after.box) + ", focus " + after.focus);
+  }
+  if (after.query.indexOf("q=export") < 0 || after.off) fails.push(label + ": after a late read the board's query is " + after.query + ", " + after.off + " cards do not say export");
+  if (after.read !== "settled") fails.push(label + ": the late read's promise is " + after.read);
+}
+
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
@@ -475,6 +512,13 @@ async function text(page) {
       const raced = await p.page.evaluate(() => ({ query: document.getElementById("board").dataset.query,
         off: Array.from(document.querySelectorAll("#board [data-card]")).filter((k) => !k.innerText.toLowerCase().includes("export")).length }));
       if (raced.query.indexOf("q=export") < 0 || raced.off) fails.push("find in a race: after a stream swap landed first the board's query is " + raced.query + ", " + raced.off + " cards do not say export");
+      // a read of the board that answers after the find's answer, so in a browser without moveBefore too
+      await lateRead(p.page, "late read", fails);
+      const lm = await open(browser, { width: 1440, height: 900 });
+      await lm.ctx.addInitScript(() => { delete Element.prototype.moveBefore; });
+      await lateRead(lm.page, "late read without moveBefore", fails);
+      if (lm.errors.length) fails.push("late read without moveBefore: " + lm.errors.join("; "));
+      await lm.ctx.close();
       // the column menus (C13): ?done-only=failed narrows Done, its head says so with a way back
       await p.page.goto(base + "/?done-only=failed", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
