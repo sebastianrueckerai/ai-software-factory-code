@@ -1115,13 +1115,16 @@ document.addEventListener("keydown", function (e) {
     syncDoc();
   });
   // load theirs: master's text becomes the editor's, the draft and the
-  // change gone, the version the one on master now
+  // change gone, the version the one on master now. The draft's dot goes
+  // with the draft, at once: the editor still holds the member's text
+  // until master's lands, and it is no longer a draft
   function loadTheirs(path) {
     confirmAsk = null;
     changed[path] = null;
     theirs = { path: "", open: false };
     dropDraft(path);
     saves[path] = {};
+    syncDoc();
     fetch(docURL(path), { headers: { Accept: "application/json" } }).then(function (r) {
       return r.ok ? r.json() : Promise.reject(r.status);
     }).then(function (d) {
