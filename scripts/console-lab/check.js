@@ -94,10 +94,15 @@ async function text(page) {
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
     if (sc === "busy") {
-      const theme0 = await p.page.evaluate(() => document.documentElement.dataset.theme);
-      await p.page.locator("#theme-toggle").click();
-      await p.page.waitForTimeout(200);
-      if ((await p.page.evaluate(() => document.documentElement.dataset.theme)) === theme0) fails.push("busy: the theme toggle does not change data-theme");
+      // the theme selector (C15): the sun sets light and is pressed, a second
+      // click on it changes nothing, the moon sets dark again
+      const themeIs = async (t) => (await p.page.evaluate(() => document.documentElement.dataset.theme)) === t &&
+        (await p.page.locator('#theme-switch [data-theme-set="' + t + '"]').getAttribute("aria-pressed")) === "true";
+      for (const [t, why] of [["light", "the sun does not set the light theme"], ["light", "a click on the sun in force changes the theme"], ["dark", "the moon does not set the dark theme"]]) {
+        await p.page.locator('#theme-switch [data-theme-set="' + t + '"]').click();
+        await p.page.waitForTimeout(200);
+        if (!(await themeIs(t))) fails.push("busy: " + why);
+      }
       const sw = await p.page.evaluate(() => document.documentElement.scrollWidth);
       if (sw > 1440) fails.push("busy: horizontal page scroll at 1440 (" + sw + ")");
       const card = p.page.locator('[data-card="' + drawer + '"]').first();
@@ -265,14 +270,14 @@ async function text(page) {
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
   }
-  // the phone: 44 px targets for the C14 controls, no horizontal scroll
+  // the phone: 44 px targets for the C14 controls and the theme selector, no horizontal scroll
   for (const sc of ["threads", "escalation"]) {
     await seed(sc);
     const pp = await open(browser, { width: 390, height: 844 });
     await pp.page.goto(base + "/", { waitUntil: "load" });
     await pp.page.waitForTimeout(600);
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
-      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button"))
+      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, .theme-switch button"))
       .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
     const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);

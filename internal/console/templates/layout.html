@@ -17,7 +17,7 @@
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select>{{with .View}}<input type="hidden" name="view" value="{{.}}">{{end}}</form>
 {{end}}<nav aria-label="Main"><a href="/">Board</a>{{if .Factory}} <a href="/tasks/new">New task</a> <a href="/projects">Projects</a> <a href="/resources">Resources</a> <a href="/costs">Costs</a> <a href="/policy">Policy</a> <a href="/alerts">Alerts</a>{{end}}</nav>{{end}}
-<button type="button" id="theme-toggle" class="theme-toggle" aria-label="Switch to the light theme" title="Dark theme is the default; your choice is remembered">Theme: dark</button>
+<div id="theme-switch" class="theme-switch" role="group" aria-label="Theme"><button type="button" data-theme-set="dark" aria-pressed="true" aria-label="Dark theme" title="Dark theme, the default; your choice is remembered"><svg viewBox="1.5 1 18 18" aria-hidden="true"><path d="M10.5 5.25a3.17 3.17 0 0 0 4.75 4.75 4.75 4.75 0 1 1-4.75-4.75Z"/></svg></button><button type="button" data-theme-set="light" aria-pressed="false" aria-label="Light theme" title="Light theme; your choice is remembered"><svg viewBox="20.75 1 18 18" aria-hidden="true"><circle cx="29.75" cy="10" r="2.5"/><path d="M29.75 4.6v1.2M29.75 14.2v1.2M24.35 10h1.2M33.95 10h1.2M25.93 6.18l.85.85M32.72 12.97l.85.85M25.93 13.82l.85-.85M32.72 7.03l.85-.85"/></svg></button></div>
 {{if .CSRF}}<form method="post" action="/logout" class="logout"><input type="hidden" name="csrf" value="{{.CSRF}}"><span>{{.User}}</span> <button type="submit">Log out</button></form>{{end}}
 </header>
 <main>

@@ -473,15 +473,17 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	}
 }
 
-// <html> carries the dark theme, the header the toggle, the head applies
-// the stored theme before the stylesheet with a script that is not
-// deferred, so a light page never paints dark first, and the toggle's
-// script and the light theme's tokens are served.
+// <html> carries the dark theme, the header the theme selector (C15) with
+// the moon pressed, the head applies the stored theme before the
+// stylesheet with a script that is not deferred, so a light page never
+// paints dark first, and the selector's script and the light theme's
+// tokens are served.
 func TestThemeOnHTMLAndToggleServed(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<html lang="en" data-theme="dark">`, `<button type="button" id="theme-toggle"`,
+	for _, want := range []string{`<html lang="en" data-theme="dark">`, `<div id="theme-switch" class="theme-switch" role="group" aria-label="Theme">`,
+		`<button type="button" data-theme-set="dark" aria-pressed="true" aria-label="Dark theme"`, `<button type="button" data-theme-set="light" aria-pressed="false" aria-label="Light theme"`,
 		"<script src=\"/static/theme.js\"></script>\n<link rel=\"stylesheet\" href=\"/static/console.css\">",
 		`<script src="/static/console.js" defer></script>`} {
 		if !strings.Contains(body, want) {
