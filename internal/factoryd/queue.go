@@ -346,9 +346,19 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 // (versionRedHeadRestage).
 const maxRestages = 3
 
+// maxTurns bounds every turn a queue head red at its merge takes per queue
+// entry, whether or not its sync moved the head (versionQueueTurns). Past
+// maxRestages a red turn goes on only when its sync moved the head, so the
+// three turns beyond them are room for main moving three times. Main moves
+// under a held turn only by what takes no turn, a roll or a push past the
+// queue, about once an hour on a busy night, while a turn lasts one checks
+// run of 3 to 12 minutes: three moves in a row past the re-runs is main
+// moving on, not chance, and the head has spent six checks runs.
+const maxTurns = maxRestages + 3
+
 // leftQueue opens the escalation of a queue head still red after its
-// re-runs, the red checks below it.
-const leftQueue = "the checks are still red after the merge queue's re-runs, so the pull request left the queue until a human answers"
+// turns (leaveRed).
+const leftQueue = "the checks are still red after the merge queue's turns"
 
 // approvalWithdrawn is the note of a merge approval request the
 // re-stage of its red head withdrew.
@@ -373,19 +383,32 @@ func (t *taskRun) restageable() bool {
 // and waits outside it for a human, the escalation naming its red checks
 // or the merge's refusal: an answer puts it back at the queue's end, a
 // new entry with its turns afresh, and a change request sends it to the
-// agent, whose fix enters the queue anew. The re-staged head's own checks
-// decide its merge (no checkedHead).
+// agent, whose fix enters the queue anew. A head whose sync kept moving it
+// leaves the same way after maxTurns turns (versionQueueTurns). The
+// re-staged head's own checks decide its merge (no checkedHead).
 func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
-	refusal := "" // the red merge that began this turn, "" after red checks
+	refusal := ""     // the red merge that began this turn, "" after red checks
+	var last []string // what ended the last turn red: its checks, or its merge's refusal
+	moves, reruns := 0, 0
 	for n := 1; ; n++ {
 		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawApproval, t.taskID).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "withdraw the approval request: " + errMessage(err)}
+		}
+		if n > maxTurns && t.queueTurns >= versionQueueTurns {
+			if v, stop := t.leaveRed(n-1, moves, reruns, last); stop {
+				return v
+			}
+			n, refusal, moves, reruns = 0, "", 0, 0
+			continue
 		}
 		sync, v, stop := t.turn(commit)
 		if stop {
 			return v
 		}
 		from, moved := commit, sync.To != commit
+		if moved {
+			moves++
+		}
 		t.checkedHead = ""
 		var red []string
 		if !moved {
@@ -400,11 +423,10 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 			if len(red) == 0 {
 				red = []string{refusal}
 			}
-			t.leaveQueue(leftQueue)
-			if v, stop := t.gateEscalated(leftQueue + "\n\n" + strings.Join(red, "\n\n")); stop {
+			if v, stop := t.leaveRed(n, moves, reruns, red); stop {
 				return v
 			}
-			n, refusal = 0, ""
+			n, refusal, moves, reruns = 0, "", 0, 0
 			continue
 		}
 		refusal = ""
@@ -413,6 +435,8 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 				commit, t.syncedHead = sync.To, sync.To
 			} else if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 				return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
+			} else {
+				reruns++
 			}
 			t.rerunHead, g.ChecksPassed = commit, false
 			findings, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review)
@@ -420,6 +444,7 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 			case stop:
 				return v
 			case len(findings) > 0:
+				last = findings
 				continue
 			case len(red) > 0:
 				checks := make([]string, len(red))
@@ -435,8 +460,19 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 		if v = t.approval(commit, g, review, reviewed, capped, card, covered); !v.restage {
 			return v
 		}
-		refusal = v.reason
+		refusal, last = v.reason, []string{v.reason}
 	}
+}
+
+// leaveRed takes a queue head still red after its turns out of the queue
+// and waits for a human: the escalation's first line says on how many of
+// them main moved and the red checks ran again, red follows it; stop ends
+// the stages with v.
+func (t *taskRun) leaveRed(turns, moves, reruns int, red []string) (v verdict, stop bool) {
+	why := fmt.Sprintf("%s: main moved on %d of %d turns, and the red checks ran again on %d, so the pull request left the queue until a human answers",
+		leftQueue, moves, turns, reruns)
+	t.leaveQueue(why)
+	return t.gateEscalated(why + "\n\n" + strings.Join(red, "\n\n"))
 }
 
 // WithdrawApproval withdraws the task's pending merge approval request
