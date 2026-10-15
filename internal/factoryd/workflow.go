@@ -1606,7 +1606,7 @@ func (t *taskRun) gate(commit string) verdict {
 			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
 		}
 	}
-	v, decided, err := t.gateActivity(true, reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+	v, decided, err := t.reproduction(&g.Reproduction, commit)
 	if decided {
 		return v
 	}
@@ -2005,6 +2005,22 @@ func (t *taskRun) gateActivity(terminal bool, opts workflow.ActivityOptions, out
 			return v, decided, err
 		}
 		if v, stop := t.gateEscalated(v.escalate); stop {
+			return v, true, nil
+		}
+	}
+}
+
+// reproduction runs the reproduction gate on commit into out: a sandbox
+// that could not start asks the human (its start escalation), and the
+// answer runs the gate again, as gateEscalated's.
+func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, error) {
+	for {
+		*out = ReproResult{}
+		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+		if decided || err != nil || out.Escalate == "" {
+			return v, decided, err
+		}
+		if v, stop := t.gateEscalated(out.Escalate); stop {
 			return v, true, nil
 		}
 	}

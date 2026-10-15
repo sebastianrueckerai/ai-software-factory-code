@@ -60,7 +60,7 @@ func run(log func(string, ...any)) int {
 		log("%v", initErr)
 		return 1
 	case mode == "repro":
-		return runRepro(log)
+		return runRepro(log, sandboxProbe)
 	}
 	return runSession(context.Background(), log, workspace, os.Stdout, initErr, sandboxProbe)
 }

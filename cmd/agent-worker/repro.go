@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
@@ -88,16 +89,46 @@ func runReproFetch(log func(string, ...any), ws string) int {
 	return recordFetch(log, ws, err)
 }
 
-// runRepro is the worker's repro mode: it reports one repro envelope on
-// stdout, whatever happens, and exits 0 once it reported.
-func runRepro(log func(string, ...any)) int {
-	rep := repro(workspace)
+// runRepro is the worker's repro mode: it reports one envelope on stdout,
+// whatever happens, and exits 0 once it reported; probe builds the egress
+// probe of the sandbox.
+func runRepro(log func(string, ...any), probe func(workerEnv) egressProbe) int {
+	env := reproEnvelope(context.Background(), workspace, probe)
 	if err := killOthers(); err != nil {
 		log("stop the command's processes: %v", err)
 	}
-	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "repro", Repro: &rep})
+	line, _ := json.Marshal(env)
 	fmt.Println(string(line))
 	return 0
+}
+
+// reproEnvelope is the repro mode's report on ws: the start failure of a
+// sandbox other than its policy (the egress probe runs before the
+// repository's code), else the repro report.
+func reproEnvelope(ctx context.Context, ws string, probe func(workerEnv) egressProbe) harness.WorkerEnvelope {
+	if err := probeRepro(ctx, probe); err != nil {
+		res := startFailed(err)
+		return harness.WorkerEnvelope{Type: "result", Result: &res}
+	}
+	rep := repro(ws)
+	return harness.WorkerEnvelope{Type: "repro", Repro: &rep}
+}
+
+// probeRepro runs the egress probe of the sandbox its env describes; an
+// error is a startError.
+func probeRepro(ctx context.Context, probe func(workerEnv) egressProbe) error {
+	v, err := required("GATEWAY_URL", "EGRESS_CANARY", "EGRESS_DIRECT_IP")
+	if err == nil {
+		err = factoryd.CheckEgressTargets(v["EGRESS_CANARY"], v["EGRESS_DIRECT_IP"])
+	}
+	if err != nil {
+		return startError{"environment", err}
+	}
+	e := workerEnv{gatewayURL: v["GATEWAY_URL"], egressCanary: v["EGRESS_CANARY"], egressDirectIP: v["EGRESS_DIRECT_IP"]}
+	if err := probe(e).run(ctx); err != nil {
+		return startError{factoryd.StepEgressProbe, err}
+	}
+	return nil
 }
 
 // fetchHead fetches e.ref into a scratch repository, checks its head is

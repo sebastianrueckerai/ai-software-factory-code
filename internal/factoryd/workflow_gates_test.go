@@ -323,6 +323,41 @@ func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
 	}
 }
 
+// A reproduction whose sandbox could not start asks the human with its
+// start escalation, before the staged gates and after them alike, and the
+// answer runs the reproduction again on the same commit: no new session,
+// and the review sees the run that started.
+func TestWorkflowReproductionThatCannotStartAsksTheHuman(t *testing.T) {
+	const reason = "the session cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
+		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" +
+		"start failed: egress probe: direct IP 1.1.1.1:443 answered: connected to 1.1.1.1:443"
+	for name, staged := range map[string]bool{"staged": true, "before stages": false} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarness(t, func(g *gateHarness) { g.repro = []ReproResult{{Escalate: reason}, {}} })
+			if !staged {
+				g.env.OnGetVersion("stages", workflow.DefaultVersion, versionStages).Return(workflow.DefaultVersion)
+			}
+			g.onSessions(pushed("s1", "c1"))
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the policy is back", Comment: 700})
+			g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if len(g.sessions) != 1 || !slices.Equal(g.escalated, []string{reason}) {
+				t.Fatalf("sessions %d, escalations %q; want one session and the start escalation", len(g.sessions), g.escalated)
+			}
+			if want := []string{"policy", "repro c1", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+				t.Fatalf("steps = %v, want %v", g.steps, want)
+			}
+			if got := g.reviewGates[0].Reproduction; got != (ReproResult{}) {
+				t.Fatalf("the review saw the reproduction %+v, want the run that started", got)
+			}
+		})
+	}
+}
+
 // A merge Forgejo refuses keeps the wait; the next approval merges.
 func TestWorkflowRefusedMergeKeepsWaiting(t *testing.T) {
 	g := newGateHarness(t)

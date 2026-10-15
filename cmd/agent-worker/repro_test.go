@@ -1,9 +1,12 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +48,62 @@ func reproEnvs(t *testing.T, remote, sha, command string) {
 }
 
 func nolog(string, ...any) {}
+
+// The repro mode probes the sandbox's egress before the repository's code
+// runs: a sandbox more open than its policy, a gateway that does not
+// answer (transient), or an env without the probe's targets reports a
+// start failure instead of a repro, and the command never runs; a closed
+// sandbox runs it. The probe holds the sandbox to the env's targets.
+func TestReproProbesTheEgressBeforeTheCommand(t *testing.T) {
+	closed := closedSandbox(t)
+	open := closed
+	open.directIP = listening(t)
+	silent := closed
+	silent.gateway = restarting(t)
+	failed := func(summary, step string, transient bool) harness.WorkerEnvelope {
+		return harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step, Transient: transient}}
+	}
+	for name, tc := range map[string]struct {
+		probe egressProbe
+		unset string
+		want  harness.WorkerEnvelope
+	}{
+		"closed": {probe: closed, want: harness.WorkerEnvelope{Type: "repro", Repro: &harness.Repro{Exit: 0}}},
+		"open":   {probe: open, want: failed("start failed: egress probe: direct IP "+open.directIP+" answered: connected to "+open.directIP, "egress probe", false)},
+		"gateway restarting": {probe: silent,
+			want: failed("start failed: egress probe: gateway: "+silent.gateway+"/healthz answered 503 Service Unavailable", "egress probe", true)},
+		"no canary": {probe: closed, unset: "EGRESS_CANARY", want: failed("start failed: environment: EGRESS_CANARY is required", "environment", false)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := t.TempDir()
+			if err := os.Mkdir(filepath.Join(ws, "repo"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range map[string]string{"REPRO_COMMAND": "touch ran", "REPRO_TIMEOUT": "60",
+				"GATEWAY_URL": "http://gw", "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443"} {
+				t.Setenv(k, v)
+			}
+			if tc.unset != "" {
+				t.Setenv(tc.unset, "")
+			}
+			got := reproEnvelope(context.Background(), ws, func(e workerEnv) egressProbe {
+				if e.gatewayURL != "http://gw" || e.egressCanary != "example.com:443" || e.egressDirectIP != "192.0.2.7:443" {
+					t.Errorf("the probe's env = %+v", e)
+				}
+				return tc.probe
+			})
+			if !reflect.DeepEqual(got, tc.want) {
+				g, _ := json.Marshal(got)
+				w, _ := json.Marshal(tc.want)
+				t.Fatalf("envelope = %s\nwant %s", g, w)
+			}
+			_, err := os.Stat(filepath.Join(ws, "repo", "ran"))
+			if ran := err == nil; ran != (tc.want.Repro != nil) {
+				t.Fatalf("the command ran: %v, want %v", ran, tc.want.Repro != nil)
+			}
+		})
+	}
+}
 
 // The fetch leaves the head in the workspace, the repro mode runs the
 // command there.

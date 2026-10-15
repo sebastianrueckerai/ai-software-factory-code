@@ -601,13 +601,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if env.Result != nil {
 			res := *env.Result
 			out.result = &res
-			switch {
-			case !res.Success && res.Step != "" && res.Transient:
-				// the activity's retry starts the session again, as on any
-				// other transient start fault
-				retry = errors.New(res.Summary)
-			case !res.Success && res.Step != "":
-				out.start = &startFailure{step: res.Step, text: res.Summary}
+			if err := workerStartFailure(res); !errors.As(err, &out.start) {
+				retry = err
 			}
 			return nil, true
 		}
@@ -1127,6 +1122,20 @@ type startFailure struct {
 
 func (f *startFailure) Error() string { return f.text }
 
+// workerStartFailure is the start failure a worker's result reports: a
+// *startFailure, or, for a fault a later start may not meet (Transient),
+// a plain error the activity's retry answers, as any other transient
+// start fault; nil when its start did not fail.
+func workerStartFailure(res harness.Result) error {
+	switch {
+	case res.Success || res.Step == "":
+		return nil
+	case res.Transient:
+		return errors.New(res.Summary)
+	}
+	return &startFailure{step: res.Step, text: res.Summary}
+}
+
 // startRefused opens the escalation of a session that cannot start.
 const startRefused = "the session cannot start at "
 
@@ -1135,6 +1144,7 @@ const startRefused = "the session cannot start at "
 const (
 	thenAnswer = "then answer to start a session again, or close the card"
 	thenSplit  = "then split the pull request again, or approve or deny it"
+	thenRepro  = "then answer to run the reproduction again, or close the card"
 )
 
 // escalation is the failure's escalation reason, then the way on: its
@@ -1386,7 +1396,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "REPOSITORY", "value": t.Repository},
 		{"name": "REPO_SHA", "value": s.startRef},
 		{"name": "BRANCH", "value": taskBranch(t)},
-		{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		{"name": "TOKEN_FILE", "value": "/var/run/secrets/tokens/gateway"},
 		{"name": "MODEL", "value": s.model},
 		{"name": "STRONGER_MODEL", "value": r.cfg.Models.Stronger},
@@ -1401,8 +1410,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
-		{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
-		{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP},
 	}
 	cloneEnv := []map[string]any{
 		{"name": "MODE", "value": "clone"},
@@ -1501,6 +1508,12 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 		mounts, volumes = append(mounts, cacheMounts...), append(volumes, cacheVolumes(cache)...)
 		env = append(env, cacheEnv...)
 	}
+	// the worker probes the sandbox's egress before the repository's code
+	// runs, in a session and in a reproduction alike (roadmap 42)
+	env = append(env,
+		map[string]any{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
+		map[string]any{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
+		map[string]any{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP})
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{

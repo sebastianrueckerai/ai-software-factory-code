@@ -967,6 +967,79 @@ func TestGateReproductionHeartbeatsThroughASlowNamespace(t *testing.T) {
 	}
 }
 
+// A reproduction whose worker's egress probe finds the sandbox more open
+// than its policy runs no command: the gate ends at once, at the base,
+// with the start escalation (its question row names the step and the
+// action, the probe's finding below), never as an exit of -1, and the
+// timeline says why. A gateway that did not answer the probe, as while it
+// restarts, is a retryable error: the activity's retry runs it again. A
+// pod that cannot start (an image the registry does not hold) is the same
+// start escalation, not a failed task.
+func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
+	const open = "start failed: egress probe: direct IP 1.1.1.1:443 answered: connected to 1.1.1.1:443"
+	const restarting = "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable"
+	failed := func(summary string, transient bool) string {
+		b, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: "egress probe", Transient: transient}})
+		return string(b)
+	}
+	task := gateTask
+	task.ReproCommand = "go test ./internal/x -run TestY"
+
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, _ := newTestRunner(t, task, kube, objects)
+	var res ReproResult
+	var err error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		var val converter.EncodedValue
+		if val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1"); err == nil {
+			err = val.Get(&res)
+		}
+	}()
+	scriptReproPods(kube, "agent-worker: probing\n"+failed(open, false))
+	<-done
+	want := "the session cannot start at egress probe, and no session can fix it: check the task namespace's worker-egress policy, " +
+		"or the pod's uid, against the probe named below, then answer to run the reproduction again, or close the card.\n" + open
+	if err != nil || res != (ReproResult{Escalate: want}) || escalationSource(res.Escalate) != "start" {
+		t.Fatalf("result = (%+v, %v), want the start escalation:\n%s", res, err, want)
+	}
+	if len(kube.podOrder) != 1 || len(hub.comments) != 0 {
+		t.Fatalf("pods %d, comments %q; want the base pod alone and no exit to comment", len(kube.podOrder), hub.comments)
+	}
+	if tl := timeline(t, objects); !strings.Contains(tl, `"step":"gate_reproduction"`) || !strings.Contains(tl, `"start_failed":"`+open+`"`) {
+		t.Fatalf("timeline = %s", tl)
+	}
+
+	kube = newFakeKube()
+	r, _, _ = newTestRunner(t, task, kube, &fakeObjectStore{})
+	done = make(chan struct{})
+	go func() {
+		defer close(done)
+		_, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+	}()
+	scriptReproPods(kube, failed(restarting, true))
+	<-done
+	if err == nil || !strings.Contains(err.Error(), restarting) || isTerminal(err) {
+		t.Fatalf("err = %v, want a retryable error with the probe's finding", err)
+	}
+
+	// a pod that cannot start is the same start escalation
+	kube = newFakeKube()
+	kube.onCreatePod = func() {
+		p := kube.podOrder[len(kube.podOrder)-1]
+		p.phase, p.containers = "Pending", []ContainerState{{Name: "fetch", State: "waiting", Reason: "ErrImagePull", Message: imageNotFound}}
+	}
+	r, _, _ = newTestRunner(t, task, kube, &fakeObjectStore{})
+	val, err := execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+	want = "the session cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+		"then answer to run the reproduction again, or close the card.\nstart failed: image pull: container fetch waits with ErrImagePull: " + imageNotFound
+	if res := getInto[ReproResult](t, val, err); res != (ReproResult{Escalate: want}) {
+		t.Fatalf("result = %+v, want the start escalation:\n%s", res, want)
+	}
+}
+
 // scriptReproPods answers the gate's two pods in order, each once it
 // exists: the run at the base, then the run at the head.
 func scriptReproPods(kube *fakeKube, bodies ...string) {
@@ -991,7 +1064,9 @@ func reproLine(exit int, output string) string {
 
 // The command runs in a fresh sandbox pod with no agent: the worker in its
 // repro mode, a read token on the task's repository only, the sandbox's
-// egress label, no gateway token; the namespace and the token go after.
+// egress label, no gateway token, and what its egress probe needs (the
+// gateway's address, the canary, the direct IP); the namespace and the
+// token go after.
 func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	task := gateTask
 	task.ReproCommand = "go test ./internal/x -run TestY"
@@ -1034,7 +1109,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 			t.Fatalf("pod spec lacks %s: %s", want, spec)
 		}
 	}
-	for _, not := range []string{"gateway-token", "PUSH_TOKEN", "GATEWAY_URL"} {
+	for _, not := range []string{"gateway-token", "PUSH_TOKEN", "TOKEN_FILE"} {
 		if strings.Contains(string(spec), not) {
 			t.Fatalf("pod spec carries %s: %s", not, spec)
 		}
@@ -1067,7 +1142,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	if got := envOf(parsed.Spec.InitContainers); got != "fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
 		t.Fatalf("init containers = %s", got)
 	}
-	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH" {
+	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH GATEWAY_URL EGRESS_CANARY EGRESS_DIRECT_IP" {
 		t.Fatalf("containers = %s", got)
 	}
 	if calls := strings.Join(hub.calls, "\n"); !strings.Contains(calls, "mint task-t1-base read:repository sf/repo") || strings.Contains(calls, "write:repository") {

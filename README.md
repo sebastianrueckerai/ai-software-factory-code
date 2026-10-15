@@ -107,18 +107,19 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   channel: a `go get` of a made-up module path carries that path to
   proxy.golang.org, so an agent can leak a few hundred bytes per request
   through it. Ruling 99 accepts this as the price of a usable Go
-  toolchain in the sandbox. Before the agent starts, the worker probes
-  that egress (roadmap 42), every probe at once and each bounded at 2 s:
-  the gateway's `/healthz` answers, while the canary (factoryd's
-  `EGRESS_CANARY`, default `example.com:443`), the metadata address and
-  a direct IP (`EGRESS_DIRECT_IP`, default `1.1.1.1:443`) take no
-  connection and a lookup of the canary's name fails at once; the
-  worker runs as uid 1000 (`factoryd.SandboxUID`). factoryd refuses at
-  boot a canary on the sandbox's DNS allowlist. A gateway or a DNS that
-  does not answer is a transient start fault, which the session
-  activity's retry starts again; a sandbox more open than its policy, or
-  on another uid, ends the start at step `egress probe` with an
-  escalation that names the probe and what answered.
+  toolchain in the sandbox. Before the agent starts, or a reproduction's
+  command runs, the worker probes that egress (roadmap 42), every probe
+  at once and each bounded at 2 s: the gateway's `/healthz` answers,
+  while the canary (factoryd's `EGRESS_CANARY`, default
+  `example.com:443`), the metadata address and a direct IP
+  (`EGRESS_DIRECT_IP`, default `1.1.1.1:443`) take no connection and a
+  lookup of the canary's name fails at once; the worker runs as uid
+  1000 (`factoryd.SandboxUID`). factoryd refuses at boot a canary on the
+  sandbox's DNS allowlist. A gateway or a DNS that does not answer is a
+  transient start fault, which the activity's retry starts again; a
+  sandbox more open than its policy, or on another uid, ends the start
+  at step `egress probe` with an escalation that names the probe and
+  what answered.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).
@@ -374,7 +375,9 @@ activities, each with a timeline step and a comment on the pull request:
    Its init container (`MODE=repro-fetch`), the token's only holder,
    fetches `refs/pull/<n>/head` into the workspace and checks it is the
    gated head; the worker container (`MODE=repro`), with no token in its
-   environment, runs the command there with `sh -c` for at most
+   environment, probes the sandbox's egress as a session's worker does
+   (a sandbox that cannot start is the start escalation, and the answer
+   runs the gate again), then runs the command there with `sh -c` for at most
    `REPRO_TIMEOUT` (default 10m, at most 15m). It runs twice, one pod
    each: first at the task's base (`CHECKOUT_SHA`, from the head's
    history), then at the head. The fetch writes only the commit's files

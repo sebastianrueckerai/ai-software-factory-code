@@ -468,7 +468,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		return []string{"schema migration, human review required: " + strings.Join(g.Policy.Migrations, ", ")}, verdict{}, false
 	case policy.StageReproduction:
-		v, decided, err := t.gateActivity(true, reproOptions(), &g.Reproduction, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+		v, decided, err := t.reproduction(&g.Reproduction, commit)
 		if decided {
 			return nil, v, true
 		}

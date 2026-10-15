@@ -54,7 +54,9 @@ func (g PolicyGate) large() bool {
 // the command is a guard-class fix's (roadmap 194): it constructs the
 // pre-fix state within the test itself, and the gate ran it at the head
 // with the base the head. NotReproduced is the agent's note that it fixed
-// a fault it did not reproduce exactly, and why (ruling 149).
+// a fault it did not reproduce exactly, and why (ruling 149). Escalate is
+// the start escalation of a reproduction whose sandbox could not start:
+// no command ran, and the human's answer runs the gate again.
 type ReproResult struct {
 	Ran           bool
 	Command       string
@@ -64,6 +66,7 @@ type ReproResult struct {
 	ByAgent       bool   `json:",omitempty"`
 	InTest        bool   `json:",omitempty"`
 	NotReproduced string `json:",omitempty"`
+	Escalate      string `json:",omitempty"`
 }
 
 func (r ReproResult) Passed() bool { return !r.Ran || r.Exit == 0 }
@@ -437,6 +440,16 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if _, err := r.setupNamespace(ctx, t, base); err != nil {
 		return ReproResult{}, err
 	}
+	// a sandbox that cannot start, its pod's or its worker's egress probe,
+	// is the start escalation, as a session's is
+	cannotStart := func(err error) (ReproResult, error) {
+		var f *startFailure
+		if !errors.As(err, &f) {
+			return ReproResult{}, err
+		}
+		r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, map[string]any{"pr": pr, "commit": commit, "start_failed": f.text}))
+		return ReproResult{Escalate: f.escalation(thenRepro)}, nil
+	}
 	// the base first (ruling 167: the fault must show before the fix),
 	// then the head. The base a signal card reproduces at is pinned at
 	// its filing (roadmap 194): the commit that was live when its alert
@@ -451,12 +464,12 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 			return ReproResult{}, terminalError("task %s has no base commit to reproduce at", t.ID)
 		}
 		if at, err = r.runRepro(ctx, t, repo, pr, commit, reproBase); err != nil {
-			return ReproResult{}, err
+			return cannotStart(err)
 		}
 	}
 	rep, err := r.runRepro(ctx, t, repo, pr, commit, "")
 	if err != nil {
-		return ReproResult{}, err
+		return cannotStart(err)
 	}
 	res := ReproResult{Ran: true, Command: t.ReproCommand, Exit: rep.Exit, Output: textutil.Tail(rep.Output, reproOutputTail),
 		BaseExit: at.Exit, ByAgent: byAgent, InTest: inTest, NotReproduced: note}
@@ -508,7 +521,8 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 
 // runRepro runs the task's reproduction command in one sandbox pod of the
 // task's namespace at the pull request head commit, or at a commit of its
-// history (the base) when given.
+// history (the base) when given. A sandbox that cannot start is a
+// *startFailure.
 func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, pr int64, commit, at string) (harness.Repro, error) {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
 	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, pr, commit, at)); err != nil {
@@ -516,10 +530,6 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, pr int64, comm
 	}
 	defer r.trackPod(t.ID, ns, podName)()
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
-		var f *startFailure
-		if errors.As(err, &f) {
-			return harness.Repro{}, terminalError("the reproduction's pod cannot start: %v", f)
-		}
 		return harness.Repro{}, err
 	}
 	return r.readRepro(ctx, ns, podName, t.ID)
@@ -586,7 +596,8 @@ func NotReproduced(summary string) string {
 	return ""
 }
 
-// readRepro follows the repro pod's log to its report.
+// readRepro follows the repro pod's log to its report, or to the start
+// failure its worker reported instead (workerStartFailure).
 func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (harness.Repro, error) {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -603,7 +614,12 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 				return harness.Repro{}, errors.New("the reproduction pod exited without a report")
 			}
 			var env harness.WorkerEnvelope
-			if json.Unmarshal(line, &env) != nil || env.Repro == nil {
+			if json.Unmarshal(line, &env) == nil && env.Result != nil {
+				if err := workerStartFailure(*env.Result); err != nil {
+					return harness.Repro{}, err
+				}
+			}
+			if env.Repro == nil {
 				log.Printf("task %s: repro: %s", taskID, line)
 				continue
 			}
