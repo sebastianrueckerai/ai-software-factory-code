@@ -2859,3 +2859,50 @@ func TestHandoverLinesNameTheJudgmentOfTheBranch(t *testing.T) {
 		t.Fatalf("lines = %q, want none for a session that left no branch and no message", got)
 	}
 }
+
+// #837: a review that answered concerns with no finding cost a session that
+// fixed nothing. It is a remark on the approval card: one session, one
+// request for approval, the remark among the reasons for a human.
+func TestWorkflowConcernsWithoutFindingsIsARemark(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		Review{Verdict: "concerns", Summary: "a human decides the merge"}, nil)
+	var asked []ApprovalInput
+	h.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			asked = append(asked, in)
+			return nil
+		})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.sessions) != 1 || len(asked) != 1 || !slices.Equal(asked[0].WhyHuman, []string{"review: remark, no finding: a human decides the merge"}) {
+		t.Fatalf("sessions %d, approvals %+v; want one session and the remark as the reason for a human", len(h.sessions), asked)
+	}
+}
+
+// A run from before the gate turns it into the finding "model review: ..." and
+// pays a session for it.
+func TestWorkflowBeforeReviewRemarkConcernsWithoutFindingsCostASession(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("review-remark", workflow.DefaultVersion, versionReviewRemark).Return(workflow.DefaultVersion)
+	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "a human decides the merge"}, nil
+			}
+			return Review{Verdict: "approve", Summary: "fine"}, nil
+		})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Findings, []string{"model review: a human decides the merge"}) {
+		t.Fatalf("final = %q, sessions = %+v; want the second session sent back with the summary as its finding", final, h.sessions)
+	}
+}

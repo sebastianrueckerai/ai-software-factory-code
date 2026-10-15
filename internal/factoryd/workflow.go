@@ -479,6 +479,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
 	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
 	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
+	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -941,6 +942,11 @@ const (
 	// counts every session that ran and every attempt the budget refused,
 	// funds on AttemptFunded and drops the budget wait's change requests.
 	versionSessionLadder workflow.Version = 1
+	// versionReviewRemark (change id "review-remark"): a review that
+	// answers concerns and names no finding is a remark on the card, not a
+	// finding for the agent and not a session. A run from before turns it into
+	// the finding "model review: <summary>".
+	versionReviewRemark workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1036,6 +1042,7 @@ type taskRun struct {
 	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
 	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
 	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
+	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)

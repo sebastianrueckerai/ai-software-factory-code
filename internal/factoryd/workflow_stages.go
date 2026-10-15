@@ -153,6 +153,10 @@ func (t *taskRun) runStages(commit string) verdict {
 			card = append(card, s.Name+": "+noVerdict+cmp.Or(review.Note, "no reason recorded"))
 			continue
 		}
+		if s.Name == policy.StageReview && t.remarked(review) {
+			card = append(card, s.Name+": remark, no finding: "+review.Summary)
+			continue
+		}
 		if len(findings) == 0 {
 			continue
 		}
@@ -523,6 +527,9 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		if review.Verdict == "concerns" {
 			if len(review.Findings) == 0 {
+				if t.remarked(*review) {
+					return nil, verdict{}, false
+				}
 				return []string{"model review: " + review.Summary}, verdict{}, false
 			}
 			return review.Findings, verdict{}, false
@@ -531,6 +538,12 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		return t.audit(commit, g)
 	}
 	return nil, verdict{}, false
+}
+
+// remarked: the review answered concerns and named no finding
+// (versionReviewRemark), a remark on the card.
+func (t *taskRun) remarked(review Review) bool {
+	return t.reviewRemark >= versionReviewRemark && review.Verdict == "concerns" && len(review.Findings) == 0
 }
 
 // besideRun is a gate scheduled beside the checks wait, by its stage: the

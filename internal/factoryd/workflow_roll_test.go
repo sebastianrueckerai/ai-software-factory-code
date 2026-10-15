@@ -338,3 +338,20 @@ func TestWorkflowRollTakesNoQueueTurn(t *testing.T) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
+
+// A roll's review that answers concerns and names no finding is a remark on
+// the card: the roll reaches its approval with the remark among the reasons
+// for a human and is not failed.
+func TestWorkflowRollConcernsWithoutFindingsIsARemark(t *testing.T) {
+	g, _ := newRollHarnessWith(t, func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "the pins look odd"}
+	}, "r1")
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || !slices.Contains(g.approvals[0].WhyHuman, "review: remark, no finding: the pins look odd") {
+		t.Fatalf("approvals %+v; want the remark among the reasons for a human", g.approvals)
+	}
+}
