@@ -337,6 +337,23 @@ func TestSuperviseGateEndedRunIsNoise(t *testing.T) {
 	}
 }
 
+// A trip the workflow dropped closes its alert unjudged without a model
+// call; a second call, a retry after a lost completion, leaves it so.
+func TestDropTripResolvesTheAlertUnjudged(t *testing.T) {
+	c := newGateCase(t, ActivityModelReview, `{"action":"cancel","diagnosis":"x"}`, nil)
+	trip := GateTrip{Activity: ActivityModelReview, ActivityID: "ModelReview-1", Attempt: 1, AlertID: c.alert}
+	for range 2 {
+		if _, err := execActivity(t, c.runner, ActivityDropTrip, "t1", trip); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := c.alertRow(t)
+	if a.Verdict != VerdictUnjudged || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil ||
+		a.Detail["diagnosis"] != "dropped: its run ended before the gate supervisor took the trip" || len(c.model.chats) != 0 {
+		t.Fatalf("alert = %+v after %d model calls", a, len(c.model.chats))
+	}
+}
+
 func TestGateActionsAllowed(t *testing.T) {
 	for _, tc := range []struct {
 		wait, retry bool

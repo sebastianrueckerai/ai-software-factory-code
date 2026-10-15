@@ -94,6 +94,7 @@ const (
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
 	ActivitySuperviseGate               = "SuperviseGate"
+	ActivityDropTrip                    = "DropTrip"
 	ActivityAutoMergeNote               = "AutoMergeNote"
 	ActivityRequestInfo                 = "RequestInfo"
 	ActivityCloseNotReproduced          = "CloseNotReproduced"
@@ -430,7 +431,13 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.planBurst = workflow.GetVersion(ctx, "plan-burst", workflow.DefaultVersion, versionPlanBurst)
 	run.redRestage = workflow.GetVersion(ctx, "red-head-restage", workflow.DefaultVersion, versionRedHeadRestage)
 	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
+	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
 	final, err := run.program()
+	// the trips no run took: their runs ended with the task
+	var trip GateTrip
+	for workflow.GetSignalChannel(ctx, SignalGateBound).ReceiveAsync(&trip) {
+		run.dropTrips(trip)
+	}
 	drainSignals(ctx)
 	return final, err
 }
@@ -795,6 +802,15 @@ const (
 	// checks just started; and a pass ends with no checked head, so a
 	// later pass reads and merges on its own head's checks.
 	versionCheckedHead workflow.Version = 1
+	// versionTripRouting (change id "trip-routing", roadmap 246): each
+	// long gate's run has its own activity id, the activity's name and
+	// its run's number (startGate), and a trip reaches the run its id
+	// names alone; a trip of a run that ended is dropped, never acted on
+	// against a later run of the same activity, and every trip the
+	// workflow drops resolves its gate_bound alert (DropTrip). A run from
+	// before the change routes trips by the activity's name and leaves a
+	// dropped trip's alert open.
+	versionTripRouting workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -881,6 +897,8 @@ type taskRun struct {
 	planBurst         workflow.Version // the plan's wait takes a writer's comments as a burst (versionPlanBurst)
 	redRestage        workflow.Version // a queue head red at its merge is re-staged (versionRedHeadRestage)
 	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
+	tripRouting       workflow.Version // trips route by their run's activity id (versionTripRouting)
+	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -2018,8 +2036,8 @@ func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
 func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, activity string, args ...any) (verdict, bool, error) {
 	supervised := t.v12 >= versionGateSupervisor
 	if supervised {
-		// trips of activities that ended before this one: none is its own;
-		// the review beside the checks wait keeps its own
+		// trips of runs that ended before this one: none is its own; the
+		// review beside the checks wait keeps its own, the rest are dropped
 		var trip GateTrip
 		for workflow.GetSignalChannel(t.ctx, SignalGateBound).ReceiveAsync(&trip) {
 			t.keepTrip(trip)
@@ -2029,15 +2047,24 @@ func (t *taskRun) watch(terminal bool, opts workflow.ActivityOptions, out any, a
 }
 
 // startGate schedules a long gate's activity, which a cancel waits for.
+// From versionTripRouting on the run's activity id is the activity's name
+// and the run's number among its runs, which the run's trips carry.
 func (t *taskRun) startGate(opts workflow.ActivityOptions, activity string, args ...any) *gateRun {
 	ctx, cancel := workflow.WithCancel(t.ctx)
 	opts.WaitForCancellation = true
+	if t.tripRouting >= versionTripRouting {
+		if t.gateRuns == nil {
+			t.gateRuns = map[string]int{}
+		}
+		t.gateRuns[activity]++
+		opts.ActivityID = fmt.Sprintf("%s-%d", activity, t.gateRuns[activity])
+	}
 	return &gateRun{activity: activity, opts: opts, args: args, cancel: cancel,
 		future: workflow.ExecuteActivity(workflow.WithActivityOptions(ctx, opts), activity, args...)}
 }
 
 // watchRun waits for run as watch describes; supervised: it takes the gate
-// supervisor's trips of run's activity, those kept for it first.
+// supervisor's trips of run, those kept for it first.
 func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (verdict, bool, error) {
 	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
 	var asking workflow.Future // the supervisor's call on trip (versionGateSupervisorRace)
@@ -2082,7 +2109,7 @@ func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (ve
 			continue
 		}
 		for asking == nil && supervised && run.nextTrip(trips, &trip) {
-			if trip.Activity != run.activity {
+			if !run.owns(trip) {
 				t.keepTrip(trip)
 				continue
 			}
@@ -2117,6 +2144,15 @@ type gateRun struct {
 	waited, retried bool
 }
 
+// owns: trip is one of the run's, by the activity id the run has
+// (versionTripRouting), else by the activity's name.
+func (r *gateRun) owns(trip GateTrip) bool {
+	if r.opts.ActivityID != "" {
+		return trip.ActivityID == r.opts.ActivityID
+	}
+	return trip.Activity == r.activity
+}
+
 // nextTrip is the run's next trip: one kept for it, else the channel's.
 func (r *gateRun) nextTrip(trips workflow.ReceiveChannel, trip *GateTrip) bool {
 	if len(r.trips) == 0 {
@@ -2124,6 +2160,20 @@ func (r *gateRun) nextTrip(trips workflow.ReceiveChannel, trip *GateTrip) bool {
 	}
 	*trip, r.trips = r.trips[0], r.trips[1:]
 	return true
+}
+
+// dropTrips resolves the gate_bound alert of each trip no run takes
+// (versionTripRouting): its run ended before the gate supervisor took
+// it. A run from before the change leaves the alerts open.
+func (t *taskRun) dropTrips(trips ...GateTrip) {
+	if t.tripRouting < versionTripRouting {
+		return
+	}
+	for _, trip := range trips {
+		if err := workflow.ExecuteActivity(t.short, ActivityDropTrip, t.taskID, trip).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("resolve a dropped trip's alert", "alert", trip.AlertID, "error", err)
+		}
+	}
 }
 
 // askGate starts SuperviseGate on one trip of the running activity.

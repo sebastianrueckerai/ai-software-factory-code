@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -24,10 +25,30 @@ func (h *workflowHarness) onGateSupervisor(decisions ...GateDecision) *[]GateSup
 	return &got
 }
 
+// tripAfter signals a trip of activity's first run after d.
 func (h *workflowHarness) tripAfter(d time.Duration, activity string, alert int64) {
+	h.runTripAfter(d, activity, 1, alert)
+}
+
+// runTripAfter signals a trip of activity's nth run after d: its activity
+// id is the activity's name and n (versionTripRouting).
+func (h *workflowHarness) runTripAfter(d time.Duration, activity string, n int, alert int64) {
 	h.env.RegisterDelayedCallback(func() {
-		h.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: activity, ActivityID: "11", Attempt: 1, AlertID: alert, Bound: 10 * time.Minute})
+		h.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: activity, ActivityID: fmt.Sprintf("%s-%d", activity, n), Attempt: 1, AlertID: alert, Bound: 10 * time.Minute})
 	}, d)
+}
+
+// onDropTrip records each DropTrip call as "alert N at D", D on the
+// workflow's clock from now.
+func (h *workflowHarness) onDropTrip() *[]string {
+	var got []string
+	start := h.env.Now()
+	h.env.OnActivity(ActivityDropTrip, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, trip GateTrip) error {
+			got = append(got, fmt.Sprintf("alert %d at %s", trip.AlertID, h.env.Now().Sub(start)))
+			return nil
+		})
+	return &got
 }
 
 // One check wait: its first trip may wait or retry; after the wait the
@@ -154,6 +175,67 @@ func TestWorkflowIgnoresTripsOfOtherActivities(t *testing.T) {
 	}
 }
 
+// Every trip the workflow drops resolves its gate_bound alert
+// (versionTripRouting), and none reaches the supervisor: one kept for the
+// review beside red checks, dropped when they cancel the review at 20
+// min; one kept for a review that ended at 10 min, within the checks
+// wait, dropped when the review stage finds it ended at 20 min; one of
+// the check wait that ended at 20 min, drained when the merge's wait
+// starts on the approval at 1 h; and one no run took before the task's
+// end, the issue's close at 1 h.
+func TestWorkflowDroppedTripsResolveTheirAlerts(t *testing.T) {
+	green := ChecksResult{State: ChecksSuccess}
+	for _, tc := range []struct {
+		name   string
+		review time.Duration
+		setup  func(g *gateHarness)
+		final  string
+		want   []string
+	}{
+		{"kept for the review red checks cancel", 3 * time.Hour, func(g *gateHarness) {
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
+				Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(green, nil)
+			g.tripAfter(15*time.Minute, ActivityModelReview, 1)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"alert 1 at 20m0s"}},
+		{"kept for a review that ended within the checks wait", 10 * time.Minute, func(g *gateHarness) {
+			g.onSessions(pushed("s1", "c1"))
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(green, nil)
+			g.tripAfter(5*time.Minute, ActivityModelReview, 1)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"alert 1 at 20m0s"}},
+		{"of a check wait that ended, at the next wait's start", 0, func(g *gateHarness) {
+			g.onSessions(pushed("s1", "c1"))
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(green, nil)
+			g.tripAfter(30*time.Minute, ActivityWaitChecks, 1)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"alert 1 at 1h0m0s"}},
+		{"no run took before the task's end", 0, func(g *gateHarness) {
+			g.onSessions(pushed("s1", "c1"))
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).Return(green, nil)
+			g.tripAfter(30*time.Minute, ActivityWaitChecks, 1)
+			g.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		}, "closed", []string{"alert 1 at 1h0m0s"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarness(t, func(g *gateHarness) { g.reviewDelay = tc.review })
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+			calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
+			drops := g.onDropTrip()
+			tc.setup(g)
+
+			if final := g.run(t); final != tc.final || len(*calls) != 0 {
+				t.Fatalf("final = %q after supervisor calls %+v, want %s after none; finals %v", final, *calls, tc.final, g.finals)
+			}
+			if !slices.Equal(*drops, tc.want) {
+				t.Fatalf("drops = %q, want %q", *drops, tc.want)
+			}
+		})
+	}
+}
+
 // A workflow started before the gate supervisor leaves its trips alone.
 func TestWorkflowBeforeGateSupervisorIgnoresTrips(t *testing.T) {
 	g := newGateHarness(t)
@@ -235,7 +317,7 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	calls := g.onGateSupervisor(GateDecision{Action: ActionWait, Diagnosis: "running"})
 	g.env.RegisterDelayedCallback(func() {
-		g.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityGateReproduction, ActivityID: "11", Attempt: 2, AlertID: 1})
+		g.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityGateReproduction, ActivityID: "GateReproduction-1", Attempt: 2, AlertID: 1})
 	}, 10*time.Minute)
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	if final := g.run(t); final != "done" || len(*calls) != 1 || !(*calls)[0].CanWait || (*calls)[0].CanRetry {
@@ -258,7 +340,7 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 	mergeCalls := m.onGateSupervisor(GateDecision{Action: ActionRetry, Diagnosis: "hung"})
 	m.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	m.env.RegisterDelayedCallback(func() {
-		m.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityMerge, ActivityID: "11", Attempt: 1, AlertID: 1, Bound: 90 * time.Second})
+		m.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityMerge, ActivityID: "Merge-1", Attempt: 1, AlertID: 1, Bound: 90 * time.Second})
 	}, time.Hour+5*time.Minute)
 	if final := m.run(t); final != "done" || len(*mergeCalls) != 1 || (*mergeCalls)[0].CanWait || !(*mergeCalls)[0].CanRetry {
 		t.Fatalf("final %q, calls %+v; want retry but no wait for a merge (2 x 90 s outlasts its 2 min attempt)", final, *mergeCalls)

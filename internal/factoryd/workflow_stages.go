@@ -550,13 +550,16 @@ func (t *taskRun) scheduleReview(head string, g *GateResults) {
 		gateRun: t.startGate(reviewOptions(), ActivityModelReview, t.taskID, t.pr, head, gates, t.reviews)}
 }
 
-// keepTrip keeps a gate trip of the review beside the checks wait for the
-// review stage, which supervises it (versionReviewSupervised); any other
-// trip that is not the watched activity's is stale, its run ended.
+// keepTrip keeps a gate trip of the review beside the checks wait, while
+// it runs, for the review stage, which supervises it
+// (versionReviewSupervised); any other trip that is not the watched run's
+// is stale, its run ended, and is dropped.
 func (t *taskRun) keepTrip(trip GateTrip) {
-	if f := t.flight; f != nil && trip.Activity == f.activity {
+	if f := t.flight; f != nil && f.owns(trip) && !f.future.IsReady() {
 		f.trips = append(f.trips, trip)
+		return
 	}
+	t.dropTrips(trip)
 }
 
 // review runs the review stage: the review scheduled beside the checks
@@ -596,7 +599,10 @@ func (t *taskRun) awaitReview(f *reviewInFlight, review *Review) (verdict, bool,
 				workflow.GetLogger(t.ctx).Warn("enter gate review", "task", t.taskID, "error", err)
 			}
 		}
-		return t.watchRun(true, true, f.gateRun, review)
+		v, decided, err := t.watchRun(true, true, f.gateRun, review)
+		// the trips kept for the review that it ended before taking
+		t.dropTrips(f.trips...)
+		return v, decided, err
 	}
 	for {
 		done := false
@@ -624,7 +630,8 @@ func (t *taskRun) awaitReview(f *reviewInFlight, review *Review) (verdict, bool,
 
 // cancelReview cancels a review still beside a checks wait and waits for
 // the call to end: no review comment lands on a head that goes back to
-// the agent, or past the pass that scheduled it.
+// the agent, or past the pass that scheduled it. The trips kept for it
+// are dropped.
 func (t *taskRun) cancelReview() {
 	f := t.flight
 	t.flight = nil
@@ -633,6 +640,7 @@ func (t *taskRun) cancelReview() {
 	}
 	f.cancel()
 	_ = f.future.Get(t.ctx, nil)
+	t.dropTrips(f.trips...)
 }
 
 // audit is the audit stage (versionAudit): the findings line that sends

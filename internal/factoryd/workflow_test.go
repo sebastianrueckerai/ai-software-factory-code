@@ -162,6 +162,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySuperviseGate: func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
 			return GateDecision{}, nil
 		},
+		ActivityDropTrip: func(ctx context.Context, taskID string, trip GateTrip) error { return nil },
 		ActivityAutoMergeNote: func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
 			return nil
 		},

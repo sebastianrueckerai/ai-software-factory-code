@@ -156,6 +156,21 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	return d, nil
 }
 
+// tripDropped is the diagnosis on the alert of a trip the workflow dropped.
+const tripDropped = "dropped: its run ended before the gate supervisor took the trip"
+
+// DropTrip resolves the gate_bound alert of a trip the workflow dropped
+// (versionTripRouting): its run ended before the gate supervisor took
+// it, so nobody judged it. An alert resolved already (a retry of this
+// call) stays as it is.
+func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) error {
+	err := r.store.ResolveAlert(ctx, trip.AlertID, AlertGateBound, VerdictUnjudged, FactoryDecider, map[string]any{"diagnosis": tripDropped})
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	return err
+}
+
 // gateBundle reads what the supervisor needs for the activity, and the
 // task's git tokens the bundle is scrubbed of; a read that fails puts its
 // error in the bundle instead.

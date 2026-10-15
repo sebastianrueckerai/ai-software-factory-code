@@ -487,6 +487,55 @@ func TestStagesEscalatedReviewBesideTheChecksRunsAgainAfterTheAnswer(t *testing.
 	}
 }
 
+// A trip of the review beside red checks that comes after they cancelled
+// it, while the next head's checks wait runs beside that head's review,
+// names the cancelled run, ModelReview-1 (versionTripRouting): it is
+// dropped at 30 min, its alert resolved, and the next review approves at
+// 3h20m. A run from before the change routes the trip by the activity's
+// name, keeps it for the next head's review and, once the review stage
+// awaits that review at 40 min, acts on it there: the supervisor's
+// cancel fails the task.
+func TestStagesLateTripOfACancelledReviewReachesNoLaterReview(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		version workflow.Version
+		final   string
+		calls   int
+		drops   []string
+		end     time.Duration
+	}{
+		{"routed by run", versionTripRouting, "done", 0, []string{"alert 1 at 30m0s"}, 10 * time.Hour},
+		{"before the change, by name", workflow.DefaultVersion, "failed", 1, nil, 40 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+			g.env.OnGetVersion("trip-routing", workflow.DefaultVersion, versionTripRouting).Return(tc.version)
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
+				Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+			calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"})
+			drops := g.onDropTrip()
+			g.runTripAfter(30*time.Minute, ActivityModelReview, 1, 1)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != tc.final {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if tc.final == "failed" && g.finals[0][1] != "the gate supervisor cancelled ModelReview: the review model does not answer" {
+				t.Fatalf("reason = %q", g.finals[0][1])
+			}
+			if len(*calls) != tc.calls || !slices.Equal(*drops, tc.drops) {
+				t.Fatalf("supervisor calls %+v, drops %q; want %d calls, drops %q", *calls, *drops, tc.calls, tc.drops)
+			}
+			if end := g.finishAt.Sub(g.started); end != tc.end {
+				t.Fatalf("finished %s after the start, want %s", end, tc.end)
+			}
+		})
+	}
+}
+
 // A run from before versionReviewSupervised keeps its review beside the
 // checks as it was: unmarked, unsupervised, the row left alone.
 func TestStagesReviewParallelRunLeavesTheReviewsTripsAndTheRow(t *testing.T) {
