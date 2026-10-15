@@ -81,6 +81,11 @@ type fakeStore struct {
 	questions   map[string][]PlanQuestion // by "task revision"
 	queue       []queueEntry              // the merge queues, oldest first
 	holds       map[string]RollHold
+	// routineStates and routineRuns (oldest first) are keyed by
+	// project + "/" + routine
+	routineStates map[string]RoutineState
+	routineRuns   map[string][]RoutineRun
+	routineCursor int64
 }
 
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -145,7 +150,8 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
-		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{}}
+		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
+		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -833,6 +839,120 @@ func (s *fakeStore) SetQueuePauseRevert(ctx context.Context, project, taskID str
 
 func (s *fakeStore) ClearQueuePause(ctx context.Context, project string) error {
 	delete(s.pauses, project)
+	return nil
+}
+
+func (s *fakeStore) RoutineState(ctx context.Context, project, routine string) (RoutineState, error) {
+	k := project + "/" + routine
+	st, ok := s.routineStates[k]
+	if !ok {
+		st = RoutineState{Project: project, Routine: routine}
+		s.routineStates[k] = st
+	}
+	return st, nil
+}
+
+func (s *fakeStore) RoutineStates(ctx context.Context, project string) ([]RoutineState, error) {
+	var out []RoutineState
+	for _, st := range s.routineStates {
+		if st.Project == project {
+			out = append(out, st)
+		}
+	}
+	slices.SortFunc(out, func(a, b RoutineState) int { return strings.Compare(a.Routine, b.Routine) })
+	return out, nil
+}
+
+func (s *fakeStore) BumpRoutineMerges(ctx context.Context, project string) ([]RoutineState, error) {
+	for k, st := range s.routineStates {
+		if st.Project == project {
+			st.Merges++
+			s.routineStates[k] = st
+		}
+	}
+	return s.RoutineStates(ctx, project)
+}
+
+func (s *fakeStore) SetRoutineMerges(ctx context.Context, project, routine string, merges int) error {
+	st, _ := s.RoutineState(ctx, project, routine)
+	st.Merges = merges
+	s.routineStates[project+"/"+routine] = st
+	return nil
+}
+
+func (s *fakeStore) SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error {
+	st, _ := s.RoutineState(ctx, project, routine)
+	st.SkipNext, st.SkipBy = skip, by
+	if !skip {
+		st.SkipBy = ""
+	}
+	s.routineStates[project+"/"+routine] = st
+	return nil
+}
+
+func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun, bool, error) {
+	k := r.Project + "/" + r.Routine
+	for _, have := range s.routineRuns[k] {
+		if have.Due.Equal(r.Due) {
+			return have, false, nil
+		}
+	}
+	st, _ := s.RoutineState(ctx, r.Project, r.Routine)
+	st.Runs++
+	run := RoutineRun{Project: r.Project, Routine: r.Routine, Run: st.Runs, Due: r.Due, Started: time.Now(), Trigger: r.Trigger}
+	if st.SkipNext {
+		run.Outcome, run.Note = "skipped", "skipped once by "+st.SkipBy
+		st.SkipNext, st.SkipBy = false, ""
+	}
+	s.routineStates[k] = st
+	s.routineRuns[k] = append(s.routineRuns[k], run)
+	return run, true, nil
+}
+
+func (s *fakeStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
+	runs := s.routineRuns[project+"/"+routine]
+	for i := range runs {
+		if runs[i].Run == run {
+			runs[i].Ended, runs[i].Outcome, runs[i].Note, runs[i].TaskID, runs[i].Issue, runs[i].CostEUR = time.Now(), outcome, note, taskID, issue, costEUR
+			return nil
+		}
+	}
+	return fmt.Errorf("routine run %s/%s #%d: %w", project, routine, run, ErrNotFound)
+}
+
+func (s *fakeStore) RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error) {
+	runs := slices.Clone(s.routineRuns[project+"/"+routine])
+	slices.Reverse(runs)
+	return runs[:min(limit, len(runs))], nil
+}
+
+func (s *fakeStore) RoutineRunOfTask(ctx context.Context, taskID string) (RoutineRun, bool, error) {
+	for _, runs := range s.routineRuns {
+		for _, r := range runs {
+			if taskID != "" && r.TaskID == taskID {
+				return r, true, nil
+			}
+		}
+	}
+	return RoutineRun{}, false, nil
+}
+
+func (s *fakeStore) OpenRoutineTask(ctx context.Context, project, routine string) (Task, bool, error) {
+	runs := s.routineRuns[project+"/"+routine]
+	for i := len(runs) - 1; i >= 0; i-- {
+		if t, ok := s.tasks[runs[i].TaskID]; ok && !Final(t.Status) {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
+}
+
+func (s *fakeStore) RoutineMergeCursor(ctx context.Context) (int64, error) {
+	return s.routineCursor, nil
+}
+
+func (s *fakeStore) SetRoutineMergeCursor(ctx context.Context, id int64) error {
+	s.routineCursor = id
 	return nil
 }
 
