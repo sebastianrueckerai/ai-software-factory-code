@@ -420,6 +420,47 @@ async function text(page) {
       const closed = new URL(p.page.url());
       if (await p.page.locator("#drawer").isVisible()) fails.push("find with a drawer: the ✕ does not close the drawer after a find");
       if (closed.hash || closed.searchParams.get("q") !== "export") fails.push("find with a drawer: after the ✕ the URL is " + p.page.url() + ", want q=export and no hash");
+      // Back across a find: a drawer opened and closed (an entry of its own), a find, Back: the URL,
+      // the box and the board agree, in place
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const wholeBoard = await p.page.locator("#board [data-card]").count();
+      await p.page.evaluate(() => { window.labPage = true; });
+      await p.page.locator('#board [data-card="' + drawer + '"]').first().click({ position: { x: 4, y: 4 } });
+      await p.page.waitForTimeout(600);
+      await p.page.locator("#drawer-close").click();
+      await p.page.waitForTimeout(300);
+      await p.page.locator("#q").click();
+      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.waitForTimeout(1200);
+      await p.page.goBack();
+      await p.page.waitForTimeout(1200);
+      const agree = await p.page.evaluate(() => ({ q: new URLSearchParams(location.search).get("q") || "", box: document.getElementById("q").value,
+        cards: document.querySelectorAll("#board [data-card]").length, same: window.labPage === true }));
+      if (agree.q !== "" || agree.box !== "" || agree.cards !== wholeBoard || !agree.same) {
+        fails.push("Back across a find: the URL's q " + JSON.stringify(agree.q) + ", the box " + JSON.stringify(agree.box) + ", " + agree.cards + " of " + wholeBoard +
+          " cards, the page " + (agree.same ? "kept" : "loaded again"));
+      }
+      // a find, then a drawer, then Back: the drawer closes in place and the find stays
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.evaluate(() => { window.labPage = true; });
+      await p.page.locator("#q").click();
+      await p.page.keyboard.type("export", { delay: 40 });
+      await p.page.waitForTimeout(1200);
+      const narrowed = await p.page.locator("#board [data-card]").count();
+      await p.page.locator('#board [data-card="' + labID(616) + '"]').click({ position: { x: 4, y: 4 } });
+      await p.page.waitForTimeout(600);
+      if (!(await p.page.locator("#drawer").isVisible())) fails.push("find then drawer: a click on a found card opens no drawer");
+      await p.page.goBack();
+      await p.page.waitForTimeout(800);
+      if (await p.page.locator("#drawer").isVisible()) fails.push("find then drawer: Back does not close the drawer");
+      const stay = await p.page.evaluate(() => ({ q: new URLSearchParams(location.search).get("q"), hash: location.hash, box: document.getElementById("q").value,
+        cards: document.querySelectorAll("#board [data-card]").length, same: window.labPage === true }));
+      if (stay.q !== "export" || stay.hash || stay.box !== "export" || stay.cards !== narrowed || !stay.same) {
+        fails.push("find then drawer: after Back the URL's q is " + stay.q + ", the hash " + JSON.stringify(stay.hash) + ", the box " + JSON.stringify(stay.box) + ", " +
+          stay.cards + " of " + narrowed + " cards, the page " + (stay.same ? "kept" : "loaded again"));
+      }
       // a stream swap that lands while a find is in flight leaves the find's answer on the board
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);

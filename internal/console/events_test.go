@@ -1072,8 +1072,12 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // holds the board's and the cards' swaps until its answer is in; a board
 // under a new query moves the stream to it, whose first open reads the
 // board and the Chat; a board swap that took the box's focus gives it back
-// with its caret, and a card's swap after the focus moved on does not;
-// the find's URL keeps the open document and the drawer's hash.
+// with its caret, and a card's swap after the focus moved on does not. A
+// find whose answer failed in its handling releases the hold too; two
+// reads of the board asked for during one in flight send one more after
+// it; the find's good answer writes its URL in place, with the open
+// document, the drawer's hash and the entry's state, a failed one none;
+// and Back to an entry with another q puts it in the box and runs the find.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1096,7 +1100,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var listeners = {}, requests = [], timers = 0, sources = [];
+	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], timers = 0, sources = [];
 function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
     querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
@@ -1114,17 +1118,19 @@ function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
 EventSource.prototype.close = function () { this.closed = true; };
 EventSource.CLOSED = 2;
-var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }}, location: {hash: ""}, history: {replaceState: function () {}},
+var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }}, location: {hash: ""},
+  history: {state: null, replaceState: function (state, title, path) { replaced.push([state, path]); }},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
+  // a read is in flight until settle answers it
   htmx: {ajax: function (verb, url) {
     requests.push(verb + " " + url);
     if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
-    return Promise.resolve();
+    return new Promise(function (ok) { pending.push(ok); });
   }, swap: function () {}, process: function () {}},
-  window: {addEventListener: function () {}},
+  window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return byID[id] || null; },
     querySelectorAll: function (sel) { return sel === "#board .count" ? counts : []; },
@@ -1133,29 +1139,43 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
     dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
 require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
+// settle answers every read in flight, and what their answers start runs
+function settle() {
+  pending.splice(0).forEach(function (ok) { ok(); });
+  return new Promise(function (done) { setImmediate(done); });
+}
+function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); }); }
+(async function () {
 var es = sources[0], out = {url: es.url};
+function event(e) { es.on.event({data: JSON.stringify(e)}); }
 es.onopen();
 out.opened = requests.slice();
 es.onopen();
 out.reconnected = requests.slice();
+await settle();
 out.timers = timers;
 es.on.counters({data: JSON.stringify({status: "\n<strong class=\"pname\">code</strong>\n", counts: ["2", "0", "1"]})});
 out.status = byID["status-line"].innerHTML;
 out.counts = counts.map(function (c) { return c.innerHTML; });
-function event(e) { es.on.event({data: JSON.stringify(e)}); }
 var text = {id: 0, at: "2026-10-11T10:05:00.25Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-2", text: "Tests pass."}};
 event(text);
 event(text);
 requests = [];
 event({id: 7, at: "2026-10-11T10:06:00Z", task_id: "t-run", kind: "card_steered", actor: "sebastian", detail: {text: "Merge it."}});
+await settle();
 event({id: 0, at: "2026-10-11T10:07:00Z", task_id: "t-run", kind: "session_said", actor: "factoryd", detail: {session: "s-3", text: "Again."}});
+await settle();
 event({id: 8, at: "2026-10-11T10:08:00Z", task_id: "t-run", kind: "task_status", actor: "factoryd", detail: {status: "in-review"}});
+await settle();
 event({id: 9, at: "2026-10-11T10:08:00Z", task_id: "t-other", kind: "task_status", actor: "factoryd", detail: {status: "done"}});
+await settle();
 out.after = requests;
 requests = [];
 byID.drawer.hidden = false;
 event({id: 10, at: "2026-10-11T10:09:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+await settle();
 es.on.board({data: ""});
+await settle();
 out.held = requests.slice();
 byID.drawer.hidden = true;
 listeners.focusout.forEach(function (fn) { fn({relatedTarget: el()}); });
@@ -1165,66 +1185,103 @@ out.focused = requests;
 requests = [];
 byID.drawer.hidden = false;
 es.on.board({data: ""});
+await settle();
 byID.drawer.hidden = true;
 listeners.drawerclosed.forEach(function (fn) { fn(); });
 out.released = requests;
 // a turn: the avatar, the who line (the name and the time), the text
 out.said = log.children.map(function (m) { var who = m.children[1]; return [m.className, m.dataset.key, who.children[0].textContent + " · " + who.children[1].textContent, m.children[2].textContent].join(" | "); });
 out.timers = timers;
-setImmediate(function () {
-  out.steer = byID["steer-input"].value;
-  function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); }); }
-  // the find's box, focused and holding text, holds no swap of the board
-  var q = el({id: "q", type: "text", value: "exp", defaultValue: "", selectionStart: 2, selectionEnd: 3,
-    matches: function () { return true; }, focus: function () { sandbox.document.activeElement = q; },
-    setSelectionRange: function (a, b) { out.caret = [a, b]; }});
-  byID.q = q;
-  byID.board.contains = function (x) { return x === q; };
-  byID.board.querySelectorAll = function (sel) { return sel === "input, textarea" ? [q] : []; };
-  sandbox.document.activeElement = q;
-  requests = [];
-  event({id: 11, at: "2026-10-11T10:10:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
-  out.typing = requests.slice();
-  // a find in flight holds the board's and the cards' swaps until its answer is in
-  requests = [];
-  fire("htmx:beforeRequest", {elt: {id: "find"}});
-  event({id: 12, at: "2026-10-11T10:11:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
-  event({id: 13, at: "2026-10-11T10:11:00Z", task_id: "t-other", kind: "card_moved", actor: "sebastian", detail: {}});
-  out.finding = requests.slice();
-  fire("htmx:afterRequest", {elt: {id: "find"}});
-  out.found = requests.slice();
-  // a swap that brings the board under a new query moves the stream to it,
-  // once; the new stream's first open reads the board and the Chat again
-  requests = [];
-  fire("htmx:afterSwap", {target: byID.board});
-  byID.board = el({id: "board", dataset: {project: "code", query: "?project=code&q=exp"}});
-  fire("htmx:afterSwap", {target: byID.board});
-  fire("htmx:afterSwap", {target: byID.board});
-  out.streams = sources.map(function (s) { return s.url + (s.closed ? " closed" : ""); });
-  if (sources[1]) sources[1].onopen();
-  out.followed = requests.slice();
-  // a board swap that took the box's focus gives it back with the caret;
-  // a card's swap (no beforeSwap) after the focus moved on leaves it there
-  sandbox.document.activeElement = q;
-  fire("htmx:beforeSwap", {target: byID.board, xhr: {status: 200, responseText: ""}});
-  sandbox.document.activeElement = sandbox.document.body;
-  fire("htmx:afterSwap", {target: byID.board});
-  out.refocused = sandbox.document.activeElement === q;
-  var composer = el({id: "chat-input"});
-  sandbox.document.activeElement = composer;
-  fire("htmx:afterSwap", {});
-  out.kept = sandbox.document.activeElement === composer;
-  // the find's URL keeps the open document's doc= and the drawer's hash
-  Object.assign(sandbox.location, {href: "http://lab/?project=code&doc=docs/a.md#card=t-1", search: "?project=code&doc=docs/a.md", hash: "#card=t-1"});
-  var h = {path: "/?project=code&q=exp"};
-  fire("htmx:beforeHistoryUpdate", {history: h});
-  out.history = h.path;
-  Object.assign(sandbox.location, {href: "http://lab/?project=code", search: "?project=code", hash: ""});
-  h = {path: "/?project=code&q=exp"};
-  fire("htmx:beforeHistoryUpdate", {history: h});
-  out.plain = h.path;
-  setImmediate(function () { console.log(JSON.stringify(out)); });
-});`
+await settle();
+out.steer = byID["steer-input"].value;
+// the find's box, focused and holding text, holds no swap of the board
+var q = el({id: "q", type: "text", value: "exp", defaultValue: "", selectionStart: 2, selectionEnd: 3,
+  matches: function () { return true; }, focus: function () { sandbox.document.activeElement = q; },
+  setSelectionRange: function (a, b) { out.caret = [a, b]; }});
+byID.q = q;
+byID.board.contains = function (x) { return x === q; };
+byID.board.querySelectorAll = function (sel) { return sel === "input, textarea" ? [q] : []; };
+sandbox.document.activeElement = q;
+requests = [];
+event({id: 11, at: "2026-10-11T10:10:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+out.typing = requests.slice();
+await settle();
+// a find in flight holds the board's and the cards' swaps until its answer
+// is in; the two held run one after the other, as reads do
+requests = [];
+fire("htmx:beforeRequest", {elt: {id: "find"}});
+event({id: 12, at: "2026-10-11T10:11:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+event({id: 13, at: "2026-10-11T10:11:00Z", task_id: "t-other", kind: "card_moved", actor: "sebastian", detail: {}});
+out.finding = requests.slice();
+fire("htmx:afterRequest", {elt: {id: "find"}});
+await settle();
+out.found = requests.slice();
+await settle();
+// a failed handling of the find's answer releases the hold too
+requests = [];
+fire("htmx:beforeRequest", {elt: {id: "find"}});
+event({id: 14, at: "2026-10-11T10:12:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+out.failing = requests.slice();
+fire("htmx:onLoadError", {elt: {id: "find"}});
+out.failed = requests.slice();
+await settle();
+// two reads of the board asked for during one in flight send exactly one more after it
+requests = [];
+event({id: 15, at: "2026-10-11T10:13:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+event({id: 16, at: "2026-10-11T10:13:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
+es.on.board({data: ""});
+out.reads = [requests.length];
+await settle();
+out.reads.push(requests.length);
+await settle();
+out.reads.push(requests.length);
+// a swap that brings the board under a new query moves the stream to it,
+// once; the new stream's first open reads the board and the Chat again
+requests = [];
+fire("htmx:afterSwap", {target: byID.board});
+byID.board = el({id: "board", dataset: {project: "code", query: "?project=code&q=exp"}});
+fire("htmx:afterSwap", {target: byID.board});
+fire("htmx:afterSwap", {target: byID.board});
+out.streams = sources.map(function (s) { return s.url + (s.closed ? " closed" : ""); });
+if (sources[1]) sources[1].onopen();
+out.followed = requests.slice();
+await settle();
+// a board swap that took the box's focus gives it back with the caret;
+// a card's swap (no beforeSwap) after the focus moved on leaves it there
+sandbox.document.activeElement = q;
+fire("htmx:beforeSwap", {target: byID.board, xhr: {status: 200, responseText: ""}});
+sandbox.document.activeElement = sandbox.document.body;
+fire("htmx:afterSwap", {target: byID.board});
+out.refocused = sandbox.document.activeElement === q;
+var composer = el({id: "chat-input"});
+sandbox.document.activeElement = composer;
+fire("htmx:afterSwap", {});
+out.kept = sandbox.document.activeElement === composer;
+// the find's good answer writes its query into the URL in place, with the
+// open document's doc=, the drawer's hash and the entry's state; a failed
+// answer writes none
+replaced = [];
+Object.assign(sandbox.location, {href: "http://lab/?project=code&doc=docs/a.md#card=t-1", search: "?project=code&doc=docs/a.md", hash: "#card=t-1"});
+sandbox.history.state = {doc: "docs/a.md"};
+fire("htmx:afterRequest", {elt: {id: "find"}, successful: true, pathInfo: {finalRequestPath: "/?project=code&q=exp"}});
+fire("htmx:afterRequest", {elt: {id: "find"}, successful: false, pathInfo: {finalRequestPath: "/?project=code&q=bad"}});
+Object.assign(sandbox.location, {href: "http://lab/?project=code", search: "?project=code", hash: ""});
+sandbox.history.state = null;
+fire("htmx:afterRequest", {elt: {id: "find"}, successful: true, pathInfo: {finalRequestPath: "/?project=code&q=exp"}});
+out.replaced = replaced;
+// Back to an entry whose q is not the box's puts it in the box and runs
+// the find as typing does; an entry with the box's q runs none
+var typed = [];
+q.dispatchEvent = function (ev) { typed.push("[" + q.value + "] " + ev.type); };
+q.value = "exp";
+winListeners.popstate.forEach(function (fn) { fn({}); });
+Object.assign(sandbox.location, {search: "?project=code&q=exp"});
+q.value = "exp";
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popped = typed;
+await settle();
+console.log(JSON.stringify(out));
+})();`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
 	got, err := cmd.Output()
 	if err != nil {
@@ -1236,9 +1293,10 @@ setImmediate(function () {
 		`"held":["GET /board?project=code","GET /board?project=code"],"moved":["GET /board?project=code","GET /board?project=code"],"focused":["GET /board?project=code","GET /board?project=code"],"released":["GET /board?project=code"],` +
 		`"said":["msg agent | s-2@2026-10-11T10:05:00.25Z | agent · 10-11 10:05Z | Tests pass.","msg you | e7 | sebastian · 10-11 10:06Z | Merge it."],"steer":"half a steer",` +
 		`"typing":["GET /board?project=code"],"finding":[],"found":["GET /board?project=code","GET /board?project=code"],` +
+		`"failing":[],"failed":["GET /board?project=code"],"reads":[1,2,2],` +
 		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
 		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +
-		`"history":"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1","plain":"/?project=code&q=exp"}`
+		`"replaced":[[{"doc":"docs/a.md"},"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1"],[null,"/?project=code&q=exp"]],"popped":["[] input"]}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
