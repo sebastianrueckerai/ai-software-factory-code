@@ -419,9 +419,10 @@ func floorRefused(reason string) bool {
 // AttemptFunded is the answer path's floor (ruling 322, finding 215): ""
 // when the free headroom can fund the cheapest call of model, a call of
 // no prompt and policy.MinCallTokens output tokens, else the refusal the
-// waiting-human card carries. It guards every attempt the workflow
-// grants, and the console's answer (DayCapped). Kept for runs from before
-// versionSessionLadder, which schedule it on replay; no new caller.
+// waiting-human card carries. It guards the console's answer (DayCapped)
+// and every attempt of a run from before versionSessionLadder, which
+// schedules it on replay; a newer run asks SessionFunded before each
+// session.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }

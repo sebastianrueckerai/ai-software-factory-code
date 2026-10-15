@@ -474,6 +474,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
 	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
 	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
+	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -925,6 +926,17 @@ const (
 	// A run from before the change hears no re-run and fails on a change
 	// request.
 	versionFactoryPRActions workflow.Version = 1
+	// versionSessionLadder (change id "session-ladder", plan A of the
+	// escalation ladder): the session cap counts the sessions that got a
+	// model answer (SessionAnswered), read after every session whatever
+	// ended it, so a starved or refused session takes no number and no branch
+	// of the loop corrects the count; the check before a session is
+	// SessionFunded (the opening calls and the floor of the rung); every
+	// wait for a human adds the change requests that answered it to the next
+	// session's findings. A run from before counts every session that ran and
+	// every attempt the budget refused, funds on AttemptFunded and drops the
+	// budget wait's change requests.
+	versionSessionLadder workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1019,6 +1031,7 @@ type taskRun struct {
 	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
 	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
 	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
+	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1107,6 +1120,15 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return false
 	}
+	// held ends every wait for a human of this loop: the task's final state
+	// when the wait decided one, else the change requests that answered it join
+	// the next session's findings (the human's comments are in t.answers)
+	held := func(final, why string, answer []string) (string, string) {
+		if final == "" {
+			findings = append(findings, answer...)
+		}
+		return final, why
+	}
 	// verifyAtCap takes the branch's head past the base through verify
 	// when no verification judged it (versionKeepWork): head "" for none.
 	verifyAtCap := func() (head string, v verdict, answered bool) {
@@ -1136,11 +1158,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
-		if final != "" {
+		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
-		findings = append(findings, answer...)
 		t.grant(&u)
 		return "", ""
 	}
@@ -1295,27 +1315,33 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = append(findings, more...)
 		}
 	}
-	for attempt := u.Attempts + 1; ; attempt++ {
+	// taken is how many numbers the budget's refusals took since the last
+	// session, in a run from before versionSessionLadder
+	taken := 0
+	for {
+		attempt := u.Attempts + 1 + taken
 		if t.attemptFunded >= versionAttemptFunded {
-			// the attempt is refused before it starts (ruling 322),
-			// whatever granted it: no session, no key, no failure round,
-			// and the card says why an answer will not run
+			// the session is refused before it starts: no session, no key,
+			// no failure round, and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
 				if DayCapped(why) {
 					// a spent day cap resets on its own: the day cap's
-					// wait, not a human's, and no attempt ran
+					// wait, not a human's, and no session ran
 					_, state, _ := strings.Cut(why, "\n")
 					until := dayTurn(workflow.Now(t.ctx))
-					final, end, answer := t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)
-					if final != "" {
+					if final, end := held(t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)); final != "" {
 						return t.finish(final, end)
 					}
-					findings = append(findings, answer...)
-					attempt--
 					continue
 				}
-				final, end, _ := t.awaitHuman(why, nil)
-				if final != "" {
+				if t.sessionLadder >= versionSessionLadder {
+					if final, end := held(t.awaitHuman(why, nil)); final != "" {
+						return t.finish(final, end)
+					}
+					continue
+				}
+				taken++
+				if final, end, _ := t.awaitHuman(why, nil); final != "" {
 					return t.finish(final, end)
 				}
 				continue
@@ -1333,11 +1359,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 				t.grant(&u)
 			}
 		}
@@ -1382,51 +1406,42 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
-				final, why, answer := t.awaitHuman(ask, nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 			}
-			attempt--
 			continue
 		}
 		t.pendingPods = 0
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
-				final, why, answer := t.awaitHuman(ask, nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 			}
-			attempt--
 			continue
 		}
 		dayCapped := t.dayCap >= versionDayCap && err == nil && !decided && res.Outcome == OutcomeDayCap && res.Capped != nil && res.Acceptance == nil
 		if dayCapped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
-			final, why, answer := t.awaitCap(*res.Capped, model)
-			if final != "" {
+			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
-			attempt--
 			continue
 		}
 		if !res.StartFailed {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		}
-		u.Attempts = attempt
+		if t.sessionLadder < versionSessionLadder || t.sessionAnswered(res, began, attempt, model) {
+			u.Attempts, taken = attempt, 0
+		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
-			final, why, answer := t.awaitHuman(v.escalate, nil)
-			if final != "" {
+			if final, why := held(t.awaitHuman(v.escalate, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
 			t.grant(&u)
 			continue
 		}
@@ -1473,11 +1488,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if dayCapped {
 			// it made calls before the cap refused one: an attempt
-			final, why, answer := t.awaitCap(*res.Capped, model)
-			if final != "" {
+			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
 			continue
 		}
 		switch res.Outcome {
@@ -1505,11 +1518,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
 			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
-				final, why, answer := t.awaitPoster(res.Reason)
-				if final != "" {
+				if final, why := held(t.awaitPoster(res.Reason)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 				t.grantPoster(&u)
 				continue
 			}
@@ -1517,11 +1528,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
-			final, why, answer := t.awaitHuman(res.Reason, res.Choices)
-			if final != "" {
+			if final, why := held(t.awaitHuman(res.Reason, res.Choices)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
 			t.grant(&u)
 			continue
 		}
@@ -1723,17 +1732,35 @@ func (t *taskRun) climbed(stronger bool) bool {
 	return stronger
 }
 
-// unfunded is the attempt grant's floor (ruling 322): "" when the task's
-// remaining budget can fund the cheapest call of model, else the refusal
-// the card carries. A failed read is no refusal: the per-call hold still
+// unfunded is the session's floor: "" when the task's remaining budget can
+// fund the session on model, else the refusal the card carries
+// (SessionFunded; a run from before versionSessionLadder asks
+// AttemptFunded). A failed read is no refusal: the per-call hold still
 // guards the money.
 func (t *taskRun) unfunded(model string) string {
+	activity := ActivityAttemptFunded
+	if t.sessionLadder >= versionSessionLadder {
+		activity = ActivitySessionFunded
+	}
 	var why string
-	if err := workflow.ExecuteActivity(t.short, ActivityAttemptFunded, t.taskID, model).Get(t.ctx, &why); err != nil {
+	if err := workflow.ExecuteActivity(t.short, activity, t.taskID, model).Get(t.ctx, &why); err != nil {
 		workflow.GetLogger(t.ctx).Warn("read the attempt's funding", "task", t.taskID, "error", err)
 		return ""
 	}
 	return why
+}
+
+// sessionAnswered reports whether the session that ran since began got a
+// model answer (versionSessionLadder), and records its start. A failed read
+// counts the session: a broken ledger must not loosen the cap.
+func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt int, model string) bool {
+	var ok bool
+	in := SessionAnswerInput{TaskID: t.taskID, SessionID: res.SessionID, Model: cmp.Or(res.Model, model), Attempt: attempt, Since: began}
+	if err := workflow.ExecuteActivity(t.short, ActivitySessionAnswered, in).Get(t.ctx, &ok); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read whether the session got an answer", "task", t.taskID, "error", err)
+		return true
+	}
+	return ok
 }
 
 // grant is what a human answer buys; only a human raises a limit. One
