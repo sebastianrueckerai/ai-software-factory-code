@@ -457,6 +457,7 @@ func main() {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
 		},
 		ReconcileError: registrar.ReconcileError,
+		FluxReady:      kube.KustomizationReady,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
 		AttemptFunded:  runner.AttemptFunded,

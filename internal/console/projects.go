@@ -33,6 +33,68 @@ type projectRow struct {
 	Mirror *factoryd.Mirror
 	// Approver: the viewer approves the project, so sets its export.
 	Approver bool
+	// Envs are a factory project's environments with their deploy state.
+	Envs []envRow
+}
+
+// envRow is an environment with its deploy state (deployState).
+type envRow struct {
+	factoryd.Environment
+	State string
+}
+
+// Words is the environment as the projects page and its tool say it.
+func (e envRow) Words() string {
+	s := e.Namespace + ": " + e.Path
+	if e.Hostname != "" {
+		s += " at " + e.Hostname
+	}
+	if e.State != "" {
+		s += " (" + e.State + ")"
+	}
+	return s
+}
+
+// envRows are p's environments with their deploy states.
+func (c *Console) envRows(ctx context.Context, p factoryd.Project) []envRow {
+	rows := make([]envRow, len(p.Environments))
+	for i, e := range p.Environments {
+		rows[i] = envRow{e, c.deployState(ctx, p, e)}
+	}
+	return rows
+}
+
+// fluxPathNotFound starts kustomize-controller's Ready message when the
+// source's revision lacks the Kustomization's path.
+const fluxPathNotFound = "kustomization path not found"
+
+// deployState is environment e of project p as its Flux Kustomization
+// tells it (roadmap 257): ready, or not ready with Flux's message, and
+// not deployed yet while the deploy branch lacks e's path, which only a
+// green build of main writes. Registration makes the Kustomization once
+// the project is minted. "" without a reader.
+func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factoryd.Environment) string {
+	if c.cfg.FluxReady == nil {
+		return ""
+	}
+	if !p.Minted() {
+		return "no Flux Kustomization yet"
+	}
+	ready, msg, err := c.cfg.FluxReady(ctx, e.Namespace, p.Name)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "no Flux Kustomization yet"
+	case err != nil:
+		log.Printf("console: the Kustomization %s/%s: %v", e.Namespace, p.Name, err)
+		return "deploy state unreadable"
+	case ready:
+		return "ready"
+	case strings.HasPrefix(msg, fluxPathNotFound):
+		return "not deployed yet: no green build has written " + e.Path
+	case msg == "":
+		return "not ready: Flux has not reconciled it yet"
+	}
+	return "not ready: " + msg
 }
 
 // projects shows every project read-only (ruling 183): its file's
@@ -64,6 +126,9 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		row.Approver = slices.Contains(v.ApproversOf(p.Repository), current(r).user)
+		if p.Objects == policy.ObjectsFactory {
+			row.Envs = c.envRows(r.Context(), p)
+		}
 		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
 			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
 			if err != nil {

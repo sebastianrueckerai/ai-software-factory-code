@@ -64,6 +64,15 @@ func TestLab(t *testing.T) {
 	}
 	r.projects.rows = slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
 	r.projects.rows[0].Process, r.projects.rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
+	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
+	demo := &r.projects.rows[slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
+	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
+	r.c.cfg.FluxReady = func(_ context.Context, namespace, _ string) (bool, string, error) {
+		if namespace == "demo-prod" {
+			return false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory", nil
+		}
+		return true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456", nil
+	}
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
 		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 120}

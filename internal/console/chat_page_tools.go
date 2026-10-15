@@ -138,8 +138,9 @@ func mirrorWords(m *factoryd.Mirror) string {
 }
 
 // projectsText is the /projects page as the agent reads it: every
-// project with its name, objects, process, merge rule, state and GitHub
-// export state.
+// project with its name, objects, process, merge rule, state, GitHub
+// export state and a factory project's environments with their deploy
+// state.
 func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 	ps, err := c.cfg.Projects.Projects(ctx)
 	if err != nil {
@@ -170,8 +171,16 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 				export = mirrorWords(&m)
 			}
 		}
-		fmt.Fprintf(&b, "%s (%s): objects %s; process %s; merge rule %s; %s; GitHub export %s\n",
+		fmt.Fprintf(&b, "%s (%s): objects %s; process %s; merge rule %s; %s; GitHub export %s",
 			x.Name, x.Repository, x.Objects, cmp.Or(x.Process, "none"), x.MergeRule, state, export)
+		if x.Objects == policy.ObjectsFactory && len(x.Environments) > 0 {
+			var envs []string
+			for _, e := range c.envRows(ctx, x) {
+				envs = append(envs, e.Words())
+			}
+			b.WriteString("; environments " + strings.Join(envs, ", "))
+		}
+		b.WriteString("\n")
 	}
 	if len(ps) == 0 {
 		return "No projects.", nil

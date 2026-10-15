@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -99,5 +100,50 @@ func TestKubeDeployments(t *testing.T) {
 		{Name: "one", Generation: 1, Replicas: 1}}
 	if err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("Deployments = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+// KustomizationReady reads the Ready condition: True is ready, False and
+// Unknown carry Flux's message, none is not ready with no message, and a
+// missing Kustomization is ErrNotFound.
+func TestKubeKustomizationReady(t *testing.T) {
+	bodies := map[string]string{
+		"ready": `{"status":{"conditions":[{"type":"Ready","status":"True","reason":"ReconciliationSucceeded",
+			"message":"Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}]}}`,
+		"missing": `{"status":{"conditions":[{"type":"Reconciling","status":"True","message":"Fetching manifests"},
+			{"type":"Ready","status":"False","reason":"ArtifactFailed",
+			"message":"kustomization path not found: stat /tmp/kustomization-103304189/deploy/staging: no such file or directory"}]}}`,
+		"progressing": `{"status":{"conditions":[{"type":"Ready","status":"Unknown","message":"Reconciliation in progress"}]}}`,
+		"new":         `{"metadata":{"name":"new"}}`,
+	}
+	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
+		ns, ok := strings.CutPrefix(r.URL.Path, "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/")
+		ns, name, _ := strings.Cut(ns, "/kustomizations/")
+		body, known := bodies[ns]
+		if r.Method != http.MethodGet || !ok || name != "app" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if !known {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		io.WriteString(w, body)
+	})
+	for ns, want := range map[string]struct {
+		ready bool
+		msg   string
+	}{
+		"ready":       {true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"},
+		"missing":     {false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/staging: no such file or directory"},
+		"progressing": {false, "Reconciliation in progress"},
+		"new":         {false, ""},
+	} {
+		ready, msg, err := k.KustomizationReady(context.Background(), ns, "app")
+		if err != nil || ready != want.ready || msg != want.msg {
+			t.Errorf("%s: %v %q, %v; want %v %q", ns, ready, msg, err, want.ready, want.msg)
+		}
+	}
+	if _, _, err := k.KustomizationReady(context.Background(), "gone", "app"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a missing Kustomization: %v, want ErrNotFound", err)
 	}
 }

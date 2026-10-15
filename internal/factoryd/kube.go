@@ -643,6 +643,30 @@ func (k *InClusterKube) Deployment(ctx context.Context, namespace, name string) 
 	return d, err
 }
 
+// KustomizationReady reads the Ready condition of the Flux Kustomization
+// name in namespace: true when it is True, else false with Flux's
+// message, "" while Flux has set none.
+func (k *InClusterKube) KustomizationReady(ctx context.Context, namespace, name string) (bool, string, error) {
+	var ks struct {
+		Status struct {
+			Conditions []struct {
+				Type    string `json:"type"`
+				Status  string `json:"status"`
+				Message string `json:"message"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := k.getJSON(ctx, "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/"+namespace+"/kustomizations/"+name, &ks); err != nil {
+		return false, "", err
+	}
+	for _, c := range ks.Status.Conditions {
+		if c.Type == "Ready" {
+			return c.Status == "True", c.Message, nil
+		}
+	}
+	return false, "", nil
+}
+
 func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error {
 	_, err := k.call(ctx, http.MethodGet, path, nil, out)
 	return err

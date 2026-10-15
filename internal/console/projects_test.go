@@ -28,7 +28,11 @@ type fakeProjects struct {
 	rows []factoryd.Project
 }
 
-func (f *fakeProjects) Projects(context.Context) ([]factoryd.Project, error) { return f.rows, nil }
+// Projects answers a fresh slice, as the store does: coderProjects
+// filters its answer in place.
+func (f *fakeProjects) Projects(context.Context) ([]factoryd.Project, error) {
+	return slices.Clone(f.rows), nil
+}
 
 // projectRows are the factory's code (seed, coder), the demo app (factory,
 // registered), the infra repository (seed, agents none) and a row whose
@@ -90,6 +94,91 @@ func TestProjectsPage(t *testing.T) {
 			t.Errorf("/projects shows %q", leak)
 		}
 	}
+}
+
+// Roadmap 257: the projects page and its tool show each environment of a
+// factory project with the Ready condition of its Flux Kustomization:
+// ready, not ready with Flux's message, not deployed yet while the deploy
+// branch lacks its path, no Kustomization before Flux has one, and
+// unreadable when the read fails. A project registration has not minted
+// has no Kustomization yet and is not read.
+func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	factory := func(name string, minted bool, envs ...factoryd.Environment) factoryd.Project {
+		p := factoryd.Project{Name: name, Repository: name + "/" + name, MergeRule: "auto", Objects: policy.ObjectsFactory, Agents: "coder",
+			File: true, Environments: envs}
+		if minted {
+			p.GitToken = "g"
+		}
+		return p
+	}
+	r.projects.rows = []factoryd.Project{projectRows()[0],
+		factory("demo-app", true, factoryd.Environment{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"},
+			factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"}),
+		factory("broken", true, factoryd.Environment{Namespace: "broken-staging", Path: "deploy/staging"},
+			factoryd.Environment{Namespace: "broken-prod", Path: "deploy/prod"}, factoryd.Environment{Namespace: "broken-new", Path: "deploy/new"},
+			factoryd.Environment{Namespace: "broken-locked", Path: "deploy/locked"}),
+		factory("waiting", false, factoryd.Environment{Namespace: "waiting-staging", Path: "deploy/staging"}),
+	}
+	type ready struct {
+		ok  bool
+		msg string
+		err error
+	}
+	flux := map[string]ready{
+		"demo-staging/demo-app": {true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456", nil},
+		"demo-prod/demo-app":    {false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory", nil},
+		"broken-staging/broken": {false, "Deployment/broken-staging/app dry-run failed: no matches for kind Thing", nil},
+		"broken-prod/broken":    {},
+		"broken-new/broken":     {err: factoryd.ErrNotFound},
+		"broken-locked/broken":  {err: factoryd.ErrForbidden},
+	}
+	var mu sync.Mutex
+	var read []string
+	r.c.cfg.FluxReady = func(_ context.Context, namespace, name string) (bool, string, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		read = append(read, namespace+"/"+name)
+		f, ok := flux[namespace+"/"+name]
+		if !ok {
+			t.Errorf("read the Kustomization %s/%s", namespace, name)
+		}
+		return f.ok, f.msg, f.err
+	}
+	readOnce := []string{"demo-staging/demo-app", "demo-prod/demo-app", "broken-staging/broken", "broken-prod/broken", "broken-new/broken", "broken-locked/broken"}
+
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /projects = %d: %s", rec.Code, rec.Body)
+	}
+	for _, want := range []string{
+		"Environments: demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
+			"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</li>",
+		"Environments: broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
+			"broken-prod: deploy/prod (not ready: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
+			"broken-locked: deploy/locked (deploy state unreadable)</li>",
+		"Environments: waiting-staging: deploy/staging (no Flux Kustomization yet)</li>",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("/projects lacks %q", want)
+		}
+	}
+	equal(t, "the page's reads", read, readOnce)
+
+	read = nil
+	equal(t, "the tool's read", reads(t, r, g, "projects", `{}`), []string{"Projects (4):\n" +
+		"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none\n" +
+		"demo-app (demo-app/demo-app): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
+		"environments demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready), " +
+		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)\n" +
+		"broken (broken/broken): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
+		"environments broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing), " +
+		"broken-prod: deploy/prod (not ready: Flux has not reconciled it yet), broken-new: deploy/new (no Flux Kustomization yet), " +
+		"broken-locked: deploy/locked (deploy state unreadable)\n" +
+		"waiting (waiting/waiting): objects factory; process none; merge rule auto; not registered; GitHub export none; " +
+		"environments waiting-staging: deploy/staging (no Flux Kustomization yet)"})
+	equal(t, "the tool's reads", read, readOnce)
 }
 
 // The settings edits are gone: the file is the one place, and a new
