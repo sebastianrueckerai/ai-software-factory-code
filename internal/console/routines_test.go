@@ -21,7 +21,7 @@ import (
 // login of a pending Skip once, "" once undone; ran lists each Run now as
 // project/routine. runNow, when set, is the run a Run now leaves, which
 // the fake numbers after the newest and stores; without it a Run now
-// leaves no run.
+// leaves no run. A Run now leaves a pending skip, as the store does.
 type fakeRoutines struct {
 	mu     sync.Mutex
 	views  []factoryd.RoutineView
@@ -113,7 +113,7 @@ func (f *fakeRoutines) RunNow(_ context.Context, project, routine string) error 
 	if f.runs == nil {
 		f.runs = map[string][]factoryd.RoutineRun{}
 	}
-	run.Project, run.Routine, run.Run, run.Trigger = project, routine, 1, cmp.Or(run.Trigger, "run-now")
+	run.Project, run.Routine, run.Run, run.Trigger = project, routine, 1, cmp.Or(run.Trigger, factoryd.TriggerRunNow)
 	if runs := f.runs[key]; len(runs) > 0 {
 		run.Run = runs[0].Run + 1
 	}
@@ -196,12 +196,12 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-790", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 790, Source: factoryd.SourceRoutine})
 	ck, s := r.loggedIn(t)
 	const path = "/routines/ai-software-factory-code/weekly-bump/run"
-	note := func(run *factoryd.RoutineRun) string {
+	leaves := func(run factoryd.RoutineRun) func(string, string) (factoryd.RoutineRun, error) {
+		return func(string, string) (factoryd.RoutineRun, error) { return run, nil }
+	}
+	note := func(hook func(string, string) (factoryd.RoutineRun, error)) string {
 		t.Helper()
-		r.routines.runNow = nil
-		if run != nil {
-			r.routines.runNow = func(string, string) (factoryd.RoutineRun, error) { return *run, nil }
-		}
+		r.routines.runNow = hook
 		rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("run now = %d %s", rec.Code, rec.Body)
@@ -214,14 +214,24 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 		body = body[i+len(`<p class="note" role="status">`):]
 		return body[:strings.Index(body, "</p>")]
 	}
+	// laterCron is a Run now whose held run a cron run lands after
+	laterCron := func(project, routine string) (factoryd.RoutineRun, error) {
+		r.routines.mu.Lock()
+		defer r.routines.mu.Unlock()
+		key := project + "/" + routine
+		held := factoryd.RoutineRun{Project: project, Routine: routine, Run: r.routines.runs[key][0].Run + 1, Trigger: factoryd.TriggerRunNow,
+			Outcome: "held", Note: "held: #781 is still open"}
+		r.routines.runs[key] = append([]factoryd.RoutineRun{held}, r.routines.runs[key]...)
+		return factoryd.RoutineRun{Trigger: "cron", Outcome: "no change"}, nil
+	}
 
-	equal(t, "held", note(&factoryd.RoutineRun{Outcome: "held", Note: "held: #781 is still open"}), "Held: #781 is still open")
-	equal(t, "filed", note(&factoryd.RoutineRun{Outcome: "filed", TaskID: "t-790", Issue: 790}), "Filed #790 in Needs you")
-	equal(t, "skipped", note(&factoryd.RoutineRun{Outcome: "skipped", Note: "skipped once by sebastian"}), "Skipped once by sebastian")
-	equal(t, "no change", note(&factoryd.RoutineRun{Outcome: "no change"}), "No change")
+	equal(t, "held", note(leaves(factoryd.RoutineRun{Outcome: "held", Note: "held: #781 is still open"})), "Held: #781 is still open")
+	equal(t, "filed", note(leaves(factoryd.RoutineRun{Outcome: "filed", TaskID: "t-790", Issue: 790})), "Filed #790 in Needs you")
+	equal(t, "no change", note(leaves(factoryd.RoutineRun{Outcome: "no change"})), "No change")
+	equal(t, "behind a later cron run", note(laterCron), "Held: #781 is still open")
 	equal(t, "an earlier run's outcome", note(nil), "Filing…")
-	equal(t, "the run of another trigger", note(&factoryd.RoutineRun{Trigger: "cron", Outcome: "filed", TaskID: "t-790", Issue: 790}), "Filing…")
-	equal(t, "a run without its outcome", note(&factoryd.RoutineRun{}), "Filing…")
+	equal(t, "the run of another trigger", note(leaves(factoryd.RoutineRun{Trigger: "cron", Outcome: "filed", TaskID: "t-790", Issue: 790})), "Filing…")
+	equal(t, "a run without its outcome", note(leaves(factoryd.RoutineRun{})), "Filing…")
 
 	if len(r.routines.ran) != 7 {
 		t.Fatalf("ran %v", r.routines.ran)
@@ -234,18 +244,27 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	equal(t, "the events", got, []string{
 		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "held"),
 		"routine_run_now sf/code sebastian button 790 t-790 " + fmt.Sprintf(detail, "filed"),
-		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "skipped"),
 		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "no change"),
+		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "held"),
 		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "pending"),
 		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "pending"),
 		"routine_run_now sf/code sebastian button 0  " + fmt.Sprintf(detail, "pending"),
 	})
 
+	// a pending Skip once stays for the run it was set for
+	if rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/skip", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusOK {
+		t.Fatalf("skip = %d %s", rec.Code, rec.Body)
+	}
+	equal(t, "a Run now beside a skip", note(leaves(factoryd.RoutineRun{Outcome: "no change"})), "No change")
+	if by := r.routines.skips["ai-software-factory-code/weekly-bump"]; by != "sebastian" {
+		t.Fatalf("the Run now took the skip: %q", by)
+	}
+
 	before := r.events.count()
 	if rec := r.do(htmxPost("/routines/ai-software-factory-code/nightly/run", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusNotFound {
 		t.Fatalf("an unknown routine = %d %s", rec.Code, rec.Body)
 	}
-	if r.events.count() != before || len(r.routines.ran) != 7 {
+	if r.events.count() != before || len(r.routines.ran) != 8 {
 		t.Fatal("an unknown routine ran or left an event")
 	}
 }

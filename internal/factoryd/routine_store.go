@@ -14,6 +14,10 @@ import (
 // SourceRoutine is the source of a card a routine's run files.
 const SourceRoutine = "routine"
 
+// TriggerRunNow is the trigger of a member's Run now, the one run that
+// leaves a pending Skip once for the run it was set for.
+const TriggerRunNow = "run-now"
+
 // RoutineState is a routine's row in the store. Project is the project
 // file's stem, "" for the factory's own routines of policy.yaml.
 type RoutineState struct {
@@ -50,8 +54,8 @@ type RoutineStore interface {
 	SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error
 	// BeginRoutineRun writes run Runs+1 of r's routine and returns it with
 	// began true. A run of the same due returns that run with began false.
-	// A pending Skip once is consumed: the new run's outcome is "skipped"
-	// with the note "skipped once by <SkipBy>".
+	// A pending Skip once is consumed by any run but a Run now: the new
+	// run's outcome is "skipped" with the note "skipped once by <SkipBy>".
 	BeginRoutineRun(ctx context.Context, r RoutineRun) (run RoutineRun, began bool, err error)
 	// RoutineRunFiled records the card a run filed and leaves the run open
 	// until EndRoutineRun. ErrNotFound for a run that never began or ended.
@@ -159,8 +163,9 @@ func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun
 		return RoutineRun{}, false, err
 	}
 	outcome, note := "", ""
-	if st.SkipNext {
+	if st.SkipNext && r.Trigger != TriggerRunNow {
 		outcome, note = "skipped", "skipped once by "+st.SkipBy
+		st.SkipNext, st.SkipBy = false, ""
 	}
 	run, err := scanRoutineRun(tx.QueryRowContext(ctx, `INSERT INTO routine_runs (project, routine, run, due, trigger, outcome, note)
 		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (project, routine, due) DO NOTHING RETURNING `+routineRunColumns,
@@ -173,8 +178,8 @@ func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineRun
 	if err != nil {
 		return RoutineRun{}, false, err
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE routine_state SET runs = runs + 1, skip_next = false, skip_by = ''
-		WHERE project = $1 AND routine = $2`, r.Project, r.Routine); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE routine_state SET runs = runs + 1, skip_next = $3, skip_by = $4
+		WHERE project = $1 AND routine = $2`, r.Project, r.Routine, st.SkipNext, st.SkipBy); err != nil {
 		return RoutineRun{}, false, err
 	}
 	if err := tx.Commit(); err != nil {

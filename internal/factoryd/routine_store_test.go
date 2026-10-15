@@ -151,7 +151,8 @@ func routinePGStore(t *testing.T) *PGStore {
 func TestFakeStoreRoutineRuns(t *testing.T) { checkRoutineStore(t, newFakeStore()) }
 
 // A routine's runs are numbered from 1, begin once per due time, consume a
-// pending Skip once, end with their card and are found by it. The merge
+// pending Skip once (a Run now leaves it), end with their card and are
+// found by it. The merge
 // counters count per project, and the merge pass's cursor holds its place.
 func checkRoutineStore(t *testing.T, s routineCardStore) {
 	ctx := t.Context()
@@ -299,5 +300,24 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 	}
 	if st := state("", "drift"); st.SkipNext || st.SkipBy != "" {
 		t.Fatalf("an undone skip: %+v", st)
+	}
+
+	// a Run now begins unskipped and leaves the mark to the run it was set for
+	if err := s.SetRoutineSkip(ctx, "", "drift", true, "anna"); err != nil {
+		t.Fatal(err)
+	}
+	now, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due, Trigger: TriggerRunNow})
+	if err != nil || !ok || now.Run != 1 || now.Outcome != "" || now.Note != "" {
+		t.Fatalf("the Run now: %+v %v %v", now, ok, err)
+	}
+	if st := state("", "drift"); !st.SkipNext || st.SkipBy != "anna" || st.Runs != 1 {
+		t.Fatalf("the mark after a Run now: %+v", st)
+	}
+	next, ok, err := s.BeginRoutineRun(ctx, RoutineRun{Routine: "drift", Due: due.Add(time.Hour), Trigger: "cron"})
+	if err != nil || !ok || next.Run != 2 || next.Outcome != "skipped" || next.Note != "skipped once by anna" {
+		t.Fatalf("the cron run after the Run now: %+v %v %v", next, ok, err)
+	}
+	if st := state("", "drift"); st.SkipNext || st.SkipBy != "" || st.Runs != 2 {
+		t.Fatalf("the mark after the skipped run: %+v", st)
 	}
 }

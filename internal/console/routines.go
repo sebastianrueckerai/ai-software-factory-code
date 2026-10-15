@@ -101,15 +101,18 @@ func (c *Console) doRoutineRun(ctx context.Context, a actor, project, name strin
 
 // awaitRun is the run-now run of project's routine name numbered above
 // after once its outcome is in; false when none came within runNowWait.
+// It reads the newest five runs, as a cron or merges run may land after it.
 func (c *Console) awaitRun(ctx context.Context, project, name string, after int) (factoryd.RoutineRun, bool) {
 	for deadline := time.Now().Add(runNowWait); ; {
-		runs, err := c.cfg.Routines.Runs(ctx, project, name, 1)
+		runs, err := c.cfg.Routines.Runs(ctx, project, name, 5)
 		if err != nil {
 			log.Printf("console: the runs of routine %s of %s: %v", name, project, err)
 			return factoryd.RoutineRun{}, false
 		}
-		if len(runs) > 0 && runs[0].Run > after && runs[0].Trigger == "run-now" && runs[0].Outcome != "" {
-			return runs[0], true
+		if i := slices.IndexFunc(runs, func(run factoryd.RoutineRun) bool {
+			return run.Run > after && run.Trigger == factoryd.TriggerRunNow && run.Outcome != ""
+		}); i >= 0 {
+			return runs[i], true
 		}
 		if time.Now().After(deadline) {
 			return factoryd.RoutineRun{}, false

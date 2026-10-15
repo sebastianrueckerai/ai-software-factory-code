@@ -295,7 +295,7 @@ func (r *Routines) RunNow(ctx context.Context, project, routine string) error {
 	if err != nil {
 		return err
 	}
-	return r.Workflows.StartRoutineRun(ctx, RoutineRunInput{Project: key, Routine: routine, Trigger: "run-now", Due: r.Now()})
+	return r.Workflows.StartRoutineRun(ctx, RoutineRunInput{Project: key, Routine: routine, Trigger: TriggerRunNow, Due: r.Now()})
 }
 
 // Skip sets project's routine's Skip once for by, or with skip false
@@ -385,7 +385,11 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			}
 		} else if every := rt.MergesEvery(); every > 0 {
 			n := max(every-st.Merges, 1)
-			if st.SkipNext {
+			switch {
+			case st.SkipNext && st.Merges >= every:
+				// the pass's run takes the skip and keeps the remainder
+				n = every - st.Merges%every
+			case st.SkipNext:
 				n += every
 			}
 			view.NextWords = "after 1 more merge"

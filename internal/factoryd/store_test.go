@@ -889,7 +889,7 @@ func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun) (RoutineR
 	st, _ := s.RoutineState(ctx, r.Project, r.Routine)
 	st.Runs++
 	run := RoutineRun{Project: r.Project, Routine: r.Routine, Run: st.Runs, Due: r.Due, Started: time.Now(), Trigger: r.Trigger}
-	if st.SkipNext {
+	if st.SkipNext && r.Trigger != TriggerRunNow {
 		run.Outcome, run.Note = "skipped", "skipped once by "+st.SkipBy
 		st.SkipNext, st.SkipBy = false, ""
 	}

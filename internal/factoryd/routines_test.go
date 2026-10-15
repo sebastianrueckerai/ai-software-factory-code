@@ -446,6 +446,13 @@ func TestViews(t *testing.T) {
 		vs[1].NextWords != "after 26 more merges" {
 		t.Fatalf("skipped: %+v", vs)
 	}
+	// past the count the pass's run takes the skip and keeps 25 % 20 = 5
+	if err := store.SetRoutineMerges(ctx, "ai-software-factory-code", "audit", 25); err != nil {
+		t.Fatal(err)
+	}
+	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[1].NextWords != "after 15 more merges" {
+		t.Fatalf("skipped past the count: %q %v", vs[1].NextWords, err)
+	}
 
 	// linkshort's board shows the factory's template pass with its state,
 	// the skipped 06:03 run passed over
