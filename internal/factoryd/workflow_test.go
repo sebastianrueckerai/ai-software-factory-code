@@ -1383,6 +1383,48 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 	}
 }
 
+// A run restarted while the cap question waits takes its answer by the
+// same rule (versionSessionLadder): attempt 1 and a session that took no
+// number spent the 20 minutes, so the answer buys the 5 minute slice alone
+// and the next session runs as attempt 2; at the session cap it buys
+// attempt 4 with the slice. A run from before the gate bought an attempt
+// with the answer.
+func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned  bool
+		used    TaskUsage
+		attempt int
+		granted TaskUsage
+	}{
+		"time cap": {used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, attempt: 2,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute}},
+		"session cap": {used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 3}, attempt: 4,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 3, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}},
+		"time cap, before the gate": {pinned: true, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, attempt: 2,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}},
+	} {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.state = RunState{Status: "waiting-human", Question: capReached, Usage: tc.used}
+		h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].Attempt != tc.attempt {
+			t.Fatalf("%s: sessions = %+v, want one, attempt %d", name, h.sessions, tc.attempt)
+		}
+		if len(h.usage) != 2 || h.usage[0] != tc.granted {
+			t.Fatalf("%s: usage = %+v, want %+v recorded by the answer, then the session's", name, h.usage, tc.granted)
+		}
+	}
+}
+
 func TestWorkflowRepetitionTripClimbsTheLadder(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Findings: []string{"changed a.go"}}, pushed("s2", "c2"))

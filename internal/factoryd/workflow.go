@@ -1297,7 +1297,11 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			findings = answer
-			if t.v5 >= versionPersistUsage {
+			switch {
+			case t.v5 < versionPersistUsage:
+			case strings.HasPrefix(st.Question, capReached):
+				capAnswer()
+			default:
 				t.grant(&u)
 			}
 		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
@@ -1511,12 +1515,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
-		// started has no lines of its own.
+		// started has no lines of its own; a pushed one's go to
+		// verification, whose apply replaces them.
 		if !res.StartFailed {
-			own = res.Findings
-			if res.Outcome != OutcomePushed {
-				own = slices.Concat(res.Findings, t.handoverLines(res))
-			}
+			own = slices.Concat(res.Findings, t.handoverLines(res))
 		}
 		if dayCapped {
 			// it made calls before the cap refused one: an attempt
