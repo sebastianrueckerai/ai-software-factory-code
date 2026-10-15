@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -16,8 +18,12 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
@@ -1223,20 +1229,110 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 	}
 }
 
-// Histories recorded live on the cluster before versionSignalsDrained
-// replay without a nondeterminism error.
+// Histories recorded live on the cluster replay without a nondeterminism
+// error, and every activity input they record decodes into today's
+// activity of that name: a roll retries an activity in flight with the
+// input the old worker recorded. A deliberate retype rolls while no task
+// runs the activity; the histories it fails leave with it, and after the
+// roll a task's history that ran the activity takes their place:
+//
+//	kubectl exec -n platform deploy/temporal-admintools -- temporal workflow show --workflow-id task-<task> --output json > internal/factoryd/testdata/history-<task>-<what>.json
 func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/history-*.json")
 	if len(files) == 0 {
 		t.Fatal("no recorded histories")
 	}
+	params := activityParams()
 	for _, f := range files {
 		replayer := worker.NewWorkflowReplayer()
 		replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 		if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
 			t.Fatalf("%s: %v", f, err)
 		}
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		hist, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+		if err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		for _, bad := range undecodableInputs(hist, params) {
+			t.Errorf("%s: %s", f, bad)
+		}
 	}
+}
+
+// An audit recorded before audit-beside passed the pin where GateAudit now
+// takes the GateResults: in flight across that roll, it does not decode.
+func TestUndecodableInputsNamesARetypedArgument(t *testing.T) {
+	scheduled := func(id int64, args ...any) *historypb.HistoryEvent {
+		input, err := converter.GetDefaultDataConverter().ToPayloads(args...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &historypb.HistoryEvent{EventId: id, EventType: enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED,
+			Attributes: &historypb.HistoryEvent_ActivityTaskScheduledEventAttributes{ActivityTaskScheduledEventAttributes: &historypb.ActivityTaskScheduledEventAttributes{
+				ActivityType: &commonpb.ActivityType{Name: ActivityGateAudit}, Input: input}}}
+	}
+	pr := PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}
+	hist := &historypb.History{Events: []*historypb.HistoryEvent{
+		scheduled(5, "t1", pr, "c1", int64(656)),
+		scheduled(6, "t1", pr, "c1", GateResults{Pin: 656}),
+	}}
+
+	want := []string{"event 5: GateAudit argument 4 does not decode into factoryd.GateResults: unable to decode: json: cannot unmarshal number into Go value of type factoryd.GateResults"}
+	if got := undecodableInputs(hist, activityParams()); !slices.Equal(got, want) {
+		t.Fatalf("undecodable = %q, want %q", got, want)
+	}
+}
+
+// activityParams maps each activity RegisterActivities registers to the
+// types of its arguments, the parameters after the context.
+func activityParams() map[string][]reflect.Type {
+	reg := activityRegistry{}
+	(&Runner{}).RegisterActivities(reg)
+	params := map[string][]reflect.Type{}
+	for name, fn := range reg {
+		for i := 1; i < fn.NumIn(); i++ {
+			params[name] = append(params[name], fn.In(i))
+		}
+	}
+	return params
+}
+
+type activityRegistry map[string]reflect.Type
+
+func (r activityRegistry) RegisterActivityWithOptions(fn any, o activity.RegisterOptions) {
+	r[o.Name] = reflect.TypeOf(fn)
+}
+
+// undecodableInputs names each activity input hist schedules that the
+// worker would fail to decode on a retry: payload i into argument i
+// through the SDK's data converter, extra payloads ignored as the SDK
+// ignores them.
+func undecodableInputs(hist *historypb.History, params map[string][]reflect.Type) []string {
+	dc := converter.GetDefaultDataConverter()
+	var bad []string
+	for _, e := range hist.GetEvents() {
+		a := e.GetActivityTaskScheduledEventAttributes()
+		if a == nil {
+			continue
+		}
+		name := a.GetActivityType().GetName()
+		args, ok := params[name]
+		if !ok {
+			bad = append(bad, fmt.Sprintf("event %d: no activity %s is registered", e.GetEventId(), name))
+			continue
+		}
+		payloads := a.GetInput().GetPayloads()
+		for i, p := range payloads[:min(len(payloads), len(args))] {
+			if err := dc.FromPayload(p, reflect.New(args[i]).Interface()); err != nil {
+				bad = append(bad, fmt.Sprintf("event %d: %s argument %d does not decode into %s: %v", e.GetEventId(), name, i+1, args[i], err))
+			}
+		}
+	}
+	return bad
 }
 
 // providerHarness answers RunSession with results in order and records
