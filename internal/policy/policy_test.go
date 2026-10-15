@@ -678,6 +678,23 @@ func TestBounds(t *testing.T) {
 	if got := d.Bound("ModelReview"); got != 32*time.Minute {
 		t.Errorf("Bound(ModelReview) under supervisor_timeout 10m = %s, want 32m", got)
 	}
+	// the model review and the audit follow the parts their diff reads in
+	// (PartsBound): at supervisor_timeout 6m one part trips at 8m, two at
+	// 14m, three at Bound's 20m; parts change no other activity's
+	d.Limits.SupervisorTimeout = 6 * time.Minute
+	for _, tc := range []struct {
+		name  string
+		parts int
+		want  time.Duration
+	}{{"ModelReview", 1, 8 * time.Minute}, {"GateAudit", 2, 14 * time.Minute}, {"ModelReview", 3, 20 * time.Minute}, {"WaitChecks", 1, 10 * time.Minute}} {
+		if got := d.PartsBound(tc.name, tc.parts); got != tc.want {
+			t.Errorf("PartsBound(%s, %d) = %s, want %s", tc.name, tc.parts, got, tc.want)
+		}
+	}
+	// a review the policy bounds itself keeps that bound, whatever its parts
+	if b, err := Parse([]byte(valid + "bounds: {ModelReview: 900}\n")); err != nil || b.PartsBound("ModelReview", 1) != 15*time.Minute {
+		t.Errorf("PartsBound(ModelReview, 1) under bounds.ModelReview 900 = %s (%v), want 15m", b.PartsBound("ModelReview", 1), err)
+	}
 	d, err = Parse([]byte(valid + "bounds: {WaitChecks: 900, default: 60}\n"))
 	if err != nil {
 		t.Fatal(err)

@@ -65,7 +65,8 @@ type workflowHarness struct {
 	states      []string
 	state       RunState // what Reconcile reports; zero = a fresh task
 	finishAt    time.Time
-	escalated   []string   // Escalate reasons, in order
+	escalated   []string // Escalate reasons, in order
+	escalatedAt []time.Time
 	choices     [][]string // Escalate choices, in order
 	usage       []TaskUsage
 	logs        *lockedBuffer // the workflow's log
@@ -164,6 +165,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return GateDecision{}, nil
 		},
 		ActivityDropTrip: func(ctx context.Context, taskID string, trip GateTrip) error { return nil },
+		ActivityWithdrawQuestion: func(ctx context.Context, taskID, reason string, comment int64, why string) error {
+			return nil
+		},
 		ActivityAutoMergeNote: func(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
 			return nil
 		},
@@ -239,6 +243,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
+			h.escalatedAt = append(h.escalatedAt, h.env.Now())
 			h.choices = append(h.choices, choices)
 			return int64(600 + len(h.escalated)), h.escalateErr
 		})

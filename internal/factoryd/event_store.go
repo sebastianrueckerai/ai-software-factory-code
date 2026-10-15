@@ -70,6 +70,11 @@ const EventSessionSaid = "session_said"
 // when the agent offered any}.
 const EventQuestionAsked = "question_asked"
 
+// EventQuestionWithdrawn is factoryd's record of an escalation it
+// withdrew unanswered, the head it asked about gone back to the agent:
+// detail {"question", "comment", "reason"}.
+const EventQuestionWithdrawn = "question_withdrawn"
+
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is
 // owner/name, the project the event belongs to; TaskID and IssueNumber are

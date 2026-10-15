@@ -968,6 +968,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if why != "" {
 		rv.Note = "not reviewed: " + why
 	} else {
+		boundByParts(ctx, len(parts))
 		last, lastFindings := lastReview(earlier, parts)
 		first := reviewInput{
 			Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),

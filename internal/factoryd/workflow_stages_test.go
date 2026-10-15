@@ -409,12 +409,12 @@ func TestStagesRowIsInReviewWhileTheStageAwaitsTheReviewBesideTheChecks(t *testi
 	}
 }
 
-// The review beside the checks wait is supervised as the sequential
-// review is (roadmap 246): its trip during the checks wait, or one still
-// unread when the checks wait runs again after a human's answer, is kept
-// for the review stage, which asks the gate supervisor once it awaits the
-// review; the supervisor's cancel fails the task then, not at the
-// review's own end three hours in.
+// In a run from before versionBesideLadder the review beside the checks
+// wait is supervised as the sequential review is (roadmap 246): its trip
+// during the checks wait, or one still unread when the checks wait runs
+// again after a human's answer, is kept for the review stage, which asks
+// the gate supervisor once it awaits the review; the supervisor's cancel
+// fails the task then, not at the review's own end three hours in.
 func TestStagesReviewBesideTheChecksKeepsItsTripsForTheStage(t *testing.T) {
 	cancel := GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"}
 	for _, tc := range []struct {
@@ -439,6 +439,7 @@ func TestStagesReviewBesideTheChecksKeepsItsTripsForTheStage(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
 			g.onSessions(pushed("s1", "c1"))
 			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 			tc.setup(g)
@@ -491,10 +492,11 @@ func TestStagesEscalatedReviewBesideTheChecksRunsAgainAfterTheAnswer(t *testing.
 // it, while the next head's checks wait runs beside that head's review,
 // names the cancelled run, ModelReview-1 (versionTripRouting): it is
 // dropped at 30 min, its alert resolved, and the next review approves at
-// 3h20m. A run from before the change routes the trip by the activity's
-// name, keeps it for the next head's review and, once the review stage
-// awaits that review at 40 min, acts on it there: the supervisor's
-// cancel fails the task.
+// 3h20m. A run from before the change (and so from before
+// versionBesideLadder) routes the trip by the activity's name, keeps it
+// for the next head's review and, once the review stage awaits that
+// review at 40 min, acts on it there: the supervisor's cancel fails the
+// task.
 func TestStagesLateTripOfACancelledReviewReachesNoLaterReview(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -510,6 +512,9 @@ func TestStagesLateTripOfACancelledReviewReachesNoLaterReview(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
 			g.env.OnGetVersion("trip-routing", workflow.DefaultVersion, versionTripRouting).Return(tc.version)
+			if tc.version == workflow.DefaultVersion {
+				g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
+			}
 			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
@@ -541,6 +546,7 @@ func TestStagesLateTripOfACancelledReviewReachesNoLaterReview(t *testing.T) {
 func TestStagesReviewParallelRunLeavesTheReviewsTripsAndTheRow(t *testing.T) {
 	g := besideTheChecks(t, time.Hour)
 	g.env.OnGetVersion("review-parallel", workflow.DefaultVersion, versionReviewSupervised).Return(versionReviewParallel)
+	g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
 	gates := g.onSetGate()
 	calls := g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "x"})
 	g.tripAfter(15*time.Minute, ActivityModelReview, 2)
@@ -1369,15 +1375,17 @@ func TestStagesRedChecksCancelTheAuditBesideThem(t *testing.T) {
 	}
 }
 
-// The review and the audit beside the checks each keep their own trips
-// for their stage (versionTripRouting): the review's at 15 min and the
-// audit's at 16 min both come during the checks wait; the review stage
-// asks the supervisor about the review's alone at 20 min, when it awaits
-// the review, and lets it wait; the audit stage asks about the audit's at
-// 30 min, once the review answered, and the supervisor's cancel fails the
-// task then, not at the audit's own end three hours in.
+// In a run from before versionBesideLadder the review and the audit
+// beside the checks each keep their own trips for their stage
+// (versionTripRouting): the review's at 15 min and the audit's at 16 min
+// both come during the checks wait; the review stage asks the supervisor
+// about the review's alone at 20 min, when it awaits the review, and lets
+// it wait; the audit stage asks about the audit's at 30 min, once the
+// review answered, and the supervisor's cancel fails the task then, not
+// at the audit's own end three hours in.
 func TestStagesTripsOfTheGatesBesideTheChecksReachOnlyTheirRuns(t *testing.T) {
 	g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) { g.reviewDelay, g.auditDelay = 30*time.Minute, 3*time.Hour })
+	g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
 	decisions := []GateDecision{{Action: ActionWait, Diagnosis: "the review model is slow"}, {Action: ActionCancel, Diagnosis: "the audit model does not answer"}}
 	var asked []string
 	g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).Return(
@@ -1397,6 +1405,259 @@ func TestStagesTripsOfTheGatesBesideTheChecksReachOnlyTheirRuns(t *testing.T) {
 	}
 	if end := g.finishAt.Sub(g.started); end != 30*time.Minute {
 		t.Fatalf("finished %s after the start, want 30m0s", end)
+	}
+}
+
+// Each running gate has its own supervision (versionBesideLadder): with
+// checks of 20 min, a review of 30 and an audit of 3 h, and a supervisor
+// that answers 10 min after it is asked, the review's trip at 5 min is
+// asked about at 5, the checks wait's own at 7 while the review's call
+// still runs, and the audit's at 8: none waits for another run's answer,
+// nor for its stage. All three wait, and the approval is asked once the
+// audit answered at 3 h. A run from before the change asks about the
+// checks' at 7 and keeps the others for their stages: the review's at 20,
+// when the checks are green, the audit's at 30, when the review answered.
+func TestStagesGatesBesideTheChecksAreSupervisedWhenTheyTrip(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		ladder workflow.Version
+		want   []string // the supervisor's calls: run, when asked, may wait, may retry
+	}{
+		{"each run on its own", versionBesideLadder,
+			[]string{"ModelReview-1 at 5m0s [true,true]", "WaitChecks-1 at 7m0s [true,true]", "GateAudit-1 at 8m0s [true,true]"}},
+		{"a run from before the change", workflow.DefaultVersion,
+			[]string{"WaitChecks-1 at 7m0s [true,true]", "ModelReview-1 at 20m0s [true,true]", "GateAudit-1 at 30m0s [true,true]"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) { g.reviewDelay, g.auditDelay = 30*time.Minute, 3*time.Hour })
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			var asked []string
+			g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).After(10 * time.Minute).Return(
+				func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
+					// the answer comes 10 min after the call
+					at := g.env.Now().Sub(g.started) - 10*time.Minute
+					asked = append(asked, fmt.Sprintf("%s at %s %s", in.Trip.ActivityID, at, jsonOf([]bool{in.CanWait, in.CanRetry})))
+					return GateDecision{Action: ActionWait, Diagnosis: "slow"}, nil
+				})
+			g.tripAfter(5*time.Minute, ActivityModelReview, 1)
+			g.tripAfter(7*time.Minute, ActivityWaitChecks, 2)
+			g.tripAfter(8*time.Minute, ActivityGateAudit, 3)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(asked, tc.want) {
+				t.Fatalf("supervisor asked %q, want %q", asked, tc.want)
+			}
+			if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 3*time.Hour {
+				t.Fatalf("approval asked at %v, want once at 3h0m0s", g.requested)
+			}
+		})
+	}
+}
+
+// A beside gate's cancel fails the task at once, while the checks wait
+// runs (versionBesideLadder): with checks of 20 min, a review of 3 h and
+// an audit of 4 h, a trip of either at 15 min fails the task at 15 min
+// with the supervisor's diagnosis. A run from before the change fails it
+// when the gate's stage takes the trip: the review's at 20 min, when the
+// checks are green, the audit's at 3 h, when the review answered.
+func TestStagesBesideGatesCancelFailsTheTaskAtOnce(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		activity string
+		ladder   workflow.Version
+		end      time.Duration
+	}{
+		{"the review's", ActivityModelReview, versionBesideLadder, 15 * time.Minute},
+		{"the audit's", ActivityGateAudit, versionBesideLadder, 15 * time.Minute},
+		{"the review's, before the change", ActivityModelReview, workflow.DefaultVersion, 20 * time.Minute},
+		{"the audit's, before the change", ActivityGateAudit, workflow.DefaultVersion, 3 * time.Hour},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) { g.reviewDelay, g.auditDelay = 3*time.Hour, 4*time.Hour })
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			g.onGateSupervisor(GateDecision{Action: ActionCancel, Diagnosis: "the model does not answer"})
+			g.tripAfter(15*time.Minute, tc.activity, 1)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "failed" || g.finals[0][1] != "the gate supervisor cancelled "+tc.activity+": the model does not answer" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if end := g.finishAt.Sub(g.started); end != tc.end {
+				t.Fatalf("finished %s after the start, want %s", end, tc.end)
+			}
+		})
+	}
+}
+
+// A beside gate's escalation asks the human at once, and red checks that
+// send the head back withdraw the question (versionBesideLadder): the
+// review's (or the audit's) trip at 15 min escalates then, its call
+// cancelled; the checks are red at 20 min, so the question, comment 601,
+// is withdrawn then because the checks failed, and the second session
+// starts with their findings. The next head's gates run beside its checks
+// from 20 min, and its approval is asked at 3h20m, after its 3-hour
+// review and audit. A run from before the change keeps the trip for the
+// stage, which the red checks never reach: no question, none withdrawn.
+func TestStagesRedChecksWithdrawTheQuestionOfAGateBesideThem(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		activity string
+		ladder   workflow.Version
+		asked    []time.Duration
+	}{
+		{"the review's", ActivityModelReview, versionBesideLadder, []time.Duration{15 * time.Minute}},
+		{"the audit's", ActivityGateAudit, versionBesideLadder, []time.Duration{15 * time.Minute}},
+		{"before the change", ActivityModelReview, workflow.DefaultVersion, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.reviewDelay, g.auditDelay = 3*time.Hour, 3*time.Hour })
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c1").After(20*time.Minute).
+				Return(ChecksResult{State: ChecksFailure, Findings: []string{"red 1"}}, nil)
+			g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", "c2").After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+			g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the model hangs", Recommendation: "look at the gateway"})
+			var withdrawn []string
+			g.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID, reason string, comment int64, why string) error {
+					withdrawn = append(withdrawn, fmt.Sprintf("%d at %s because %s: %s", comment, g.env.Now().Sub(g.started), why, reason))
+					return nil
+				})
+			g.tripAfter(15*time.Minute, tc.activity, 1)
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			var asked []time.Duration
+			for _, at := range g.escalatedAt {
+				asked = append(asked, at.Sub(g.started))
+			}
+			if !slices.Equal(asked, tc.asked) {
+				t.Fatalf("escalated at %v, want %v", asked, tc.asked)
+			}
+			var want []string
+			if tc.asked != nil {
+				reason := "The gate supervisor stopped " + tc.activity + " (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
+				if !slices.Equal(g.escalated, []string{reason}) {
+					t.Fatalf("escalations = %q, want %q", g.escalated, reason)
+				}
+				want = []string{"601 at 20m0s because the checks failed: " + reason}
+			}
+			if !slices.Equal(withdrawn, want) {
+				t.Fatalf("withdrawn %q, want %q", withdrawn, want)
+			}
+			if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) {
+				t.Fatalf("sessions = %+v", g.sessions)
+			}
+			if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || g.requested[0].Sub(g.started) != 200*time.Minute {
+				t.Fatalf("approvals %+v asked at %v, want one on c2 at 3h20m0s", g.approvals, g.requested)
+			}
+		})
+	}
+}
+
+// Green checks hand a beside gate's question to its stage
+// (versionBesideLadder): the review's trip at 15 min escalates then, and
+// the review stage, once the checks are green at 20 min, waits for the
+// answer to that question, asked once; the answer reviews the head again,
+// sequentially, for 3 h. An answer during the checks wait (at 17 min) is
+// the stage's at 20 min, its quiet window ending at 20m30s; one after
+// them (at 1 h) ends it at 1h0m30s. A run from before the change asks at
+// 20 min, when the stage takes the trip.
+func TestStagesGreenChecksHandTheQuestionToItsStage(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		ladder    workflow.Version
+		answer    time.Duration
+		escalated time.Duration
+		approval  time.Duration
+	}{
+		{"answered during the checks wait", versionBesideLadder, 17 * time.Minute, 15 * time.Minute, 3*time.Hour + 20*time.Minute + answerQuiet},
+		{"answered after them", versionBesideLadder, time.Hour, 15 * time.Minute, 4*time.Hour + answerQuiet},
+		{"a run from before the change", workflow.DefaultVersion, time.Hour, 20 * time.Minute, 4*time.Hour + answerQuiet},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideTheChecks(t, 3*time.Hour)
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			g.tripAfter(15*time.Minute, ActivityModelReview, 1)
+			g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+			g.signalAfter(tc.answer, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 700})
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if len(g.escalatedAt) != 1 || g.escalatedAt[0].Sub(g.started) != tc.escalated {
+				t.Fatalf("escalated at %v, want once at %s", g.escalatedAt, tc.escalated)
+			}
+			if last := g.reviewGates[len(g.reviewGates)-1]; len(g.reviewGates) != 2 || !last.ChecksPassed || last.Beside {
+				t.Fatalf("review gates %+v: want the second review after the green checks, not beside them", g.reviewGates)
+			}
+			if len(g.requested) != 1 || g.requested[0].Sub(g.started) != tc.approval {
+				t.Fatalf("approval requested %v, want once at %s", g.requested, tc.approval)
+			}
+		})
+	}
+}
+
+// Green checks keep a beside gate's ladder (versionBesideLadder): the
+// review's first trip at 15 min is asked about then and waits; the checks
+// are green at 20 min, and the review stage takes the review's second
+// trip at 25 min as its run's second, its wait spent: the supervisor may
+// only retry, and its cancel fails the task at 25 min. A supervisor call
+// still running when the checks end is the stage's: the review's trip at
+// 18 min starts a 5-min call, and its cancel at 23 min fails the task
+// then. A run from before the change asks about either first trip at 20
+// min, when the stage takes it, the call's cancel failing the task at 25.
+func TestStagesGreenChecksKeepTheBesideGatesLadder(t *testing.T) {
+	wait, cancel := GateDecision{Action: ActionWait, Diagnosis: "slow"}, GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"}
+	for _, tc := range []struct {
+		name      string
+		ladder    workflow.Version
+		trips     []time.Duration
+		call      time.Duration // how long the supervisor takes to answer
+		decisions []GateDecision
+		want      []string // the supervisor's calls: when asked, may wait, may retry
+		end       time.Duration
+	}{
+		{"its wait spent", versionBesideLadder, []time.Duration{15 * time.Minute, 25 * time.Minute}, 0, []GateDecision{wait, cancel},
+			[]string{"15m0s [true,true]", "25m0s [false,true]"}, 25 * time.Minute},
+		{"its wait spent, before the change", workflow.DefaultVersion, []time.Duration{15 * time.Minute, 25 * time.Minute}, 0, []GateDecision{wait, cancel},
+			[]string{"20m0s [true,true]", "25m0s [false,true]"}, 25 * time.Minute},
+		{"its call running", versionBesideLadder, []time.Duration{18 * time.Minute}, 5 * time.Minute, []GateDecision{cancel},
+			[]string{"18m0s [true,true]"}, 23 * time.Minute},
+		{"its call running, before the change", workflow.DefaultVersion, []time.Duration{18 * time.Minute}, 5 * time.Minute, []GateDecision{cancel},
+			[]string{"20m0s [true,true]"}, 25 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := besideTheChecks(t, time.Hour)
+			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			var asked []string
+			g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).After(tc.call).Return(
+				func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {
+					asked = append(asked, fmt.Sprintf("%s %s", g.env.Now().Sub(g.started)-tc.call, jsonOf([]bool{in.CanWait, in.CanRetry})))
+					return tc.decisions[min(len(asked), len(tc.decisions))-1], nil
+				})
+			for i, at := range tc.trips {
+				g.tripAfter(at, ActivityModelReview, int64(i+1))
+			}
+			g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := g.run(t); final != "failed" || g.finals[0][1] != "the gate supervisor cancelled ModelReview: the review model does not answer" {
+				t.Fatalf("final = %q, finals %v", final, g.finals)
+			}
+			if !slices.Equal(asked, tc.want) {
+				t.Fatalf("supervisor asked %q, want %q", asked, tc.want)
+			}
+			if end := g.finishAt.Sub(g.started); end != tc.end {
+				t.Fatalf("finished %s after the start, want %s", end, tc.end)
+			}
+		})
 	}
 }
 

@@ -103,6 +103,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReportMergeRetriesExhausted: r.ReportMergeRetriesExhausted,
 		ActivitySuperviseGate:               r.SuperviseGate,
 		ActivityDropTrip:                    r.DropTrip,
+		ActivityWithdrawQuestion:            r.WithdrawQuestion,
 		ActivityAutoMergeNote:               r.AutoMergeNote,
 		ActivityRequestInfo:                 r.RequestInfo,
 		ActivityCloseNotReproduced:          r.CloseNotReproduced,

@@ -80,8 +80,13 @@ func (t *taskRun) stages(commit string) verdict {
 	v := t.runStages(commit)
 	// no gate beside the checks outlives the pass: one still running when
 	// the pass ends (findings sent back, the task's end) is cancelled
-	// before its findings land anywhere
-	t.cancelBeside()
+	// before its findings land anywhere, and a question its escalation
+	// asked is withdrawn when the head goes back (the task's end closes it)
+	why := ""
+	if v.final == "" {
+		why = headBack
+	}
+	t.cancelBeside(why)
 	if t.checkedRead >= versionCheckedHead {
 		// nor a checked head: a later pass reads its own head's checks
 		t.checkedHead = ""
@@ -166,6 +171,9 @@ func (t *taskRun) runStages(commit string) verdict {
 			}
 		}
 		if v, stop := t.onFindings(s, findings, &capped, &card); stop {
+			if s.Name == policy.StageChecks && v.final == "" {
+				t.cancelBeside(checksFailed)
+			}
 			return v
 		}
 		if s.Name == policy.StageReview && t.adjudicated >= versionAdjudicated {
@@ -437,7 +445,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 				t.rerunHead = *head
 				// the re-run made a new head: the gates beside the old
 				// one are cancelled, the new head runs them sequentially
-				t.cancelBeside()
+				t.cancelBeside(checksFailed)
 				return t.runStage(name, head, g, review)
 			}
 		}
@@ -522,13 +530,26 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 // besideRun is a gate scheduled beside the checks wait, by its stage: the
 // model review (versionReviewParallel) or the audit (versionAuditBeside).
 // head is the commit it reads, the one the checks stage was waiting on
-// when it scheduled the call at since.
+// when it scheduled the call at since. asked is the escalation its gate
+// supervisor asked a human while the checks wait ran, comment its issue
+// comment (versionBesideLadder); "" for none.
 type besideRun struct {
-	stage string
-	head  string
-	since time.Time
+	stage   string
+	head    string
+	since   time.Time
+	asked   string
+	comment int64
 	*gateRun
 }
+
+// checksFailed and headBack are why a question a gate beside the checks
+// asked is withdrawn (versionBesideLadder): red checks, or another
+// stage's findings or a change request, sent the head it was asked on
+// back to the agent.
+const (
+	checksFailed = "the checks failed"
+	headBack     = "the head went back to the agent"
+)
 
 // scheduleBeside starts the review and the audit beside the checks wait
 // on head, in their stages' order, under one rule: only the pinned
@@ -566,9 +587,9 @@ func (t *taskRun) scheduleBeside(head string, g *GateResults) {
 }
 
 // keepTrip keeps a gate trip of a gate beside the checks wait, while it
-// runs, for its stage, which supervises it (versionReviewSupervised); any
-// other trip that is not the watched run's is stale, its run ended, and
-// is dropped.
+// runs, for its supervision: its stage's (versionReviewSupervised), or
+// the next wait's at once (versionBesideLadder); any other trip that is
+// not the watched run's is stale, its run ended, and is dropped.
 func (t *taskRun) keepTrip(trip GateTrip) {
 	for _, f := range t.beside {
 		if f.owns(trip) && !f.future.IsReady() {
@@ -583,15 +604,21 @@ func (t *taskRun) keepTrip(trip GateTrip) {
 // scheduled beside the checks wait on the same head is awaited; any other
 // head — one the checks re-run made, or a run from before the change —
 // runs the gate sequentially after the checks, cancelling a call still
-// beside an older head. A human's answer to the awaited call's escalation
+// beside an older head. A human's answer to the awaited call's escalation,
+// or to the one it asked while the checks wait ran (versionBesideLadder),
 // runs the gate sequentially too, as gateActivity runs a gate again.
 func (t *taskRun) besideGate(stage, gate, head string, out any, activity string, args ...any) (verdict, bool, error) {
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.stage == stage }); i >= 0 {
 		f := t.beside[i]
 		t.beside = slices.Delete(t.beside, i, i+1)
-		if f.head != head {
-			t.stopBeside(f)
-		} else {
+		switch {
+		case f.head != head:
+			t.stopBeside(checksFailed, f)
+		case f.asked != "":
+			if v, stop := t.besideAnswered(f); stop {
+				return v, true, nil
+			}
+		default:
 			v, decided, err := t.awaitBeside(f, gate, out)
 			if !decided || v.escalate == "" {
 				return v, decided, err
@@ -602,6 +629,35 @@ func (t *taskRun) besideGate(stage, gate, head string, out any, activity string,
 		}
 	}
 	return t.gateActivity(true, reviewOptions(), out, activity, args...)
+}
+
+// askBeside asks the human at once what the gate supervisor's escalation
+// of run, a gate beside the checks wait, puts (versionBesideLadder): the
+// gate's call is cancelled, as an escalation cancels a sequential gate's,
+// and the checks wait goes on. Green checks hand the question to the
+// gate's stage (besideAnswered); a head that goes back withdraws it
+// (stopBeside). stop: the question could not be asked.
+func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
+	f := t.beside[slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.gateRun == run })]
+	run.cancel()
+	_ = run.future.Get(t.ctx, nil)
+	t.dropTrips(run.trips...)
+	run.trips = nil
+	if err := t.ask(reason, nil); err != nil {
+		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
+	}
+	f.asked, f.comment = reason, t.escalation
+	return verdict{}, false
+}
+
+// besideAnswered waits for the answer to f's question, asked while the
+// checks wait ran (askBeside), as gateEscalated waits for one: asked
+// again when a later escalation took the answers since.
+func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
+	if f.comment != t.escalation {
+		return t.gateEscalated(f.asked)
+	}
+	return t.gateAnswered(t.awaitAnswer(escalationQuestion(f.asked), nil))
 }
 
 // awaitBeside waits for a gate scheduled beside the checks wait as watch
@@ -650,23 +706,30 @@ func (t *taskRun) awaitBeside(f *besideRun, gate string, out any) (verdict, bool
 }
 
 // cancelBeside cancels every gate still beside a checks wait (stopBeside).
-func (t *taskRun) cancelBeside() {
+func (t *taskRun) cancelBeside(why string) {
 	runs := t.beside
 	t.beside = nil
-	t.stopBeside(runs...)
+	t.stopBeside(why, runs...)
 }
 
 // stopBeside cancels the calls of runs and waits for them to end: no
 // review comment lands on a head that goes back to the agent, and no
 // call outlives the pass that scheduled it. The trips kept for them are
-// dropped.
-func (t *taskRun) stopBeside(runs ...*besideRun) {
+// dropped, and a question one's escalation asked is withdrawn for why
+// (versionBesideLadder), none for "": the task's end closes it.
+func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 	for _, f := range runs {
 		f.cancel()
 	}
 	for _, f := range runs {
 		_ = f.future.Get(t.ctx, nil)
 		t.dropTrips(f.trips...)
+		if f.asked == "" || why == "" {
+			continue
+		}
+		if err := workflow.ExecuteActivity(t.short, ActivityWithdrawQuestion, t.taskID, f.asked, f.comment, why).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("withdraw the question", "task", t.taskID, "error", err)
+		}
 	}
 }
 

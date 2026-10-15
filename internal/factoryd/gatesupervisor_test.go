@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -393,6 +394,44 @@ func TestDropTripJudgesTheAlertAsAnEndedAttempt(t *testing.T) {
 	if a.Verdict != VerdictNoise || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil || a.Detail["action"] != "" ||
 		a.Detail["diagnosis"] != "the attempt ended before the supervisor looked" || len(c.model.chats) != 0 {
 		t.Fatalf("alert = %+v after %d model calls", a, len(c.model.chats))
+	}
+}
+
+// WithdrawQuestion withdraws a beside gate's question when the head it
+// was asked on went back: the task is in review again, on the issue too,
+// a comment there says why no answer is needed, and the question_withdrawn
+// row and the timeline step carry the question, its comment and why. A
+// second call, the task in review already, leaves the state as it is.
+func TestWithdrawQuestionTellsTheIssueAndTheCard(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/waiting-human"}}}
+	r, store, objects := newActivityRunner(t, withStatus(prTask, "waiting-human"), fj)
+	rows := &fakeEventRecorder{}
+	r.timeline.Events = rows
+	reason := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs\nRecommendation: look at the gateway"
+	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(701), checksFailed); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || !slices.Equal(fj.labels[4], []string{"agent", "state/in-review"}) {
+		t.Fatalf("status %q, labels %v; want in-review on both", got.Status, fj.labels[4])
+	}
+	comment := "factoryd: task t1 withdraws its question above because the checks failed. It needs no answer."
+	if !slices.Equal(fj.comments, []string{comment}) {
+		t.Fatalf("comments = %q, want %q", fj.comments, comment)
+	}
+	question := "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs"
+	want := []Event{{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionWithdrawn, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": question, "comment": int64(701), "reason": "the checks failed"}}}
+	if !reflect.DeepEqual(rows.rows, want) {
+		t.Fatalf("rows = %+v, want %+v", rows.rows, want)
+	}
+	if step := timelineStep(t, objects, "t1", "question_withdrawn"); step["question"] != question || step["comment"] != 701.0 || step["reason"] != "the checks failed" {
+		t.Fatalf("question_withdrawn step = %v", step)
+	}
+	if _, err := execActivity(t, r, ActivityWithdrawQuestion, "t1", reason, int64(701), checksFailed); err != nil {
+		t.Fatalf("a second call: %v", err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "in-review" || len(fj.comments) != 2 {
+		t.Fatalf("status %q after %d comments, want in-review after 2", got.Status, len(fj.comments))
 	}
 }
 

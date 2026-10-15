@@ -78,10 +78,10 @@ type point struct {
 // status rows, its timeline's steps and its model calls: a status row
 // opens the run its status names, a session's start opens a building or
 // planning run (its attempt and model on the run, or on the run the
-// status row just opened), the session's end, a check, a review and a
-// question are notes on the run they fall in, a stall on the provider a
-// note inside the run (the card's state did not change). The last run
-// ends at the card's end, or now.
+// status row just opened), the session's end, a check, a review, a
+// question and its withdrawal are notes on the run they fall in, a stall
+// on the provider a note inside the run (the card's state did not
+// change). The last run ends at the card's end, or now.
 func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, calls []policy.ModelCall, now time.Time) []run {
 	var pts []point
 	for _, e := range events {
@@ -94,6 +94,10 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 		case factoryd.EventQuestionAsked:
 			q, _ := e.Detail["question"].(string)
 			pts = append(pts, point{at: e.At, order: 1, note: "asked: " + strings.TrimSpace(q)})
+		case factoryd.EventQuestionWithdrawn:
+			q, _ := e.Detail["question"].(string)
+			why, _ := e.Detail["reason"].(string)
+			pts = append(pts, point{at: e.At, order: 1, note: "withdrawn because " + why + ": " + strings.TrimSpace(q)})
 		}
 	}
 	for _, m := range steps {

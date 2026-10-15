@@ -457,6 +457,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
 	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
 	run.podWait = workflow.GetVersion(ctx, "pod-wait", workflow.DefaultVersion, versionPodWait)
+	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -881,6 +882,19 @@ const (
 	// waited on (notStarted). A run from before the change takes it as no
 	// push, a plan's or a split's as no plan, and fails a report task's.
 	versionPodWait workflow.Version = 1
+	// versionBesideLadder (change id "beside-ladder", roadmap 246): each
+	// running gate has its own supervision. A trip of a gate beside the
+	// checks wait (the review, the audit) is supervised when it comes,
+	// beside the checks wait's own trips, each run with its own supervisor
+	// call (watchRuns): the supervisor's wait and retry act at once, its
+	// cancel fails the task at once, and its escalation asks the human at
+	// once while the checks wait goes on (askBeside). Red checks, or any
+	// other return of the head to the agent, withdraw that question, on
+	// the card and the issue; green checks hand it to the gate's stage,
+	// which waits for the answer and runs the gate again (besideAnswered).
+	// A run from before the change keeps a beside gate's trips for its
+	// stage.
+	versionBesideLadder workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -972,6 +986,7 @@ type taskRun struct {
 	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
 	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
+	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -2191,7 +2206,12 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 // change request back to the agent), else the task is in review again and
 // the gate runs again.
 func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
-	final, why, changes := t.awaitHuman(reason, escalationQuestion(reason), nil)
+	return t.gateAnswered(t.awaitHuman(reason, escalationQuestion(reason), nil))
+}
+
+// gateAnswered goes on from the human's answer to a gate's escalation, as
+// gateEscalated describes.
+func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bool) {
 	switch {
 	case final != "":
 		return verdict{final: final, reason: why}, true
@@ -2238,8 +2258,13 @@ func (t *taskRun) startGate(opts workflow.ActivityOptions, activity string, args
 }
 
 // watchRun waits for run as watch describes; supervised: it takes the gate
-// supervisor's trips of run, those kept for it first.
+// supervisor's trips of run, those kept for it first, and from
+// versionBesideLadder on those of the gates beside the checks wait too
+// (watchRuns).
 func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (verdict, bool, error) {
+	if supervised && t.besideLadder >= versionBesideLadder {
+		return t.watchRuns(terminal, run, out)
+	}
 	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
 	var asking workflow.Future // the supervisor's call on trip (versionGateSupervisorRace)
 	var trip GateTrip
@@ -2305,9 +2330,97 @@ func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (ve
 	}
 }
 
+// watchRuns waits for run as watchRun does, from versionBesideLadder on:
+// run and each gate still running beside the checks wait have their own
+// supervision, a trip asked about when it comes in its run's own
+// supervisor call, so no run's trip waits for another run's answer. A
+// beside gate's wait and retry act on it at once and its cancel ends the
+// task, as run's do; its escalation asks the human at once while run goes
+// on (askBeside). A beside gate's answer that comes after its call ended
+// changes nothing, as run's (ruling 171).
+func (t *taskRun) watchRuns(terminal bool, run *gateRun, out any) (verdict, bool, error) {
+	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
+	for {
+		runs := []*gateRun{run}
+		for _, f := range t.beside {
+			if f.gateRun != run && f.asked == "" && !f.future.IsReady() {
+				runs = append(runs, f.gateRun)
+			}
+		}
+		done, kept := false, false
+		var answered *gateRun
+		sel := workflow.NewSelector(t.ctx)
+		sel.AddFuture(run.future, func(workflow.Future) { done = true })
+		if terminal {
+			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
+				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
+			}
+		}
+		for _, r := range runs {
+			if r.asking != nil {
+				sel.AddFuture(r.asking, func(workflow.Future) { answered = r })
+			}
+			kept = kept || r.asking == nil && len(r.trips) > 0
+		}
+		if kept {
+			// a trip kept for a run is taken at once
+			sel.AddDefault(func() {})
+		} else {
+			sel.AddReceive(trips, func(workflow.ReceiveChannel, bool) {})
+		}
+		sel.Select(t.ctx)
+		if done {
+			return verdict{}, false, run.future.Get(t.ctx, out)
+		}
+		if terminal {
+			if final, reason, ok := t.decided(); ok {
+				run.cancel()
+				_ = run.future.Get(t.ctx, nil)
+				return verdict{final: final, reason: reason}, true, nil
+			}
+		}
+		if answered != nil {
+			d := t.gateAnswer(answered.asking)
+			answered.asking = nil
+			if answered != run && answered.future.IsReady() {
+				continue
+			}
+			v, stop := t.actOnGate(answered.trip, d, answered)
+			if stop && answered != run && v.escalate != "" {
+				v, stop = t.askBeside(answered, v.escalate)
+			}
+			if stop {
+				run.cancel()
+				_ = run.future.Get(t.ctx, nil)
+				return v, true, nil
+			}
+			continue
+		}
+		for _, r := range runs {
+			if r.asking == nil && len(r.trips) > 0 {
+				r.trip, r.trips = r.trips[0], r.trips[1:]
+				r.asking = t.askGate(r.trip, r)
+			}
+		}
+		var trip GateTrip
+		for trips.ReceiveAsync(&trip) {
+			i := slices.IndexFunc(runs, func(r *gateRun) bool { return r.owns(trip) })
+			switch {
+			case i < 0:
+				t.keepTrip(trip)
+			case runs[i].asking != nil:
+				runs[i].trips = append(runs[i].trips, trip)
+			default:
+				runs[i].trip, runs[i].asking = trip, t.askGate(trip, runs[i])
+			}
+		}
+	}
+}
+
 // gateRun is one run of a long gate's activity: the call, the trips kept
 // for it while the workflow awaited another activity (a gate beside the
-// checks wait), and what it used of the gate supervisor.
+// checks wait) or while its supervisor call ran, that call on trip
+// (watchRuns), and what it used of the gate supervisor.
 type gateRun struct {
 	activity        string
 	opts            workflow.ActivityOptions
@@ -2315,6 +2428,8 @@ type gateRun struct {
 	future          workflow.Future
 	cancel          workflow.CancelFunc
 	trips           []GateTrip
+	asking          workflow.Future
+	trip            GateTrip
 	waited, retried bool
 }
 
@@ -2539,9 +2654,21 @@ func (t *taskRun) awaitHuman(reason, question string, choices []string) (final, 
 // awaitHumanUntil is awaitHuman that also ends, with no answer, when day,
 // a wait on the day cap, ends on its own (versionDayCap).
 func (t *taskRun) awaitHumanUntil(reason, question string, choices []string, day *dayWait) (final, why string, answer []string) {
-	if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
+	if err := t.ask(reason, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
+	return t.awaitAnswer(question, day)
+}
+
+// ask escalates the task with reason and the agent's choices, if any:
+// only comments newer than its comment answer it.
+func (t *taskRun) ask(reason string, choices []string) error {
+	return workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation)
+}
+
+// awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
+// asked last, which asked question.
+func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string, answer []string) {
 	day.start(t)
 	defer day.stop()
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}

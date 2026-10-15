@@ -281,7 +281,7 @@ func execActivity(t *testing.T, r *Runner, name string, args ...any) (converter.
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
 	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{},
-		&GateWatch{Store: r.store, Bound: func(context.Context, string, int64) time.Duration { return time.Hour }}}})
+		&GateWatch{Store: r.store, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }}}})
 	r.RegisterActivities(env)
 	return env.ExecuteActivity(name, args...)
 }

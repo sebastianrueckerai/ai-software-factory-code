@@ -84,7 +84,8 @@ var activityGates = map[string]string{
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip}
+	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
+	ActivityWithdrawQuestion}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {
@@ -130,8 +131,10 @@ type GateWatch struct {
 	interceptor.WorkerInterceptorBase
 	Store GateStore
 	// Bound is activity's bound under the policy version pin, the one its
-	// task started under (0: the version in force).
-	Bound func(ctx context.Context, activity string, pin int64) time.Duration
+	// task started under (0: the version in force); parts: the calls a
+	// model review or an audit reads its diff in, policy.ReviewParts until
+	// it read the diff (boundByParts).
+	Bound func(ctx context.Context, activity string, pin int64, parts int) time.Duration
 	// Signal delivers a trip to the workflow; nil = the alert only.
 	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
 
@@ -171,8 +174,10 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
-	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, activityPin(in.Args)), cancel: cancel}
+	pin := activityPin(in.Args)
+	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, pin, policy.ReviewParts), cancel: cancel}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
+	parts := func(n int) { i.g.rebound(run, i.g.Bound(ctx, name, pin, n)) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
 	i.g.mu.Lock()
 	if i.g.runs == nil {
@@ -189,7 +194,7 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 			delete(i.g.runs, key)
 		}
 	}()
-	out, err := i.Next.ExecuteActivity(ctx, in)
+	out, err := i.Next.ExecuteActivity(context.WithValue(ctx, partsKey{}, parts), in)
 	if err != nil && errors.Is(context.Cause(ctx), errGateRetry) {
 		return nil, temporal.NewApplicationError(errGateRetry.Error()+": "+err.Error(), gateRetryError)
 	}
@@ -268,6 +273,31 @@ func (g *GateWatch) Wait(workflowID, activityID string, attempt int32) bool {
 	return true
 }
 
+// rebound moves run's bound to bound, from the attempt's start: a model
+// review's or an audit's once it knows its diff's parts. A run that
+// tripped or waited already keeps its own.
+func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if run.extended || !run.timer.Stop() {
+		return
+	}
+	run.bound = bound
+	run.timer = time.AfterFunc(time.Until(run.started.Add(bound)), func() { run.raise(bound, false) })
+}
+
+// partsKey carries an activity's call to rebound in its context.
+type partsKey struct{}
+
+// boundByParts bounds the running model review or audit by the parts its
+// diff reads in, one call each (policy.Document.PartsBound), once it read
+// the diff and before the first call.
+func boundByParts(ctx context.Context, parts int) {
+	if f, ok := ctx.Value(partsKey{}).(func(int)); ok {
+		f(parts)
+	}
+}
+
 // Retry stops the attempt with a retryable error; false when it runs here
 // no more.
 func (g *GateWatch) Retry(workflowID, activityID string, attempt int32) bool {
@@ -326,19 +356,19 @@ func activityBeside(args []any) bool {
 // read), the current version for 0 or a version it cannot read, since a
 // bound only decides when to alert. A roll's waits end at their own bound
 // (gapBound), so theirs is that and rollWaitSlack.
-func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64) time.Duration {
-	return func(ctx context.Context, activity string, pin int64) time.Duration {
+func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64, parts int) time.Duration {
+	return func(ctx context.Context, activity string, pin int64, parts int) time.Duration {
 		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
 			return gapBound(current()) + rollWaitSlack
 		}
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {
-				return v.Document.Bound(activity)
+				return v.Document.PartsBound(activity, parts)
 			}
 			log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
 		}
-		return current().Document.Bound(activity)
+		return current().Document.PartsBound(activity, parts)
 	}
 }
 

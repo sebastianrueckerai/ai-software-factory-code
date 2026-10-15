@@ -532,9 +532,15 @@ var BoundActivities = []string{
 // policy's bound for it; else for a session the agent time plus a minute
 // (a session at the cap is stopped by the cap already), for the gate
 // supervisor its call's timeout plus two and for the model review and the
-// audit their ReviewParts calls' timeouts plus two; else DefaultBounds'
-// for it, else the policy's default, else DefaultBounds' default.
-func (d Document) Bound(activity string) time.Duration {
+// audit their ReviewParts calls' timeouts plus two (PartsBound); else
+// DefaultBounds' for it, else the policy's default, else DefaultBounds'
+// default.
+func (d Document) Bound(activity string) time.Duration { return d.PartsBound(activity, ReviewParts) }
+
+// PartsBound is Bound for a model review or an audit whose diff reads in
+// parts calls, one part's timeout each: a one-part review is bound at one
+// call's timeout plus two minutes. Any other activity's is Bound's.
+func (d Document) PartsBound(activity string, parts int) time.Duration {
 	s, ok := d.Bounds[activity]
 	switch {
 	case ok:
@@ -546,7 +552,7 @@ func (d Document) Bound(activity string) time.Duration {
 	case activity == "SuperviseGate":
 		return d.Limits.SupervisorTimeout + 2*time.Minute
 	case activity == "ModelReview" || activity == "GateAudit":
-		return ReviewParts*d.Limits.SupervisorTimeout + 2*time.Minute
+		return time.Duration(parts)*d.Limits.SupervisorTimeout + 2*time.Minute
 	}
 	if !ok {
 		s, ok = DefaultBounds[activity]

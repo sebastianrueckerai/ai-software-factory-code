@@ -26,7 +26,7 @@ func watchedEnv(store *fakeStore, bound time.Duration) *testsuite.TestActivityEn
 	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	env := suite.NewTestActivityEnvironment()
 	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{
-		&GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return bound }}}})
+		&GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return bound }}}})
 	return env
 }
 
@@ -134,7 +134,7 @@ func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
+	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
 	var info activity.Info
 	slow := func(ctx context.Context) {
 		info = activity.GetInfo(ctx)
@@ -172,7 +172,7 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
+	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex
 	var waits []bool
 	sig.onTrip = func(wf string, tr GateTrip) {
@@ -204,13 +204,96 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	}
 }
 
+// A model review's bound follows the parts its diff reads in
+// (boundByParts): until it read the diff it is policy.ReviewParts parts',
+// 300 ms at 100 ms a part, so a review that runs 200 ms never trips;
+// told one part, it trips at 100 ms, the trip carrying that bound.
+func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		parts int // 0: the review tells none
+		want  []time.Duration
+	}{
+		{"one part", 1, []time.Duration{100 * time.Millisecond}},
+		{"no parts told", 0, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+			sig := &signalled{}
+			env := signallingEnv(&GateWatch{Store: store, Bound: func(_ context.Context, _ string, _ int64, parts int) time.Duration {
+				return time.Duration(parts) * 100 * time.Millisecond
+			}, Signal: sig.signal})
+			env.RegisterActivityWithOptions(func(ctx context.Context, _ string) error {
+				if tc.parts > 0 {
+					boundByParts(ctx, tc.parts)
+				}
+				time.Sleep(200 * time.Millisecond)
+				return nil
+			}, activity.RegisterOptions{Name: ActivityModelReview})
+			if _, err := env.ExecuteActivity(ActivityModelReview, "t1"); err != nil {
+				t.Fatal(err)
+			}
+			trips, _ := sig.got()
+			var bounds []time.Duration
+			for _, tr := range trips {
+				bounds = append(bounds, tr.Bound)
+			}
+			if !slices.Equal(bounds, tc.want) {
+				t.Fatalf("trips bound %v, want %v", bounds, tc.want)
+			}
+		})
+	}
+}
+
+// The model review and the audit tell their watch the parts their diff
+// reads in before the first call: two files of 30 KiB are two parts, read
+// after the watch bound the run at policy.ReviewParts parts; a diff beyond
+// three parts makes no call and tells none.
+func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
+	two := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
+	four := diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
+	for _, tc := range []struct {
+		name, activity, diff, answer string
+		want                         []int
+	}{
+		{"a review of two parts", ActivityModelReview, two, `{"verdict":"approve","summary":"ok"}`, []int{3, 2}},
+		{"a review beyond its reach", ActivityModelReview, four, `{"verdict":"approve","summary":"ok"}`, []int{3}},
+		{"an audit of two parts", ActivityGateAudit, two, `{"verdict":"clear"}`, []int{3, 2}},
+		{"an audit beyond its reach", ActivityGateAudit, four, `{"verdict":"clear"}`, []int{3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)
+			var mu sync.Mutex
+			var parts []int
+			env := signallingEnv(&GateWatch{Store: r.store, Bound: func(_ context.Context, activity string, _ int64, n int) time.Duration {
+				if activity == tc.activity {
+					mu.Lock()
+					defer mu.Unlock()
+					parts = append(parts, n)
+				}
+				return time.Hour
+			}})
+			r.RegisterActivities(env)
+			if _, err := env.ExecuteActivity(tc.activity, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+				t.Fatal(err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if !slices.Equal(parts, tc.want) {
+				t.Fatalf("bounds asked for %v parts, want %v", parts, tc.want)
+			}
+		})
+	}
+}
+
 // retry ends the running attempt with a retryable error, so the
 // activity's retry policy runs it again.
 func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
 	sig := &signalled{}
-	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
+	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex
 	running := false
 	sig.onTrip = func(wf string, tr GateTrip) {
@@ -269,7 +352,8 @@ func TestTripVerdict(t *testing.T) {
 
 // A session's bound follows the agent time of the version its task
 // started under, not the current one (ruling 183); pin 0 reads the
-// current version.
+// current version. A model review's or an audit's follows its diff's
+// parts: one call's supervisor_timeout of 10 min each, and two minutes.
 func TestPinnedBound(t *testing.T) {
 	pinned, current := testPolicyVersion(), testPolicyVersion()
 	pinned.Document.Limits.AgentTime, pinned.Document.Limits.SupervisorTimeout = 30*time.Minute, 10*time.Minute
@@ -280,21 +364,26 @@ func TestPinnedBound(t *testing.T) {
 	for _, tc := range []struct {
 		activity string
 		pin      int64
+		parts    int
 		want     time.Duration
 	}{
-		{ActivityRunSession, 7, 31 * time.Minute},
-		{ActivitySuperviseGate, 7, 12 * time.Minute},
-		{ActivityRunSession, 0, 21 * time.Minute},
+		{ActivityRunSession, 7, policy.ReviewParts, 31 * time.Minute},
+		{ActivitySuperviseGate, 7, policy.ReviewParts, 12 * time.Minute},
+		{ActivityRunSession, 0, policy.ReviewParts, 21 * time.Minute},
 		// an unreadable pin falls back to the current version: a bound is
 		// an alert threshold, never a reason to fail the activity
-		{ActivityRunSession, 99, 21 * time.Minute},
+		{ActivityRunSession, 99, policy.ReviewParts, 21 * time.Minute},
 		// a roll's waits end at their own bound, the longest agent time in
 		// force and half an hour: the alert only past that and the slack
-		{ActivityAwaitSessionGap, 0, 55 * time.Minute},
-		{ActivityAwaitRollHold, 0, 55 * time.Minute},
+		{ActivityAwaitSessionGap, 0, policy.ReviewParts, 55 * time.Minute},
+		{ActivityAwaitRollHold, 0, policy.ReviewParts, 55 * time.Minute},
+		{ActivityModelReview, 7, 1, 12 * time.Minute},
+		{ActivityGateAudit, 7, 2, 22 * time.Minute},
+		{ActivityModelReview, 7, 3, 32 * time.Minute},
+		{ActivityRunSession, 7, 1, 31 * time.Minute},
 	} {
-		if got := bound(ctx, tc.activity, tc.pin); got != tc.want {
-			t.Errorf("bound(%s, pin %d) = %s, want %s", tc.activity, tc.pin, got, tc.want)
+		if got := bound(ctx, tc.activity, tc.pin, tc.parts); got != tc.want {
+			t.Errorf("bound(%s, pin %d, %d parts) = %s, want %s", tc.activity, tc.pin, tc.parts, got, tc.want)
 		}
 	}
 }

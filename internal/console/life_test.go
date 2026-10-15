@@ -73,3 +73,37 @@ func TestRunsOfACardsLife(t *testing.T) {
 		t.Errorf("a fresh card's line is %q", got)
 	}
 }
+
+// A question withdrawn unanswered, a beside gate's whose head went back,
+// is a note on the run it falls in: the withdrawal puts the card in
+// review again at 10:20, after five minutes waiting on you, and the next
+// session builds from 10:21.
+func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
+	at := func(h, m, s int) time.Time { return time.Date(2026, 10, 15, h, m, s, 0, time.UTC) }
+	task := factoryd.Task{ID: "t-w", Kind: "agent", Status: "running", Lane: "ready", CreatedAt: at(9, 50, 0)}
+	status := func(t time.Time, s string) factoryd.Event {
+		return factoryd.Event{TaskID: "t-w", Kind: factoryd.EventTaskStatus, At: t, Detail: map[string]any{"status": s}}
+	}
+	const q = "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: the model hangs"
+	events := []factoryd.Event{status(at(10, 0, 0), "in-review"), status(at(10, 15, 0), "waiting-human"),
+		{TaskID: "t-w", Kind: factoryd.EventQuestionAsked, At: at(10, 15, 0), Detail: map[string]any{"question": q, "comment": 601.0}},
+		status(at(10, 20, 0), "in-review"),
+		{TaskID: "t-w", Kind: factoryd.EventQuestionWithdrawn, At: at(10, 20, 1), Detail: map[string]any{"question": q, "comment": 601.0, "reason": "the checks failed"}},
+		status(at(10, 21, 0), "running")}
+	runs := runsOf(task, events, nil, nil, at(10, 30, 0))
+	want := []struct{ kind, at, note string }{
+		{"queued", "09:50", ""},
+		{"verifying", "10:00", ""},
+		{"waiting on you", "10:15", "asked: " + q},
+		{"verifying", "10:20", "withdrawn because the checks failed: " + q},
+		{"building", "10:21", ""},
+	}
+	if len(runs) != len(want) {
+		t.Fatalf("%d runs, want %d: %+v", len(runs), len(want), runs)
+	}
+	for i, w := range want {
+		if r := runs[i]; r.Kind != w.kind || r.At() != w.at || r.Note() != w.note {
+			t.Errorf("run %d: %s at %s, %q; want %s at %s, %q", i, r.Kind, r.At(), r.Note(), w.kind, w.at, w.note)
+		}
+	}
+}

@@ -186,6 +186,38 @@ func (r *Runner) DropTrip(ctx context.Context, taskID string, trip GateTrip) err
 	return nil
 }
 
+// ActivityWithdrawQuestion withdraws a question a gate beside the checks
+// asked (versionBesideLadder).
+const ActivityWithdrawQuestion = "WithdrawQuestion"
+
+// WithdrawQuestion withdraws the gate supervisor's escalation of reason,
+// asked with comment while the checks wait ran, for why: the task is in
+// review again, as before the question; a comment on the issue says the
+// question needs no answer and why; and a question_withdrawn row says it
+// on the card.
+func (r *Runner) WithdrawQuestion(ctx context.Context, taskID, reason string, comment int64, why string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if t.Status == "waiting-human" {
+		if err := r.store.TransitionTask(ctx, taskID, []string{"waiting-human"}, "in-review"); err != nil {
+			return err
+		}
+		mirrorTaskState(ctx, r.forgejo, t, "in-review")
+	}
+	if t.IssueNumber != 0 {
+		body := fmt.Sprintf("factoryd: task %s withdraws its question above because %s. It needs no answer.", taskID, why)
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
+			return err
+		}
+	}
+	detail := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "reason": why}
+	r.record(ctx, taskID, "question_withdrawn", detail)
+	r.timeline.RecordRow(ctx, taskID, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, detail)
+	return nil
+}
+
 // gateBundle reads what the supervisor needs for the activity, and the
 // task's git tokens the bundle is scrubbed of; a read that fails puts its
 // error in the bundle instead.

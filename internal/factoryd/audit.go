@@ -175,6 +175,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		stopBeats()
 		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
 	}
+	boundByParts(ctx, len(parts))
 	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files))}
 	if len(parts) > 1 {
 		first.Part = partLabel(parts, 0, len(files))
