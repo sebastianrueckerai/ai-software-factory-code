@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1285,5 +1286,113 @@ func TestDonePagesItsFinishedCards(t *testing.T) {
 		if code, body := get(target); code != http.StatusBadRequest {
 			t.Errorf("%s = %d %q, want 400", target, code, body)
 		}
+	}
+}
+
+// countingTasks wraps the task store and counts the whole board's reads.
+type countingTasks struct {
+	*fakeTasks
+	mu    sync.Mutex
+	reads map[string]int
+}
+
+func (s *countingTasks) note(what string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.reads == nil {
+		s.reads = map[string]int{}
+	}
+	s.reads[what]++
+}
+
+func (s *countingTasks) BoardTasks(ctx context.Context, repository string) ([]factoryd.BoardTask, error) {
+	s.note("BoardTasks")
+	return s.fakeTasks.BoardTasks(ctx, repository)
+}
+
+func (s *countingTasks) FinishedTasks(ctx context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
+	s.note("FinishedTasks")
+	return s.fakeTasks.FinishedTasks(ctx, q)
+}
+
+// countingApprovals wraps the approval requests.
+type countingApprovals struct {
+	*fakeApprovals
+	mu    sync.Mutex
+	reads int
+}
+
+func (a *countingApprovals) ApprovalRequests(ctx context.Context, status string) ([]factoryd.ApprovalRequest, error) {
+	a.mu.Lock()
+	a.reads++
+	a.mu.Unlock()
+	return a.fakeApprovals.ApprovalRequests(ctx, status)
+}
+
+// countingPulses is a pulse store that counts its reads.
+type countingPulses struct {
+	mu    sync.Mutex
+	reads int
+}
+
+func (p *countingPulses) NewestPulse(context.Context, string) (factoryd.Pulse, bool, error) {
+	p.mu.Lock()
+	p.reads++
+	p.mu.Unlock()
+	return factoryd.Pulse{}, false, nil
+}
+
+// A page of finished cards reads only its column: the column's page after
+// the cursor, not the open cards, the approval requests or the pulse a
+// whole board read takes (roadmap 270).
+func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now, at := time.Now(), time.Now().Add(-time.Hour)
+	r.tasks.mu.Lock()
+	for i := range 60 {
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{
+			ID: fmt.Sprintf("t-d%02d", i), Kind: "agent", Status: "done", Lane: "ready", Repository: "sf/code",
+			Objective: "a done card", CreatedAt: now.Add(-2 * time.Hour), FinishedAt: &at}})
+	}
+	r.tasks.mu.Unlock()
+	tasks, approvals, pulses := &countingTasks{fakeTasks: r.tasks}, &countingApprovals{fakeApprovals: r.approvals}, &countingPulses{}
+	cfg := r.c.cfg
+	cfg.Tasks, cfg.Approvals, cfg.Pulses = tasks, approvals, pulses
+	page, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.AddCookie(ck)
+		rec := httptest.NewRecorder()
+		page.ServeHTTP(rec, req)
+		return rec
+	}
+	rec := get("/board/finished?project=ai-software-factory-code&col=done&after=" +
+		url.QueryEscape(at.UTC().Format(time.RFC3339Nano)) + "&after-id=t-d00")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-card="t-d50"`) {
+		t.Fatalf("the page = %d %s", rec.Code, rec.Body.String())
+	}
+	if n := tasks.reads["BoardTasks"]; n != 0 {
+		t.Errorf("the page read the open cards %d time(s)", n)
+	}
+	if approvals.reads != 0 {
+		t.Errorf("the page read the approval requests %d time(s)", approvals.reads)
+	}
+	if pulses.reads != 0 {
+		t.Errorf("the page read the pulse %d time(s)", pulses.reads)
+	}
+	if n := tasks.reads["FinishedTasks"]; n != 1 {
+		t.Errorf("the page read its column %d time(s), want 1", n)
+	}
+	// the whole board still reads all of it
+	if rec := get("/?project=ai-software-factory-code"); rec.Code != http.StatusOK {
+		t.Fatalf("the board = %d", rec.Code)
+	}
+	if tasks.reads["BoardTasks"] != 1 || approvals.reads != 1 || pulses.reads != 1 {
+		t.Errorf("the board read the open cards %d, the approvals %d and the pulse %d time(s), want 1 each",
+			tasks.reads["BoardTasks"], approvals.reads, pulses.reads)
 	}
 }
