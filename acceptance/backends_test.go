@@ -318,6 +318,27 @@ func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, number 
 	return factoryd.Task{}, false, nil
 }
 
+// TasksByPR lists every card linked to number on repository, newest first,
+// as the SQL store does: a webhook on a factory pull request picks the
+// open card among them.
+func (s *acceptanceStore) TasksByPR(_ context.Context, repository string, number int64) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cards []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.PRNumber == number && number != 0 {
+			cards = append(cards, t)
+		}
+	}
+	slices.SortFunc(cards, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return b.CreatedAt.Compare(a.CreatedAt)
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
+	return cards, nil
+}
+
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
