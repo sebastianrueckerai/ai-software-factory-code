@@ -49,6 +49,9 @@ type RoutineView struct {
 	// "after 6 more merges" (past a pending skip's run too) or the
 	// event's words.
 	NextWords string
+	// MergesLeft are the merges before the next merge-counted run, 0
+	// for a routine whose next run is a time or an event.
+	MergesLeft int
 	// Last is the newest run, zero before the first.
 	Last RoutineRun
 	// Open is the open card of the routine's runs, nil for none, and Held
@@ -392,7 +395,7 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			case st.SkipNext:
 				n += every
 			}
-			view.NextWords = "after 1 more merge"
+			view.MergesLeft, view.NextWords = n, "after 1 more merge"
 			if n > 1 {
 				view.NextWords = fmt.Sprintf("after %d more merges", n)
 			}

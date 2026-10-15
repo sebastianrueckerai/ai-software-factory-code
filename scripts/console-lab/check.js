@@ -216,7 +216,7 @@ async function text(page) {
       if (!state.some((s) => s.includes("failed only"))) fails.push("menus: no state line reads failed only under ?done-only=failed (" + state.join(" | ") + ")");
       if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
       if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
-      if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+      if ((await p.page.locator("#board .column > .col-menu").count()) !== 3) fails.push("menus: not three column menus");
     }
     if (sc === "threads") {
       // the thread table starts folded to its marks until the member unfolds it

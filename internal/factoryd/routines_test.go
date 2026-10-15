@@ -402,13 +402,13 @@ func TestViews(t *testing.T) {
 	}
 	bump, audit := vs[0], vs[1]
 	if bump.Project != "ai-software-factory-code" || bump.Routine.Name != "weekly-bump" || !bump.Next.Equal(mon0540.Add(20*time.Minute)) ||
-		bump.NextWords != "Mon 06:00" || !bump.Soon || bump.Lane != "needs-you" {
+		bump.NextWords != "Mon 06:00" || bump.MergesLeft != 0 || !bump.Soon || bump.Lane != "needs-you" {
 		t.Fatalf("the weekly bump: %+v", bump)
 	}
 	if bump.Last.Run != 1 || bump.Open == nil || bump.Open.ID != "t-1" || !bump.Held {
 		t.Fatalf("the weekly bump's card: last %+v, open %v, held %v", bump.Last, bump.Open, bump.Held)
 	}
-	if audit.Routine.Name != "audit" || audit.State.Merges != 14 || audit.NextWords != "after 6 more merges" || !audit.Next.IsZero() ||
+	if audit.Routine.Name != "audit" || audit.State.Merges != 14 || audit.NextWords != "after 6 more merges" || audit.MergesLeft != 6 || !audit.Next.IsZero() ||
 		audit.Soon || audit.Lane != "queued" || audit.Open != nil || audit.Held || audit.Last.Run != 0 {
 		t.Fatalf("the audit: %+v", audit)
 	}
@@ -443,15 +443,15 @@ func TestViews(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !vs[0].Next.Equal(time.Date(2026, 10, 19, 6, 0, 0, 0, berlin)) || vs[0].NextWords != "Mon 19 Oct 06:00" || vs[0].Soon ||
-		vs[1].NextWords != "after 26 more merges" {
+		vs[1].NextWords != "after 26 more merges" || vs[1].MergesLeft != 26 {
 		t.Fatalf("skipped: %+v", vs)
 	}
 	// past the count the pass's run takes the skip and keeps 25 % 20 = 5
 	if err := store.SetRoutineMerges(ctx, "ai-software-factory-code", "audit", 25); err != nil {
 		t.Fatal(err)
 	}
-	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[1].NextWords != "after 15 more merges" {
-		t.Fatalf("skipped past the count: %q %v", vs[1].NextWords, err)
+	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[1].NextWords != "after 15 more merges" || vs[1].MergesLeft != 15 {
+		t.Fatalf("skipped past the count: %q %d %v", vs[1].NextWords, vs[1].MergesLeft, err)
 	}
 
 	// linkshort's board shows the factory's template pass with its state,

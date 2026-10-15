@@ -272,6 +272,21 @@ footer#live:empty { display: none; }
 .card:has(> .line1 > .title > .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .card .open:focus-visible { outline: none; }
 .card.escalation:has(.open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* a routine's ghost (C16): the card that is not yet there, a dashed line,
+   no fill, no edge, its words faint; a run under an hour away names its
+   time in the text colour, a held one in amber, a running card breathes */
+.card.ghost { border: 1px dashed var(--btn-line); background: none; box-shadow: none; }
+.card.ghost > .open { display: block; width: 100%; height: auto; padding: 0; border: 0; background: none; color: var(--text-faint); font: 13px/1.38 var(--font-ui); text-align: left; white-space: normal; }
+.card.ghost:has(> .open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
+.card.ghost .ref, .card.ghost .line2 { color: var(--text-faint); }
+.card.ghost .line2.soon { color: var(--text); }
+.card.ghost .held { color: var(--need-text); }
+.card.ghost .run .dot { display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; color: var(--st-running); background: currentColor; vertical-align: 1px; animation: live 2.2s ease-in-out infinite; }
+.card.ghost .acts { gap: 4px; margin-top: 7px; }
+.card.ghost .acts button { height: 22px; }
+.ghosts-hidden { margin: 0 4px 6px; color: var(--text-faint); font: 11.5px var(--font-mono); }
+.ghosts-hidden a { color: inherit; }
+.chip.routine { color: var(--text-faint); }
 /* a done, failed or closed card: a two-line row */
 .face.final { padding: 6px 2px 7px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
 .face.final:last-child { border-bottom: 0; }
@@ -524,6 +539,12 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .col-menu > summary { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 20px; border: 1px solid transparent; border-radius: 2px; color: var(--text-faint); font: 12px var(--font-mono); list-style: none; cursor: pointer; transition: color .12s, border-color .12s, background-color .12s; }
 .col-menu > summary::-webkit-details-marker { display: none; }
 .col-menu > summary::after { content: "▾"; }
+/* the routines control (C16): a quiet mono button right of the find, its
+   menu the column menus' */
+.col-menu.routines-ctl { position: relative; top: auto; right: auto; height: auto; margin-right: auto; }
+.find:has(+ .routines-ctl) { margin-right: 0; }
+.col-menu.routines-ctl > summary { width: auto; height: 24px; gap: 4px; padding: 0 8px; border-color: var(--btn-line); border-radius: 3px; font-size: 11.5px; }
+.col-menu.routines-ctl > .menu-pop { left: 0; right: auto; top: 28px; }
 .col-menu > summary:hover, .col-menu[open] > summary { color: var(--text); border-color: var(--line-strong); background: var(--bg-hover); }
 .col-menu > summary.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .menu-pop { position: absolute; right: 0; top: 30px; z-index: 15; min-width: 164px; padding: 4px 12px 8px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; }
@@ -594,10 +615,11 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .spend.over .gauge { --fill: var(--st-failed); }
 .spend.over .n, .spend.over .pct { color: var(--st-failed); }
 .pct { font: 12px var(--font-mono); color: var(--text-muted); min-width: 4ch; }
-.cell.gh { margin-left: auto; }
+.cell.routine, .cell.gh { margin-left: auto; }
+.cell.routine + .cell.gh { margin-left: 0; }
 .cell.xp { margin: 0; padding: 0 14px; height: auto; border: 0; border-left: 1px solid var(--line); border-radius: 0; background: none; color: var(--text-muted); }
 .cell.gh + .cell.xp { margin-left: 0; }
-.cell.xp:not(.cell.gh + .cell.xp) { margin-left: auto; }
+.cell.xp:not(.cell.gh + .cell.xp, .cell.routine + .cell.xp) { margin-left: auto; }
 .cell.xp:hover { color: var(--text); background: var(--bg-hover); border-color: var(--line); }
 .cell.xp svg { width: 14px; height: 14px; transition: transform .15s; }
 .strip.xp-open .cell.xp svg { transform: rotate(180deg); }
@@ -811,7 +833,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .pulse-text { flex-basis: calc(100% - 40px); font-size: 17px; }
   .pulse-bullets { padding-left: 42px; }
   .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
-  .cell, .cell.gh { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
+  .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
   .cell.needs.on { background: color-mix(in srgb, var(--need) 10%, var(--bg-panel)); }
   .cell.spend { flex-basis: 100%; }
   .cell.spend .gauge { flex: 1; width: auto; }
@@ -839,6 +861,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .menu-pop label { min-height: 44px; }
   .col-state { padding: 0 0 0 12px; }
   .col-x { width: 44px; height: 44px; font-size: 20px; }
+  .col-menu.routines-ctl { flex: 1 1 100%; order: 6; }
+  .col-menu.routines-ctl > summary { justify-content: flex-start; width: 100%; height: 44px; padding: 0 12px; font-size: 14px; }
+  .col-menu.routines-ctl > .menu-pop { right: 0; top: 44px; }
+  .card.ghost > .open, .card.ghost .acts button { min-height: 44px; }
+  .ghosts-hidden a { display: inline-flex; align-items: center; min-height: 44px; }
   #board { overflow: visible; }
   .lane, .lane.five { display: flex; flex-direction: column; gap: 10px; overflow: visible; }
   .lane.five .cards { overflow: visible; }
