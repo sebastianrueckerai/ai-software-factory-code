@@ -9,7 +9,8 @@ metadata:
 # inside each task namespace, and deleting released cache volumes. RBAC
 # cannot restrict create by name, so the ValidatingAdmissionPolicy below
 # confines all of it to factory-agents-* (and the volumes to released
-# ones of class factory-cache).
+# ones of class factory-cache). It also lists the CronJobs, which the
+# console's Resources page shows.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -36,6 +37,9 @@ rules:
   verbs: [list]
 - apiGroups: [helm.toolkit.fluxcd.io]
   resources: [helmreleases]
+  verbs: [list]
+- apiGroups: [batch]
+  resources: [cronjobs]
   verbs: [list]
 ---
 apiVersion: rbac.authorization.k8s.io/v1

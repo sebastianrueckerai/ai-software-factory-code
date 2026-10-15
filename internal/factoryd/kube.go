@@ -108,6 +108,7 @@ type Kube interface {
 	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
 	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
 	DeletePersistentVolume(ctx context.Context, name string) error
+	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
 }
 
 // PodDiagnosis is what the gate supervisor and a pod's start read of a
@@ -634,6 +635,65 @@ func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolu
 func (k *InClusterKube) DeletePersistentVolume(ctx context.Context, name string) error {
 	_, err := k.call(ctx, http.MethodDelete, "/api/v1/persistentvolumes/"+name, nil, nil)
 	return err
+}
+
+// CronJobState is a CronJob as the console's Resources page lists it.
+// LastScheduled is zero for a job never scheduled, LastSuccessful for
+// one that never succeeded.
+type CronJobState struct {
+	Namespace, Name, Schedule     string
+	Suspended                     bool
+	LastScheduled, LastSuccessful time.Time
+}
+
+func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Schedule string `json:"schedule"`
+				Suspend  bool   `json:"suspend"`
+			} `json:"spec"`
+			Status struct {
+				LastScheduleTime   time.Time `json:"lastScheduleTime"`
+				LastSuccessfulTime time.Time `json:"lastSuccessfulTime"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs", &list); err != nil {
+		return nil, err
+	}
+	out := make([]CronJobState, 0, len(list.Items))
+	for _, it := range list.Items {
+		out = append(out, CronJobState{Namespace: namespace, Name: it.Metadata.Name, Schedule: it.Spec.Schedule, Suspended: it.Spec.Suspend,
+			LastScheduled: it.Status.LastScheduleTime, LastSuccessful: it.Status.LastSuccessfulTime})
+	}
+	return out, nil
+}
+
+// ClusterJobs are the cluster's CronJobs in Namespaces, platform and
+// factory when none are set: the console's Resources page lists them.
+type ClusterJobs struct {
+	Kube       Kube
+	Namespaces []string
+}
+
+func (j ClusterJobs) CronJobs(ctx context.Context) ([]CronJobState, error) {
+	namespaces := j.Namespaces
+	if len(namespaces) == 0 {
+		namespaces = []string{"platform", "factory"}
+	}
+	var out []CronJobState
+	for _, ns := range namespaces {
+		jobs, err := j.Kube.CronJobs(ctx, ns)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, jobs...)
+	}
+	return out, nil
 }
 
 // Deployment reads one Deployment (the factory namespace's roll record).

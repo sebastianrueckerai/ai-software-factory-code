@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -63,6 +64,13 @@ type projectView struct {
 	Project  string // the repository
 	Envelope envelopeView
 	Rows     []resourceRow
+}
+
+// jobsView is the cluster's jobs, or Failed when the cluster did not
+// answer.
+type jobsView struct {
+	Rows   []factoryd.CronJobState
+	Failed bool
 }
 
 // resources lists the agent project's commissions by project and task,
@@ -118,8 +126,17 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		projects = append(projects, pv)
 	}
 	slices.SortFunc(projects, func(a, b *projectView) int { return cmp.Compare(a.Project, b.Project) })
+	var jobs *jobsView
+	if c.cfg.Jobs != nil {
+		jobs = &jobsView{}
+		if jobs.Rows, err = c.cfg.Jobs.CronJobs(r.Context()); err != nil {
+			log.Printf("console: the cluster's jobs: %v", err)
+			jobs.Failed = true
+		}
+	}
 	s := current(r)
-	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Approver": c.approver(r)})
+	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Jobs": jobs,
+		"Approver": c.approver(r)})
 }
 
 // resourceButton is a resources page button: do on the path's commission,

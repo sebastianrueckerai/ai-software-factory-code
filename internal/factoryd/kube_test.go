@@ -409,3 +409,57 @@ func TestInClusterKubeSecretsByLabels(t *testing.T) {
 		t.Fatalf("SecretsByLabels = %+v, %v\nwant %+v", got, err, want)
 	}
 }
+
+// CronJobs reads a namespace's CronJobs with their schedule, suspension
+// and last runs; a job never run has zero times.
+func TestInClusterKubeCronJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/platform/cronjobs" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"cnpg-backup"},"spec":{"schedule":"0 2 * * *","suspend":false},`+
+			`"status":{"lastScheduleTime":"2026-10-15T02:00:00Z","lastSuccessfulTime":"2026-10-15T02:03:10Z"}},`+
+			`{"metadata":{"name":"forgejo-dump"},"spec":{"schedule":"30 2 * * *","suspend":true},"status":{}}]}`)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	got, err := k.CronJobs(context.Background(), "platform")
+	want := []CronJobState{
+		{Namespace: "platform", Name: "cnpg-backup", Schedule: "0 2 * * *",
+			LastScheduled: time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC), LastSuccessful: time.Date(2026, 10, 15, 2, 3, 10, 0, time.UTC)},
+		{Namespace: "platform", Name: "forgejo-dump", Schedule: "30 2 * * *", Suspended: true},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("CronJobs = %+v, %v\nwant %+v", got, err, want)
+	}
+}
+
+// ClusterJobs reads platform and factory unless told other namespaces,
+// in their order, and a namespace the cluster does not answer fails the
+// whole read.
+func TestClusterJobsReadTheirNamespaces(t *testing.T) {
+	backup := CronJobState{Namespace: "platform", Name: "cnpg-backup", Schedule: "0 2 * * *"}
+	dump := CronJobState{Namespace: "factory", Name: "forgejo-dump", Schedule: "30 2 * * *"}
+	other := CronJobState{Namespace: "forgejo", Name: "push-mirrors", Schedule: "*/10 * * * *"}
+	k := &fakeKube{cronJobs: map[string][]CronJobState{"platform": {backup}, "factory": {dump}, "forgejo": {other}}}
+	got, err := ClusterJobs{Kube: k}.CronJobs(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []CronJobState{backup, dump}) {
+		t.Fatalf("by default = %+v, %v", got, err)
+	}
+	got, err = ClusterJobs{Kube: k, Namespaces: []string{"forgejo", "platform"}}.CronJobs(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []CronJobState{other, backup}) {
+		t.Fatalf("forgejo and platform = %+v, %v", got, err)
+	}
+	k.cronJobsErr = map[string]error{"factory": ErrForbidden}
+	if got, err := (ClusterJobs{Kube: k}).CronJobs(context.Background()); !errors.Is(err, ErrForbidden) || got != nil {
+		t.Fatalf("factory forbidden = %+v, %v", got, err)
+	}
+}

@@ -42,6 +42,12 @@ type Resources interface {
 	Commission(ctx context.Context, id int64) (cloudres.Resource, bool, error)
 }
 
+// Jobs are the cluster's CronJobs (factoryd.ClusterJobs), which the
+// Resources page lists read-only.
+type Jobs interface {
+	CronJobs(ctx context.Context) ([]factoryd.CronJobState, error)
+}
+
 // Policies reads the policy version being enforced (policy_versions).
 type Policies interface {
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)

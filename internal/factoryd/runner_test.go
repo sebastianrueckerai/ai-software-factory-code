@@ -67,7 +67,9 @@ type fakeKube struct {
 	nsDelay     time.Duration // every CreateNamespace takes this long
 	pvs         []PersistentVolume
 	deletedPVs  []string
-	tokenTaken  chan struct{} // closed when a worker endpoint took a push token
+	cronJobs    map[string][]CronJobState // namespace → its CronJobs
+	cronJobsErr map[string]error          // namespace → injected CronJobs failure
+	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
 }
 
@@ -484,6 +486,15 @@ func (k *fakeKube) DeletePersistentVolume(ctx context.Context, name string) erro
 	defer k.mu.Unlock()
 	k.deletedPVs = append(k.deletedPVs, name)
 	return nil
+}
+
+func (k *fakeKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if err := k.cronJobsErr[namespace]; err != nil {
+		return nil, err
+	}
+	return slices.Clone(k.cronJobs[namespace]), nil
 }
 
 var _ Kube = (*fakeKube)(nil)

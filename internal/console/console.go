@@ -237,6 +237,9 @@ type Config struct {
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.
 	Routines Routines
+	// Jobs are the cluster's CronJobs, which the Resources page lists;
+	// nil lists none.
+	Jobs Jobs
 	// GitHubSync brings a project's GitHub default branch back as a pull
 	// request to main (factoryd's Registrar.GitHubSync); nil offers none.
 	GitHubSync func(ctx context.Context, project, by string) (string, error)

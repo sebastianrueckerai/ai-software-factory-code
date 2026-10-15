@@ -414,6 +414,19 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.resources.rows = s.resources
 	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
 	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
+	// the cluster's nightly backup and dump, last run at their latest
+	// 02:00 and 02:30 UTC; the dump's last run failed
+	nightly := func(minute int) time.Time {
+		t := time.Date(now.UTC().Year(), now.UTC().Month(), now.UTC().Day(), 2, minute, 0, 0, time.UTC)
+		if t.After(now) {
+			t = t.AddDate(0, 0, -1)
+		}
+		return t
+	}
+	r.c.cfg.Jobs = fakeJobs{rows: []factoryd.CronJobState{
+		{Namespace: "platform", Name: "cnpg-backup", Schedule: "0 2 * * *", LastScheduled: nightly(0), LastSuccessful: nightly(0)},
+		{Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *", LastScheduled: nightly(30), LastSuccessful: nightly(30).AddDate(0, 0, -1)},
+	}}
 	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
 	r.c.turns = newTurnGate()
 	for _, n := range s.working {

@@ -475,6 +475,7 @@ func main() {
 			return runner.RetryPlanCard(ctx, taskID, by)
 		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
+		Jobs:       factoryd.ClusterJobs{Kube: kube},
 		Alerts:     store,
 		Projects:   store,
 		Events:     store,

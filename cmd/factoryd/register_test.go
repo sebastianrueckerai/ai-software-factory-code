@@ -167,3 +167,39 @@ func TestFactorydPodReapsGitHelpers(t *testing.T) {
 		}
 	}
 }
+
+// factoryd's ClusterRole lists the cluster's CronJobs for the Resources
+// page and does nothing else with them.
+func TestFactorydOnlyListsCronJobs(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var verbs []string
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Rules    []struct {
+				APIGroups []string `yaml:"apiGroups"`
+				Resources []string `yaml:"resources"`
+				Verbs     []string `yaml:"verbs"`
+			} `yaml:"rules"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind != "ClusterRole" || doc.Metadata.Name != "factoryd" {
+			continue
+		}
+		for _, r := range doc.Rules {
+			if slices.Contains(r.APIGroups, "batch") && slices.Contains(r.Resources, "cronjobs") {
+				verbs = append(verbs, r.Verbs...)
+			}
+		}
+	}
+	if !slices.Equal(verbs, []string{"list"}) {
+		t.Fatalf("factoryd's ClusterRole grants %v on cronjobs, want [list]", verbs)
+	}
+}
