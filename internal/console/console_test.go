@@ -686,6 +686,7 @@ type fakeLedger struct {
 	risk      policy.Risk
 	routines  []policy.Routine  // policy.yaml's
 	briefs    map[string]string // the routines' briefs by path
+	down      bool              // no policy in force can be read
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -746,6 +747,9 @@ func (l *fakeLedger) CallTotals(_ context.Context, tasks []string) (map[string]p
 }
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	if l.down {
+		return policy.Version{}, false, errors.New("the ledger is down")
+	}
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},

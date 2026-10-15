@@ -29,6 +29,11 @@ type fakeRoutines struct {
 	skips  map[string]string
 	ran    []string
 	runNow func(project, routine string) (factoryd.RoutineRun, error)
+	// limits are the limits Runs was asked for, runsErr its failure, and
+	// onSkip changes the views when a Skip once is set, under mu
+	limits  []int
+	runsErr error
+	onSkip  func(project, routine string)
 }
 
 // known reports whether project's board shows routine, as the service's
@@ -57,6 +62,10 @@ func (f *fakeRoutines) Runs(_ context.Context, project, routine string, limit in
 	defer f.mu.Unlock()
 	if err := f.known(project, routine); err != nil {
 		return nil, err
+	}
+	f.limits = append(f.limits, limit)
+	if f.runsErr != nil {
+		return nil, f.runsErr
 	}
 	runs := f.runs[project+"/"+routine]
 	return slices.Clone(runs[:min(limit, len(runs))]), nil
@@ -89,6 +98,9 @@ func (f *fakeRoutines) Skip(_ context.Context, project, routine string, skip boo
 		by = ""
 	}
 	f.skips[project+"/"+routine] = by
+	if skip && f.onSkip != nil {
+		f.onSkip(project, routine)
+	}
 	return nil
 }
 

@@ -6,14 +6,15 @@
 <nav class="tabs" role="tablist" aria-label="The routine's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/routines/{{$.View.Project}}/{{$.View.Routine.Name}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
 <div id="drawer-panel" class="drawer-body" role="tabpanel">
-{{with .Problem}}<p class="problem" role="alert">{{.}}</p>
+{{with .Note}}<p class="note" role="status">{{.}}</p>
+{{end}}{{range .Problems}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{if eq .Tab "overview"}}<dl class="top-block">
 {{range .Rows}}<dt>{{.Term}}</dt><dd{{with .Class}} class="{{.}}"{{end}}>{{.Value}}{{with .Why}} <span class="why">· {{.}}</span>{{end}}</dd>
 {{end}}</dl>
 {{template "routine-acts" .Acts}}
 {{if .Brief}}<details class="sec" data-sec="brief"><summary>The brief<span class="hint">{{.View.Routine.Brief}}</span></summary><div class="sec-body"><p class="objective-body">{{.Brief}}</p></div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The brief<span class="hint">no brief</span></p></div>
-{{end}}{{if .Runs}}<details class="sec" data-sec="runs"><summary>Runs ({{.View.State.Runs}})</summary><div class="sec-body">{{template "routine-runs" .Recent}}</div></details>
+{{end}}{{if .View.State.Runs}}<details class="sec" data-sec="runs"><summary>Runs ({{.View.State.Runs}})</summary><div class="sec-body">{{template "routine-runs" .Runs}}</div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Runs<span class="hint">no run yet</span></p></div>
 {{end}}<details class="sec" data-sec="config"><summary>Config</summary><div class="sec-body">{{template "routine-config" .Config}}</div></details>
 {{else if eq .Tab "runs"}}{{if .Runs}}{{template "routine-runs" .Runs}}{{with .Older}}

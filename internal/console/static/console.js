@@ -389,6 +389,7 @@ function showDrawer() {
   var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
     rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
+  d.setAttribute("aria-label", rt ? "The routine" : "The card");
   document.body.classList.toggle("drawer-open", !!(m || rt));
   d.hidden = !(m || rt);
   if (!m && !rt) {

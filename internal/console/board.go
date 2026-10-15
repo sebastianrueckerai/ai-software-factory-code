@@ -830,6 +830,8 @@ type ghost struct {
 	Open                        int64
 	Filter                      boardFilter
 	CSRF                        string
+	// Drawer says the acts sit in the routine's drawer, which answers them.
+	Drawer bool
 }
 
 // Count is the number the column's head shows: its needs, else its
@@ -2994,7 +2996,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 				problem("routine", err)
 			}
 			// a human card's body ends in the line factoryd filed it with, which the routine line says
-			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], "filed by the factory · routine ") {
+			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], factoryd.RoutineProvenance) {
 				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
 			}
 		}

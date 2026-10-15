@@ -84,7 +84,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 
 	brief, _ := v.Brief(rt.Brief)
 	brief = strings.TrimSpace(brief)
-	provenance := fmt.Sprintf("filed by the factory · routine %s · run %d", rt.Name, run.Run)
+	provenance := fmt.Sprintf("%s%s · run %d", RoutineProvenance, rt.Name, run.Run)
 	switch rt.Files {
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
@@ -138,6 +138,10 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		return res, err
 	}
 }
+
+// RoutineProvenance starts the line that ends the body of a routine's
+// card: "filed by the factory · routine weekly-bump · run 15".
+const RoutineProvenance = "filed by the factory · routine "
 
 // pokeRoutine writes text about card taskID ("" for none) into the inbox
 // of repository's notify list, else its approvers, as Poker.Pass does,

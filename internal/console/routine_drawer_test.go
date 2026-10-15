@@ -1,8 +1,10 @@
 package console
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -33,12 +35,13 @@ func bumpRuns() []factoryd.RoutineRun {
 	}
 }
 
-// bumpRows are bumpRuns as the drawer's run rows, in their order.
+// bumpRows are bumpRuns as the drawer's run rows, in their order: a run
+// that filed nothing shows no duration.
 var bumpRows = []string{
 	`<span class="mono">Mon 12 Oct 06:00</span><span class="mono"><a href="#card=t-790">#790</a></span><span class="k st-running">filed</span><span class="mono num">open</span><span class="mono num"></span><span class="tnote"></span>`,
 	`<span class="mono">Mon 5 Oct 06:00</span><span class="mono"><a href="#card=t-781">#781</a></span><span class="k st-done">merged</span><span class="mono num">2 d 2 h</span><span class="mono num">€0.42</span><span class="tnote"></span>`,
-	`<span class="mono">Mon 28 Sep 06:00</span><span class="mono"></span><span class="k st-closed">skipped</span><span class="mono num">under a minute</span><span class="mono num"></span><span class="tnote">skipped once by sebastian</span>`,
-	`<span class="mono">Mon 21 Sep 06:00</span><span class="mono"></span><span class="k st-waiting">held</span><span class="mono num">under a minute</span><span class="mono num"></span><span class="tnote">held: #770 is still open</span>`,
+	`<span class="mono">Mon 28 Sep 06:00</span><span class="mono"></span><span class="k st-closed">skipped</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">skipped once by sebastian</span>`,
+	`<span class="mono">Mon 21 Sep 06:00</span><span class="mono"></span><span class="k st-waiting">held</span><span class="mono num"></span><span class="mono num"></span><span class="tnote">held: #770 is still open</span>`,
 	`<span class="mono">Mon 14 Sep 06:00</span><span class="mono"><a href="#card=t-770">#770</a></span><span class="k st-failed">failed</span><span class="mono num">8 d 4 h</span><span class="mono num">€1.10</span><span class="tnote"></span>`,
 	`<span class="mono">Mon 7 Sep 06:00</span><span class="mono"><a href="#card=t-762">#762</a></span><span class="k st-done">done</span><span class="mono num">3 h 0 min</span><span class="mono num">€0.30</span><span class="tnote"></span>`,
 }
@@ -127,8 +130,8 @@ func TestRoutineDrawerTabs(t *testing.T) {
 			"<dt>Last</dt><dd>#790 filed <span class=\"why\">· Mon 12 Oct 06:00</span></dd>\n" +
 			"<dt>While open</dt><dd>hold <span class=\"why\">· a run skips while the last card is open, and says so</span></dd>\n" +
 			"<dt>Tells</dt><dd>inbox <span class=\"why\">· a filing pokes the inbox</span></dd>\n</dl>",
-		`<form method="post" action="/routines/` + bumpKey + `/skip" hx-post="/routines/` + bumpKey + `/skip" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>`,
-		`<form method="post" action="/routines/` + bumpKey + `/run" hx-post="/routines/` + bumpKey + `/run" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form>`,
+		`<form method="post" action="/routines/` + bumpKey + `/skip" hx-post="/routines/` + bumpKey + `/skip" hx-target="#drawer" hx-swap="innerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>`,
+		`<form method="post" action="/routines/` + bumpKey + `/run" hx-post="/routines/` + bumpKey + `/run" hx-target="#drawer" hx-swap="innerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form>`,
 		`<details class="sec" data-sec="brief"><summary>The brief<span class="hint">routines/weekly-bump.md</span></summary><div class="sec-body"><p class="objective-body">Bump the pinned inputs to the newest release of each line.</p></div></details>`,
 		runs,
 		`<details class="sec" data-sec="config"><summary>Config</summary><div class="sec-body">` + config + `</div></details>`,
@@ -142,10 +145,12 @@ func TestRoutineDrawerTabs(t *testing.T) {
 	}
 
 	d = getPage(r, ck, path+"?tab=runs").Body.String()
-	if !strings.Contains(d, `data-routine-drawer="`+bumpKey+`:runs">`) || !strings.Contains(d, `<div class="life runs">`+strings.Join(bumpRows, "")+`</div>`) {
-		t.Fatalf("the runs tab lacks the six runs newest first:\n%s", d)
+	if !strings.Contains(d, `data-routine-drawer="`+bumpKey+`:runs">`) || !strings.Contains(d, `<div class="life runs">`+strings.Join(bumpRows, "")+`</div>`) ||
+		strings.Contains(d, "older") {
+		t.Fatalf("the runs tab lacks the six runs newest first, or counts older ones a full list would hold:\n%s", d)
 	}
 	d = getPage(r, ck, path+"?tab=config").Body.String()
+	equal(t, "the runs read for the overview, the runs tab and config", r.routines.limits, []int{3, 100})
 	if !strings.Contains(d, `<div id="drawer-panel" class="drawer-body" role="tabpanel">`+"\n"+config) || strings.Contains(d, "top-block") {
 		t.Fatalf("the config tab:\n%s", d)
 	}
@@ -177,6 +182,17 @@ func TestRoutineDrawerTabs(t *testing.T) {
 	d = getPage(r, ck, path+"?tab=runs").Body.String()
 	if strings.Count(d, `<span class="k st-closed">no change</span>`) != 100 || !strings.Contains(d, "</div>\n<p class=\"quiet\">and 31 older runs</p>") {
 		t.Fatalf("the runs past the list:\n%s", d)
+	}
+	// exactly 100: the list holds them all
+	bump.State.Runs = 100
+	r.routines.views, r.routines.runs[bumpKey] = []factoryd.RoutineView{bump, audit()}, r.routines.runs[bumpKey][31:]
+	d = getPage(r, ck, path+"?tab=runs").Body.String()
+	if strings.Count(d, `<span class="k st-closed">no change</span>`) != 100 || strings.Contains(d, "older") {
+		t.Fatalf("100 runs of 100:\n%s", d)
+	}
+	// none yet
+	if d = getPage(r, ck, "/routines/ai-software-factory-code/audit/drawer?tab=runs").Body.String(); !strings.Contains(d, `role="tabpanel">`+"\n"+`<p class="quiet">No run yet.</p>`) {
+		t.Fatalf("the runs tab of a routine that never ran:\n%s", d)
 	}
 
 	// a merge-counted routine that never ran, without a brief
@@ -217,5 +233,73 @@ func TestRoutineDrawerNeedsAMember(t *testing.T) {
 		if rec := getPage(r, ck, p); rec.Code != http.StatusNotFound {
 			t.Fatalf("GET %s = %d", p, rec.Code)
 		}
+	}
+}
+
+// An event routine's next run has no time: its Next row is blank, as its
+// schedule names the event.
+func TestRoutineDrawerOfAnEventRoutine(t *testing.T) {
+	r := newRig(t)
+	rt := policy.Routine{Name: "push-report", Title: "Push report", Files: policy.FilesReport, Schedule: []policy.Trigger{{On: policy.OnPushMain}}}
+	r.routines.views = []factoryd.RoutineView{{Project: "ai-software-factory-code", Routine: rt, NextWords: rt.Words(), Lane: "queued"}}
+	ck, _ := r.loggedIn(t)
+	d := getPage(r, ck, "/routines/ai-software-factory-code/push-report/drawer").Body.String()
+	for _, want := range []string{
+		`<p class="drawer-facts">routine · on each push to main · report</p>`,
+		"<dt>Schedule</dt><dd>on each push to main</dd>\n<dt>Next</dt><dd class=\"muted\">—</dd>\n",
+	} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("the event routine's drawer lacks\n%s\n%s", want, d)
+		}
+	}
+}
+
+// What the drawer cannot read it says, each on its own line, and the
+// Overview still counts the runs the routine made.
+func TestRoutineDrawerSaysWhatItCouldNotRead(t *testing.T) {
+	r := newRig(t)
+	bump := soonBump()
+	bump.State.Runs = 15
+	r.routines.views = []factoryd.RoutineView{bump}
+	ck, _ := r.loggedIn(t)
+	r.ledger.down, r.routines.runsErr = true, errors.New("the store is down")
+	d := getPage(r, ck, "/routines/"+bumpKey+"/drawer").Body.String()
+	for _, want := range []string{
+		"<p class=\"problem\" role=\"alert\">The configuration in force could not be read. See the factoryd log.</p>\n" +
+			"<p class=\"problem\" role=\"alert\">The routine&#39;s runs could not be read. See the factoryd log.</p>\n",
+		`<summary>Runs (15)</summary>`,
+	} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("the drawer lacks\n%s\n%s", want, d)
+		}
+	}
+}
+
+// An act pressed in the drawer answers the drawer, read again after the
+// act, with the act's note; the board's ghost keeps answering the board.
+func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
+	r := newRig(t)
+	r.routines.views = []factoryd.RoutineView{soonBump()}
+	r.routines.onSkip = func(string, string) {
+		r.routines.views[0].Next, r.routines.views[0].NextWords = time.Now().Add(7*24*time.Hour+20*time.Minute+30*time.Second), "Mon 26 Oct 06:00"
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "from": {"drawer"}, "project": {"ai-software-factory-code"}}), ck)
+	d := rec.Body.String()
+	for _, want := range []string{
+		`<div class="drawer-content" data-routine-drawer="` + bumpKey + `:overview">`,
+		`<div id="drawer-panel" class="drawer-body" role="tabpanel">` + "\n" + `<p class="note" role="status">Skipped once · next Mon 26 Oct 06:00</p>`,
+		"<dt>Next</dt><dd>Mon 26 Oct 06:00 · in 7 d</dd>\n",
+		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="project" value="ai-software-factory-code">`,
+	} {
+		if rec.Code != http.StatusOK || !strings.Contains(d, want) {
+			t.Fatalf("the drawer's skip = %d, lacks\n%s\n%s", rec.Code, want, d)
+		}
+	}
+	if strings.Contains(d, `id="board"`) {
+		t.Fatalf("the drawer's skip answers the board:\n%s", d)
+	}
+	if b := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck).Body.String(); !strings.HasPrefix(b, `<div id="board"`) {
+		t.Fatalf("the ghost's skip answers no board:\n%s", b)
 	}
 }

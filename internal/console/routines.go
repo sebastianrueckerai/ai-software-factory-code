@@ -32,7 +32,7 @@ func (c *Console) routineSkip(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.routineActed(w, r, note)
 }
 
 // routineRun is a routine's Run now (doRoutineRun).
@@ -40,6 +40,16 @@ func (c *Console) routineRun(w http.ResponseWriter, r *http.Request) {
 	note, err := c.doRoutineRun(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"))
 	if err != nil {
 		c.fail(w, r, err)
+		return
+	}
+	c.routineActed(w, r, note)
+}
+
+// routineActed answers an act with note: the routine's drawer when its
+// form sat there (from=drawer), else the board.
+func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note string) {
+	if r.PostFormValue("from") == "drawer" {
+		c.showRoutineDrawer(w, r, "overview", note)
 		return
 	}
 	c.showBoard(w, r, http.StatusOK, note, nil)

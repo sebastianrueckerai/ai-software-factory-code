@@ -62,21 +62,22 @@ const runDue = "Mon 2 Jan 15:04"
 
 // routineDrawerData is a routine's drawer on one tab (C16). Sub is the
 // head's line and Rows the top block; Acts carries the ghost's forms.
-// Runs are the newest runs, Recent the Overview's first three of them and
-// Older those past the list; Config is the routine as its project file
-// holds it.
+// Runs are the newest runs, three on the Overview, and Older those past
+// the Runs tab's list; Config is the routine as its project file holds
+// it. Note is what the member's act did, Problems what could not be read.
 type routineDrawerData struct {
-	View         factoryd.RoutineView
-	Tab          string
-	Tabs         []drawerTab
-	Sub          string
-	Rows         []topRow
-	Acts         ghost
-	Brief        string
-	Runs, Recent []routineRun
-	Older        int
-	Config       string
-	Problem      string
+	View     factoryd.RoutineView
+	Tab      string
+	Tabs     []drawerTab
+	Sub      string
+	Rows     []topRow
+	Acts     ghost
+	Brief    string
+	Runs     []routineRun
+	Older    int
+	Config   string
+	Note     string
+	Problems []string
 }
 
 // topRow is a row of a drawer's top block: its term, its value with the
@@ -93,6 +94,10 @@ type routineRun struct {
 	EUR                                         float64
 	Costs                                       bool
 }
+
+// filedNothing are the outcomes of a run that filed nothing, whose row
+// shows no duration.
+var filedNothing = []string{"held", "skipped", "folded", "gone", "no change", "reported"}
 
 // outcomeClasses are the hues of a run's outcomes, an outcome-less run's
 // "running" among them.
@@ -120,6 +125,13 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, runs or config", http.StatusBadRequest)
 		return
 	}
+	c.showRoutineDrawer(w, r, tab, "")
+}
+
+// showRoutineDrawer renders the drawer of the path's routine on tab with
+// note, what the member's act did; an act's drawer keeps the board's
+// filter its form carried.
+func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab, note string) {
 	if c.cfg.Routines == nil {
 		http.NotFound(w, r)
 		return
@@ -139,11 +151,15 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 	rv := views[i]
 	rt := rv.Routine
 	f := urlFilter(r)
+	if r.Method == http.MethodPost {
+		f = formFilter(r)
+	}
 	f.Project = cmp.Or(f.Project, project)
-	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Acts: ghost{Project: project, Name: name, Title: rt.Title, Filter: f, CSRF: current(r).csrf}}
+	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Note: note,
+		Acts: ghost{Project: project, Name: name, Title: rt.Title, Filter: f, CSRF: current(r).csrf, Drawer: true}}
 	v, ok := c.inForce(ctx)
 	if !ok {
-		d.Problem = "The configuration in force could not be read. See the factoryd log."
+		d.Problems = append(d.Problems, "The configuration in force could not be read. See the factoryd log.")
 	}
 	loc, err := v.Document.Location()
 	if err != nil {
@@ -151,13 +167,15 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 	}
 
 	when, in, kind := nextWords(rv, time.Now())
-	next := rv.NextWords
+	next := topRow{Term: "Next", Value: when}
 	d.Sub = "routine · " + rt.Words() + " · " + kind
 	switch {
 	case in != "":
-		d.Sub, next = d.Sub+" · next "+when+", in "+in, when+" · in "+in
+		d.Sub, next.Value = d.Sub+" · next "+when+", in "+in, when+" · in "+in
 	case when != "":
 		d.Sub += " · next " + when
+	default: // an event's: the schedule's words name it
+		next.Value, next.Class = "—", "muted"
 	}
 	schedule := topRow{Term: "Schedule", Value: rt.Words()}
 	if slices.ContainsFunc(rt.Schedule, func(t policy.Trigger) bool { return t.Cron != "" }) {
@@ -173,7 +191,7 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 	if rv.Last.Run > 0 {
 		last.Why = rv.Last.Due.In(loc).Format(runDue)
 	}
-	d.Rows = []topRow{schedule, {Term: "Next", Value: next}, last,
+	d.Rows = []topRow{schedule, next, last,
 		{Term: "While open", Value: rt.WhileOpenRule(), Why: whileOpenWords[rt.WhileOpenRule()]},
 		{Term: "Tells", Value: rt.TellRule(), Why: tellWords[rt.TellRule()]}}
 	if rt.Missed != "" {
@@ -186,16 +204,19 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: routine %s of %s as YAML: %v", name, project, err)
 	}
 	if tab != "config" {
-		runs, err := c.cfg.Routines.Runs(ctx, project, name, routineRunsShown)
+		limit := 3
+		if tab == "runs" {
+			limit = routineRunsShown
+		}
+		runs, err := c.cfg.Routines.Runs(ctx, project, name, limit)
 		if err != nil {
 			log.Printf("console: the runs of routine %s of %s: %v", name, project, err)
-			d.Problem = "The routine's runs could not be read. See the factoryd log."
+			d.Problems = append(d.Problems, "The routine's runs could not be read. See the factoryd log.")
 		}
 		for _, run := range runs {
 			d.Runs = append(d.Runs, routineRunOf(run, loc))
 		}
-		d.Recent = d.Runs[:min(3, len(d.Runs))]
-		if len(runs) == routineRunsShown {
+		if tab == "runs" && len(runs) == routineRunsShown {
 			d.Older = rv.State.Runs - len(runs)
 		}
 	}
@@ -205,9 +226,13 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 // routineRunOf is run as its drawer row, its due time read in loc.
 func routineRunOf(run factoryd.RoutineRun, loc *time.Location) routineRun {
 	o := cmp.Or(run.Outcome, "running")
-	row := routineRun{Due: run.Due.In(loc).Format(runDue), Outcome: o, Class: cmp.Or(outcomeClasses[o], "st-closed"), Duration: "open", Note: run.Note,
+	row := routineRun{Due: run.Due.In(loc).Format(runDue), Outcome: o, Class: cmp.Or(outcomeClasses[o], "st-closed"), Note: run.Note,
 		TaskID: run.TaskID, Issue: run.Issue, EUR: run.CostEUR, Costs: run.TaskID != "" && !run.Ended.IsZero()}
-	if !run.Ended.IsZero() {
+	switch {
+	case slices.Contains(filedNothing, o):
+	case run.Ended.IsZero():
+		row.Duration = "open"
+	default:
 		row.Duration = minutes(run.Ended.Sub(run.Started))
 	}
 	return row
