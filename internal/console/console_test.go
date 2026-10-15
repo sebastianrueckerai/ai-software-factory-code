@@ -1903,7 +1903,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are red, so it cannot merge: run them again "+
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
 		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") || len(r.fg.calls) != 0 {
 		t.Fatalf("approve on red = %d %q, calls %q: want the refusal and no review", rec.Code, rec.Body, r.fg.calls)
 	}
@@ -1973,6 +1973,9 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
 	}
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "make the stub match the interface" {
+		t.Fatalf("reviews = %v: want one REQUEST_CHANGES with the note", r.fg.reviews)
+	}
 }
 
 // A factory pull request's merge request on red checks fits its re-run and
@@ -1987,6 +1990,17 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
 		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
 	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
+}
+
+// An agent pull request's merge request on red checks fits its return and
+// its close, not an approval.
+func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
+	const want = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
+	for _, status := range []string{"in-review", "waiting-human"} {
+		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}
+		equal(t, status, fitting(card, capFactsFrom(card, 0, "", req)), want)
+	}
 }
 
 // A resource request is approved for its task, once; the project's

@@ -74,6 +74,9 @@ type capFacts struct {
 	// rerun: its merge request is a factory pull request's on red checks,
 	// which a re-run or a close decides (roadmap 264)
 	rerun bool
+	// returns: its merge request is an agent's on red checks, which a
+	// return to the agent or a close decides
+	returns bool
 }
 
 // capFactsOf reads t's facts, only for a card waiting on a human or in
@@ -113,6 +116,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		var spec factoryd.MergeSpec
 		if q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
 			f.rerun = spec.Factory && spec.RedChecks
+			f.returns = !spec.Factory && spec.RedChecks
 		}
 	}
 	f.capped = t.Status == "waiting-human" && !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
@@ -140,6 +144,10 @@ func splitRunning(t factoryd.Task, pr int64) error {
 // red checks (roadmap 264).
 const factoryRedFits = "rerun_checks runs its red checks again, or deny_merge closes it with your words"
 
+// agentRedFits is what decides an agent pull request's merge request on
+// red checks.
+const agentRedFits = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+
 // fitting is the action that fits t's state.
 func fitting(t factoryd.Task, f capFacts) string {
 	switch t.Status {
@@ -153,6 +161,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "an answer with the findings grants one session (answer); close ends it"
 		case f.rerun:
 			return factoryRedFits
+		case f.returns:
+			return agentRedFits
 		case f.merge:
 			return "approve_merge or deny_merge decide its merge request"
 		case f.plan:
@@ -168,6 +178,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "in-review":
 		if f.rerun {
 			return factoryRedFits
+		}
+		if f.returns {
+			return agentRedFits
 		}
 		if f.merge {
 			return "approve_merge or deny_merge decide its merge request"
@@ -1494,13 +1507,12 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 		}
-		if spec.RedChecks && !spec.Factory {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: return it to the agent with what to change "+
-				"(deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close).", q.PRNumber))
-		}
-		if spec.Factory && spec.RedChecks {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: run them again "+
-				"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).", q.PRNumber))
+		if spec.RedChecks {
+			remedy := "return it to the agent with what to change (deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close)"
+			if spec.Factory {
+				remedy = "run them again (rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close)"
+			}
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
 		}
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the approving review", err}
