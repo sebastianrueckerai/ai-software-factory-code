@@ -104,7 +104,9 @@ func (r *Registrar) templateUpdate(ctx context.Context, p Project) (Change, erro
 // openTemplateUpdate runs the template pass's opening branch of project p:
 // it cuts the branch from main on the fork, made and synced first, with
 // want, opens the pull request and files its card (roadmap 187). A branch
-// a closed pull request left goes to leftBranch instead.
+// a closed pull request left goes to leftBranch instead. The new pull
+// request replaces the one closed last: a card that one was due (cardDue)
+// closes as factoryd's, its issue naming the new card.
 func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[string][]byte, body string) (Change, error) {
 	f, repo := r.Forgejo.As(r.ProjectsUser, r.Forgejo.ProjectsToken), p.Repo()
 	fork := f.Fork(repo)
@@ -114,6 +116,16 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 	}
 	if !errors.Is(err, ErrNotFound) {
 		return "", err
+	}
+	last, err := f.LastClosedPullRequestFrom(ctx, repo.Owner, repo.Name, f.BotUser, fork, TemplateUpdateBranch)
+	if err != nil {
+		return "", err
+	}
+	var replaced *Task
+	if last != nil && !last.Merged {
+		if replaced, _, err = r.cardDue(ctx, repo, last.Number); err != nil {
+			return "", err
+		}
 	}
 	if err := f.EnsureFork(ctx, repo); err != nil {
 		return "", err
@@ -133,8 +145,14 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 		// a branch without its pull request would read as the last one closed
 		return "", errors.Join(err, f.DeleteBranch(ctx, fork.Owner, fork.Name, TemplateUpdateBranch))
 	}
-	if _, _, err := r.fileTemplateCard(ctx, p, ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", ")); err != nil {
+	_, issue, err := r.fileTemplateCard(ctx, p, ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
+	if err != nil {
 		return "", err
+	}
+	if replaced != nil {
+		if err := r.closeReplaced(ctx, p, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
+			return "", err
+		}
 	}
 	return Change(fmt.Sprintf("created pull request #%d: %s", ref.Number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))), nil
 }
@@ -214,18 +232,24 @@ func (r *Registrar) cardDue(ctx context.Context, repo Repo, number int64) (faile
 const refusedToAgents = " is forbidden to agents: "
 
 // fileDueCard files the card pull request number is due (cardDue). The
-// failed card it replaces closes as factoryd's recorded close, its issue
-// naming the new card, as a retried plan card's does.
+// failed card it replaces closes (closeReplaced).
 func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, failed *Task, want map[string][]byte) error {
 	_, ref, err := r.fileTemplateCard(ctx, p, number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
 	if err != nil || failed == nil {
 		return err
 	}
+	return r.closeReplaced(ctx, p, *failed, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number))
+}
+
+// closeReplaced closes failed card's issue as factoryd's recorded close,
+// as a retried plan card's: why, naming the card that replaces it, is
+// its comment.
+func (r *Registrar) closeReplaced(ctx context.Context, p Project, failed Task, why string) error {
 	repo := p.Repo()
-	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, failed.IssueNumber, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number)); err != nil {
+	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, failed.IssueNumber, why); err != nil {
 		return err
 	}
-	if err := recordFactoryClose(ctx, r.Cards, *failed); err != nil {
+	if err := recordFactoryClose(ctx, r.Cards, failed); err != nil {
 		return err
 	}
 	return r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, failed.IssueNumber)

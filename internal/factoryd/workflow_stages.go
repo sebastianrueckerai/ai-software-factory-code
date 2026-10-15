@@ -63,6 +63,10 @@ const reviewHistory = policy.StageReview + ", round "
 // capReached heads the card of a task at its session cap.
 const capReached = "the session cap is reached: every finding sent to the agent so far goes to a human"
 
+// noAgent heads the card of a factory pull request card whose stages found
+// what an agent's card would go back with (versionFactoryPRFindings).
+const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
+
 // AtSessionCap: escalation is the card of a task at its session cap.
 func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
 
@@ -264,7 +268,7 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 
 // onFindings sends stage s's findings where its on_findings says: stop
 // with the task's verdict (fail, or back to the agent), or onto the card,
-// capped when the agent may take no more.
+// capped when the agent may take no more or there is none (noAgent).
 func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]string) (verdict, bool) {
 	switch s.OnFindings {
 	case policy.FindingsFail:
@@ -278,6 +282,8 @@ func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]
 		t.remember(s.Name, 0, findings)
 		limit := ""
 		switch {
+		case t.orphanPR && t.factoryPRFindings >= versionFactoryPRFindings:
+			limit = noAgent
 		case t.lastRound:
 			limit = capReached
 		case s.MaxReturns != nil && t.returns[s.Name] >= *s.MaxReturns:
@@ -865,7 +871,12 @@ func (t *taskRun) headGreen(commit string, card *[]string) (verdict, bool) {
 		return v, true
 	}
 	if len(capped) > 0 {
-		*card = append(append(capped, t.history...), *card...)
+		// the stages' pass may have put the same lines on the card
+		var lines []string
+		for _, l := range slices.Concat(capped, t.history, *card) {
+			lines = appendNew(lines, l)
+		}
+		*card = lines
 	}
 	return verdict{}, false
 }

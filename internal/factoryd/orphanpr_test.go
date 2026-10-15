@@ -11,6 +11,7 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -405,23 +406,37 @@ func TestFactoryPRCardWithoutItsPullRequestFails(t *testing.T) {
 	}
 }
 
-// Findings on a factory pull request card's head end it, like a roll's:
-// no session answers them and no RollCommit writes what they ask, the
-// pull request exists already.
-func TestFactoryPRCardFailsOnFindingsItCannotAnswer(t *testing.T) {
-	g := newGateHarness(t)
-	g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate,
-		PR: PullRequest{Number: 9}, Head: "c7"}
+// A factory pull request card has no agent (versionFactoryPRFindings): the
+// findings a stage would send an agent's card back with, red checks and
+// the review's concerns, go to a human's approval, whose card names each
+// once; no session runs and the card never fails for want of an agent.
+// The approval merges it. A run from before the change fails on them.
+func TestFactoryPRCardTakesItsFindingsToAHuman(t *testing.T) {
 	red := "check \"pr / test (pull_request)\": failure"
-	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}})
-	if final := g.run(t); final != "failed" {
-		t.Fatalf("final = %q", final)
+	concern := "ci.yml: the smoke job has no trigger"
+	factoryCard := func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "the smoke job never runs", Findings: []string{concern}}
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+		g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}})
+		g.onHeadChecks(ChecksResult{State: ChecksFailure, Findings: []string{red}})
 	}
-	if reason := g.finals[0][1]; reason != "factory pull request: checks findings went back to the agent: "+red {
-		t.Fatalf("reason = %q", reason)
+	g := newGateHarness(t, factoryCard)
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.sessions) != 0 {
-		t.Fatalf("sessions = %v, want none", g.sessions)
+	want := []string{noAgent, "checks, round 1: " + red, "review, round 1: " + concern}
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, want) {
+		t.Fatalf("approvals %+v, want one whose card is %q", g.approvals, want)
+	}
+	if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) || len(g.sessions) != 0 {
+		t.Fatalf("merges %v, sessions %v: want the approved merge and no session", g.merges, g.sessions)
+	}
+
+	old := newGateHarness(t, factoryCard)
+	old.env.OnGetVersion("factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings).Return(workflow.DefaultVersion)
+	if final := old.run(t); final != "failed" || old.finals[0][1] != "factory pull request: checks findings went back to the agent: "+red {
+		t.Fatalf("a run from before the change: final = %q, finals %v", final, old.finals)
 	}
 }
 

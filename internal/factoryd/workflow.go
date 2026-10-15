@@ -458,6 +458,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
 	run.podWait = workflow.GetVersion(ctx, "pod-wait", workflow.DefaultVersion, versionPodWait)
 	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
+	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -895,6 +896,12 @@ const (
 	// A run from before the change keeps a beside gate's trips for its
 	// stage.
 	versionBesideLadder workflow.Version = 1
+	// versionFactoryPRFindings (change id "factory-pr-findings"): a card of
+	// a pull request factoryd opened has no agent, so the findings a stage
+	// would send an agent's card back with (red checks, the review's
+	// concerns, an audit's findings) go on its approval card under noAgent,
+	// for a human. A run from before the change fails the card on them.
+	versionFactoryPRFindings workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -987,6 +994,7 @@ type taskRun struct {
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
 	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
 	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
+	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1610,9 +1618,10 @@ func (t *taskRun) roll(head string) (string, error) {
 // to it: like a roll's run it holds no session and takes the gates from
 // running (set running, then verify sets in-review and runs the stages).
 // Unlike a roll it runs no RollCommit — nothing writes its branch, the
-// pull request exists already — so findings on the head end the task where
-// a roll's next round would write what the findings ask (verify opens no
-// pull request: the linked one is taken, t.orphanPR).
+// pull request exists already — and no agent answers its findings: they go
+// to the human's approval (versionFactoryPRFindings), and a human's change
+// request ends the task where a roll's next round would write what it asks
+// (verify opens no pull request: the linked one is taken, t.orphanPR).
 func (t *taskRun) factoryPR(head string) (string, error) {
 	if final, why, ok := t.decided(); ok {
 		return t.finish(final, why)

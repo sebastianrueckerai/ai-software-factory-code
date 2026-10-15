@@ -594,6 +594,39 @@ func TestTemplateUpdateRefilesACardRefusedAsForbiddenToAgents(t *testing.T) {
 	}
 }
 
+// A render that changed since a card was refused as forbidden to agents
+// deletes the branch its closed pull request left, and the next pass opens
+// a new pull request with its card: the refused card, due one, closes as
+// factoryd's, its issue naming the new pull request and card.
+func TestTemplateUpdateNewPullRequestClosesTheRefusedCard(t *testing.T) {
+	fj, reg, store, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	refused := templateCards(t, tasks)[0]
+	failTemplateCard(t, fj, tasks, refused, true)
+	if err := reg.Timeline.Append(ctx, refused, "final", map[string]any{"state": "failed",
+		"reason": "policy: policy version 656: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml"}); err != nil {
+		t.Fatal(err)
+	}
+	p := store.m["demo-app"]
+	p.TemplateFiles = maps.Clone(p.TemplateFiles)
+	p.TemplateFiles["deploy/smoke.sh"] = "curl -f [[.Name]]\n"
+	store.m["demo-app"] = p
+	reg.TemplateUpdates(ctx)
+	if fj.branches[TemplateUpdateBranch] != nil || len(fj.prs) != 1 || fj.issues[0].state != "open" {
+		t.Fatalf("branch %v, pull requests %+v, issues %+v: want the branch deleted, nothing else yet", fj.branches[TemplateUpdateBranch], fj.prs, fj.issues)
+	}
+	reg.TemplateUpdates(ctx)
+	cards := templateCards(t, tasks)
+	if len(fj.prs) != 2 || fj.prs[1].state != "open" || len(cards) != 1 || len(fj.issues) != 2 {
+		t.Fatalf("pull requests %+v, cards of #1 %v, issues %d: want #2 open with its card on issue #2", fj.prs, cards, len(fj.issues))
+	}
+	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: factoryd: Pull request #2 replaces #1; its card is #2.") ||
+		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == refused && e.Kind == IntakeFactoryClosed }) {
+		t.Fatalf("issues %+v, comments %q, intake events %+v: want the refused card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a card's
 // row is inserted with its pull request; a pull request's cards come newest
 // first, TaskByPR is the newest, and only a card whose status moved to
