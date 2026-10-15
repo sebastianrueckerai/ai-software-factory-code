@@ -1581,9 +1581,9 @@ var (
 		At: oct(14, 20, 43)}
 	dayCapped = SessionResult{Outcome: OutcomeDayCap, SessionID: "s1", Capped: &dayRefusal,
 		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_day_cap"}}
-	dayQuestion = "the day cap is reached: the gateway refused this task's spend (refused_day_cap): the card resumes on its own once the day's free headroom " +
+	dayQuestion = "the day cap is reached: the card resumes on its own once the day's free headroom " +
 		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
-	dayReason = dayQuestion + "\nfree headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
 )
 
 // A session the day cap refused at its first call (card #784, roadmap 240)
@@ -1638,7 +1638,7 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if want := dayQuestion + "\n" + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
+	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's wait once: %q", h.escalated, want)
 	}
 	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {

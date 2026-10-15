@@ -1271,7 +1271,7 @@ func (t *taskRun) lifecycle() (string, error) {
 					// wait, not a human's, and no attempt ran
 					_, state, _ := strings.Cut(why, "\n")
 					until := dayTurn(workflow.Now(t.ctx))
-					final, end, answer := t.awaitDay(dayCapRefused(policy.Refusal{Decision: policy.RefusedDayCap, Reason: state}, until), until, model)
+					final, end, answer := t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)
 					if final != "" {
 						return t.finish(final, end)
 					}

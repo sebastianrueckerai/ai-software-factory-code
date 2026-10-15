@@ -57,12 +57,19 @@ func (c CapRefusal) reason() string {
 	if c.Decision != policy.RefusedDayCap {
 		return capRefused(c.Refusal)
 	}
-	return dayCapRefused(c.Refusal, c.until())
+	return dayCapRefused(dayCapGateway, c.Reason, c.until())
 }
 
-// dayCapReached opens the reason of a session the gateway refused at the
-// day cap.
-const dayCapReached = "the day cap is reached: the gateway refused this task's spend (refused_day_cap)"
+// dayCapReached opens the reason of a card the day cap stopped.
+const dayCapReached = "the day cap is reached"
+
+// What refused at the day cap, which opens the reason's second line: the
+// gateway a session's call, or the attempt's floor the attempt before it
+// started.
+const (
+	dayCapGateway = "the gateway refused this task's spend (refused_day_cap)"
+	dayCapFloor   = "the attempt's floor refused the attempt before it started (refused_day_cap)"
+)
 
 // dayTurn is when the UTC day of at ends: the day cap counts the ledger's
 // UTC day (budget.day_eur), so it resets then.
@@ -75,12 +82,13 @@ func dayTurn(at time.Time) time.Time {
 // wait ends on its own (dayWait).
 const dayCapResumes = dayCapReached + ": the card resumes on its own"
 
-// dayCapRefused is the reason of a session the gateway refused at the day
-// cap, which resets at until: its first line is the card's question row
-// (escalationQuestion), with the actions.
-func dayCapRefused(r policy.Refusal, until time.Time) string {
+// dayCapRefused is the reason of a card by (dayCapGateway, dayCapFloor)
+// refused at the day cap, which resets at until: its first line is the
+// card's question row (escalationQuestion), with the actions; the second
+// names by and its state.
+func dayCapRefused(by, state string, until time.Time) string {
 	return fmt.Sprintf("%s once the day's free headroom funds a session, at the latest when the UTC day turns at %s. "+
-		"Raise budget.day_eur in policy.yaml to resume it sooner, or close the card.\n%s", dayCapResumes, stamp(until), r.Reason)
+		"Raise budget.day_eur in policy.yaml to resume it sooner, or close the card.\n%s: %s", dayCapResumes, stamp(until), by, state)
 }
 
 // dayCapWait is the wait on the day cap the task's last escalation holds:

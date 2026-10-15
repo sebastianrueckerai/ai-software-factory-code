@@ -414,11 +414,11 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	if res.Outcome != OutcomeDayCap || res.Capped == nil || res.Capped.Refusal != capped.Refusal || !res.Capped.At.Equal(capped.At) || !res.Capped.Allowed {
 		t.Fatalf("result = %+v, want day_cap with the refusal", res)
 	}
-	question := "the day cap is reached: the gateway refused this task's spend (refused_day_cap): the card resumes on its own once the day's free headroom " +
+	question := "the day cap is reached: the card resumes on its own once the day's free headroom " +
 		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
 	reason := res.Capped.reason()
-	if reason != question+"\n"+refusal || !res.Capped.until().Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
-		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, res.Capped.until(), question+"\n"+refusal)
+	if want := question + "\nthe gateway refused this task's spend (refused_day_cap): " + refusal; reason != want || !res.Capped.until().Equal(time.Date(2026, 10, 15, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("reason %q until %v, want %q until 2026-10-15 00:00 UTC", reason, res.Capped.until(), want)
 	}
 	if got := escalationQuestion(reason); got != question {
 		t.Fatalf("question row = %q, want %q", got, question)

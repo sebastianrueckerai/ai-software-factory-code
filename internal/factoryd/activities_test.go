@@ -2219,7 +2219,7 @@ func TestDayResume(t *testing.T) {
 // its reason, and the turn of the escalation's UTC day; any later
 // escalation, or a split's at the day cap, asks otherwise.
 func TestDayCapWait(t *testing.T) {
-	reason := dayCapRefused(policy.Refusal{Reason: "spent"}, oct(15, 0, 0))
+	reason := dayCapRefused(dayCapGateway, "spent", oct(15, 0, 0))
 	esc := func(body string, at time.Time) IntakeEvent {
 		return IntakeEvent{Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}
 	}
