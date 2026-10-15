@@ -72,6 +72,12 @@ var enums = map[string][]string{
 	"Merge.Queue":             Queues,
 	"ChatConfig.Model":        ChatModels,
 	"ChatConfig.Confirm":      ChatTools,
+	"Routine.Files":           RoutineFiles,
+	"Routine.Pass":            RoutinePasses,
+	"Routine.WhileOpen":       WhileOpenValues,
+	"Routine.Missed":          MissedValues,
+	"Routine.Tell":            TellValues,
+	"Trigger.On":              RoutineEvents,
 }
 
 // SchemaVersion is Document.Version's one value.
@@ -82,7 +88,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go process.go commands.go
+//go:embed policy.go project.go risk.go process.go commands.go routine.go
 var typeSources embed.FS
 
 var (

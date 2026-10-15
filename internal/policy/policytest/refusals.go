@@ -88,7 +88,7 @@ var Refusals = map[string]Refusal{
 	"workflow_yaml": {Change: func(f map[string][]byte) {
 		f["workflow.yaml"] = []byte("# yaml-language-server: $schema=schema/workflow.schema.json\nstages:\n" +
 			"  - {name: policy, on_findings: fail, enabled: true}\n  - {name: approval, on_findings: human, enabled: true}\n" + merge)
-	}, Want: []string{`workflow.yaml: unknown file "workflow.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
+	}, Want: []string{`workflow.yaml: unknown file "workflow.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/, routines/<name>.md and schema/`}},
 
 	// P1 to P3: projects and their processes
 	"project_process_unknown": {Change: in("projects/linkshort.yaml", "process: spec", "process: specs"),
@@ -200,7 +200,7 @@ var Refusals = map[string]Refusal{
 	"ready_session_only": {Exact: true, Change: in(spec, "{name: ready, class: coder", "{name: ready, class: analyzer"),
 		Want: []string{"processes/spec.yaml: lanes.ready: class analyzer has session report; lane ready needs a class with session code"}},
 	"nested_process": {Change: func(f map[string][]byte) { f["processes/x/spec.yaml"] = f[spec] },
-		Want: []string{`processes/x/spec.yaml: unknown file "processes/x/spec.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
+		Want: []string{`processes/x/spec.yaml: unknown file "processes/x/spec.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/, routines/<name>.md and schema/`}},
 }
 
 const (
@@ -226,7 +226,7 @@ var TemplateRefusals = map[string]Refusal{
 	"template_dir_name": {Exact: true, Change: func(f map[string][]byte) { f["templates/TS/AGENTS.md"] = []byte("x\n") },
 		Want: []string{"templates/TS/AGENTS.md: the template's directory name: lowercase letters, digits and dashes, at most 37"}},
 	"template_loose_file": {Exact: true, Change: func(f map[string][]byte) { f["templates/AGENTS.md"] = []byte("x\n") },
-		Want: []string{`templates/AGENTS.md: unknown file "templates/AGENTS.md": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/ and schema/`}},
+		Want: []string{`templates/AGENTS.md: unknown file "templates/AGENTS.md": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/, routines/<name>.md and schema/`}},
 	"template_not_text": {Exact: true, Change: func(f map[string][]byte) { f["templates/ts-go/logo.png"] = []byte{0x89, 'P', 'N', 'G', 0xff} },
 		Want: []string{"templates/ts-go/logo.png: not UTF-8 text: a template holds text files"}},
 }

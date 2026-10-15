@@ -58,6 +58,24 @@ type Document struct {
 	// Chat is the project agent's block: its model, its monthly budget and
 	// the tools that need the member's OK. Absent: DefaultChat.
 	Chat *ChatConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
+	// TimeZone is the IANA zone of every routine's cron schedule, such as
+	// Europe/Berlin. Absent: UTC.
+	TimeZone string `yaml:"time_zone,omitempty" json:"time_zone,omitempty"`
+	// Routines are the factory's routines, each a pass that runs for every
+	// project it applies to: the template pass for every project with a
+	// template.
+	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
+}
+
+// Location is the zone of time_zone, UTC when the file leaves it out.
+func (d Document) Location() (*time.Location, error) {
+	switch d.TimeZone {
+	case "":
+		return time.UTC, nil
+	case "Local":
+		return nil, errors.New("Local is the host's zone, which moves with the host")
+	}
+	return time.LoadLocation(d.TimeZone)
 }
 
 // ChatConfig is the project agent's block of policy.yaml and of a project
@@ -860,6 +878,20 @@ func (d Document) Validate() error {
 		}
 		if s <= 0 {
 			return fmt.Errorf("policy: supervisor.%s must be a positive number of seconds, is %d", name, s)
+		}
+	}
+	if _, err := d.Location(); err != nil {
+		return fmt.Errorf("policy: time_zone %q: %v, want an IANA zone such as Europe/Berlin", d.TimeZone, err)
+	}
+	for i, r := range d.Routines {
+		if err := r.Validate("policy"); err != nil {
+			return err
+		}
+		if r.Files != FilesPullRequest {
+			return fmt.Errorf("policy: routine %q: a routine of policy.yaml is a pass over the projects, files pull-request, and a project's own routine goes in its project file", r.Name)
+		}
+		if slices.ContainsFunc(d.Routines[:i], func(o Routine) bool { return o.Name == r.Name }) {
+			return fmt.Errorf("policy: routine %q: given twice", r.Name)
 		}
 	}
 	for name, c := range d.Classes {

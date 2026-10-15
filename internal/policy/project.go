@@ -284,6 +284,9 @@ type ProjectConfig struct {
 	// BacklogCap bounds how many of the project's cards hold no admission
 	// stamp (backlog and queued); a filing at the cap refuses. Absent: 8.
 	BacklogCap int `yaml:"backlog_cap,omitempty" json:"backlog_cap,omitempty"`
+	// Routines are the project's recurring work, each run filing a card on
+	// its schedule.
+	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -504,6 +507,12 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)
+	}
+	for i, r := range p.Routines {
+		errs = append(errs, r.Validate("project "+name))
+		if slices.ContainsFunc(p.Routines[:i], func(o Routine) bool { return o.Name == r.Name }) {
+			bad("routine %q: given twice", r.Name)
+		}
 	}
 	switch p.Objects {
 	case ObjectsFactory:
