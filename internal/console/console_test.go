@@ -1936,6 +1936,45 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 }
 
+// An agent card's merge request on red checks (#838: the cap reached, the sync
+// with main turned the head red) cannot merge: its card offers the return to
+// the agent and the close, no Approve, and an approve refuses naming both.
+func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	start := strings.Index(body, `action="/approvals/4/`)
+	if start < 0 {
+		t.Fatalf("the board shows no form of request 4:\n%s", body)
+	}
+	start = strings.LastIndex(body[:start], "<article")
+	got := body[start : start+strings.Index(body[start:], "</article>")]
+	for _, want := range []string{`aria-controls="deny-4">Return or close</button>`, `name="action" value="request_changes" checked`, "return it to the agent",
+		`name="action" value="reject"`, "close it (closes the pull request)", `aria-label="Return or close PR #9 of t-m">Send</button>`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the red agent request lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>"} {
+		if strings.Contains(got, not) {
+			t.Errorf("the red agent request shows %q:\n%s", not, got)
+		}
+	}
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") || len(r.fg.calls) != 0 {
+		t.Fatalf("approve on red = %d %q, calls %q: want the refusal naming both ways and no review", rec.Code, rec.Body, r.fg.calls)
+	}
+	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 // A factory pull request's merge request on red checks fits its re-run and
 // its close, not an approval, wherever a refusal names what fits a card; on
 // green checks approve and deny decide it as any merge request.

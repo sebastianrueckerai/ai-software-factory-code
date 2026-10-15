@@ -1494,6 +1494,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 		}
+		if spec.RedChecks && !spec.Factory {
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: return it to the agent with what to change "+
+				"(deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close).", q.PRNumber))
+		}
 		if spec.Factory && spec.RedChecks {
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: run them again "+
 				"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).", q.PRNumber))

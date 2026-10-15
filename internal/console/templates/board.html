@@ -123,23 +123,23 @@
 {{end}}{{if .Rerun}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/rerun">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Re-run the checks of PR #{{.PRNumber}} of {{.TaskID}}">Re-run the checks</button>
-</form>{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
+</form>{{else if .Returns}}<div class="acts">{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
 {{end}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
-<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else}}Deny{{end}}</button>
+<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else if .Returns}}Return or close{{else}}Deny{{end}}</button>
 {{template "split" .}}</div>
 <form method="post" action="/approvals/{{.ID}}/deny" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}" hidden>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
+<label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else if .Returns}}What the agent changes, or why it closes, posted on the pull request as you{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
 <textarea id="note-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
-{{if and (eq .Kind "merge") (not .Merge.Factory)}}<fieldset><legend>Deny by</legend>
-<label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
-<label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
+{{if and (eq .Kind "merge") (not .Merge.Factory)}}<fieldset><legend>{{if .Returns}}Send it{{else}}Deny by{{end}}</legend>
+<label><input type="radio" name="action" value="request_changes" checked> {{if .Returns}}return it to the agent{{else}}requesting changes{{end}}</label>
+<label><input type="radio" name="action" value="reject"> {{if .Returns}}close it (closes the pull request){{else}}rejecting (closes the pull request){{end}}</label>
 </fieldset>{{end}}
 {{if .Merge.Factory}}<button type="submit" class="deny" aria-label="Close PR #{{.PRNumber}} of {{.TaskID}} and its card">Close</button>
-{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
+{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
 </form>
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
