@@ -45,6 +45,30 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	}
 }
 
+// Main's nightly run reads as a push run to Forgejo: red at 03:00 on a
+// roll merge whose push run was green, it filed a fix card and two hours
+// later the revert of the roll (cards #804 and #806). A scheduled run says
+// nothing of main's push CI: no pause, no card.
+func TestRollerTakesNoScheduledRunForMainsCI(t *testing.T) {
+	nightly := pushRun(59, commitC2, "failure")
+	nightly["trigger_event"] = "schedule"
+	f := &rollForgejo{
+		runs:     []map[string]any{nightly, pushRun(58, commitC2, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	for range 2 {
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pause, ok := store.pauses[codeRepo]; ok || len(f.issues) != 0 {
+		t.Fatalf("pause %+v (%v), issues %q; want none: the red run is the nightly schedule", pause, ok, f.issues)
+	}
+}
+
 // A green push run of main ends the pause and wakes the queue's waiting
 // head; a pause past the bound with no revert yet files the revert as a
 // factory-PR card on a branch of the bot's fork.

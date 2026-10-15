@@ -485,15 +485,18 @@ const actionTasksPage = 50
 // the run, those still blocked or waiting included; Created is when the
 // event (the push) created the run, Stopped when its last job finished.
 type ActionRun struct {
-	ID        int64     `json:"id"`
-	Index     int64     `json:"index_in_repo"` // the run number
-	CommitSHA string    `json:"commit_sha"`
-	PrettyRef string    `json:"prettyref"` // the branch of a push run
-	Event     string    `json:"event"`
-	Status    string    `json:"status"`
-	Created   time.Time `json:"created"`
-	Started   time.Time `json:"started"`
-	Stopped   time.Time `json:"stopped"`
+	ID        int64  `json:"id"`
+	Index     int64  `json:"index_in_repo"` // the run number
+	CommitSHA string `json:"commit_sha"`
+	PrettyRef string `json:"prettyref"` // the branch of a push run
+	Event     string `json:"event"`
+	// TriggerEvent is what started the run: a scheduled run reads push
+	// in Event, schedule here
+	TriggerEvent string    `json:"trigger_event"`
+	Status       string    `json:"status"`
+	Created      time.Time `json:"created"`
+	Started      time.Time `json:"started"`
+	Stopped      time.Time `json:"stopped"`
 	// EventPayload is the webhook payload that created the run, as JSON
 	EventPayload string `json:"event_payload"`
 }
@@ -515,7 +518,10 @@ func (r ActionRun) PushedRef() string {
 
 // ActionRuns reads owner/repo's actions/runs, newest first, filtered by
 // query (page, limit, event, head_sha, ...). Forgejo 15 honours limit only
-// with a page, so page 1 is asked when query names none.
+// with a page, so page 1 is asked when query names none. Forgejo files a
+// scheduled run under event push (main's nightly, run 1241), so a query
+// for an event drops the runs another trigger started: a push run is one
+// a push made.
 func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, query url.Values) ([]ActionRun, error) {
 	if query.Get("page") == "" {
 		query = maps.Clone(query)
@@ -530,6 +536,9 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
 		return nil, fmt.Errorf("forgejo actions runs: %w", err)
+	}
+	if event := query.Get("event"); event != "" {
+		res.Entries = slices.DeleteFunc(res.Entries, func(r ActionRun) bool { return r.TriggerEvent != "" && r.TriggerEvent != event })
 	}
 	return res.Entries, nil
 }

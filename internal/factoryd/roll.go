@@ -350,7 +350,8 @@ func (w *RollWatcher) measure(ctx context.Context, dep string, changes []rollCha
 		return false, nil
 	}
 	if w.pushed.IsZero() {
-		runs, err := w.Forgejo.ActionRuns(ctx, w.Token, w.Owner, w.Repo, url.Values{"event": {"push"}, "head_sha": {w.sha}, "limit": {"1"}})
+		// a few: the commit's nightly run, filed under push too, drops out
+		runs, err := w.Forgejo.ActionRuns(ctx, w.Token, w.Owner, w.Repo, url.Values{"event": {"push"}, "head_sha": {w.sha}, "limit": {"5"}})
 		if err != nil {
 			return false, err
 		}

@@ -1037,6 +1037,34 @@ func TestActionRunsAlwaysAsksForAPage(t *testing.T) {
 	}
 }
 
+// Forgejo files a scheduled run under event push, its trigger_event
+// schedule (main's nightly, run 1241): a query for push runs drops it, and
+// a query naming no event keeps every run.
+func TestActionRunsForAnEventDropsRunsAnotherTriggerStarted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"workflow_runs":[{"id":3,"event":"push","trigger_event":"schedule"},{"id":2,"event":"push","trigger_event":"push"},{"id":1,"event":"push"}]}`)
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL}
+	ids := func(q url.Values) []int64 {
+		runs, err := f.ActionRuns(context.Background(), "tok", "sf", "r", q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, r := range runs {
+			out = append(out, r.ID)
+		}
+		return out
+	}
+	if got := ids(url.Values{"event": {"push"}}); !slices.Equal(got, []int64{2, 1}) {
+		t.Fatalf("push runs = %v, want 2 and 1: the scheduled run 3 is no push run", got)
+	}
+	if got := ids(url.Values{}); !slices.Equal(got, []int64{3, 2, 1}) {
+		t.Fatalf("runs = %v, want all three", got)
+	}
+}
+
 // An answer longer than the read limit is an error that says so, not a
 // cut body a decoder fails on.
 func TestForgejoRefusesAnAnswerPastItsReadLimit(t *testing.T) {
