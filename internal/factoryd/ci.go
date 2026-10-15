@@ -835,7 +835,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 		args = append(args, "--handle", kind.handle)
 	}
 	args = append(args, "--wait")
-	return map[string]any{
+	return requestEmptyDirs(map[string]any{
 		"metadata": map[string]any{
 			"labels": labels,
 		},
@@ -865,7 +865,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 			"initContainers": initContainers,
 			"volumes":        volumes,
 		},
-	}
+	})
 }
 
 const (

@@ -1501,7 +1501,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	clone["env"] = cloneEnv
 	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}}
 	spec["initContainers"] = []any{clone}
-	return pod
+	return requestEmptyDirs(pod)
 }
 
 // SandboxUID is the sandbox's uid and gid: its pods' runAsUser and
@@ -1593,6 +1593,34 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			"volumes": volumes,
 		},
 	}
+}
+
+// requestEmptyDirs has pod request, as ephemeral-storage, the sum of its
+// emptyDir sizeLimits (each in whole Gi), so the scheduler counts what
+// they may fill against a node's allocatable. Its one container and its
+// init containers each request it, as they share every other request: a
+// pod's request is the larger of its init containers' and its containers'
+// sum, so the pod's is the sum.
+func requestEmptyDirs(pod map[string]any) map[string]any {
+	spec := pod["spec"].(map[string]any)
+	gi := 0
+	for _, v := range spec["volumes"].([]any) {
+		if dir, ok := v.(map[string]any)["emptyDir"].(map[string]any); ok {
+			limit, _ := dir["sizeLimit"].(string)
+			n, _ := strconv.Atoi(strings.TrimSuffix(limit, "Gi"))
+			gi += n
+		}
+	}
+	for _, key := range []string{"initContainers", "containers"} {
+		list, _ := spec[key].([]any)
+		for _, c := range list {
+			res := c.(map[string]any)["resources"].(map[string]any)
+			requests := maps.Clone(res["requests"].(map[string]any))
+			requests["ephemeral-storage"] = fmt.Sprintf("%dGi", gi)
+			res["requests"] = requests
+		}
+	}
+	return pod
 }
 
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research

@@ -177,6 +177,52 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 	}
 }
 
+// Each sandbox and CI pod requests the ephemeral-storage its emptyDirs may
+// fill, so the scheduler counts them against a node's allocatable: a pull
+// request's CI pod workspace 8, home 2, tmp 4 and the module cache 8; a
+// smoke run's the same without the cache; an agent's workspace 4, home 1,
+// tmp 1 and the module cache 8; a reproduction's the same with its build
+// directory 8 in the cache's place. An init container requests the same
+// as the container it copies, so the pod's request stays the sum; cpu and
+// memory stay the LimitRange's defaults.
+func TestPodsRequestTheirEmptyDirs(t *testing.T) {
+	spawner := newTestCISpawner(t, newFakeKube(), &ciHub{})
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
+	for name, c := range map[string]struct {
+		pod       map[string]any
+		want, cpu string
+		inits     bool
+	}{
+		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "22Gi", "1", false},
+		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
+		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "14Gi", "1", false},
+		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "14Gi", "250m", true},
+		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "14Gi", "250m", true},
+	} {
+		spec := c.pod["spec"].(map[string]any)
+		requests := spec["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)
+		if requests["ephemeral-storage"] != c.want || requests["cpu"] != c.cpu {
+			t.Errorf("%s requests %v, want ephemeral-storage %s and cpu %s", name, requests, c.want, c.cpu)
+		}
+		inits, _ := spec["initContainers"].([]any)
+		if (len(inits) > 0) != c.inits {
+			t.Fatalf("%s has %d init containers", name, len(inits))
+		}
+		for _, ic := range inits {
+			if eph := ic.(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)["ephemeral-storage"]; eph != c.want {
+				t.Errorf("%s init container %s requests ephemeral-storage %v, want %s", name, ic.(map[string]any)["name"], eph, c.want)
+			}
+		}
+	}
+	if _, ok := sandboxRequests["ephemeral-storage"]; ok {
+		t.Error("sandboxRequests, the LimitRange's default, gained ephemeral-storage")
+	}
+	if _, ok := ciRequests["ephemeral-storage"]; ok {
+		t.Error("ciRequests, the LimitRange's default, gained ephemeral-storage")
+	}
+}
+
 func TestCIPodMountsCICache(t *testing.T) {
 	store := &memProjects{m: map[string]Project{
 		"linkshort": {Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"},

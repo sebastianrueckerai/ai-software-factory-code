@@ -892,7 +892,8 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
 	}
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m memory:512Mi]]" {
+	// ephemeral-storage: workspace 4, home 1, tmp 1 and the module cache 8
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:14Gi memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
