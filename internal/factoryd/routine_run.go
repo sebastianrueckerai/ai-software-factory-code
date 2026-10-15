@@ -17,10 +17,10 @@ const routineLate = 10 * time.Minute
 
 // RoutineRun is a routine's one activity (roadmap 267). It begins the
 // run, applies a pending Skip once, the missed rule and the hold rule,
-// files what the routine's kind asks for, records the outcome and pokes
-// the inbox. A run that began earlier and has its outcome returns it. One
-// an attempt left without its outcome goes on, so a retry files what that
-// attempt did not.
+// files what the routine's kind asks for and records the outcome, whose
+// event pokes the inbox by tell. A run that began earlier and has its
+// outcome returns it. One an attempt left without its outcome goes on, so
+// a retry files what that attempt did not.
 func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRunResult, error) {
 	v := r.cfg.Policy()
 	rt, ok := v.Routine(in.Project, in.Routine)
@@ -47,58 +47,56 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		return RoutineRunResult{Outcome: run.Outcome, Note: run.Note, TaskID: run.TaskID, Issue: run.Issue}, nil
 	}
 	tell := rt.TellRule() == policy.TellInbox
-	poke := func(taskID, text string) { r.pokeRoutine(ctx, v.Tree, p.Repository, rt, run.Run, taskID, text) }
-	end := func(outcome, note string) (RoutineRunResult, error) {
+	// end and filed record the outcome; poke is the inbox's words, "" for
+	// none
+	end := func(outcome, note, poke string) (RoutineRunResult, error) {
 		if err := r.Routines.EndRoutineRun(ctx, in.Project, in.Routine, run.Run, outcome, note, "", 0, 0); err != nil {
 			return RoutineRunResult{}, err
 		}
+		r.routineRan(ctx, p.Repository, in, rt.Words(), run.Run, outcome, note, "", 0, poke)
 		return RoutineRunResult{Outcome: outcome, Note: note}, nil
 	}
-	filed := func(taskID string, issue int64) (RoutineRunResult, error) {
+	filed := func(taskID string, issue int64, poke string) (RoutineRunResult, error) {
 		if err := r.Routines.RoutineRunFiled(ctx, in.Project, in.Routine, run.Run, taskID, issue); err != nil {
 			return RoutineRunResult{}, err
 		}
+		r.routineRan(ctx, p.Repository, in, rt.Words(), run.Run, "filed", "", taskID, issue, poke)
 		return RoutineRunResult{Outcome: "filed", TaskID: taskID, Issue: issue}, nil
 	}
 
 	if run.Outcome == "skipped" {
-		return end("skipped", run.Note)
+		return end("skipped", run.Note, "")
 	}
 	if in.Trigger == "cron" && rt.MissedRule() == policy.MissedSkip && run.Started.Sub(in.Due) > routineLate {
-		return end("skipped", "missed: the factory was down at "+in.Due.In(loc).Format("Mon 15:04"))
+		return end("skipped", "missed: the factory was down at "+in.Due.In(loc).Format("Mon 15:04"), "")
 	}
-	open, ok, err := r.Routines.OpenRoutineTask(ctx, in.Project, in.Routine)
-	if err != nil {
+	// fold is a pull-request routine's, whose pass folds into its own open
+	// pull request: a routine's card holds only a human or agent routine
+	if open, ok, err := r.Routines.OpenRoutineTask(ctx, in.Project, in.Routine); err != nil {
 		return RoutineRunResult{}, err
-	}
-	switch {
-	case ok && rt.WhileOpenRule() == policy.WhileOpenHold:
-		res, err := end("held", fmt.Sprintf("held: #%d is still open", open.IssueNumber))
-		if err == nil && tell {
-			poke(open.ID, fmt.Sprintf("%s is held, run %d: #%d from the last run is still open.", rt.Title, run.Run, open.IssueNumber))
-		}
-		return res, err
-	case ok && rt.WhileOpenRule() == policy.WhileOpenFold:
-		return end("folded", fmt.Sprintf("folded into #%d", open.IssueNumber))
+	} else if ok && rt.WhileOpenRule() == policy.WhileOpenHold {
+		return end("held", fmt.Sprintf("held: #%d is still open", open.IssueNumber), "")
 	}
 
 	brief, _ := v.Brief(rt.Brief)
 	brief = strings.TrimSpace(brief)
 	provenance := fmt.Sprintf("%s%s · run %d", RoutineProvenance, rt.Name, run.Run)
+	told := func(text string) string {
+		if !tell {
+			return ""
+		}
+		return text
+	}
 	switch rt.Files {
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, p.Repo(), rt.Title, body, Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard",
-			Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
+		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		res, err := filed(t.ID, issue)
-		if err == nil {
-			// a card that needs a person pokes under tell quiet too
-			poke(t.ID, fmt.Sprintf("#%d needs you: %s.", issue, rt.Title))
-		}
-		return res, err
+		// a card that needs a person pokes under tell quiet too
+		return filed(t.ID, issue, fmt.Sprintf("#%d needs you: %s.", issue, rt.Title))
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)
@@ -108,34 +106,22 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		res, err := filed(t.ID, ref.Number)
-		if err == nil && tell {
-			poke(t.ID, fmt.Sprintf("Filed #%d %q.", ref.Number, rt.Title))
-		}
-		return res, err
+		return filed(t.ID, ref.Number, told(fmt.Sprintf("Filed #%d %q.", ref.Number, rt.Title)))
 	case policy.FilesPullRequest:
 		cards, err := r.TemplatePass(ctx)
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
 		if cards == 0 {
-			return end("no change", "")
+			return end("no change", "", "")
 		}
 		note := fmt.Sprintf("%d cards", cards)
 		if cards == 1 {
 			note = "1 card"
 		}
-		res, err := end("filed", note)
-		if err == nil && tell {
-			poke("", rt.Title+": "+note+".")
-		}
-		return res, err
+		return end("filed", note, told(rt.Title+": "+note+"."))
 	default: // a report: a poke and no card
-		res, err := end("reported", "")
-		if err == nil && tell {
-			poke("", strings.TrimSpace(rt.Title+"\n\n"+brief))
-		}
-		return res, err
+		return end("reported", "", told(strings.TrimSpace(rt.Title+"\n\n"+brief)))
 	}
 }
 
@@ -143,20 +129,56 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 // card: "filed by the factory · routine weekly-bump · run 15".
 const RoutineProvenance = "filed by the factory · routine "
 
-// pokeRoutine writes text about card taskID ("" for none) into the inbox
-// of repository's notify list, else its approvers, as Poker.Pass does,
-// with run n of rt as the decider line. A factory routine has no
-// repository and pokes nobody. A failed poke is logged: the run stands.
-func (r *Runner) pokeRoutine(ctx context.Context, tree policy.Tree, repository string, rt policy.Routine, n int, taskID, text string) {
-	if repository == "" {
+// RoutineRunFailed records run in, whose activity failed for good, as
+// failed with note, the error's words: the run begins first when the
+// failure came before it did. A run that filed its card or has its
+// outcome stays as it is.
+func (r *Runner) RoutineRunFailed(ctx context.Context, in RoutineRunInput, note string) error {
+	run, _, err := r.Routines.BeginRoutineRun(ctx, RoutineRun{Project: in.Project, Routine: in.Routine, Due: in.Due, Trigger: in.Trigger})
+	if err != nil {
+		return err
+	}
+	if !run.Ended.IsZero() || run.TaskID != "" {
+		return nil
+	}
+	if err := r.Routines.EndRoutineRun(ctx, in.Project, in.Routine, run.Run, "failed", note, "", 0, 0); err != nil {
+		return err
+	}
+	var repository, words string
+	if p, ok, err := r.Routines.Project(ctx, in.Project); err == nil && ok {
+		repository = p.Repository
+	}
+	if rt, ok := r.cfg.Policy().Routine(in.Project, in.Routine); ok {
+		words = rt.Words()
+	}
+	r.routineRan(ctx, repository, in, words, run.Run, "failed", note, "", 0, "")
+	return nil
+}
+
+// routineRan logs run n of in's routine reaching outcome and, for a
+// project's routine (repository set), records it as a routine_ran event
+// on the card taskID ("" for none), which pokes the inbox with poke
+// unless it is "". words are the routine's schedule in words, the poke's
+// decider line. A failed record is logged: the run stands.
+func (r *Runner) routineRan(ctx context.Context, repository string, in RoutineRunInput, words string, n int, outcome, note, taskID string, issue int64, poke string) {
+	said := note
+	if issue > 0 {
+		said = fmt.Sprintf("#%d", issue)
+	}
+	log.Printf("routines: %s", strings.TrimSpace(fmt.Sprintf("%s/%s run %d %s %s", in.Project, in.Routine, n, outcome, said)))
+	if repository == "" || r.timeline == nil || r.timeline.Events == nil {
 		return
 	}
-	m := ChatMessage{Role: "assistant", Kind: MessagePoke, Content: text, TaskID: taskID,
-		Decider: fmt.Sprintf("routine %s · run %d · %s", rt.Name, n, rt.Words())}
-	// event 0: the poke answers no event, so the cursor stays
-	to := pokeTo(tree, repository)
-	if _, err := r.Routines.Poke(ctx, 0, repository, to, make([]bool, len(to)), m); err != nil {
-		log.Printf("routine %s: run %d: poke: %v", rt.Name, n, err)
+	detail := map[string]any{"project": in.Project, "routine": in.Routine, "run": n, "outcome": outcome, "schedule": words}
+	if note != "" {
+		detail["note"] = note
+	}
+	if poke != "" {
+		detail["poke"] = poke
+	}
+	if _, err := r.timeline.Events.Record(ctx, Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: EventRoutineRan,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
+		log.Printf("routines: %s/%s run %d: the event: %v", in.Project, in.Routine, n, err)
 	}
 }
 

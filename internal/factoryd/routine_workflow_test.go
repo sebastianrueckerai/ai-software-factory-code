@@ -33,8 +33,58 @@ func TestRoutineRunWorkflowCallsTheRunOnce(t *testing.T) {
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil || calls != 1 {
 		t.Fatalf("completed %v err %v calls %d", env.IsWorkflowCompleted(), env.GetWorkflowError(), calls)
 	}
-	if got := RoutineRunID(in); got != "routine/ai-software-factory-code/weekly-bump/20261013T0400" {
+	if got := RoutineRunID(in); got != "routine/ai-software-factory-code/weekly-bump/20261013T040000" {
 		t.Fatalf("id %q", got)
+	}
+	// two Run nows in one minute are two runs, as the store keys them
+	in.Due = in.Due.Add(30 * time.Second)
+	if got := RoutineRunID(in); got != "routine/ai-software-factory-code/weekly-bump/20261013T040030" {
+		t.Fatalf("id %q, want the seconds", got)
+	}
+}
+
+// A run whose activity fails for good leaves its row failed, with the
+// error's words as its note, and the workflow fails: a terminal error
+// before the run began gets the run a row, a run that filed its card keeps
+// it.
+func TestRoutineRunWorkflowRecordsAFailedRun(t *testing.T) {
+	r, store, _, _ := routineRunner(t, routineTree(t))
+	run := func(in RoutineRunInput, failure error) error {
+		var ts testsuite.WorkflowTestSuite
+		env := ts.NewTestWorkflowEnvironment()
+		env.RegisterWorkflowWithOptions(RoutineRunWorkflow, workflow.RegisterOptions{Name: "RoutineRunWorkflow"})
+		env.RegisterActivityWithOptions(func(context.Context, RoutineRunInput) (RoutineRunResult, error) {
+			return RoutineRunResult{}, failure
+		}, activity.RegisterOptions{Name: ActivityRoutineRun})
+		env.RegisterActivityWithOptions(r.RoutineRunFailed, activity.RegisterOptions{Name: ActivityRoutineRunFailed})
+		env.ExecuteWorkflow("RoutineRunWorkflow", in)
+		return env.GetWorkflowError()
+	}
+	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Date(2026, 10, 12, 4, 0, 0, 0, time.UTC)}
+	var app *temporal.ApplicationError
+	if err := run(in, terminalError("routine %s/%s: no project %s in the store", in.Project, in.Routine, in.Project)); !errors.As(err, &app) {
+		t.Fatalf("workflow error %v, want the activity's", err)
+	}
+	runs := store.routineRuns[codeProject+"/weekly-bump"]
+	if len(runs) != 1 || runs[0].Run != 1 || runs[0].Outcome != "failed" || runs[0].Ended.IsZero() || !runs[0].Due.Equal(in.Due) ||
+		runs[0].Note != "routine ai-software-factory-code/weekly-bump: no project ai-software-factory-code in the store" {
+		t.Fatalf("runs %+v, want run 1 failed with the error's words", runs)
+	}
+	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Detail["outcome"] != "failed" || ran[0].Detail["poke"] != nil {
+		t.Fatalf("routine_ran %+v, want one failed and no poke", ran)
+	}
+
+	filed := in
+	filed.Due = in.Due.Add(7 * 24 * time.Hour)
+	began, _, _ := store.BeginRoutineRun(context.Background(), RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: filed.Due, Trigger: "cron"})
+	if err := store.RoutineRunFiled(context.Background(), codeProject, "weekly-bump", began.Run, "t-71", 71); err != nil {
+		t.Fatal(err)
+	}
+	if err := run(filed, terminalError("forgejo: 502")); err == nil {
+		t.Fatal("the workflow did not fail")
+	}
+	if got := store.routineRuns[codeProject+"/weekly-bump"][1]; got.Outcome != "filed" || got.TaskID != "t-71" || !got.Ended.IsZero() {
+		t.Fatalf("the filed run %+v, want it open with its card", got)
 	}
 }
 
@@ -101,7 +151,7 @@ func TestStartRoutineRunIsKeyedOnTheDueTime(t *testing.T) {
 	if err := (TemporalWorkflows{Client: c}).StartRoutineRun(context.Background(), in); err != nil {
 		t.Fatalf("StartRoutineRun = %v, want an already-started refusal to be success", err)
 	}
-	if opts.ID != "routine/ai-software-factory-code/audit/20261013T0400" || opts.TaskQueue != TaskQueue ||
+	if opts.ID != "routine/ai-software-factory-code/audit/20261013T040000" || opts.TaskQueue != TaskQueue ||
 		opts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY || !opts.WorkflowExecutionErrorWhenAlreadyStarted {
 		t.Fatalf("options = %+v", opts)
 	}

@@ -86,15 +86,6 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
-	// pokes are the pokes written through Poke, in order
-	pokes []fakePoke
-}
-
-// fakePoke is one Poke call: m for logins on repository.
-type fakePoke struct {
-	repository string
-	logins     []string
-	m          ChatMessage
 }
 
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -967,11 +958,6 @@ func (s *fakeStore) Project(ctx context.Context, name string) (Project, bool, er
 		return Project{}, false, nil
 	}
 	return s.projects[i], true, nil
-}
-
-func (s *fakeStore) Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error) {
-	s.pokes = append(s.pokes, fakePoke{repository: repository, logins: logins, m: m})
-	return make([]int64, len(logins)), nil
 }
 
 func (s *fakeStore) PutLiveSession(ctx context.Context, l LiveSession) error {

@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -42,7 +44,7 @@ type RoutineView struct {
 	State   RoutineState
 	// Next is the next cron run, the one after when a Skip once is
 	// pending, zero for a routine without a cron trigger, and Soon says
-	// it is under an hour away.
+	// it is under an hour away and the run after it a day or more later.
 	Next time.Time
 	Soon bool
 	// NextWords is "Mon 06:00" within a week, else "Mon 20 Oct 06:00",
@@ -155,7 +157,10 @@ func (r *Routines) Reconcile(ctx context.Context) error {
 		var err error
 		switch {
 		case !ok:
-			err = r.Schedules.Create(ctx, want)
+			// a schedule List did not see yet stands: it takes the spec
+			if err = r.Schedules.Create(ctx, want); errors.Is(err, temporal.ErrScheduleAlreadyRunning) {
+				err = r.Schedules.Update(ctx, want)
+			}
 		case got.Cron != want.Cron || got.TimeZone != want.TimeZone || got.CatchupWindow != want.CatchupWindow:
 			err = r.Schedules.Update(ctx, want)
 		default:
@@ -383,7 +388,10 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 					next = after
 				}
 			}
-			view.Next, view.Soon = next, next.Sub(now) < time.Hour
+			// a run under an hour away is soon when the next comes a day
+			// or more after it: an hourly pass is always under an hour away
+			after, more := rt.NextCron(next, loc)
+			view.Next, view.Soon = next, next.Sub(now) < time.Hour && (!more || after.Sub(next) >= 24*time.Hour)
 			view.NextWords = next.Format("Mon 15:04")
 			if next.Sub(now) >= 7*24*time.Hour {
 				view.NextWords = next.Format("Mon 2 Jan 15:04")

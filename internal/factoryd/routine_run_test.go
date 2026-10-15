@@ -76,8 +76,8 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 const codeProject = "ai-software-factory-code"
 
 // routineRunner is a runner over tree with an empty store, the code
-// project in the maintenance process, the code repository's issues and a
-// recorder of the workflows it starts.
+// project in the maintenance process, the code repository's issues, a
+// recorder of the workflows it starts and of the events it records.
 func routineRunner(t *testing.T, tree policy.Tree) (*Runner, *fakeStore, *codeIssues, *fakeWorkflows) {
 	t.Helper()
 	issues := &codeIssues{labels: map[int64][]string{}}
@@ -85,9 +85,52 @@ func routineRunner(t *testing.T, tree policy.Tree) (*Runner, *fakeStore, *codeIs
 	store.projects = []Project{{Name: codeProject, Repository: "sf/ai-software-factory-code", File: true, Objects: policy.ObjectsSeed,
 		Process: "maintenance", Lanes: maintenanceLanes}}
 	v := policy.Version{Tree: tree}
-	r := &Runner{store: store, forgejo: issues.srv(t), timeline: &Timeline{Objects: &fakeObjectStore{}},
+	r := &Runner{store: store, forgejo: issues.srv(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: &fakeEventRecorder{}, Store: store},
 		cfg: RunnerConfig{Policy: func() policy.Version { return v }, Workflows: wf}, Routines: store}
 	return r, store, issues, wf
+}
+
+// fakePoke is one poke the Poker writes: m for logins on repository.
+type fakePoke struct {
+	repository string
+	logins     []string
+	m          ChatMessage
+}
+
+// routinePokes are the pokes the Poker writes for the routine_ran events
+// r recorded, as Poker.Pass does: their detail read back as the events
+// table gives it, to the project's notify list, else its approvers.
+func routinePokes(t *testing.T, r *Runner, store *fakeStore) []fakePoke {
+	t.Helper()
+	var out []fakePoke
+	for _, e := range recordedEvents(r, EventRoutineRan) {
+		b, err := json.Marshal(e.Detail)
+		if err != nil {
+			t.Fatal(err)
+		}
+		e.Detail = nil
+		if err := json.Unmarshal(b, &e.Detail); err != nil {
+			t.Fatal(err)
+		}
+		if m, ok := pokeOf(e, store.tasks[e.TaskID]); ok {
+			out = append(out, fakePoke{repository: e.Repository, logins: pokeTo(r.cfg.Policy().Tree, e.Repository), m: m})
+		}
+	}
+	return out
+}
+
+// recordedEvents are the events of kind r recorded, oldest first.
+func recordedEvents(r *Runner, kind string) []Event {
+	rec := r.timeline.Events.(*fakeEventRecorder)
+	rec.mu.Lock()
+	defer rec.mu.Unlock()
+	var out []Event
+	for _, e := range rec.rows {
+		if e.Kind == kind {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // onlyTask is the store's one task.
@@ -102,13 +145,14 @@ func onlyTask(t *testing.T, store *fakeStore) Task {
 	return Task{}
 }
 
-// The weekly bump at its due: a human card on the code repository, the
-// brief's text as its body with the run's provenance, waiting on a
-// person. The run stays open with its card, and the inbox of the
-// project's approvers hears of it once, with the routine, the run and
-// the schedule as the decider line. A human card pokes under tell quiet
-// too. Hand-derived: the first issue is #71, the fixture's approver
-// sebastian.
+// The weekly bump at its due: a human card on the code repository,
+// labelled routine, the brief's text as its body with the run's
+// provenance, waiting on a person, its card_created recorded. The run
+// stays open with its card, its routine_ran event names the card, and the
+// inbox of the project's approvers hears of it once through that event,
+// with the routine, the run and the schedule as the decider line. A human
+// card pokes under tell quiet too. Hand-derived: the first issue is #71,
+// the fixture's approver sebastian.
 func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, _ := routineRunner(t, routineTree(t))
@@ -128,8 +172,18 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "state/waiting-human"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
+	}
+	if created := recordedEvents(r, EventCardCreated); len(created) != 1 || created[0].TaskID != card.ID ||
+		!reflect.DeepEqual(created[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(71)}) {
+		t.Errorf("card_created %+v, want the card's one", created)
+	}
+	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Repository != "sf/ai-software-factory-code" || ran[0].TaskID != card.ID ||
+		ran[0].IssueNumber != 71 || ran[0].Actor != FactoryDecider || ran[0].Via != ViaFactoryd ||
+		!reflect.DeepEqual(ran[0].Detail, map[string]any{"project": codeProject, "routine": "weekly-bump", "run": 1, "outcome": "filed",
+			"schedule": "every Monday 06:00", "poke": "#71 needs you: Weekly bump of the pinned outside inputs."}) {
+		t.Errorf("routine_ran %+v", ran)
 	}
 	title, body, _ := strings.Cut(issues.issues[0], "\n\n")
 	if title != "Weekly bump of the pinned outside inputs" || card.Objective != title+"\n\n"+body {
@@ -153,8 +207,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
 		Content: "#71 needs you: Weekly bump of the pinned outside inputs.", TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00"}}
-	if !reflect.DeepEqual(store.pokes, []fakePoke{want}) {
-		t.Fatalf("pokes %+v,\nwant %+v", store.pokes, want)
+	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
+		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -163,19 +217,18 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.pokes) != 1 || store.pokes[0].m.Content != "#71 needs you: Weekly bump of the pinned outside inputs." {
-		t.Fatalf("pokes under tell quiet %+v, want the human card's one", store.pokes)
+	if pokes := routinePokes(t, r, store); len(pokes) != 1 || pokes[0].m.Content != "#71 needs you: Weekly bump of the pinned outside inputs." {
+		t.Fatalf("pokes under tell quiet %+v, want the human card's one", pokes)
 	}
 }
 
 // While the last run's card #781 is open, a routine that holds files
 // nothing: the run ends held, names the card in its note and keeps no
-// task of its own, so the card's end finds the run that filed it. Under
-// tell inbox the inbox hears why, about that card, with the run's number,
-// so each held run pokes once. Quiet holds in silence, fold ends folded
-// into the card, and file files a second card beside it: a new issue,
-// since #781, the bot's open issue of the same title, is the open card's.
-// Once #781 ends, the next run files.
+// task of its own, so the card's end finds the run that filed it. A held
+// run is pulse material and pokes nobody, under tell inbox too (rule 7).
+// File files a second card beside it: a new issue, since #781, the bot's
+// open issue of the same title, is the open card's. Once #781 ends, the
+// next run files.
 func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	ctx := context.Background()
 	onTime := time.Now().Truncate(time.Minute)
@@ -184,10 +237,8 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 		want                  RoutineRunResult
 		poke                  string
 	}{
-		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"},
-			"Weekly bump of the pinned outside inputs is held, run 2: #781 from the last run is still open."},
+		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
 		{"hold quietly", policy.WhileOpenHold, policy.TellQuiet, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
-		{"fold", policy.WhileOpenFold, policy.TellInbox, RoutineRunResult{Outcome: "folded", Note: "folded into #781"}, ""},
 		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, "#71 needs you: Weekly bump of the pinned outside inputs."},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -204,12 +255,11 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			pokedAbout := "t-781"
 			if tt.whileOpen == policy.WhileOpenFile {
 				if len(store.tasks) != 2 || len(issues.issues) != 1 || store.tasks[res.TaskID].IssueNumber != 71 {
 					t.Fatalf("tasks %+v, issues %q, result %+v: want a second card on a new issue, #71", store.tasks, issues.issues, res)
 				}
-				tt.want.TaskID, pokedAbout = res.TaskID, res.TaskID
+				tt.want.TaskID = res.TaskID
 			} else if len(issues.issues) != 0 || len(store.tasks) != 1 {
 				t.Fatalf("issues %q, tasks %+v: want none filed", issues.issues, store.tasks)
 			}
@@ -223,16 +273,17 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			var pokes []fakePoke
 			if tt.poke != "" {
 				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-					Content: tt.poke, TaskID: pokedAbout, Decider: "routine weekly-bump · run 2 · every Monday 06:00"}}}
+					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00"}}}
 			}
-			if !reflect.DeepEqual(store.pokes, pokes) {
-				t.Fatalf("pokes %+v,\nwant %+v", store.pokes, pokes)
+			if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
+				t.Fatalf("pokes %+v,\nwant %+v", got, pokes)
 			}
 		})
 	}
 
 	r, store, issues, _ := routineRunner(t, routineTree(t))
-	store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine}
+	store.tasks["t-781"] = Task{ID: "t-781", Kind: "human", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine,
+		FinishedAt: &onTime}
 	last, _, _ := store.BeginRoutineRun(ctx, RoutineRun{Project: codeProject, Routine: "weekly-bump", Due: onTime.Add(-7 * 24 * time.Hour), Trigger: "cron"})
 	if err := store.RoutineRunFiled(ctx, codeProject, "weekly-bump", last.Run, "t-781", 781); err != nil {
 		t.Fatal(err)
@@ -260,8 +311,8 @@ func TestRoutineRunSkipsOnce(t *testing.T) {
 	if want := (RoutineRunResult{Outcome: "skipped", Note: "skipped once by sebastian"}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if len(issues.issues) != 0 || len(store.tasks) != 0 || len(store.pokes) != 0 {
-		t.Fatalf("issues %d, tasks %d, pokes %d: want none", len(issues.issues), len(store.tasks), len(store.pokes))
+	if pokes := routinePokes(t, r, store); len(issues.issues) != 0 || len(store.tasks) != 0 || len(pokes) != 0 {
+		t.Fatalf("issues %d, tasks %d, pokes %d: want none", len(issues.issues), len(store.tasks), len(pokes))
 	}
 	if run := store.routineRuns[codeProject+"/weekly-bump"][0]; run.Outcome != "skipped" || run.Note != "skipped once by sebastian" || run.Ended.IsZero() {
 		t.Fatalf("run %+v", run)
@@ -298,8 +349,8 @@ func TestRoutineRunMissed(t *testing.T) {
 	if want := (RoutineRunResult{Outcome: "skipped", Note: "missed: the factory was down at Mon 06:00"}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if run := store.routineRuns[codeProject+"/weekly-bump"][0]; len(issues.issues) != 0 || len(store.pokes) != 0 || run.Outcome != "skipped" || run.Ended.IsZero() {
-		t.Fatalf("issues %d, pokes %d, run %+v", len(issues.issues), len(store.pokes), run)
+	if run, pokes := store.routineRuns[codeProject+"/weekly-bump"][0], routinePokes(t, r, store); len(issues.issues) != 0 || len(pokes) != 0 || run.Outcome != "skipped" || run.Ended.IsZero() {
+		t.Fatalf("issues %d, pokes %d, run %+v", len(issues.issues), len(pokes), run)
 	}
 	if res, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now()}); err != nil ||
 		res.Outcome != "filed" || len(issues.issues) != 1 {
@@ -354,8 +405,8 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
 		Content: `Filed #71 "Audit: bug hunt and architecture review".`, TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges"}}
-	if !reflect.DeepEqual(store.pokes, []fakePoke{want}) {
-		t.Fatalf("pokes %+v,\nwant %+v", store.pokes, want)
+	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
+		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
 }
 
@@ -398,8 +449,8 @@ func TestRoutineRunRunsTheTemplatePass(t *testing.T) {
 			t.Fatalf("%d cards: run %+v", tt.cards, run)
 		}
 	}
-	if passes != 3 || len(store.pokes) != 0 {
-		t.Fatalf("passes %d, pokes %+v: want 3 and none", passes, store.pokes)
+	if pokes := routinePokes(t, r, store); passes != 3 || len(pokes) != 0 || len(recordedEvents(r, EventRoutineRan)) != 0 {
+		t.Fatalf("passes %d, pokes %+v: want 3 and none, and no event", passes, pokes)
 	}
 
 	in := RoutineRunInput{Routine: "template-pass", Trigger: "cron", Due: onTime.Add(3 * time.Hour)}
@@ -444,8 +495,8 @@ func TestRoutineRunReports(t *testing.T) {
 			pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
 				Content: "Revert and drift report\n\nThe reverts and the drift of the week.", Decider: "routine drift · run 1 · every Monday 07:00"}}}
 		}
-		if !reflect.DeepEqual(store.pokes, pokes) {
-			t.Fatalf("%s: pokes %+v,\nwant %+v", tell, store.pokes, pokes)
+		if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
+			t.Fatalf("%s: pokes %+v,\nwant %+v", tell, got, pokes)
 		}
 	}
 }
@@ -468,8 +519,8 @@ func TestRoutineRunTwiceIsOnce(t *testing.T) {
 	if first.Outcome != "filed" || second != first {
 		t.Fatalf("first %+v, second %+v", first, second)
 	}
-	if len(issues.issues) != 1 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(store.pokes) != 1 {
-		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want one each", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(store.pokes))
+	if pokes := routinePokes(t, r, store); len(issues.issues) != 1 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(pokes) != 1 {
+		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want one each", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(pokes))
 	}
 }
 
@@ -528,7 +579,8 @@ func TestTaskEndedFinishesTheRun(t *testing.T) {
 	if err := store.EndRoutineRun(ctx, codeProject, "weekly-bump", held.Run, "held", "held: #781 is still open", "", 0, 0); err != nil {
 		t.Fatal(err)
 	}
-	card := Task{ID: "t-781", Kind: "agent", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine, SpentEUR: 1.25}
+	card := Task{ID: "t-781", Kind: "agent", Status: "done", Repository: "sf/ai-software-factory-code", IssueNumber: 781, Source: SourceRoutine, SpentEUR: 1.25,
+		FinishedAt: &due}
 	store.tasks[card.ID] = card
 	taskEnded(ctx, nil, store, nil, nil, card, "done", "")
 	runs := store.routineRuns[codeProject+"/weekly-bump"]

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -39,19 +41,23 @@ func withRoutines(tree policy.Tree, project string, rs ...policy.Routine) policy
 	return tree
 }
 
-// fakeSchedules is Temporal's schedules in memory.
+// fakeSchedules is Temporal's schedules in memory; List leaves out those
+// unlisted names, as a list that lags behind a create does.
 type fakeSchedules struct {
 	have             map[string]ScheduleSpec
+	unlisted         map[string]bool
 	updates, deletes int
 }
 
 func (f *fakeSchedules) List(context.Context) (map[string]ScheduleSpec, error) {
-	return maps.Clone(f.have), nil
+	out := maps.Clone(f.have)
+	maps.DeleteFunc(out, func(id string, _ ScheduleSpec) bool { return f.unlisted[id] })
+	return out, nil
 }
 
 func (f *fakeSchedules) Create(_ context.Context, s ScheduleSpec) error {
 	if _, ok := f.have[s.ID]; ok {
-		return fmt.Errorf("schedule %s exists", s.ID)
+		return temporal.ErrScheduleAlreadyRunning
 	}
 	if f.have == nil {
 		f.have = map[string]ScheduleSpec{}
@@ -198,6 +204,25 @@ func TestReconcileCreatesUpdatesAndDeletesSchedules(t *testing.T) {
 	}
 	if sched.updates != 4 {
 		t.Fatalf("a new zone updated %d", sched.updates-2)
+	}
+}
+
+// A schedule the list does not show yet is there: Temporal refuses its
+// create as already registered, and the pass updates it instead.
+func TestReconcileUpdatesAScheduleTheListMissed(t *testing.T) {
+	r, _, sched, _, _ := routinesRig(t)
+	id := "routine/ai-software-factory-code/weekly-bump/0"
+	sched.have = map[string]ScheduleSpec{id: {ID: id, Cron: "0 5 * * 1"}}
+	sched.unlisted = map[string]bool{id: true}
+	logs := captureLog(t)
+	if err := r.Reconcile(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := sched.have[id]; got.Cron != "0 6 * * 1" || got.TimeZone != "Europe/Berlin" || sched.updates != 1 {
+		t.Fatalf("schedule %+v, %d updates: want the tree's spec through one update", got, sched.updates)
+	}
+	if got := logs.String(); !strings.Contains(got, "routines: reconciled 2 schedules\n") {
+		t.Fatalf("log %q", got)
 	}
 }
 
@@ -421,7 +446,7 @@ func TestViews(t *testing.T) {
 		vs[0].Last.Note != "held: #781 is still open" {
 		t.Fatalf("held: %+v %v", vs, err)
 	}
-	store.tasks["t-1"] = Task{ID: "t-1", Status: "done", IssueNumber: 781, Source: SourceRoutine}
+	store.tasks["t-1"] = Task{ID: "t-1", Status: "done", IssueNumber: 781, Source: SourceRoutine, FinishedAt: &mon0540}
 	if vs, err := r.Views(ctx, "ai-software-factory-code"); err != nil || vs[0].Held || vs[0].Open != nil {
 		t.Fatalf("closed: %+v %v", vs, err)
 	}
@@ -476,6 +501,14 @@ func TestViews(t *testing.T) {
 	}
 	if _, ok := store.routineStates["linkshort/template-pass"]; ok {
 		t.Fatal("a view wrote a state row")
+	}
+	// without the skip the hourly pass is 23 minutes away and not soon:
+	// the run after it comes within the day
+	if err := store.SetRoutineSkip(ctx, "", "template-pass", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if vs, err := r.Views(ctx, "linkshort"); err != nil || vs[0].NextWords != "Mon 06:03" || !vs[0].Next.Equal(mon0540.Add(23*time.Minute)) || vs[0].Soon {
+		t.Fatalf("the hourly pass: %+v %v, want 06:03 and not soon", vs, err)
 	}
 
 	// past a week the date is named, and an event says its words

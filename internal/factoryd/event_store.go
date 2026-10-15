@@ -65,6 +65,11 @@ const (
 	// EventRoutineDeleted is a routine taken out of its project's file:
 	// detail {"project", "routine"}.
 	EventRoutineDeleted = "routine_deleted"
+	// EventRoutineRan is a project routine's run reaching its outcome:
+	// detail {"project", "routine", "run", "outcome", "schedule"}, with
+	// "note" when the run has one and "poke", the inbox's words, when the
+	// run tells the inbox, which the Poker writes.
+	EventRoutineRan = "routine_ran"
 )
 
 // EventTaskStatus is factoryd's own record of a task's status or gate

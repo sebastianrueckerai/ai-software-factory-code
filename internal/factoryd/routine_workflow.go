@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"errors"
 	"time"
 
 	"go.temporal.io/sdk/converter"
@@ -8,8 +9,13 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// ActivityRoutineRun is the routine run's one activity.
-const ActivityRoutineRun = "RoutineRun"
+// ActivityRoutineRun is the routine run's activity, and
+// ActivityRoutineRunFailed the one that records the run as failed when it
+// fails for good.
+const (
+	ActivityRoutineRun       = "RoutineRun"
+	ActivityRoutineRunFailed = "RoutineRunFailed"
+)
 
 // RoutineRunInput is one run of a routine: the project's name ("" for the
 // factory's own routines) and the routine's.
@@ -26,8 +32,11 @@ type RoutineRunResult struct {
 	Issue                 int64
 }
 
-// RoutineRunWorkflow is one run of a routine (roadmap 267): the schedule, the merge pass or Run now starts it,
-// its one activity files the card and writes the run, and the ID keyed on the due time makes a second start a no-op.
+// RoutineRunWorkflow is one run of a routine (roadmap 267): the schedule,
+// the merge pass or Run now starts it, its activity files the card and
+// writes the run, and the ID keyed on the due time makes a second start a
+// no-op. An activity that fails after its retries, or for good, leaves the
+// run's row failed with the error's words, and the workflow fails.
 func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 	// a schedule sets the time the run was due on the workflow it starts,
 	// read untyped: the typed read drops a payload without type metadata
@@ -44,7 +53,28 @@ func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 		ScheduleToCloseTimeout: 24 * time.Hour,
 		RetryPolicy:            &temporal.RetryPolicy{InitialInterval: 10 * time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Minute, NonRetryableErrorTypes: []string{errTerminal}},
 	})
-	return workflow.ExecuteActivity(ctx, ActivityRoutineRun, in).Get(ctx, nil)
+	err := workflow.ExecuteActivity(ctx, ActivityRoutineRun, in).Get(ctx, nil)
+	if err == nil {
+		return nil
+	}
+	fctx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout:    time.Minute,
+		ScheduleToCloseTimeout: time.Hour,
+		RetryPolicy:            &temporal.RetryPolicy{InitialInterval: 10 * time.Second, BackoffCoefficient: 2, MaximumInterval: 10 * time.Minute},
+	})
+	if ferr := workflow.ExecuteActivity(fctx, ActivityRoutineRunFailed, in, failureWords(err)).Get(fctx, nil); ferr != nil {
+		workflow.GetLogger(ctx).Error("routine run: record the failure", "project", in.Project, "routine", in.Routine, "error", ferr)
+	}
+	return err
+}
+
+// failureWords are an activity's failure as a run's note: the
+// application error's message, else the error's text.
+func failureWords(err error) string {
+	if app := (*temporal.ApplicationError)(nil); errors.As(err, &app) {
+		return app.Message()
+	}
+	return err.Error()
 }
 
 // routineRunPrefix is the workflow ID of a routine's runs without the due
@@ -56,5 +86,5 @@ func routineRunPrefix(in RoutineRunInput) string { return "routine/" + in.Projec
 // RoutineRunID is a run's workflow ID: Temporal refuses a second start for
 // the same due time.
 func RoutineRunID(in RoutineRunInput) string {
-	return routineRunPrefix(in) + "/" + in.Due.UTC().Format("20060102T1504")
+	return routineRunPrefix(in) + "/" + in.Due.UTC().Format("20060102T150405")
 }

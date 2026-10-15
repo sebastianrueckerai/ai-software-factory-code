@@ -276,9 +276,8 @@ func (s *PGStore) MergedEvents(ctx context.Context, after int64, limit int) ([]E
 }
 
 // RoutineRunStore is what a routine's run reads and writes besides the
-// task rows: the runs, the project it files on and the inbox it pokes.
+// task rows: the runs and the project it files on.
 type RoutineRunStore interface {
 	RoutineStore
 	Project(ctx context.Context, name string) (Project, bool, error)
-	Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error)
 }

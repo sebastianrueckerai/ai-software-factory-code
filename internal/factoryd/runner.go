@@ -150,7 +150,7 @@ type Runner struct {
 	booted time.Time
 
 	// Routines keeps the routines' runs, and reads the project a run files
-	// on and pokes (roadmap 267). TemplatePass runs the template pass over
+	// on (roadmap 267). TemplatePass runs the template pass over
 	// every project with a template and counts the cards it filed
 	// (Registrar.TemplateUpdates). Both are set before the worker starts.
 	Routines     RoutineRunStore
