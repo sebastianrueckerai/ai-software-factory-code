@@ -1636,6 +1636,65 @@ func (f *Forgejo) SyncFork(ctx context.Context, fork Repo) error {
 	return err
 }
 
+// RecutBranch writes changes as one commit whose only parent is parent
+// and moves branch to it, whatever branch held: the force push of an
+// update that cuts its branch from main's head again, so its pull
+// request's base is main's head and its diff only the changes (roadmap
+// 279). It returns the commit's sha.
+func (f *Forgejo) RecutBranch(ctx context.Context, owner, repo, branch, parent string, a Attribution, subject string, changes []FileChange) (string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s", owner, repo, url.PathEscape(parent)), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var base struct {
+		Commit struct {
+			Tree struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		} `json:"commit"`
+	}
+	if err := json.Unmarshal(body, &base); err != nil || base.Commit.Tree.SHA == "" {
+		return "", fmt.Errorf("forgejo commit %s of %s/%s: no tree in the answer", parent, owner, repo)
+	}
+	tree := make([]map[string]string, 0, len(changes))
+	for _, c := range changes {
+		body, err = f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/git/blobs", owner, repo),
+			mustJSON(map[string]string{"content": base64.StdEncoding.EncodeToString(c.Content), "encoding": "base64"}), http.StatusCreated)
+		if err != nil {
+			return "", err
+		}
+		var blob struct {
+			SHA string `json:"sha"`
+		}
+		if err := json.Unmarshal(body, &blob); err != nil || blob.SHA == "" {
+			return "", fmt.Errorf("forgejo blob %s of %s/%s: no sha in the answer", c.Path, owner, repo)
+		}
+		tree = append(tree, map[string]string{"path": c.Path, "mode": "100644", "type": "blob", "sha": blob.SHA})
+	}
+	var made struct {
+		SHA string `json:"sha"`
+	}
+	if body, err = f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/git/trees", owner, repo),
+		mustJSON(map[string]any{"base_tree": base.Commit.Tree.SHA, "tree": tree}), http.StatusCreated); err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(body, &made); err != nil || made.SHA == "" {
+		return "", fmt.Errorf("forgejo tree of %s/%s: no sha in the answer", owner, repo)
+	}
+	if body, err = f.call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits", owner, repo),
+		mustJSON(map[string]any{"message": a.Message(subject), "tree": made.SHA, "parents": []string{parent}}), http.StatusCreated); err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(body, &made); err != nil || made.SHA == "" {
+		return "", fmt.Errorf("forgejo commit of %s/%s: no sha in the answer", owner, repo)
+	}
+	if _, err = f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/git/refs/heads/%s", owner, repo, branch),
+		mustJSON(map[string]any{"sha": made.SHA, "force": true}), http.StatusOK); err != nil {
+		return "", err
+	}
+	return made.SHA, nil
+}
+
 // FileContent reads path at ref with its blob sha, which a change of the
 // file must name.
 func (f *Forgejo) FileContent(ctx context.Context, owner, repo, ref, path string) (content []byte, blob string, err error) {
