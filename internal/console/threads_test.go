@@ -86,6 +86,45 @@ func TestChatTurnsSerialise(t *testing.T) {
 	}
 }
 
+// A queued turn reads the project when it starts, after the turn ahead of
+// it ends, not when its message came: its read is stamped then.
+func TestQueuedTurnReadsWhenItStarts(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	g.replies = [][]string{{say("first answer")}, {call(1, "board", `{}`)}, {say("second answer")}}
+	done := make(chan error, 2)
+	post := func(text string) {
+		_, _, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {text}})
+		done <- err
+	}
+	go post("first")
+	<-g.arrived
+	go post("second")
+	waitUntil(t, "the second message stored as queued", func() bool {
+		chat.mu.Lock()
+		defer chat.mu.Unlock()
+		return slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageQueued })
+	})
+	released := time.Now()
+	close(g.hold)
+	for range 2 {
+		if err := <-done; err != nil {
+			t.Fatal(err)
+		}
+	}
+	msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 5 || len(msgs[3].ToolCalls) != 1 {
+		t.Fatalf("the thread holds %d rows, want the second turn's board read as its fourth: %+v", len(msgs), msgs)
+	}
+	if read := msgs[3].ToolCalls[0].ReadAt; read.Before(released) {
+		t.Fatalf("the queued turn's board read is stamped %v, before the turn ahead ended after %v", read, released)
+	}
+}
+
 // The gate: one turn per thread, the waiting ones in order, and at most
 // the project's bound of model turns at once, another project's apart.
 func TestTurnGate(t *testing.T) {

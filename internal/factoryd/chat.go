@@ -57,8 +57,8 @@ type ChatToolCall struct {
 	Name      string `json:"name"`
 	Arguments string `json:"arguments"`
 	Result    string `json:"result"`
-	// ReadAt is when the result was read: a replayed result older than a
-	// minute shows its age beside the turn's fresh card state.
+	// ReadAt is when the result was read: a later turn replays a read
+	// without its result, for its time and age.
 	ReadAt time.Time `json:"read_at,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`

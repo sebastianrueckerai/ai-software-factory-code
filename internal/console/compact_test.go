@@ -153,6 +153,30 @@ func TestChatCompactByHand(t *testing.T) {
 	equal(t, "the thread's read", []any{got.Thread.Summary, got.Thread.SummaryUpto, got.Thread.Compactions}, []any{"the cache was fixed", int64(2), 1})
 }
 
+// The summariser reads a write's result and a read's call alone, so the
+// summary carries no old read as the project now.
+func TestChatCompactionLeavesReadsOut(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: "a1"},
+		{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
+			{ID: "call_1", Name: "board", Arguments: `{}`, Result: "Running (1):\n  #11 t-r"},
+			{ID: "call_2", Name: "set_accent", Arguments: `{"task_id":"t-m","accent":"red"}`, Result: "The accent of #5 is set."}}},
+		{Role: "assistant", Content: "a2"}} {
+		m.Conversation = 1
+		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seedTurns(t, chat, "b", "c")
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"/compact"}})
+	if len(g.compacts) != 1 {
+		t.Fatalf("%d compaction calls, want 1", len(g.compacts))
+	}
+	equal(t, "the summariser's turns", messages(t, g.compacts[0])[1]["content"], "The summary so far:\n(none yet)\n\nThe turns after it:\n"+
+		"the member: a1\nthe agent read board {}\n"+`the agent called set_accent {"task_id":"t-m","accent":"red"}: The accent of #5 is set.`+"\nthe agent: a2\n")
+}
+
 // A command of the config tree's sends its message: the turn stores and
 // sends the message, not the name; any other /word is text (roadmap 239).
 func TestChatCommandSendsItsMessage(t *testing.T) {

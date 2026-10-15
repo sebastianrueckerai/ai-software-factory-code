@@ -87,8 +87,8 @@ type turn struct {
 	// send writes one event of the stream; after a failed write, which a
 	// member who left causes, it writes no more
 	send func(event string, data any)
-	// freshRead is this turn's read of the board, stamped on every tool
-	// result it stores.
+	// freshRead is this turn's read of the board, when it starts running
+	// after any queue, stamped on every tool result it stores.
 	freshRead time.Time
 	// conv is the member's thread the turn answers in (roadmap 239).
 	conv int64
@@ -112,7 +112,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 		a.level, a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
 	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree,
-		cfg: v.Document.ChatOf(v.Projects[p.Name]), freshRead: time.Now()}, true
+		cfg: v.Document.ChatOf(v.Projects[p.Name])}, true
 }
 
 // open answers the turn as an event stream.
@@ -311,6 +311,7 @@ func scrubTokens(text string) (string, bool) {
 // budget.
 func (t *turn) run(id, notice string) {
 	ctx := t.r.Context()
+	t.freshRead = time.Now()
 	t.presetCompact(id)
 	msgs, err := t.context()
 	if err != nil {
@@ -622,11 +623,11 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 // context is the turn's conversation for the model: the system prompt with
 // the project's status line and pulse read at this turn's start, the
 // thread's summary, then its rows after the summary, each tool call
-// followed by its result; the board and the events are the tools'. A
-// replayed result older than a minute shows when it was read and its age
-// before its text. An assistant row with no tool calls whose content
-// claims an action is dropped from the replay. The turn stamps every tool
-// result it stores with the time of this read.
+// followed by its result; the board and the events are the tools'. An
+// earlier turn's read is replayed without its result (replayed). An
+// assistant row with no tool calls whose content claims an action is
+// dropped from the replay. The turn stamps every tool result it stores
+// with the time of this read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	status, _, _, err := t.snapshot()
 	if err != nil {
@@ -655,21 +656,24 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		}
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
-			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: agedResult(call, t.freshRead)})
+			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: t.replayed(call)})
 		}
 	}
 	return msgs, nil
 }
 
-// agedResult is a replayed tool result, prefixed with the time it was
-// read and its age beside this turn's fresh read when that read is older
-// than a minute: an old read shows its age beside the current state.
-func agedResult(call factoryd.ChatToolCall, now time.Time) string {
-	if call.ReadAt.IsZero() || !call.ReadAt.Before(now.Add(-time.Minute)) {
+// replayed is a stored tool result as the turn's context holds it: a
+// write's whole, the record of an action, and a read's whole within its
+// own turn. An earlier turn's read is left out for when it was read and
+// the call that reads the present, so no old read stands as the project
+// now.
+func (t *turn) replayed(call factoryd.ChatToolCall) string {
+	if !isRead(call.Name) || !call.ReadAt.Before(t.freshRead) {
 		return call.Result
 	}
-	age := int(now.Sub(call.ReadAt).Round(time.Minute) / time.Minute)
-	return fmt.Sprintf("[read at %s, %d min ago] %s", call.ReadAt.UTC().Format("2006-01-02 15:04 UTC"), age, call.Result)
+	age := int(t.freshRead.Sub(call.ReadAt).Round(time.Minute) / time.Minute)
+	return fmt.Sprintf("[read at %s, %d min ago, in an earlier turn: its result is left out, as the project may have changed since; call %s again for the present]",
+		call.ReadAt.UTC().Format("2006-01-02 15:04 UTC"), age, call.Name)
 }
 
 // prompt is the agent's standing instructions.

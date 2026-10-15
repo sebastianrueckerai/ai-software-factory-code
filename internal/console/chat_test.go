@@ -1194,10 +1194,10 @@ func TestChatUndoOfAMoveTheCardLeft(t *testing.T) {
 // A tool no confirm names runs at once with its undo token; the stream
 // carries the turn's events in their order. The undo restores the
 // summary with one row, once. The conversation keeps every call with its
-// result, so the next turn replays a valid conversation, and GET answers
-// it.
+// result, so the next turn replays a valid conversation, the earlier
+// read left out and the write's result whole, and GET answers it.
 func TestChatAppliedWithUndo(t *testing.T) {
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	g.replies = [][]string{
@@ -1252,10 +1252,15 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		}
 		shape = append(shape, line)
 	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := rows[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
 	equal(t, "the next turn's conversation", shape, []string{
 		`user "summarize #5"`,
 		`assistant "Let me look." calls call_1 board {}`,
-		fmt.Sprintf("tool call_1 %q", boardText),
+		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
 		`assistant "Setting it." calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`,
 		`tool call_2 "The summary of #5 is set. The member may undo it."`,
 		`assistant "Done."`,
@@ -1801,14 +1806,16 @@ func TestChatNewConversation(t *testing.T) {
 
 // The replay leaves out an assistant row that claims an action without a
 // tool call, keeps one that claims none, and keeps one with a call
-// whatever it says; GET still answers the row left out.
+// whatever it says, its earlier read left out for its time and age; GET
+// still answers the row left out.
 func TestChatReplayDropsClaims(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
+	read := time.Now().Add(-10 * time.Minute)
 	for _, m := range []factoryd.ChatMessage{
 		{Role: "assistant", Content: "I proposed to file a card"},
 		{Role: "assistant", Content: "The board has 3 cards"},
-		{Role: "assistant", Content: "Reading the proposal's card.", ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card", Arguments: `{"task_id":"t-m"}`, Result: "#5"}}},
+		{Role: "assistant", Content: "Reading the proposal's card.", ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card", Arguments: `{"task_id":"t-m"}`, Result: "#5", ReadAt: read}}},
 	} {
 		if err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
 			t.Fatal(err)
@@ -1820,7 +1827,8 @@ func TestChatReplayDropsClaims(t *testing.T) {
 		{"role": "assistant", "content": "The board has 3 cards"},
 		{"role": "assistant", "content": "Reading the proposal's card.", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
-		{"role": "tool", "content": "#5", "tool_call_id": "call_1"},
+		{"role": "tool", "content": "[read at " + read.UTC().Format("2006-01-02 15:04 UTC") +
+			", 10 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]", "tool_call_id": "call_1"},
 		{"role": "user", "content": "what now?"},
 	})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"content":"I proposed to file a card"`) {
@@ -2126,22 +2134,21 @@ func TestChatToolResultCarriesReadAt(t *testing.T) {
 }
 
 // TestChatTurnContextHasFreshStatus proves the system message holds the
-// status line read at the turn's start and old results show their age:
-// two turns with a card started between them; the second turn's status
-// line counts it working, and the first turn's replayed result carries
-// its age prefix.
+// status line read at the turn's start and no earlier turn's read stands
+// as the project now: two turns with a card started between them; the
+// second turn's status line counts it working, the first turn's board
+// read is replayed as its time, age and the call to read again, without
+// the old board, and its write's result is replayed whole.
 func TestChatTurnContextHasFreshStatus(t *testing.T) {
-	r, _, g := newChatRig(t)
+	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("first answer")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
+	g.replies = [][]string{{call(1, "board", `{}`, "set_accent", `{"task_id":"t-m","accent":"red"}`)}, {say("first answer")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is on the board?"}})
 	r.chat.mu.Lock()
 	key := "sf/code sebastian"
 	for i := range r.chat.msgs[key] {
 		for j := range r.chat.msgs[key][i].ToolCalls {
-			if !r.chat.msgs[key][i].ToolCalls[j].ReadAt.IsZero() {
-				r.chat.msgs[key][i].ToolCalls[j].ReadAt = r.chat.msgs[key][i].ToolCalls[j].ReadAt.Add(-2 * time.Hour)
-			}
+			r.chat.msgs[key][i].ToolCalls[j].ReadAt = r.chat.msgs[key][i].ToolCalls[j].ReadAt.Add(-2 * time.Hour)
 		}
 	}
 	r.chat.mu.Unlock()
@@ -2158,10 +2165,10 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 		t.Fatal("t-m not found in tasks")
 	}
 	g.replies = [][]string{{say("second answer")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how many cards are open?"}})
 	calls := g.calls()
-	if len(calls) < 3 {
-		t.Fatalf("%d model calls, want at least 3", len(calls))
+	if len(calls) != 3 {
+		t.Fatalf("%d model calls, want 3", len(calls))
 	}
 	firstSystem, _ := messages(t, calls[0])[0]["content"].(string)
 	secondMsgs := messages(t, calls[2])
@@ -2172,18 +2179,33 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 	if !strings.Contains(secondSystem, "\nStatus: waiting on you; 2 working; 3 need you; ") {
 		t.Errorf("the second turn's status line counts no 2 working:\n%s", secondSystem)
 	}
-	var agedFound bool
-	for _, m := range secondMsgs {
-		content, _ := m["content"].(string)
-		if strings.HasPrefix(content, "[read at ") {
-			agedFound = true
-			if !strings.Contains(content, "min ago]") {
-				t.Errorf("the aged result lacks 'min ago]': %s", content)
-			}
-			break
+	results := map[string]string{}
+	for _, m := range messages(t, calls[1]) {
+		if m["role"] == "tool" {
+			results[m["tool_call_id"].(string)], _ = m["content"].(string)
 		}
 	}
-	if !agedFound {
-		t.Error("no aged result found in the second turn's conversation")
+	oldBoard := results["call_1"]
+	if !strings.Contains(oldBoard, "Backlog (1):\n  #5 t-m ") {
+		t.Fatalf("the first turn's board read holds no #5 in the backlog:\n%s", oldBoard)
 	}
+	stored, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readAt := stored[1].ToolCalls[0].ReadAt.UTC().Format("2006-01-02 15:04 UTC")
+	replayed := map[string]string{}
+	for _, m := range secondMsgs {
+		content, _ := m["content"].(string)
+		if strings.Contains(content, "Backlog (1):") {
+			t.Errorf("the second turn's %s message holds the old board read:\n%s", m["role"], content)
+		}
+		if m["role"] == "tool" {
+			replayed[m["tool_call_id"].(string)] = content
+		}
+	}
+	equal(t, "the second turn's replayed results", replayed, map[string]string{
+		"call_1": "[read at " + readAt + ", 120 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
+		"call_2": "The accent of #5 is set. The member may undo it.",
+	})
 }

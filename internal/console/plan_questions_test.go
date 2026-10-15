@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -226,7 +225,7 @@ func (r *rig) chatTurnOf(t *testing.T, s *session, events *[]string) *turn {
 	}
 	v, _ := r.c.inForce(req.Context())
 	trn := &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p,
-		cfg: v.Document.ChatOf(v.Projects[p.Name]), freshRead: time.Now()}
+		cfg: v.Document.ChatOf(v.Projects[p.Name])}
 	trn.stream(func(line string) error {
 		event, data := "", ""
 		for _, f := range strings.Split(strings.TrimRight(line, "\n"), "\n") {

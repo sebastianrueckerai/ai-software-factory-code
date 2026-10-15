@@ -184,6 +184,13 @@ func (c *Console) chatTool(name string) (chatTool, bool) {
 	return c.chatTools()[i], true
 }
 
+// isRead is true for the name of a read tool: its result is the project
+// as it was at the call.
+func isRead(name string) bool {
+	i := slices.IndexFunc(tools, func(t chatTool) bool { return t.name == name })
+	return i >= 0 && !tools[i].write
+}
+
 // card is the tool's card, refused unless it is the chat project's.
 func (t *turn) card(in toolInput) (factoryd.Task, error) {
 	return t.c.cardIn(t.r.Context(), t.a, in.TaskID)

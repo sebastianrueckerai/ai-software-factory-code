@@ -76,7 +76,8 @@ func tailStart(rows []factoryd.ChatMessage, keep int) int {
 }
 
 // transcript is rows as the summariser reads them: who said what, each
-// tool call with its result cut short.
+// tool call with its result cut short, a read's left out, so the summary
+// carries no old read as the project now.
 func transcript(rows []factoryd.ChatMessage) string {
 	var b strings.Builder
 	for _, m := range rows {
@@ -91,6 +92,10 @@ func transcript(rows []factoryd.ChatMessage) string {
 			fmt.Fprintf(&b, "%s: %s\n", who, m.Content)
 		}
 		for _, c := range m.ToolCalls {
+			if isRead(c.Name) {
+				fmt.Fprintf(&b, "the agent read %s %s\n", c.Name, c.Arguments)
+				continue
+			}
 			fmt.Fprintf(&b, "the agent called %s %s: %s\n", c.Name, c.Arguments, textutil.Truncate(strings.Join(strings.Fields(c.Result), " "), compactSlot))
 		}
 	}

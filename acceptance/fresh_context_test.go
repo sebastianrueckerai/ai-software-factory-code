@@ -4,20 +4,19 @@
 // the turn's start and no card, which the reads give on demand by the
 // card's issue number as well as its task id, every tool result carries
 // the time it was read, which GET /projects/{name}/chat answers as
-// read_at, and a replayed result older than one minute shows its age
-// beside the current state. The rig is the whole chat stack over the
+// read_at, and a later turn replays an earlier turn's read without its
+// result, for its time and age. The rig is the whole chat stack over the
 // fixture stores with the operator model scripted: the agent's move_card
 // runs through the console's own action, the fixture board takes the
 // card into ready as factoryd would, and the next turn's card read
-// answers the new state while the conversation still holds the old read
-// — which shows its age.
+// answers the new state while the conversation holds no old read.
 package acceptance
 
 import (
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -167,13 +166,12 @@ func TestAcceptanceToolResultTimestamps(t *testing.T) {
 	}
 }
 
-// TestAcceptanceAgedReadShowsAge reads a card by its issue number,
-// mutates it through the agent's own move, then sends another message
-// once the read is older than a minute: the replayed tool result carries
-// its age prefix — when it was read and how many minutes ago, beside the
-// card text it read — while the same turn's fresh read of "#5" already
-// shows the new state.
-func TestAcceptanceAgedReadShowsAge(t *testing.T) {
+// TestAcceptanceEarlierReadLeftOut reads a card by its issue number,
+// mutates it through the agent's own move, then sends another message:
+// the replayed card read is its time, its age and the call to read again,
+// without the backlog card it read, the move's result is whole, and the
+// same turn's fresh read of "#5" shows the new state.
+func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
 		{call(1, "card", `{"task_id":"#5"}`)},
@@ -194,10 +192,6 @@ func TestAcceptanceAgedReadShowsAge(t *testing.T) {
 	} else if !hasToolResult(events, "move_card", movedNote) {
 		t.Fatalf("the move did not run; events:\n%s", strings.Join(events, "\n"))
 	}
-	// the read must be older than a minute at the next turn's fresh read
-	if d := time.Until(readAt.Add(61 * time.Second)); d > 0 {
-		time.Sleep(d)
-	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the third turn = %d %v", code, events)
 	}
@@ -205,31 +199,27 @@ func TestAcceptanceAgedReadShowsAge(t *testing.T) {
 	if len(calls) != 6 {
 		t.Fatalf("%d model calls, want 6", len(calls))
 	}
-	last := messagesOf(calls[len(calls)-1])
-	var aged string
-	for _, m := range last {
+	results := map[string]string{}
+	for _, m := range messagesOf(calls[len(calls)-1]) {
 		content, _ := m["content"].(string)
-		if m["role"] == "tool" && strings.HasPrefix(content, "[read at ") {
-			aged = content
-			break
+		if strings.Contains(content, backlogCardHead) {
+			t.Errorf("the third turn's %s message holds the old backlog read:\n%s", m["role"], content)
+		}
+		if m["role"] == "tool" {
+			results[m["tool_call_id"].(string)] = content
 		}
 	}
-	if aged == "" {
-		var all []string
-		for _, m := range last {
-			all = append(all, fmt.Sprintf("%v %q", m["role"], m["content"]))
-		}
-		t.Fatalf("no replayed tool result shows its age:\n%s", strings.Join(all, "\n"))
+	if !strings.HasPrefix(results["call_3"], queuedCardHead) {
+		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", queuedCardHead, results["call_3"])
 	}
-	wantPrefix := fmt.Sprintf("[read at %s, 1 min ago] ", readAt.UTC().Format("2006-01-02 15:04 UTC"))
-	if !strings.HasPrefix(aged, wantPrefix) {
-		t.Errorf("the aged result = %q, want it to begin %q", aged, wantPrefix)
+	delete(results, "call_3")
+	want := map[string]string{
+		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
+			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
+		"call_2": movedNote + " The member may undo it.",
 	}
-	if !strings.Contains(aged, backlogCardHead) {
-		t.Errorf("the aged result lost the card text it read:\n%s", aged)
-	}
-	if fresh, _ := last[len(last)-1]["content"].(string); !strings.HasPrefix(fresh, queuedCardHead) {
-		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", queuedCardHead, fresh)
+	if !reflect.DeepEqual(results, want) {
+		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)
 	}
 }
 
