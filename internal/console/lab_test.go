@@ -58,7 +58,7 @@ func TestLab(t *testing.T) {
 	// the capped card of the fire scene is below the answer path's floor, so its approvers get the Fund action (roadmap 210)
 	r.c.cfg.AttemptFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
-			return "the card's remaining €0.52 cannot fund a call: the floor is €0.60", nil
+			return "the remaining budget cannot fund a call: 0.520 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card.", nil
 		}
 		return "", nil
 	}

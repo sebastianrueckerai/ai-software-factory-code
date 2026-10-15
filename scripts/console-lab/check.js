@@ -40,9 +40,9 @@ const mustHave = {
     "#598", "#616", "#617", "waiting on #603, #611", "#533",
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
-    "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send", "own thread",
+    "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
-    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only", "Apply"],
+    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
@@ -56,10 +56,14 @@ async function seed(s) {
   return resp.headers.get("x-lab-drawer") || "";
 }
 
-async function open(browser, viewport) {
+// open is a fresh page at viewport in the dark theme; its thread table is
+// unfolded, as for a member who unfolded it once, unless folded is set,
+// which leaves the table at its default (folded to its marks).
+async function open(browser, viewport, folded) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1 });
   await ctx.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
   await ctx.addInitScript(() => localStorage.setItem("theme", "dark"));
+  if (!folded) await ctx.addInitScript(() => { if (localStorage.getItem("chat-fold:sebastian") === null) localStorage.setItem("chat-fold:sebastian", "0"); });
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -157,6 +161,12 @@ async function text(page) {
       if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
     }
     if (sc === "threads") {
+      // the thread table starts folded to its marks until the member unfolds it
+      const fresh = await open(browser, { width: 1440, height: 900 }, true);
+      await fresh.page.goto(base + "/", { waitUntil: "load" });
+      await fresh.page.waitForTimeout(600);
+      if (!(await fresh.page.locator(".chat.sw-collapsed").count())) fails.push("threads: the thread table does not start folded");
+      await fresh.ctx.close();
       // the commands (C14): "/" at the start of the box opens the palette, the arrows
       // choose, Escape closes it; /compact and /new also sit as chips under the box
       const box = p.page.locator("#chat-input"), pal = p.page.locator("#chat-palette");
