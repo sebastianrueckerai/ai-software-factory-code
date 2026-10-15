@@ -7,7 +7,11 @@
 # Dockerfiles and workflows, and the infra repository's manifests, its
 # HelmReleases' values and its runner's job image. A line marked bootstrap
 # is referenced at its upstream: Forgejo serves the store, so what Forgejo,
-# its database and the cluster's start run on cannot come from it.
+# its database and the cluster's start run on cannot depend on it; the
+# nodes' registry mirror serves these from the store while it answers,
+# from their upstreams when it does not. Each copy is tagged twice: its tag
+# and the digest's first 12 hex digits, which never moves, and its upstream
+# tag, which names the pinned digest for a pull by tag through the mirror.
 # The weekly upstream card bumps these lines.
 
 # the images' builds
@@ -40,6 +44,21 @@ docker.io/library/alpine:3.18.2@sha256:25fad2a32ad1f6f510e528448ae1ec69a28ef8191
 docker.io/altinity/clickhouse-operator:0.21.2@sha256:f972ef4aec9959313a4d4407a83803c75f0be215af4a6811b3f2b890c15ba893
 docker.io/altinity/metrics-exporter:0.21.2@sha256:084a75d8ab0ba5c31ed9d923d301745d24f0e8a3cadf54cdbfe298443eda8da9
 docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c
+
+# the nodes' own: Talos's Kubernetes, the installer of its node image, and
+# Cilium, installed by its CLI; the nodes pull them through their registry
+# mirror (infra talos/patches.yaml), mostly by tag
+registry.k8s.io/kube-apiserver:v1.37.0@sha256:83f25d9626d2860003425ad0e31b4d3c73738b2ee16505fca9645d6443b719da bootstrap
+registry.k8s.io/kube-controller-manager:v1.37.0@sha256:9db48abfafe1ca12b8cd6208331e0867fa225cb173e7588627cdada1818bcee9 bootstrap
+registry.k8s.io/kube-scheduler:v1.37.0@sha256:f705b23a4c819ed0f571ce1f618531acf59e3d53bec13896eb1c3a1d28488041 bootstrap
+registry.k8s.io/coredns/coredns:v1.14.7@sha256:2329f5f0e7e79fbe56dcdf11ecc4337ee2476bb251095bc275fe9461cb88a55b bootstrap
+registry.k8s.io/etcd:3.7.1@sha256:acf78d83ed1eb6263a0b972fdf4f1e5a3ca536545f8b54947486e22abfe14a11 bootstrap
+registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17 bootstrap
+ghcr.io/siderolabs/kubelet:v1.37.0@sha256:3e1d9098c9365fbc23177a1845687d3ffd9ac314042cae7b459454ffea3b4d3b bootstrap
+factory.talos.dev/installer/d9ff89777e246792e7642abd3220a616afb4e49822382e4213a2e528ab826fe5:v1.14.1@sha256:92299630407775fc04b18f7c0d56e679c653b521ec48bb7542640b3bcecb46cf bootstrap
+quay.io/cilium/cilium:v1.20.0@sha256:9a9fc73bb594bf2497955a481996c7a4ad146ee2e142152c3890dea10ad6d3c5 bootstrap
+quay.io/cilium/cilium-envoy:v1.37.5-1782911245-7cffc778c923f68a77954a53b1a98d6b5353f004@sha256:070017873c423cf294b094eef9794f3670cac8df1872bd30a98f142dd6897e18 bootstrap
+quay.io/cilium/operator-generic:v1.20.0@sha256:79e630e3f5e2344a2c352d341a619c1cb7fbe874cadcfe244edf032d62d037c2 bootstrap
 
 # Forgejo's path, referenced at the upstream
 code.forgejo.org/forgejo/forgejo:15.0.9-rootless@sha256:e0950cca25a2344f0f519b9aff894bcfa80b53601b24f07066d6625033597b55 bootstrap

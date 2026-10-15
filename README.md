@@ -1873,8 +1873,12 @@ into the Forgejo registry. Every image the factory uses and does not
 build is a line of `upstream-images.txt`, pinned by its linux/amd64
 digest (roadmaps 203 and 242); the `upstream` job runs
 `scripts/upstream-copy`, which copies each line the store lacks to
-`git.aisoftwarefactory.world/upstream/<its name>` with that digest, and
-every Dockerfile, workflow and infra manifest names the copy. The
+`git.aisoftwarefactory.world/upstream/<its name>` with that digest and
+tags it with its upstream tag as well, and every Dockerfile, workflow and
+infra manifest names the copy. The nodes' registry mirror (infra
+`talos/patches.yaml`) serves the lines marked bootstrap, Talos's own
+images and Cilium's from the store too, by digest or by that tag, and
+falls back to their upstreams while the store does not answer. The
 Dockerfiles take their bases from the store through `ARG UPSTREAM` (a
 local build without a login sets it empty for the same digests at their
 upstreams). A pull request's image build pulls from the store too:

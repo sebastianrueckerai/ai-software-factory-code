@@ -2,12 +2,14 @@
 # scripts/upstream-copy [list] copies every image of the list
 # (upstream-images.txt by default) into the factory's store,
 # git.aisoftwarefactory.world/upstream/<its name>, with the bytes of its
-# digest, so the copy's digest is the upstream's. Each copy's tag is its
-# upstream tag and the digest's first 12 hex digits: Forgejo deletes a
+# digest, so the copy's digest is the upstream's. Each copy is tagged with
+# its upstream tag and the digest's first 12 hex digits: Forgejo deletes a
 # version named only by its digest after a day, and one tag per digest
-# never moves off a digest a reference names. A copy the store holds
-# already is left alone, so only a new line touches its upstream. crane
-# reads the store's login from its docker config.
+# never moves off a digest a reference names. Its upstream tag names the
+# pinned digest too, for a node's pull by tag through its registry mirror.
+# A copy the store holds already is not copied again, so only a new line
+# touches its upstream. crane reads the store's login from its docker
+# config.
 set -euo pipefail
 list=${1:-upstream-images.txt}
 store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}
@@ -23,14 +25,18 @@ while read -r ref _; do
     status=1
     continue
   fi
-  if crane manifest "$store/$name@$digest" >/dev/null 2>&1; then
-    continue
-  fi
   hex=${digest#sha256:}
-  if crane copy "$name@$digest" "$store/$name:$tag-${hex:0:12}"; then
-    echo "copied $ref"
-  else
-    echo "upstream-copy: $ref: the copy failed" >&2
+  if ! crane manifest "$store/$name@$digest" >/dev/null 2>&1; then
+    if crane copy "$name@$digest" "$store/$name:$tag-${hex:0:12}"; then
+      echo "copied $ref"
+    else
+      echo "upstream-copy: $ref: the copy failed" >&2
+      status=1
+      continue
+    fi
+  fi
+  if [ "$(crane digest "$store/$name:$tag" 2>/dev/null)" != "$digest" ] && ! crane tag "$store/$name@$digest" "$tag"; then
+    echo "upstream-copy: $ref: tagging $tag failed" >&2
     status=1
   fi
 done < "$list"

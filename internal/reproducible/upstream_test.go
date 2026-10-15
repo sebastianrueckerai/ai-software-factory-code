@@ -179,17 +179,21 @@ func TestOutsideImagesComeFromTheStore(t *testing.T) {
 }
 
 // The copy reads the store before the upstream: a line the store holds
-// costs one manifest read there and nothing upstream, so a main push
-// while an upstream is down still passes; a missing one is copied by its
-// digest under a tag no other digest takes. A stub crane records the
-// calls; the store holds the first line's digest.
+// costs manifest reads there and nothing upstream, so a main push while an
+// upstream is down still passes; a missing one is copied by its digest
+// under a tag no other digest takes. The upstream tag follows the pinned
+// digest. A stub crane records the calls: the store holds the first line's
+// digest under both tags, the second line's tag names an older digest, the
+// third is missing.
 func TestUpstreamCopyCopiesWhatTheStoreLacks(t *testing.T) {
 	dir := t.TempDir()
 	list := filepath.Join(dir, "list")
 	const (
-		a = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		b = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-		c = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		a   = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		b   = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+		c   = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+		old = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+		s   = "git.aisoftwarefactory.world/upstream/"
 	)
 	body := "# a comment\n\n" +
 		"docker.io/library/debian:bookworm-slim@" + a + "\n" +
@@ -200,8 +204,12 @@ func TestUpstreamCopyCopiesWhatTheStoreLacks(t *testing.T) {
 	}
 	log := filepath.Join(dir, "calls")
 	crane := "#!/bin/sh\necho \"$*\" >> " + log + "\n" +
-		"[ \"$1\" = manifest ] && [ \"$2\" = \"git.aisoftwarefactory.world/upstream/docker.io/library/debian@" + a + "\" ] && exit 0\n" +
-		"[ \"$1\" = manifest ] && exit 1\nexit 0\n"
+		"case \"$*\" in\n" +
+		"\"manifest " + s + "docker.io/library/debian@" + a + "\") exit 0 ;;\n" +
+		"\"digest " + s + "docker.io/library/debian:bookworm-slim\") echo " + a + " ;;\n" +
+		"\"digest " + s + "ghcr.io/fluxcd/source-controller:v1.9.5\") echo " + old + " ;;\n" +
+		"manifest*|digest*) exit 1 ;;\n" +
+		"esac\n"
 	if err := os.WriteFile(filepath.Join(dir, "crane"), []byte(crane), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -214,11 +222,16 @@ func TestUpstreamCopyCopiesWhatTheStoreLacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "manifest git.aisoftwarefactory.world/upstream/docker.io/library/debian@" + a + "\n" +
-		"manifest git.aisoftwarefactory.world/upstream/ghcr.io/fluxcd/source-controller@" + b + "\n" +
-		"copy ghcr.io/fluxcd/source-controller@" + b + " git.aisoftwarefactory.world/upstream/ghcr.io/fluxcd/source-controller:v1.9.5-bbbbbbbbbbbb\n" +
-		"manifest git.aisoftwarefactory.world/upstream/code.forgejo.org/forgejo/runner@" + c + "\n" +
-		"copy code.forgejo.org/forgejo/runner@" + c + " git.aisoftwarefactory.world/upstream/code.forgejo.org/forgejo/runner:12.7.3-cccccccccccc\n"
+	want := "manifest " + s + "docker.io/library/debian@" + a + "\n" +
+		"digest " + s + "docker.io/library/debian:bookworm-slim\n" +
+		"manifest " + s + "ghcr.io/fluxcd/source-controller@" + b + "\n" +
+		"copy ghcr.io/fluxcd/source-controller@" + b + " " + s + "ghcr.io/fluxcd/source-controller:v1.9.5-bbbbbbbbbbbb\n" +
+		"digest " + s + "ghcr.io/fluxcd/source-controller:v1.9.5\n" +
+		"tag " + s + "ghcr.io/fluxcd/source-controller@" + b + " v1.9.5\n" +
+		"manifest " + s + "code.forgejo.org/forgejo/runner@" + c + "\n" +
+		"copy code.forgejo.org/forgejo/runner@" + c + " " + s + "code.forgejo.org/forgejo/runner:12.7.3-cccccccccccc\n" +
+		"digest " + s + "code.forgejo.org/forgejo/runner:12.7.3\n" +
+		"tag " + s + "code.forgejo.org/forgejo/runner@" + c + " 12.7.3\n"
 	if string(got) != want {
 		t.Errorf("crane calls:\n%s\nwant:\n%s", got, want)
 	}
