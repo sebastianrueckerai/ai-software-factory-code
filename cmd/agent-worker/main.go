@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -62,7 +63,7 @@ func run(log func(string, ...any)) int {
 	case mode == "repro":
 		return runRepro(log)
 	}
-	return runSession(context.Background(), log, workspace, os.Stdout, initErr)
+	return runSession(context.Background(), log, workspace, os.Stdout, initErr, sandboxProbe)
 }
 
 // becomeInit checks the worker runs as its container's init and makes it
@@ -97,10 +98,11 @@ type session struct {
 }
 
 // runSession runs a session on the workspace ws, its envelopes on stdout;
-// initErr is becomeInit's. A step before the harness that fails ends the
-// session with a result that names the step and its error.
-func runSession(ctx context.Context, log func(string, ...any), ws string, stdout io.Writer, initErr error) int {
-	s, err := start(ctx, log, ws, initErr)
+// initErr is becomeInit's, and probe builds the egress probe of the
+// sandbox its env describes. A step before the harness that fails ends
+// the session with a result that names the step and its error.
+func runSession(ctx context.Context, log func(string, ...any), ws string, stdout io.Writer, initErr error, probe func(workerEnv) egressProbe) int {
+	s, err := start(ctx, log, ws, initErr, probe)
 	defer s.closeTelemetry()
 	defer s.stopMessages()
 	if err != nil {
@@ -194,7 +196,7 @@ func startFailed(err error) harness.Result {
 // start runs the session's steps before the harness, in order, on the
 // workspace ws; an error is a startError. s is never nil: its closers
 // undo what started.
-func start(ctx context.Context, log func(string, ...any), ws string, initErr error) (s *session, err error) {
+func start(ctx context.Context, log func(string, ...any), ws string, initErr error, probe func(workerEnv) egressProbe) (s *session, err error) {
 	s = &session{outcome: "failed", closeTelemetry: func() {}, stopMessages: func() {}}
 	if initErr != nil {
 		return s, startError{"init", initErr}
@@ -219,6 +221,12 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		defer cancel()
 		otelProviders.Shutdown(ctx) // #nosec G104 -- fire and forget: the last spans may be lost
 	})
+	endProbe := s.tel.phase("egress probe")
+	err = probe(s.env).run(ctx)
+	endProbe(err)
+	if err != nil {
+		return s, startError{"egress probe", err}
+	}
 	endBrief := s.tel.phase("brief")
 	defer func() { endBrief(err) }()
 
@@ -449,6 +457,10 @@ type workerEnv struct {
 	// taskPR is the task's own pull request (TASK_PR): a closed one's head
 	// stays on the task's repository after its branch left the fork
 	taskPR string
+	// egressCanary (EGRESS_CANARY, a name and a port) and egressDirectIP
+	// (EGRESS_DIRECT_IP, an IP and a port) are public targets the egress
+	// probe must not reach
+	egressCanary, egressDirectIP string
 }
 
 func loadEnv() (workerEnv, error) {
@@ -472,9 +484,11 @@ func loadEnv() (workerEnv, error) {
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
+	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,
 		"BRANCH": e.branch, "GATEWAY_URL": e.gatewayURL, "TOKEN_FILE": e.tokenFile, "MODEL": e.model,
+		"EGRESS_CANARY": e.egressCanary, "EGRESS_DIRECT_IP": e.egressDirectIP,
 	}
 	if str("MODE") == "report" {
 		e.report = str("REPORT_GUIDE")
@@ -489,6 +503,13 @@ func loadEnv() (workerEnv, error) {
 	}
 	if e.home == "" {
 		e.home = "/home/worker"
+	}
+	// the canary's name is the DNS probe's too
+	if host, _, err := net.SplitHostPort(e.egressCanary); err != nil || net.ParseIP(host) != nil {
+		return e, fmt.Errorf("EGRESS_CANARY must be a name and a port, is %q", e.egressCanary)
+	}
+	if host, _, err := net.SplitHostPort(e.egressDirectIP); err != nil || net.ParseIP(host) == nil {
+		return e, fmt.Errorf("EGRESS_DIRECT_IP must be an IP and a port, is %q", e.egressDirectIP)
 	}
 	var err error
 	if e.messageHash, err = parseHash(messageHash); err != nil {

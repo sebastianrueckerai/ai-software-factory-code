@@ -27,7 +27,7 @@ func setRequiredEnv(t *testing.T) {
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo",
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
-		"MESSAGE_TOKEN_SHA256": testMessageHash,
+		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 	} {
 		t.Setenv(name, val)
 	}
@@ -237,6 +237,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
 		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "MESSAGE_TOKEN_SHA256": testMessageHash,
+		"EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 	} {
 		t.Setenv(k, v)
 	}
@@ -401,21 +402,29 @@ func TestCloneModeClones(t *testing.T) {
 // error, whatever the step: the card reads why, not a pod that exited
 // without a result. The init checks are the first step; the clone's
 // failure is the text its init container left in the workspace; an error
-// too long for factoryd's 1 MiB log line is cut with its size.
+// too long for factoryd's 1 MiB log line is cut with its size. A sandbox
+// more open than its policy fails the egress probe, before the clone is
+// read.
 func TestSessionStartFailureLeavesAResult(t *testing.T) {
 	const cloneErr = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
 	huge := strings.Repeat("\x01", 2<<20)
+	closed := closedSandbox(t)
+	open := closed
+	open.directIP = listening(t)
 	for name, tc := range map[string]struct {
 		initErr                         error
+		probe                           egressProbe
 		taskID, fetchFailed, step, want string
 	}{
 		"init": {initErr: errors.New("must run as the container's init (pid 1), runs as pid 7"), taskID: "t1",
 			step: "init", want: "start failed: init: must run as the container's init (pid 1), runs as pid 7"},
-		"environment":  {step: "environment", want: "start failed: environment: TASK_ID is required"},
-		"clone":        {taskID: "t1", fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
-		"prepare repo": {taskID: "t1", step: "prepare repo", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
+		"environment": {step: "environment", want: "start failed: environment: TASK_ID is required"},
+		"egress probe": {taskID: "t1", probe: open, fetchFailed: cloneErr, step: "egress probe",
+			want: "start failed: egress probe: direct IP " + open.directIP + " answered: connected to " + open.directIP},
+		"clone":        {taskID: "t1", probe: closed, fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
+		"prepare repo": {taskID: "t1", probe: closed, step: "prepare repo", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
 		// "clone: " and 2 MiB, cut at 16 KiB
-		"huge clone error": {taskID: "t1", fetchFailed: huge, step: "clone",
+		"huge clone error": {taskID: "t1", probe: closed, fetchFailed: huge, step: "clone",
 			want: "start failed: clone: " + huge[:16384-7] + "… (cut from 2097159 bytes)"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -435,7 +444,7 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 				}
 			}
 			var out bytes.Buffer
-			if code := runSession(context.Background(), nolog, ws, &out, tc.initErr); code != 1 {
+			if code := runSession(context.Background(), nolog, ws, &out, tc.initErr, func(workerEnv) egressProbe { return tc.probe }); code != 1 {
 				t.Fatalf("exit %d, want 1", code)
 			}
 			want := harness.Result{Summary: strings.Replace(tc.want, "WS", ws, 1), Step: tc.step}

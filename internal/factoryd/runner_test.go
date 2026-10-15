@@ -2659,6 +2659,18 @@ func TestWorkerPodSpecCarriesMigrationGlobs(t *testing.T) {
 	}
 }
 
+// The worker pod carries the egress probe's targets (roadmap 42) as
+// factoryd is configured with them.
+func TestWorkerPodSpecCarriesTheEgressProbeTargets(t *testing.T) {
+	cfg := testRunnerConfig()
+	cfg.EgressCanary, cfg.EgressDirectIP = "canary.example:443", "192.0.2.7:443"
+	pod := (&Runner{cfg: cfg, forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, sessionSpec{id: "s-1"})
+	env := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))
+	if env["EGRESS_CANARY"] != "canary.example:443" || env["EGRESS_DIRECT_IP"] != "192.0.2.7:443" {
+		t.Fatalf("EGRESS_CANARY = %q, EGRESS_DIRECT_IP = %q; want canary.example:443 and 192.0.2.7:443", env["EGRESS_CANARY"], env["EGRESS_DIRECT_IP"])
+	}
+}
+
 // Roadmap 237: every worker env value that grows with its input stays
 // within the 128 KiB Linux allows one "NAME=value" string with its NUL
 // (MAX_ARG_STRLEN), so a session's container always starts, and LEFT_OUT

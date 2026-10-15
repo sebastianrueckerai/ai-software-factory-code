@@ -107,7 +107,14 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   channel: a `go get` of a made-up module path carries that path to
   proxy.golang.org, so an agent can leak a few hundred bytes per request
   through it. Ruling 99 accepts this as the price of a usable Go
-  toolchain in the sandbox.
+  toolchain in the sandbox. Before the agent starts, the worker probes
+  that egress (roadmap 42), every probe at once and each bounded at 2 s:
+  the gateway's `/healthz` answers, while the canary (factoryd's
+  `EGRESS_CANARY`, default `example.com:443`), the metadata address and
+  a direct IP (`EGRESS_DIRECT_IP`, default `1.1.1.1:443`) take no
+  connection and a lookup of the canary's name fails at once; the
+  worker runs as uid 1000. A probe that fails ends the start at step
+  `egress probe`, naming the probe and what answered.
 
 `internal/` holds the packages behind them, `k8s/` the manifests Flux
 applies from this repository (namespace `factory`).

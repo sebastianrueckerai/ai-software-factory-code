@@ -69,6 +69,10 @@ type RunnerConfig struct {
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
 	// workers send their telemetry (ruling 158); "" = none.
 	OTLPEndpoint string
+	// EgressCanary (a public name and port) and EgressDirectIP (a public
+	// IP and port) are what the worker's egress probe must not reach
+	// before a session starts (roadmap 42).
+	EgressCanary, EgressDirectIP string
 	// Gates is the worker's GateWatch: the gate supervisor acts on the
 	// attempts it watches.
 	Gates *GateWatch
@@ -1375,6 +1379,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
+		{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
+		{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP},
 	}
 	cloneEnv := []map[string]any{
 		{"name": "MODE", "value": "clone"},

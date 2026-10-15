@@ -177,7 +177,11 @@ func main() {
 		CIQueue:      ciQueue,
 		Metrics:      metrics,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
-		Gates:        gates,
+		// the worker's egress probe passes when these do not answer, so no
+		// session start needs them up
+		EgressCanary:   env("EGRESS_CANARY", "example.com:443"),
+		EgressDirectIP: env("EGRESS_DIRECT_IP", "1.1.1.1:443"),
+		Gates:          gates,
 		LastFailure: func(ctx context.Context, workflowID, activityID string) (string, error) {
 			return inner.LastFailure(ctx, workflowID, activityID)
 		},
