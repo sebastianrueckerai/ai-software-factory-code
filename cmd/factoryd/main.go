@@ -270,6 +270,7 @@ func main() {
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
+	taskWorker.RegisterWorkflowWithOptions(factoryd.RoutineRunWorkflow, workflow.RegisterOptions{Name: "RoutineRunWorkflow"})
 	runner.RegisterActivities(taskWorker)
 
 	webhookIntake := &factoryd.Intake{

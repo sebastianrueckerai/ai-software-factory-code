@@ -790,6 +790,8 @@ type batchWorkflows struct{ rig *batchRig }
 
 func (w batchWorkflows) Start(context.Context, string) error { return nil }
 
+func (w batchWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInput) error { return nil }
+
 func (w batchWorkflows) Signal(_ context.Context, taskID, signal string, sig factoryd.TaskSignal) error {
 	w.rig.noteSignal(fmt.Sprintf("%s %s %d %d by %s", signal, taskID, sig.Revision, sig.Index, sig.Author))
 	return nil

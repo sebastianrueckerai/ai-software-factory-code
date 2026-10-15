@@ -729,7 +729,8 @@ type signalRecorder struct {
 	err     error
 }
 
-func (w *signalRecorder) Start(context.Context, string) error { return nil }
+func (w *signalRecorder) Start(context.Context, string) error                    { return nil }
+func (w *signalRecorder) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
 func (w *signalRecorder) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
 	if w.err != nil {
 		return w.err

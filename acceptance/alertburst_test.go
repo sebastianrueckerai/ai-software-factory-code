@@ -476,6 +476,10 @@ func (w *acceptanceWorkflows) Start(_ context.Context, taskID string) error {
 	return nil
 }
 
+func (w *acceptanceWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInput) error {
+	return nil
+}
+
 func (w *acceptanceWorkflows) Signal(_ context.Context, taskID, name string, sig factoryd.TaskSignal) error {
 	return nil
 }

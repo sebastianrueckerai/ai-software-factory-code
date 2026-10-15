@@ -560,6 +560,8 @@ type noopWorkflows struct{}
 
 func (noopWorkflows) Start(context.Context, string) error { return nil }
 
+func (noopWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInput) error { return nil }
+
 func (noopWorkflows) Signal(context.Context, string, string, factoryd.TaskSignal) error { return nil }
 
 // syncBuffer collects factoryd's log while the test runs.

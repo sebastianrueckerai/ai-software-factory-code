@@ -9,11 +9,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// recordingWorkflows records the starts and signals that reached the
-// workflow layer.
+// recordingWorkflows records the starts, signals and routines' runs that
+// reached the workflow layer.
 type recordingWorkflows struct {
-	starts  []string
-	signals []string
+	starts      []string
+	signals     []string
+	routineRuns []RoutineRunInput
 }
 
 func (w *recordingWorkflows) Start(ctx context.Context, taskID string) error {
@@ -23,6 +24,11 @@ func (w *recordingWorkflows) Start(ctx context.Context, taskID string) error {
 
 func (w *recordingWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
 	w.signals = append(w.signals, taskID)
+	return nil
+}
+
+func (w *recordingWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInput) error {
+	w.routineRuns = append(w.routineRuns, in)
 	return nil
 }
 
