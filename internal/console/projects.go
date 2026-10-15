@@ -282,7 +282,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	}
 	infra := c.infraAPI()
 	branch := "project-" + p.Name
-	switch exists, err := c.branchExists(r.Context(), branch); {
+	switch _, exists, err := c.branchHead(r.Context(), branch); {
 	case err != nil:
 		log.Printf("console: branch %s of %s: %v", branch, c.cfg.InfraRepo, err)
 		http.Error(w, "cannot read infra's branches; see the factoryd log", http.StatusBadGateway)
@@ -292,16 +292,22 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 			[]string{"name: infra has branch " + branch + " from an earlier filing; delete it to file the name again"})
 		return
 	}
+	var committed struct {
+		Commit struct {
+			SHA string `json:"sha"`
+		} `json:"commit"`
+	}
 	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
 		"branch": "main", "new_branch": branch,
 		"message": button(r).attribution().Message("Project " + p.Name + ": add its file"),
 		"files": []map[string]string{{"operation": "create", "path": c.cfg.ConfigDir + "/" + policy.ProjectFile(p.Name),
 			"content": base64.StdEncoding.EncodeToString(file)}},
-	}, http.StatusCreated, nil); err != nil {
+	}, http.StatusCreated, &committed); err != nil {
 		log.Printf("console: %s could not commit projects/%s.yaml: %v", user, p.Name, err)
 		c.failFiling(w, r, p, undo{none: true}, http.StatusBadGateway, "Forgejo refused to commit the project's file")
 		return
 	}
+	made := committed.Commit.SHA
 	if c.cfg.Mirrors != nil {
 		var err error
 		if p.Source == "" {
@@ -312,7 +318,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the GitHub import of %s: %v", p.Name, err)
-			c.failFiling(w, r, p, undo{none: true}, http.StatusInternalServerError, "cannot store the GitHub import")
+			c.failFiling(w, r, p, undo{commit: made, none: true}, http.StatusInternalServerError, "cannot store the GitHub import")
 			return
 		}
 	}
@@ -325,7 +331,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 			if rerr != nil {
 				log.Printf("console: the open pull requests of %s: %v", c.cfg.InfraRepo, rerr)
 			}
-			c.failFiling(w, r, p, undo{row: p.Source != "", none: rerr == nil}, http.StatusBadGateway, "Forgejo refused to open the pull request")
+			c.failFiling(w, r, p, undo{commit: made, row: p.Source != "", none: rerr == nil}, http.StatusBadGateway, "Forgejo refused to open the pull request")
 			return
 		}
 		log.Printf("console: %s#%d from %s is open all the same: the filing keeps it", c.cfg.InfraRepo, open.Number, branch)
@@ -334,7 +340,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	if p.Source != "" {
 		if err := c.cfg.Mirrors.SetImportPR(r.Context(), p.Name, pull.Number); err != nil {
 			log.Printf("console: the GitHub import of %s: record %s#%d: %v", p.Name, c.cfg.InfraRepo, pull.Number, err)
-			c.failFiling(w, r, p, undo{row: true, pr: pull.Number}, http.StatusInternalServerError,
+			c.failFiling(w, r, p, undo{commit: made, row: true, pr: pull.Number}, http.StatusInternalServerError,
 				fmt.Sprintf("cannot record %s#%d on the GitHub import", c.cfg.InfraRepo, pull.Number))
 			return
 		}
@@ -346,7 +352,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	if _, err := c.cfg.Events.Record(r.Context(), factoryd.Event{Repository: p.Name + "/" + p.Name, Kind: factoryd.EventProjectFiled,
 		Actor: user, Via: factoryd.ViaButton, Detail: detail}); err != nil {
 		log.Printf("console: event %s of %s: %v", factoryd.EventProjectFiled, p.Name, err)
-		c.failFiling(w, r, p, undo{row: p.Source != "", pr: pull.Number}, http.StatusInternalServerError,
+		c.failFiling(w, r, p, undo{commit: made, row: p.Source != "", pr: pull.Number}, http.StatusInternalServerError,
 			fmt.Sprintf("cannot record the filing of %s#%d", c.cfg.InfraRepo, pull.Number))
 		return
 	}
@@ -359,18 +365,22 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 // end between two of them.
 const filingTime = 5 * time.Minute
 
-// undo is how far a failed filing got: row, whether it put its import
-// row; pr, its pull request, 0 for none known; none, that no pull request
-// of it can exist.
+// undo is how far a failed filing got: commit, the commit it made on its
+// branch, "" when its commit errs; row, whether it put its import row;
+// pr, its pull request, 0 for none known; none, that no pull request of
+// it can exist.
 type undo struct {
-	row  bool
-	pr   int64
-	none bool
+	commit string
+	row    bool
+	pr     int64
+	none   bool
 }
 
 // failFiling undoes p's filing, failed for why, and answers code: it
-// closes the filing's pull request and deletes its branch if it exists,
-// so the name can be filed again. The import row the filing put goes with
+// closes the filing's pull request and deletes its branch while the
+// branch's head is the filing's commit, so the name can be filed again;
+// a branch with another head, a racing filing's or one whose commit
+// errs, is left. The import row the filing put goes with
 // its token once no pull request of the filing can merge: none opened, it
 // closed, or its branch is gone. Otherwise the row stays, so a merge still
 // imports, and the answer names what is left.
@@ -385,14 +395,15 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 		}
 		closed = err == nil
 	}
-	exists, err := c.branchExists(r.Context(), branch)
-	if err == nil && exists {
+	head, exists, err := c.branchHead(r.Context(), branch)
+	mine := exists && u.commit != "" && head == u.commit
+	if mine {
 		err = c.asUser(r, http.MethodDelete, c.infraAPI()+"/branches/"+url.PathEscape(branch), nil, http.StatusNoContent, nil)
 	}
 	if err != nil {
 		log.Printf("console: %s could not delete branch %s: %v", user, branch, err)
 	}
-	deleted := err == nil
+	deleted := err == nil && (!exists || mine)
 	gone := u.none || closed || deleted
 	if gone && u.row {
 		if err := c.cfg.Mirrors.DeleteMirror(r.Context(), p.Name, factoryd.MirrorImport); err != nil {
@@ -407,22 +418,30 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	default:
 		msg += "; a pull request from " + branch + " may be open: close it"
 	}
-	if deleted {
+	switch {
+	case deleted:
 		msg += "; the filing was undone"
-	} else {
+	case err == nil:
+		msg += "; branch " + branch + " is left: its head is not this filing's commit"
+	default:
 		msg += "; delete branch " + branch + " to file the name again"
 	}
 	http.Error(w, msg+"; see the factoryd log", code)
 }
 
-// branchExists reads whether infra has branch, with factoryd's config
-// token.
-func (c *Console) branchExists(ctx context.Context, branch string) (bool, error) {
-	err := c.api(ctx, c.cfg.InfraToken, http.MethodGet, c.infraAPI()+"/branches/"+url.PathEscape(branch), nil, http.StatusOK, nil)
-	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
-		return false, nil
+// branchHead reads infra's branch, with factoryd's config token: its head
+// commit, and whether it exists.
+func (c *Console) branchHead(ctx context.Context, branch string) (string, bool, error) {
+	var b struct {
+		Commit struct {
+			ID string `json:"id"`
+		} `json:"commit"`
 	}
-	return err == nil, err
+	err := c.api(ctx, c.cfg.InfraToken, http.MethodGet, c.infraAPI()+"/branches/"+url.PathEscape(branch), nil, http.StatusOK, &b)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return "", false, nil
+	}
+	return b.Commit.ID, err == nil, err
 }
 
 // infraAPI is the infra repository's API path.

@@ -1691,8 +1691,10 @@ the opening answers an error, the console reads infra's open pull
 requests (newest first, `forgejo-config` token) and keeps the one from
 the branch into main as the filing's. Any write that fails (the commit,
 no pull request, the import row or the event not written) undoes the
-filing as the human: its pull request is closed and its branch, if it
-exists, deleted, so the name can be filed again. The status panel
+filing as the human: its pull request is closed and its branch deleted
+while the branch's head is the commit the filing made, so the name can
+be filed again. A branch with another head, a racing filing's or one a
+commit that errs left, stays, and the answer says so. The status panel
 `/projects/<name>/status` polls every 3 s until its four steps are done:
 1. the pull request, read with the `forgejo-config` token by the number
    the name's last `project_filed` event records, so a second filing of

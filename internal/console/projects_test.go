@@ -249,16 +249,20 @@ type infraFake struct {
 	pulls       []recorded
 	pullsStatus int              // the pull request's opening; 0: 201
 	open        []map[string]any // GET pulls?state=open
-	// branches, when set, are infra's branches besides main: a new branch
-	// that exists is refused, a deleted one goes; unset, no branch exists.
-	// branchReads are the reads' Authorization, branchDeletes the
+	// branches, when set, are infra's branches besides main with their
+	// heads: a commit makes its new branch with a head of its own, a new
+	// branch that exists is refused, a deleted one goes; unset, no branch
+	// exists. branchReads are the reads' Authorization, branchDeletes the
 	// deletions, branchStatus their answer, 0: 204.
-	branches      map[string]bool
+	branches      map[string]string
 	branchReads   []string
 	branchDeletes []recorded
 	branchStatus  int
 	// contentsAfter answers a commit once its branch is made; 0: 201
 	contentsAfter int
+	// racers, when set, holds the first branch reads until all of them
+	// came, so the filings behind them pass the branch check together
+	racers *barrier
 	// merges and closes are the calls on a pull request, its path theirs;
 	// closeStatus answers a close, 0: 201
 	merges, closes []recorded
@@ -275,6 +279,29 @@ type infraFake struct {
 	reads []string
 }
 
+// barrier holds the first n callers of wait until all n came; later ones
+// pass at once.
+type barrier struct {
+	mu  sync.Mutex
+	n   int
+	all chan struct{}
+}
+
+func newBarrier(n int) *barrier { return &barrier{n: n, all: make(chan struct{})} }
+
+func (b *barrier) wait() {
+	b.mu.Lock()
+	if b.n == 0 {
+		b.mu.Unlock()
+		return
+	}
+	if b.n--; b.n == 0 {
+		close(b.all)
+	}
+	b.mu.Unlock()
+	<-b.all
+}
+
 type recorded struct {
 	auth, path string
 	body       map[string]any
@@ -289,6 +316,12 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 	}
 	proxy := httputil.NewSingleHostReverseProxy(next)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		f.mu.Lock()
+		racers := f.racers
+		f.mu.Unlock()
+		if racers != nil && req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/") {
+			racers.wait()
+		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		rec := func() recorded {
@@ -314,19 +347,20 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 				w.WriteHeader(f.contentsStatus)
 				return
 			}
+			sha := fmt.Sprintf("c0ffee%d", len(f.contents))
 			if branch, _ := c.body["new_branch"].(string); f.branches != nil {
-				if f.branches[branch] {
+				if f.branches[branch] != "" {
 					http.Error(w, `{"message":"branch already exists"}`, http.StatusUnprocessableEntity)
 					return
 				}
-				f.branches[branch] = true
+				f.branches[branch] = sha
 			}
 			if f.contentsAfter != 0 {
 				w.WriteHeader(f.contentsAfter)
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
-			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]string{"sha": sha}})
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/pulls":
 			f.pulls = append(f.pulls, rec())
 			if f.pullsStatus != 0 {
@@ -341,11 +375,11 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"):
 			f.branchReads = append(f.branchReads, req.Header.Get("Authorization"))
 			name := strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/")
-			if !f.branches[name] {
+			if f.branches[name] == "" {
 				http.Error(w, `{"message":"branch does not exist"}`, http.StatusNotFound)
 				return
 			}
-			json.NewEncoder(w).Encode(map[string]string{"name": name})
+			json.NewEncoder(w).Encode(map[string]any{"name": name, "commit": map[string]string{"id": f.branches[name]}})
 		case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"):
 			f.branchDeletes = append(f.branchDeletes, rec())
 			if f.branchStatus != 0 {
@@ -764,7 +798,7 @@ func TestFailedFilingDeletesItsBranch(t *testing.T) {
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
 	infra.mu.Lock()
-	infra.branches, infra.pullsStatus = map[string]bool{}, http.StatusUnprocessableEntity
+	infra.branches, infra.pullsStatus = map[string]string{}, http.StatusUnprocessableEntity
 	infra.mu.Unlock()
 	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusBadGateway {
 		t.Fatalf("a refused pull request: POST /projects = %d %q, want 502", rec.Code, rec.Body.String())
@@ -781,22 +815,23 @@ func TestFailedFilingDeletesItsBranch(t *testing.T) {
 	}
 	infra.mu.Lock()
 	defer infra.mu.Unlock()
-	if len(infra.contents) != 2 || len(infra.pulls) != 2 || !infra.branches["project-linkshort"] {
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || infra.branches["project-linkshort"] == "" {
 		t.Errorf("%d contents and %d pull calls, branches %v; want two each and project-linkshort", len(infra.contents), len(infra.pulls), infra.branches)
 	}
 }
 
-// A filing whose commit errs after Forgejo made its branch deletes that
-// branch as the human, read with the config token first, so the name can
-// be filed again; one that finds the branch already there, an earlier
-// filing's, commits nothing and leaves the branch.
-func TestFailedCommitDeletesItsBranch(t *testing.T) {
+// A filing deletes only a branch whose head is the commit it made. One
+// that finds branch project-<name> already there, an earlier filing's,
+// commits nothing and leaves it; one whose commit errs after Forgejo made
+// the branch knows no commit of its own, so its undo, reading the branch
+// with the config token, leaves it and says so.
+func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	r := newRig(t)
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
 	infra.mu.Lock()
-	infra.branches = map[string]bool{"project-linkshort": true}
+	infra.branches = map[string]string{"project-linkshort": "earlier"}
 	infra.mu.Unlock()
 	rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusUnprocessableEntity ||
@@ -804,28 +839,68 @@ func TestFailedCommitDeletesItsBranch(t *testing.T) {
 		t.Fatalf("an earlier filing's branch: POST /projects = %d:\n%s", rec.Code, body)
 	}
 	infra.mu.Lock()
-	if len(infra.contents) != 0 || len(infra.branchDeletes) != 0 || !infra.branches["project-linkshort"] {
+	if len(infra.contents) != 0 || len(infra.branchDeletes) != 0 || infra.branches["project-linkshort"] != "earlier" {
 		t.Errorf("an earlier filing's branch: %d commits, %d deletes, branches %v; want none, none and the branch kept",
 			len(infra.contents), len(infra.branchDeletes), infra.branches)
 	}
-	infra.branches, infra.contentsAfter = map[string]bool{}, http.StatusInternalServerError
+	infra.branches, infra.contentsAfter = map[string]string{}, http.StatusInternalServerError
 	infra.mu.Unlock()
 	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
-	if body := rec.Body.String(); rec.Code != http.StatusBadGateway || !strings.Contains(body, "Forgejo refused to commit the project's file; the filing was undone") {
-		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the filing was undone", rec.Code, body)
+	if body := rec.Body.String(); rec.Code != http.StatusBadGateway ||
+		!strings.Contains(body, "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
+		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch is left", rec.Code, body)
 	}
 	infra.mu.Lock()
-	deletes, reads := slices.Clone(infra.branchDeletes), slices.Clone(infra.branchReads)
-	infra.contentsAfter = 0
+	defer infra.mu.Unlock()
+	if len(infra.branchDeletes) != 0 || infra.branches["project-linkshort"] == "" {
+		t.Errorf("a failed commit: branch deletes %+v, branches %v; want none and the branch kept", infra.branchDeletes, infra.branches)
+	}
+	if !slices.Equal(infra.branchReads, []string{"Bearer config-token", "Bearer config-token", "Bearer config-token"}) {
+		t.Errorf("branch reads %q, want three with the config token", infra.branchReads)
+	}
+}
+
+// Two filings of one name racing both pass the branch check. The one
+// whose commit lands first opens its pull request; the other's commit is
+// refused, and its undo finds the branch's head is not its commit, so it
+// leaves the branch: the winning filing keeps its branch and its pull
+// request.
+func TestRacingFilingsKeepTheWinnersBranch(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	infra.mu.Lock()
+	infra.branches, infra.racers = map[string]string{}, newBarrier(2)
 	infra.mu.Unlock()
-	if len(deletes) != 1 || deletes[0].path != "/api/v1/repos/sf/infra/branches/project-linkshort" || deletes[0].auth != "Bearer access-1" {
-		t.Errorf("branch deletes %+v, want project-linkshort deleted as the human", deletes)
+	codes, bodies := make([]int, 2), make([]string, 2)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+			codes[i], bodies[i] = rec.Code, rec.Body.String()
+		}()
 	}
-	if !slices.Equal(reads, []string{"Bearer config-token", "Bearer config-token", "Bearer config-token"}) {
-		t.Errorf("branch reads %q, want three with the config token", reads)
+	wg.Wait()
+	won, lost := 0, 1
+	if codes[0] != http.StatusSeeOther {
+		won, lost = 1, 0
 	}
-	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther {
-		t.Fatalf("the filing after: POST /projects = %d %q, want 303", rec.Code, rec.Body.String())
+	if codes[won] != http.StatusSeeOther || codes[lost] != http.StatusBadGateway ||
+		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
+		t.Errorf("racing filings answered %d %q and %d %q; want one 303 and one 502 leaving the branch", codes[0], bodies[0], codes[1], bodies[1])
+	}
+	infra.mu.Lock()
+	defer infra.mu.Unlock()
+	if len(infra.contents) != 2 || len(infra.pulls) != 1 || len(infra.closes) != 0 || len(infra.branchDeletes) != 0 ||
+		infra.branches["project-linkshort"] != "c0ffee1" {
+		t.Errorf("%d commits, %d pull requests, closes %+v, branch deletes %+v, branches %v; want two, one, none, none and the first commit's branch",
+			len(infra.contents), len(infra.pulls), infra.closes, infra.branchDeletes, infra.branches)
+	}
+	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); pr != 12 || !ok || err != nil {
+		t.Errorf("FiledPR = %d, %v, %v; want the winner's #12", pr, ok, err)
 	}
 }
 

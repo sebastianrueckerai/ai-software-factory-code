@@ -452,7 +452,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
-	infra.branches = map[string]bool{}
+	infra.branches = map[string]string{}
 	file := func(want int, says string) {
 		t.Helper()
 		if rec := r.do(post("/projects", importForm(s.csrf)), ck); rec.Code != want || !strings.Contains(rec.Body.String(), says) {
@@ -552,7 +552,7 @@ func TestFilingFailsWithoutItsEvent(t *testing.T) {
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
-	infra.branches = map[string]bool{}
+	infra.branches = map[string]string{}
 	r.events.mu.Lock()
 	r.events.fail = errors.New("db down")
 	r.events.mu.Unlock()
