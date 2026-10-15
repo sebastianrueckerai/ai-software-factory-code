@@ -774,11 +774,11 @@ func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.Task
 	tf := s.held[r.TaskID]
 	tf.Status, tf.Headroom = t.Status, t.BudgetEUR-t.SpentEUR
 	inf := math.Inf(1)
-	f := policy.Free{DayHeadroom: inf, MonthHeadroom: inf, ProjectHeadroom: inf, Day: inf, Month: inf, Project: inf}
+	f := policy.Free{Day: inf, Month: inf, Project: inf}
 	if s.capsFree != nil {
 		f = *s.capsFree
 	}
-	f.TaskHeadroom, f.Task = tf.Headroom, tf.Free()
+	f.Task = tf.Free()
 	return tf, f, nil
 }
 

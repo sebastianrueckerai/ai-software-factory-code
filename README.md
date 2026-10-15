@@ -47,12 +47,12 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   headroom, the worst case is held, and the real cost is booked after the
   call (402 `refused_budget`, `refused_day_cap`, `refused_month_cap` or
   `refused_project_cap` when it cannot fit). The per-task LiteLLM virtual key is limited to the
-  classes' aliases and capped at the smallest headroom; a new run, policy version or UTC day
+  classes' aliases and carries no budget: the holds are the budget, and a
+  second one counted by LiteLLM's own estimate refused calls the holds
+  admitted (#704). A new run or policy version
   mints a new key and blocks the old one once the calls still using it
-  are done. A LiteLLM budget refusal is labelled by the headroom the key
-  was capped at (`refused_budget`, `refused_day_cap`, `refused_month_cap` or `refused_project_cap`);
-  LiteLLM's proxy-wide `max_budget` (its message names no entity) is
-  `refused_month_cap`. Every decision has an audit row
+  are done. LiteLLM's one budget, the proxy-wide `max_budget`, is the
+  backstop; its refusal is `refused_month_cap`. Every decision has an audit row
   naming the policy version and the task's issue author (`audit.author`,
   roadmap 41); an admitted call's row also carries its
   output limit and hold. factoryd's own model calls (the session
@@ -965,10 +965,8 @@ reasoning: verified on the earlier reasoning models (reasoning counts inside
 does not, so the dashscope deployment runs with thinking off, and the
 gateway refuses a client's `thinking` field. `holds` has kinds `model`,
 `tool` (see "Tools") and `resource`. During a superseded key's grace (the
-calls still in flight on it when a new run, policy version or day mints
-its replacement), a task briefly has two live keys, each capped at the
-headroom of its own mint, so LiteLLM does not count one key's spend
-against the other; the holds remain the primary cap. LiteLLM's
+calls still in flight on it when a new run or policy version mints its
+replacement), a task briefly has two live keys; the holds cap both. LiteLLM's
 `fail_closed_budget_enforcement` is the backstop.
 
 The `ledger` table holds every booked cost, append-only: task, UTC day,

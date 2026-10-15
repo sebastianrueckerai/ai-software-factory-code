@@ -52,7 +52,7 @@ func TestLiteLLMMint(t *testing.T) {
 			defer srv.Close()
 
 			l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-			key, err := l.Mint(context.Background(), "42", "42", 8, []string{"coding-cheap", "coding-frontier"})
+			key, err := l.Mint(context.Background(), "42", "42", []string{"coding-cheap", "coding-frontier"})
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -75,8 +75,8 @@ func TestLiteLLMMint(t *testing.T) {
 			if gotPath != "/key/generate" {
 				t.Fatalf("path = %q, want /key/generate", gotPath)
 			}
-			if gotPayload["max_budget"] != 8.0 {
-				t.Fatalf("max_budget = %v, want 8", gotPayload["max_budget"])
+			if _, ok := gotPayload["max_budget"]; ok {
+				t.Fatalf("max_budget = %v, want none: the gateway's holds are the budget", gotPayload["max_budget"])
 			}
 			if models, _ := json.Marshal(gotPayload["models"]); string(models) != `["coding-cheap","coding-frontier"]` {
 				t.Fatalf("models = %s, want the task's aliases", models)
@@ -103,7 +103,7 @@ func TestLiteLLMMintNamesTheFactorydSlot(t *testing.T) {
 	}))
 	defer srv.Close()
 	l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-	if _, err := l.Mint(context.Background(), "42/factoryd", "42", 8, []string{"review-frontier"}); err != nil {
+	if _, err := l.Mint(context.Background(), "42/factoryd", "42", []string{"review-frontier"}); err != nil {
 		t.Fatal(err)
 	}
 	meta, _ := gotPayload["metadata"].(map[string]any)
@@ -114,7 +114,7 @@ func TestLiteLLMMintNamesTheFactorydSlot(t *testing.T) {
 
 func TestLiteLLMMintRefusesNoModels(t *testing.T) {
 	l := &LiteLLM{BaseURL: "http://127.0.0.1:1", MasterKey: "sk-master"}
-	if _, err := l.Mint(context.Background(), "42", "42", 8, nil); err == nil || !strings.Contains(err.Error(), "no models") {
+	if _, err := l.Mint(context.Background(), "42", "42", nil); err == nil || !strings.Contains(err.Error(), "no models") {
 		t.Fatalf("Mint without models = %v, want a refusal", err)
 	}
 }

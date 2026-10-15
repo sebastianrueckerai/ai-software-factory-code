@@ -153,7 +153,6 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	}
 	m.nextID++
 	h.ID = m.nextID
-	h.Headroom, h.Bound = policy.HeadroomBound(taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom)
 	m.holds[h.ID] = h
 	return h, nil
 }
@@ -241,9 +240,8 @@ type fakeAuth struct {
 func (f fakeAuth) Authenticate(*http.Request) (Identity, error) { return f.id, f.err }
 
 type mintCall struct {
-	taskID    string
-	maxBudget float64
-	models    string // comma-joined
+	taskID string
+	models string // comma-joined
 }
 
 type fakeMinter struct {
@@ -267,9 +265,9 @@ func (f *fakeMinter) blockedKeys() []string {
 	return append([]string(nil), f.blocked...)
 }
 
-func (f *fakeMinter) Mint(_ context.Context, slot, taskID string, maxBudget float64, models []string) (string, error) {
+func (f *fakeMinter) Mint(_ context.Context, slot, taskID string, models []string) (string, error) {
 	f.mu.Lock()
-	f.calls = append(f.calls, mintCall{taskID, maxBudget, strings.Join(models, ",")})
+	f.calls = append(f.calls, mintCall{taskID, strings.Join(models, ",")})
 	hold := f.hold[taskID]
 	f.mu.Unlock()
 	if hold != nil {
@@ -385,7 +383,7 @@ func TestChatCompletions(t *testing.T) {
 		wantBody        string // "" = don't check
 		wantUpstreamReq string // "" = the client body forwarded verbatim
 		wantSpent       *float64
-		wantMintBudget  *float64
+		wantMint        bool
 		wantNoMint      bool
 		wantUpstreamHit int
 		wantAlias       string // "" = don't check
@@ -462,31 +460,6 @@ func TestChatCompletions(t *testing.T) {
 			wantErrType:  "budget_exceeded",
 		},
 		{
-			name:            "the key is capped at the month headroom when it is the smallest",
-			monthTotal:      47,
-			dayTotal:        1,
-			task:            &runningTask,
-			reqBody:         chatBody("coding-cheap"),
-			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.1"}},
-			wantStatus:      http.StatusOK,
-			wantDecision:    "allowed",
-			wantMintBudget:  ptr(2.0),
-			wantSpent:       ptr(2.1),
-			wantUpstreamHit: 1,
-		},
-		{
-			name:            "the key is capped at the day headroom when it is the smaller",
-			dayTotal:        17,
-			task:            &runningTask,
-			reqBody:         chatBody("coding-cheap"),
-			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.1"}},
-			wantStatus:      http.StatusOK,
-			wantDecision:    "allowed",
-			wantMintBudget:  ptr(3.0),
-			wantSpent:       ptr(2.1),
-			wantUpstreamHit: 1,
-		},
-		{
 			name:         "no or invalid jwt refuses 401",
 			wantNoMint:   true,
 			authErr:      errors.New("missing bearer token"),
@@ -553,36 +526,8 @@ func TestChatCompletions(t *testing.T) {
 			wantErrType:  "upstream_error",
 		},
 		{
-			name:    "litellm 429 budget_exceeded maps to 402",
-			task:    &runningTask,
-			reqBody: chatBody("coding-cheap"),
-			resp: stubResp{
-				status: http.StatusTooManyRequests,
-				body:   `{"error":{"message":"Budget has been exceeded! Key=42 (sk-...W8TA) Current cost: 8.0, Max budget: 8.0","type":"budget_exceeded","param":null,"code":"429"}}`,
-			},
-			wantStatus:      http.StatusPaymentRequired,
-			wantDecision:    "refused_budget",
-			wantErrType:     "budget_exceeded",
-			wantUpstreamHit: 1,
-		},
-		{
-			name:     "litellm 429 budget_exceeded on a key the day capped is a day-cap refusal",
-			task:     &runningTask,
-			dayTotal: 15, // day headroom 5 < task headroom 8
-			reqBody:  chatBody("coding-cheap"),
-			resp: stubResp{
-				status: http.StatusTooManyRequests,
-				body:   `{"error":{"message":"Budget has been exceeded! Key=42 (sk-...W8TA) Current cost: 5.0, Max budget: 5.0","type":"budget_exceeded","param":null,"code":"429"}}`,
-			},
-			wantStatus:      http.StatusPaymentRequired,
-			wantDecision:    "refused_day_cap",
-			wantErrType:     "budget_exceeded",
-			wantUpstreamHit: 1,
-		},
-		{
-			// LiteLLM 1.102.2 auth_checks.py _global_proxy_budget_check raises
-			// BudgetExceededError without a message; exceptions.py's default
-			// names no entity, auth_exception_handler.py passes it through
+			// no key has a budget: LiteLLM's budget refusal is the proxy-wide
+			// stop (auth_checks.py _global_proxy_budget_check)
 			name:    "litellm 429 on the proxy-wide budget is a month-cap refusal",
 			task:    &runningTask,
 			reqBody: chatBody("coding-cheap"),
@@ -610,21 +555,6 @@ func TestChatCompletions(t *testing.T) {
 			wantDecision:    "refused_context",
 			wantReason:      "the prompt is past the model's context window: litellm.ContextWindowExceededError: maximum context length is 131072 tokens, the messages resulted in 140213",
 			wantErrType:     "context_length_exceeded",
-			wantUpstreamHit: 1,
-		},
-		{
-			// the key's window budget (auth_checks.py) names the key
-			name:     "litellm 429 on a key's window budget stays the key's bound",
-			task:     &runningTask,
-			dayTotal: 15,
-			reqBody:  chatBody("coding-cheap"),
-			resp: stubResp{
-				status: http.StatusTooManyRequests,
-				body:   `{"error":{"message":"ExceededBudget: Key over 1d budget. Spend=$5.0100, Limit=$5.00","type":"budget_exceeded","param":null,"code":"429"}}`,
-			},
-			wantStatus:      http.StatusPaymentRequired,
-			wantDecision:    "refused_day_cap",
-			wantErrType:     "budget_exceeded",
 			wantUpstreamHit: 1,
 		},
 		{
@@ -713,7 +643,7 @@ func TestChatCompletions(t *testing.T) {
 			wantDeployment:  "deepseek/deepseek-flash",
 			wantBody:        `{"choices":[{"message":{"role":"assistant"}}]}`,
 			wantSpent:       ptr(2.1),
-			wantMintBudget:  ptr(8.0),
+			wantMint:        true,
 			wantUpstreamHit: 1,
 		},
 		{
@@ -1082,12 +1012,9 @@ func TestChatCompletions(t *testing.T) {
 			}
 
 			calls := minter.mintCalls()
-			if tt.wantMintBudget != nil {
-				if len(calls) != 1 {
-					t.Fatalf("mint calls = %d, want 1", len(calls))
-				}
-				if calls[0].maxBudget != *tt.wantMintBudget || calls[0].taskID != "42" {
-					t.Fatalf("mint call = %+v, want task 42 budget %v", calls[0], *tt.wantMintBudget)
+			if tt.wantMint {
+				if len(calls) != 1 || calls[0].taskID != "42" {
+					t.Fatalf("mint calls = %+v, want one for task 42", calls)
 				}
 			} else if tt.wantNoMint && len(calls) != 0 {
 				t.Fatalf("mint calls = %+v, want none", calls)
@@ -1343,8 +1270,8 @@ func TestKeyRemintedForNewServiceAccount(t *testing.T) {
 	}
 
 	calls := minter.mintCalls()
-	if len(calls) != 2 || calls[0].maxBudget != 8 || calls[1].maxBudget != 7.5 {
-		t.Fatalf("mint calls = %+v, want budgets 8 (10-2) then 7.5 (10-2.5)", calls)
+	if len(calls) != 2 || calls[0].taskID != "42" || calls[1].taskID != "42" {
+		t.Fatalf("mint calls = %+v, want one per run of task 42", calls)
 	}
 	auths, _, _ := stub.seen()
 	if len(auths) != 2 || auths[0] != "Bearer sk-task-key-1" || auths[1] != "Bearer sk-task-key-2" {
@@ -1474,7 +1401,7 @@ const sseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n" +
 	"data: [DONE]\n\n"
 
 // Two tasks, each within its own budget, together exhaust the day: the day
-// cap binds the key of the second and refuses the next call of either.
+// cap refuses the next call of either.
 func TestDayCapAcrossTasks(t *testing.T) {
 	stub := newStubUpstream(t)
 	store := newMemStore(
@@ -1499,9 +1426,8 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	if rr := call("b", "0.5"); rr.Code != http.StatusOK {
 		t.Fatalf("b's first call = %d, want 200", rr.Code)
 	}
-	// a minted at min(5, 1), b at min(5, 1 - 0.625)
-	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", 1, "coding-cheap,coding-frontier"}) || calls[1] != (mintCall{"b", 0.375, "coding-cheap,coding-frontier"}) {
-		t.Fatalf("mint calls = %+v, want a at 1, b at 0.375", calls)
+	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", "coding-cheap,coding-frontier"}) || calls[1] != (mintCall{"b", "coding-cheap,coding-frontier"}) {
+		t.Fatalf("mint calls = %+v, want a's, then b's", calls)
 	}
 	for _, task := range []string{"a", "b"} {
 		rr := call(task, "0.1")
@@ -1565,11 +1491,9 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 	if rr := call("c", "0.1"); rr.Code != http.StatusOK {
 		t.Fatalf("c's call = %d %s, want 200: notes has no cap", rr.Code, rr.Body.String())
 	}
-	// a minted at min(5, 20, 50, 1), b at the project's 1 - 0.625, c at its
-	// task's 5
-	if calls := minter.mintCalls(); len(calls) != 3 || calls[0] != (mintCall{"a", 1, "coding-cheap,coding-frontier"}) ||
-		calls[1] != (mintCall{"b", 0.375, "coding-cheap,coding-frontier"}) || calls[2] != (mintCall{"c", 5, "coding-cheap,coding-frontier"}) {
-		t.Fatalf("mint calls = %+v, want a at 1, b at 0.375, c at 5", calls)
+	if calls := minter.mintCalls(); len(calls) != 3 || calls[0] != (mintCall{"a", "coding-cheap,coding-frontier"}) ||
+		calls[1] != (mintCall{"b", "coding-cheap,coding-frontier"}) || calls[2] != (mintCall{"c", "coding-cheap,coding-frontier"}) {
+		t.Fatalf("mint calls = %+v, want a's, b's, then c's", calls)
 	}
 	audits := store.auditRows()
 	for i, want := range []string{"allowed", "allowed", policy.RefusedProjectCap, policy.RefusedProjectCap, "allowed"} {
@@ -1629,9 +1553,10 @@ func withMaxTokens(t *testing.T, body string, limit int) string {
 	return string(b)
 }
 
-// A key is minted for one run, policy version and UTC day, limited to the
-// classes' aliases; a new version or day mints a new key and blocks the old.
-func TestKeyRemintedOnPolicyVersionAndDay(t *testing.T) {
+// A key is minted for one run and policy version, limited to the classes'
+// aliases; a new version mints a new key and blocks the old, a new UTC day
+// keeps it: the key has no budget for the day to change.
+func TestKeyRemintedOnPolicyVersion(t *testing.T) {
 	stub := newStubUpstream(t)
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.5"}})
 	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
@@ -1646,26 +1571,25 @@ func TestKeyRemintedOnPolicyVersionAndDay(t *testing.T) {
 		}
 	}
 
-	call()                         // version 1, 2026-09-27: headroom 8
+	call()                         // version 1, 2026-09-27
 	call()                         // cached
 	now = now.Add(2 * time.Minute) // UTC midnight passed
-	call()                         // headroom 7
+	call()                         // cached
 	next := testPolicy(2, 20)
 	next.Document.Classes["coder"] = policy.Class{Models: []string{"coding-cheap"}}
 	store.setPolicy(next)
 	now = now.Add(policyTTL)
-	call() // version 2: headroom 6.5, only coding-cheap
+	call() // version 2: only coding-cheap
 
 	want := []mintCall{
-		{"42", 8, "coding-cheap,coding-frontier"},
-		{"42", 7, "coding-cheap,coding-frontier"},
-		{"42", 6.5, "coding-cheap"},
+		{"42", "coding-cheap,coding-frontier"},
+		{"42", "coding-cheap"},
 	}
 	if calls := minter.mintCalls(); !reflect.DeepEqual(calls, want) {
 		t.Fatalf("mints = %+v, want %+v", calls, want)
 	}
-	if blocked := minter.blockedKeys(); !reflect.DeepEqual(blocked, []string{"sk-task-key-1", "sk-task-key-2"}) {
-		t.Fatalf("blocked = %v, want the two superseded keys", blocked)
+	if blocked := minter.blockedKeys(); !reflect.DeepEqual(blocked, []string{"sk-task-key-1"}) {
+		t.Fatalf("blocked = %v, want the superseded key", blocked)
 	}
 }
 
@@ -1735,11 +1659,12 @@ func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
 	done := make(chan int, 1)
 	go func() { done <- doChat(t, s.Routes("test"), chatBody("coding-cheap")).Code }()
 	<-started // the first call runs on key 1
+	store.setPolicy(testPolicy(2, 20))
 	clock.Lock()
-	now = now.Add(2 * time.Minute) // UTC midnight: key 2
+	now = now.Add(policyTTL) // version 2: key 2
 	clock.Unlock()
 	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
-		t.Fatalf("call on the new day = %d", rr.Code)
+		t.Fatalf("call under the new version = %d", rr.Code)
 	}
 	if b := minter.blockedKeys(); len(b) != 0 {
 		t.Fatalf("blocked %v while a call still runs on key 1, want none", b)

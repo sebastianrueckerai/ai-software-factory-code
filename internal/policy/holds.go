@@ -58,21 +58,15 @@ type HoldRequest struct {
 }
 
 // Hold is headroom taken for one call: EUR at the request's prompt as Fit
-// prices it and MaxOut output tokens. Headroom is the smallest of the
-// task's, the day's, the month's and the project's month headroom before
-// any hold, the figure a key's max_budget takes; Bound names which one it
-// is, as the refusal it would cause (refused_budget, refused_day_cap,
-// refused_month_cap or refused_project_cap).
+// prices it and MaxOut output tokens.
 type Hold struct {
-	ID       int64
-	TaskID   string
-	Kind     string
-	Ref      string
-	Session  string
-	EUR      float64
-	MaxOut   int
-	Headroom float64
-	Bound    string
+	ID      int64
+	TaskID  string
+	Kind    string
+	Ref     string
+	Session string
+	EUR     float64
+	MaxOut  int
 }
 
 // HeadroomBound is the smallest of the task's, the day's, the month's and
@@ -246,7 +240,6 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	if err != nil {
 		return Hold{}, err
 	}
-	h.Headroom, h.Bound = HeadroomBound(free.TaskHeadroom, free.DayHeadroom, free.MonthHeadroom, free.ProjectHeadroom)
 	if h.ID, err = InsertHold(ctx, tx, h, HoldTTL); err != nil {
 		return Hold{}, err
 	}
@@ -353,11 +346,10 @@ func LockHeadroom(ctx context.Context, tx *sql.Tx) error {
 }
 
 // Free is a task's, the day's, the month's and the task's project's month
-// headroom: before any hold, and free (after every outstanding hold). The
-// project's is +Inf for a project without a cap.
+// headroom after every outstanding hold. The project's is +Inf for a
+// project without a cap.
 type Free struct {
-	TaskHeadroom, DayHeadroom, MonthHeadroom, ProjectHeadroom float64
-	Task, Day, Month, Project                                 float64
+	Task, Day, Month, Project float64
 }
 
 // figures are the free headroom a refusal quotes; the project's only under
@@ -428,17 +420,15 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 		return TaskFree{}, Free{}, err
 	}
 	var f Free
-	var allHeld float64
+	var day, month, allHeld float64
 	if err := q.QueryRowContext(ctx,
 		`SELECT ($1 - `+daySpentSQL("$3::timestamptz")+`)::float8,
 		        ($2 - `+MonthSpentSQL("$3::timestamptz")+`)::float8,
 		        `+heldSQL+`::float8`, r.DayEUR, r.MonthEUR, at,
-	).Scan(&f.DayHeadroom, &f.MonthHeadroom, &allHeld); err != nil {
+	).Scan(&day, &month, &allHeld); err != nil {
 		return TaskFree{}, Free{}, err
 	}
-	f.TaskHeadroom, f.Task = t.Headroom, t.Free()
-	f.Day, f.Month = f.DayHeadroom-allHeld, f.MonthHeadroom-allHeld
-	f.ProjectHeadroom, f.Project = math.Inf(1), math.Inf(1)
+	f.Task, f.Day, f.Month, f.Project = t.Free(), day-allHeld, month-allHeld, math.Inf(1)
 	if math.IsInf(r.ProjectEUR, 1) {
 		return t, f, nil
 	}
@@ -451,8 +441,7 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 		 FROM tasks t WHERE t.id = $1`, taskID, at).Scan(&spent, &held); err != nil {
 		return TaskFree{}, Free{}, err
 	}
-	f.ProjectHeadroom = r.ProjectEUR - spent
-	f.Project = f.ProjectHeadroom - held
+	f.Project = r.ProjectEUR - spent - held
 	return t, f, nil
 }
 

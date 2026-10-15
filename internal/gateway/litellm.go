@@ -21,10 +21,10 @@ type LiteLLM struct {
 }
 
 // Mint mints a virtual key for the task's slot (the task id, or
-// <task>/factoryd) capped at maxBudget and limited to models. Its metadata
-// names the task and the slot kind, so factoryd's reconcile can tell the
-// agent's keys from its own (internal/factoryd BlockTaskKeys).
-func (l *LiteLLM) Mint(ctx context.Context, slot string, taskID string, maxBudget float64, models []string) (string, error) {
+// <task>/factoryd) limited to models, with no budget of its own. Its
+// metadata names the task and the slot kind, so factoryd's reconcile can
+// tell the agent's keys from its own (internal/factoryd BlockTaskKeys).
+func (l *LiteLLM) Mint(ctx context.Context, slot string, taskID string, models []string) (string, error) {
 	if len(models) == 0 {
 		return "", fmt.Errorf("key generate: no models (an empty list would allow every alias)")
 	}
@@ -33,9 +33,8 @@ func (l *LiteLLM) Mint(ctx context.Context, slot string, taskID string, maxBudge
 		metadata["slot"] = factorydSA
 	}
 	payload, err := json.Marshal(map[string]any{
-		"max_budget": maxBudget,
-		"models":     models,
-		"metadata":   metadata,
+		"models":   models,
+		"metadata": metadata,
 	})
 	if err != nil {
 		return "", err

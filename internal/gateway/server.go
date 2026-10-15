@@ -29,10 +29,10 @@ type Authenticator interface {
 }
 
 // KeyMinter mints a per-task LiteLLM virtual key for a slot (the task, or
-// the task's factoryd slot) capped at maxBudget and limited to models, and
-// blocks a superseded one. Implemented by LiteLLM; tests substitute a fake.
+// the task's factoryd slot) limited to models, and blocks a superseded
+// one. Implemented by LiteLLM; tests substitute a fake.
 type KeyMinter interface {
-	Mint(ctx context.Context, slot, taskID string, maxBudget float64, models []string) (string, error)
+	Mint(ctx context.Context, slot, taskID string, models []string) (string, error)
 	Block(ctx context.Context, key string) error
 }
 
@@ -124,19 +124,16 @@ const statusClientCanceled = 499
 // purpose is known; it is no purpose.
 const auditFactoryd = "factoryd"
 
-// liveKey is a task's virtual key and what it was minted for: a new run,
-// policy version or UTC day mints a new key (its models and max_budget
-// follow from them) and retires this one. A retired key is blocked once
-// the calls still using it are done, so none of them fails on the block.
+// liveKey is a task's virtual key and what it was minted for: a new run
+// or policy version mints a new key (its models follow from the version)
+// and retires this one. A retired key is blocked once the calls still
+// using it are done, so none of them fails on the block. A key carries no
+// budget: the gateway's holds are the budget, and LiteLLM's proxy-wide
+// max_budget the backstop.
 type liveKey struct {
-	key     string
-	saUID   string
-	version int64
-	day     string
-	// bound is the refusal the key's max_budget stands for: the smallest of
-	// the task's, the day's, the month's and the project's headroom at the
-	// mint.
-	bound    string
+	key      string
+	saUID    string
+	version  int64
 	inFlight int
 	retired  bool
 }
@@ -335,7 +332,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
 	}
-	key, err := s.keyFor(ctx, slot, task, id.SAUID, models, pv, hold)
+	key, err := s.keyFor(ctx, slot, task, id.SAUID, models, pv)
 	if err != nil {
 		s.finish(call, zeroCost, "")
 		if r.Context().Err() != nil {
@@ -551,21 +548,20 @@ func withStreamUsage(req map[string]json.RawMessage) error {
 	return err
 }
 
-// keyFor returns the virtual key of the task's current run, policy version
-// and UTC day, or mints one: limited to the aliases the task's classes
-// allow (so LiteLLM refuses any other target) and capped at the hold's
-// headroom, the smallest of the task's, the day's, the month's and the
-// project's. The key counts the call as in flight until doneWith.
-func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID string, models []string, pv *policy.Version, hold policy.Hold) (*liveKey, error) {
-	want := liveKey{saUID: saUID, version: pv.ID, day: s.now().UTC().Format(policy.DateLayout), bound: hold.Bound}
+// keyFor returns the virtual key of the task's current run and policy
+// version, or mints one, limited to the aliases the task's classes allow
+// (so LiteLLM refuses any other target). The key counts the call as in
+// flight until doneWith.
+func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID string, models []string, pv *policy.Version) (*liveKey, error) {
+	want := liveKey{saUID: saUID, version: pv.ID}
 	// a key minted here and superseded before this call takes it is rare
-	// (a version or day change within the mint); three rounds cover it
+	// (a version change within the mint); three rounds cover it
 	for range 3 {
 		if k := s.acquire(slot, want); k != nil {
 			return k, nil
 		}
 		// one mint per run at a time, and no task waits on another's mint
-		_, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d\x00%s", slot, saUID, pv.ID, want.day), func() (any, error) {
+		_, err, _ := s.mints.Do(fmt.Sprintf("%s\x00%s\x00%d", slot, saUID, pv.ID), func() (any, error) {
 			s.mu.Lock()
 			fresh := s.matches(s.keysByTask[slot], want)
 			s.mu.Unlock()
@@ -573,7 +569,7 @@ func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID strin
 				return nil, nil
 			}
 			ctx := context.WithoutCancel(ctx)
-			key, err := s.opts.Minter.Mint(ctx, slot, task.ID, hold.Headroom, models)
+			key, err := s.opts.Minter.Mint(ctx, slot, task.ID, models)
 			if err != nil {
 				return nil, fmt.Errorf("mint virtual key: %w", err)
 			}
@@ -600,7 +596,7 @@ func (s *Server) keyFor(ctx context.Context, slot string, task Task, saUID strin
 }
 
 func (s *Server) matches(k *liveKey, want liveKey) bool {
-	return k != nil && k.saUID == want.saUID && k.version == want.version && k.day == want.day
+	return k != nil && k.saUID == want.saUID && k.version == want.version
 }
 
 // dropKey removes the slot's cached key after LiteLLM answered that it is
@@ -640,7 +636,7 @@ func (s *Server) doneWith(slot string, k *liveKey) {
 
 func (s *Server) block(slot string, k *liveKey) {
 	if err := s.opts.Minter.Block(context.Background(), k.key); err != nil {
-		log.Printf("key slot %s: block superseded key (version %d, day %s): %v", slot, k.version, k.day, err)
+		log.Printf("key slot %s: block superseded key (version %d): %v", slot, k.version, err)
 	}
 }
 
@@ -768,13 +764,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 					} `json:"error"`
 				}
 				json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
-				// the key's max_budget was the task's, the day's, the month's
-				// or the project's headroom; the proxy-wide budget stops every
-				// key
-				decision, reason := c.key.bound, "litellm budget_exceeded: "+liteErr.Error.Message
-				if isProxyBudget(liteErr.Error.Message) {
-					decision, reason = policy.RefusedMonthCap, "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "+liteErr.Error.Message
-				}
+				// no key has a budget: LiteLLM's one is the proxy-wide stop
+				decision, reason := policy.RefusedMonthCap, "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "+liteErr.Error.Message
 				s.auditCall(c, decision, reason, &c.task.SpentEUR)
 				w.Header().Set(HeaderDecision, decision)
 				writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
@@ -839,7 +830,7 @@ func (s *Server) rekey(ctx context.Context, c *modelCall) error {
 	s.dropKey(c.slot, old)
 	s.doneWith(c.slot, old)
 	c.key = nil
-	key, err := s.keyFor(ctx, c.slot, c.task, c.saUID, c.models, c.pv, c.hold)
+	key, err := s.keyFor(ctx, c.slot, c.task, c.saUID, c.models, c.pv)
 	if err != nil {
 		return err
 	}
@@ -984,16 +975,6 @@ func isBudgetExceeded(body []byte) bool {
 		} `json:"error"`
 	}
 	return json.Unmarshal(body, &e) == nil && e.Error.Type == "budget_exceeded"
-}
-
-// isProxyBudget: LiteLLM 1.102 raises the proxy-wide max_budget
-// (auth_checks.py _global_proxy_budget_check) as a BudgetExceededError
-// without a message, so it carries exceptions.py's default "Budget has
-// been exceeded! Current cost: {current_cost}, Max budget: {max_budget}".
-// Every other budget names its entity before the cost ("Key=...",
-// "Team=...") or reads "ExceededBudget: ...".
-func isProxyBudget(message string) bool {
-	return strings.HasPrefix(message, "Budget has been exceeded! Current cost: ")
 }
 
 func contentType(r *http.Request) string {

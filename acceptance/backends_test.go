@@ -400,7 +400,7 @@ func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.
 	t := s.tasks[r.TaskID]
 	headroom, inf := t.BudgetEUR-t.SpentEUR, math.Inf(1)
 	return policy.TaskFree{Status: t.Status, Headroom: headroom},
-		policy.Free{TaskHeadroom: headroom, DayHeadroom: inf, MonthHeadroom: inf, ProjectHeadroom: inf, Task: headroom, Day: inf, Month: inf, Project: inf}, nil
+		policy.Free{Task: headroom, Day: inf, Month: inf, Project: inf}, nil
 }
 
 func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Opening, error) {
