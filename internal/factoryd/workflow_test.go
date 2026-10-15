@@ -654,20 +654,57 @@ func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
 }
 
 // refusedThenFunded answers the funding floor: the nth call (1-based) in
-// refusing is refused with a budget refusal, the others funded. Both the
-// floor of the new gate and the old one answer it.
-func (h *workflowHarness) refusedThenFunded(refusing ...int) *int {
-	calls := 0
-	refuse := func(ctx context.Context, taskID, model string) (string, error) {
-		calls++
-		if slices.Contains(refusing, calls) {
-			return budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n0.100 EUR of the 2.000 EUR budget remains, and a session on " + model + " needs 0.300000 EUR", nil
+// refusing is refused with a budget refusal whose remainder is n tenths of a
+// euro, the others funded. Both the floor of the new gate and the old one
+// answer it; the reads it returns count each one's calls.
+func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
+	reads, calls := map[string]int{}, 0
+	floor := func(activity string) func(ctx context.Context, taskID, model string) (string, error) {
+		return func(ctx context.Context, taskID, model string) (string, error) {
+			calls++
+			reads[activity]++
+			if slices.Contains(refusing, calls) {
+				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
+					budgetRefused, float64(calls)/10, model), nil
+			}
+			return "", nil
 		}
-		return "", nil
 	}
-	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(refuse)
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(refuse)
-	return &calls
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivitySessionFunded))
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivityAttemptFunded))
+	return reads
+}
+
+// An answer to a session that took no number buys none: the start failure
+// is no session, so its answer buys only agent time, and the cap of 3 asks
+// after three answered sessions. Attempts 1 (the start failure), 1, 2 and 3
+// run, the cap question comes, and its answer buys attempt 4.
+func TestWorkflowAnswerToAnUncountedSessionBuysNoAttempt(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "starved", StartFailed: true, Reason: "the pod could not start: image pull refused"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s4"}, pushed("s5", "c5"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the registry is back", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 603})
+	h.signalAfter(4*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 1, 2, 3, 4}) || len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[1], capReached) {
+		t.Fatalf("attempts = %v, escalations %q; want 1 1 2 3 4 and the cap question after the third answered session", attempts, h.escalated)
+	}
+	if u := h.usage[len(h.usage)-1]; u.Attempts != 4 || u.ExtraAttempts != 1 {
+		t.Fatalf("usage = %+v, want four sessions counted and the cap answer's one extra attempt", u)
+	}
 }
 
 // A session the gateway starved is no session: #839 ran attempts 1, 2, 3 and
@@ -708,6 +745,8 @@ func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
 	h.onSessions(
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"},
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"}, pushed("s4", "c4"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 	h.signalAfter(6*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
@@ -723,12 +762,12 @@ func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
 // the wait, and session 2 starts as attempt 2 with both findings.
 func TestWorkflowFundRefusalKeepsTheAnswerAndTheNumber(t *testing.T) {
 	change := "reviewer sebastian requested changes: rename it"
-	run := func(t *testing.T, pinned bool) *workflowHarness {
+	run := func(t *testing.T, pinned bool) (*workflowHarness, map[string]int) {
 		h := newWorkflowHarness(t)
 		if pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 		}
-		h.refusedThenFunded(2)
+		reads := h.refusedThenFunded(2)
 		h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 		h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}}, ChecksResult{State: ChecksSuccess})
 		h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
@@ -736,15 +775,21 @@ func TestWorkflowFundRefusalKeepsTheAnswerAndTheNumber(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, finals %v", final, h.finals)
 		}
-		return h
+		return h, reads
 	}
-	h := run(t, false)
+	h, reads := run(t, false)
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 || !slices.Equal(h.sessions[1].Findings, []string{"red", change}) {
 		t.Fatalf("sessions = %+v, want the second as attempt 2 with the red check and the change request", h.sessions)
 	}
-	h = run(t, true)
+	if reads[ActivitySessionFunded] != 3 || reads[ActivityAttemptFunded] != 0 {
+		t.Fatalf("floor reads = %v, want three of SessionFunded and none of AttemptFunded", reads)
+	}
+	h, reads = run(t, true)
 	if len(h.sessions) != 2 || h.sessions[1].Attempt != 3 || !slices.Equal(h.sessions[1].Findings, []string{"red"}) {
 		t.Fatalf("pinned sessions = %+v, want the old run's attempt 3 and the dropped change request", h.sessions)
+	}
+	if reads[ActivityAttemptFunded] != 3 || reads[ActivitySessionFunded] != 0 {
+		t.Fatalf("pinned floor reads = %v, want three of AttemptFunded and none of SessionFunded", reads)
 	}
 }
 
@@ -752,7 +797,7 @@ func TestWorkflowFundRefusalKeepsTheAnswerAndTheNumber(t *testing.T) {
 // amount; the session starts once the floor is met.
 func TestWorkflowFundThatMissesTheFloorAsksAgain(t *testing.T) {
 	h := newWorkflowHarness(t)
-	calls := h.refusedThenFunded(1, 2)
+	reads := h.refusedThenFunded(1, 2)
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "funded 0.1", Comment: 602})
@@ -762,8 +807,9 @@ func TestWorkflowFundThatMissesTheFloorAsksAgain(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if len(h.escalated) != 2 || !strings.Contains(h.escalated[0], "needs 0.300000 EUR") || !strings.Contains(h.escalated[1], "needs 0.300000 EUR") || *calls != 3 {
-		t.Fatalf("escalations %q after %d floor reads; want two questions naming the amount, then the session", h.escalated, *calls)
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[0], "0.100 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") ||
+		!strings.Contains(h.escalated[1], "0.200 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") || reads[ActivitySessionFunded] != 3 {
+		t.Fatalf("escalations %q after floor reads %v; want two questions, each naming its read's remainder and the amount, then the session", h.escalated, reads)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 || len(h.sessions[0].Answers) != 2 {
 		t.Fatalf("sessions = %+v, want one attempt-1 session with both answers", h.sessions)

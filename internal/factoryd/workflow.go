@@ -926,16 +926,16 @@ const (
 	// A run from before the change hears no re-run and fails on a change
 	// request.
 	versionFactoryPRActions workflow.Version = 1
-	// versionSessionLadder (change id "session-ladder", plan A of the
-	// escalation ladder): the session cap counts the sessions that got a
-	// model answer (SessionAnswered), read after every session whatever
-	// ended it, so a starved or refused session takes no number and no branch
-	// of the loop corrects the count; the check before a session is
-	// SessionFunded (the opening calls and the floor of the rung); every
-	// wait for a human adds the change requests that answered it to the next
-	// session's findings. A run from before counts every session that ran and
-	// every attempt the budget refused, funds on AttemptFunded and drops the
-	// budget wait's change requests.
+	// versionSessionLadder (change id "session-ladder"): the session cap
+	// counts the sessions that got a model answer (SessionAnswered), read
+	// after every session whatever ended it, so a starved or refused session
+	// takes no number and no branch of the loop corrects the count, and an
+	// answer after a session that took none buys agent time but no attempt;
+	// the check before a session is SessionFunded (the opening calls and the
+	// floor of the rung); every wait for a human adds the change requests
+	// that answered it to the next session's findings. A run from before
+	// counts every session that ran and every attempt the budget refused,
+	// funds on AttemptFunded and drops the budget wait's change requests.
 	versionSessionLadder workflow.Version = 1
 )
 
@@ -1120,6 +1120,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return false
 	}
+	// counted: the last session took a number; an answer after one that
+	// took none buys agent time but no attempt (versionSessionLadder)
+	counted := true
+	buy := func() {
+		if counted {
+			t.grant(&u)
+			return
+		}
+		t.grantTime(&u)
+	}
 	// held ends every wait for a human of this loop: the task's final state
 	// when the wait decided one, else the change requests that answered it join
 	// the next session's findings (the human's comments are in t.answers)
@@ -1161,7 +1171,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
-		t.grant(&u)
+		buy()
 		return "", ""
 	}
 	if t.v2 >= versionReconcileRace {
@@ -1385,11 +1395,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
-		final, why, answer := t.screenAnswers()
-		if final != "" {
+		if final, why := held(t.screenAnswers()); final != "" {
 			return t.finish(final, why)
 		}
-		findings = append(findings, answer...)
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
@@ -1433,7 +1441,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		}
-		if t.sessionLadder < versionSessionLadder || t.sessionAnswered(res, began, attempt, model) {
+		counted = t.sessionLadder < versionSessionLadder || t.sessionAnswered(res, began, attempt, model)
+		if counted {
 			u.Attempts, taken = attempt, 0
 		}
 		t.recordUsage(u)
@@ -1442,7 +1451,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman(v.escalate, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			t.grant(&u)
+			buy()
 			continue
 		}
 		if decided {
@@ -1531,7 +1540,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman(res.Reason, res.Choices)); final != "" {
 				return t.finish(final, why)
 			}
-			t.grant(&u)
+			buy()
 			continue
 		}
 		startRef = res.Commit
@@ -1764,13 +1773,18 @@ func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt in
 }
 
 // grant is what a human answer buys; only a human raises a limit. One
-// more attempt, and when less than the slice of agent time is left, the
-// difference, so the attempt is not born at the cap. The slice is a
-// quarter of the resolved agent time, never under the 5 minutes a session
-// needs to start (versionAnswerSlice); a run from before the change id
-// keeps WorkflowConfig.AnswerSlice instead.
+// more attempt, and grantTime's agent time.
 func (t *taskRun) grant(u *TaskUsage) {
 	u.ExtraAttempts++
+	t.grantTime(u)
+}
+
+// grantTime is an answer's agent time: when less than the slice of agent
+// time is left, the difference, so the attempt is not born at the cap. The
+// slice is a quarter of the resolved agent time, never under the 5 minutes
+// a session needs to start (versionAnswerSlice); a run from before the
+// change id keeps WorkflowConfig.AnswerSlice instead.
+func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.v5 < versionPersistUsage {
 		return
 	}
