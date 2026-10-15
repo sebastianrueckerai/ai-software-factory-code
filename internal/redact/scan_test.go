@@ -116,6 +116,8 @@ func TestScanDiffCleanDiff(t *testing.T) {
 		"+ssh_public_key: \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT op@host\"\n" +
 		"+\taccessKey := \"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT\"\n" +
 		"+AGENT_SSH_KEY=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq3Zy0p3a9Jx1mC2b7ZQ0Yt9V2kLw8rS4uN6dEoF1hT\n" +
+		"+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBKqTqMbrvBwPpFfNy3Q8JfK8mjGJRgM0fD6kMHPH2H8k3SGjR7vC5qYzX9wA user@host\n" +
+		"+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQC7vbqajDRIK4MNcCZ7X1qcWjR5YvFJzD0G3kL8mN2pQ4rS6tU8wA deploy@prod\n" +
 		"+-----BEGIN PUBLIC KEY-----\n"
 	if got := ScanDiff(clean); len(got) != 0 {
 		t.Fatalf("ScanDiff = %+v", got)
