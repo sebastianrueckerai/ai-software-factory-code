@@ -30,7 +30,7 @@ type gateHarness struct {
 	earlier      [][]Review    // the earlier reviews each ModelReview call was given
 	rounds       []int         // the round each ModelReview call was given
 	reviewGates  []GateResults // the gates each ModelReview call was given
-	besideMu     sync.Mutex    // review and audit calls can overlap: beside the checks, or cancelled still finishing
+	mu           sync.Mutex    // what the mocks record: the review and the audit run beside other activities, and a cancelled call still finishes in the test env
 	audits       []AuditResult // in order, the last repeating; empty: clear
 	auditErr     error
 	auditGates   []GateResults // the gates each GateAudit call was given
@@ -75,6 +75,8 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 	g.started = g.env.Now()
 	g.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.policyDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.policyPins = append(g.policyPins, pin)
 			g.policyCommits = append(g.policyCommits, commit)
 			g.steps = append(g.steps, "policy")
@@ -82,24 +84,24 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 		})
 	g.env.OnActivity(ActivityGateMigration, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, migrations []string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.steps = append(g.steps, "migration "+strings.Join(migrations, ","))
 			return nil
 		})
 	n := 0
 	g.env.OnActivity(ActivityGateReproduction, mock.Anything, "t1", mock.Anything, mock.Anything).After(g.reproDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit string) (ReproResult, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			n++
 			g.steps = append(g.steps, "repro "+commit)
 			return g.repro[min(n, len(g.repro))-1], nil
 		})
 	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
-			// the review runs beside the checks wait: a cancelled call
-			// still finishes in the test env (the real one is cut at its
-			// next heartbeat and posts no comment), so calls can overlap
-			// and share these slices under the lock
-			g.besideMu.Lock()
-			defer g.besideMu.Unlock()
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.steps = append(g.steps, "review "+commit)
 			g.earlier, g.rounds = append(g.earlier, earlier), append(g.rounds, round)
 			g.reviewGates = append(g.reviewGates, gates)
@@ -111,9 +113,8 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 	a := 0
 	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.auditDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
-			// the audit runs beside the checks wait, as the review does
-			g.besideMu.Lock()
-			defer g.besideMu.Unlock()
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			a++
 			g.steps = append(g.steps, "audit "+commit)
 			g.auditGates = append(g.auditGates, gates)
@@ -124,11 +125,15 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 		})
 	g.env.OnActivity(ActivityJudgeScreening, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, verdict string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.judged = append(g.judged, verdict)
 			return nil
 		})
 	g.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.requested = append(g.requested, g.env.Now())
 			g.steps = append(g.steps, "approval "+in.Commit)
 			g.approvals = append(g.approvals, in)
@@ -137,6 +142,8 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 	m := 0
 	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.checkedHeads = append(g.checkedHeads, checkedHead)
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
@@ -149,21 +156,29 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 		})
 	g.env.OnActivity(ActivityAwaitSessionGap, mock.Anything, "t1").After(g.gapDelay).Return(
 		func(ctx context.Context, taskID string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.steps = append(g.steps, "gap")
 			return nil
 		})
 	g.env.OnActivity(ActivityClearRollHold, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, merged bool) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.steps = append(g.steps, map[bool]string{false: "clear", true: "settle"}[merged])
 			return nil
 		})
 	g.env.OnActivity(ActivityReportMergeRetriesExhausted, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.exhausted++
 			return nil
 		})
 	g.env.OnActivity(ActivityReportMergeFailure, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
 			g.reported = append(g.reported, reason)
 			return nil
 		})

@@ -94,26 +94,36 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		Stages: testStages(), Queue: queue}
 	env := q.env
 	env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (int, error) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.enters = append(q.enters, env.Now().Sub(q.started))
 		return q.ahead(len(q.enters)), nil
 	})
 	env.OnActivity(ActivitySyncWithMain, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
+			q.mu.Lock()
+			defer q.mu.Unlock()
 			q.syncs = append(q.syncs, from)
 			q.steps = append(q.steps, "sync "+from)
 			return q.sync(from), nil
 		})
 	env.OnActivity(ActivityLeaveQueue, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, why string) error {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.leaves = append(q.leaves, why)
 		q.steps = append(q.steps, "leave")
 		return nil
 	})
 	env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
 	env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.checks = append(q.checks, sha)
 		return checks(sha), nil
 	})
 	env.OnActivity(ActivityHeadChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.headChecks = append(q.headChecks, sha)
 		if q.headAnswers != nil {
 			return q.headAnswers(sha), nil
@@ -121,10 +131,14 @@ func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksR
 		return ChecksResult{State: ChecksSuccess}, nil
 	})
 	env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.reruns = append(q.reruns, sha)
 		return sha + "-rerun", nil
 	})
 	env.OnActivity(ActivityWithdrawApproval, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) error {
+		q.mu.Lock()
+		defer q.mu.Unlock()
 		q.steps = append(q.steps, "withdraw")
 		return nil
 	})
