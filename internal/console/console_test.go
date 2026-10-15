@@ -2211,7 +2211,9 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
 		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
 			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
+		// a resolution with a diagnosis and no action still says it
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600,
+			Detail: map[string]any{"diagnosis": "the attempt ended before the supervisor looked"}},
 	}
 	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
 	r.tasks.tasks[0].EscalationAlert = 3
@@ -2221,6 +2223,7 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 		t.Fatalf("alerts not newest first: %d %d %d", i3, i2, i1)
 	}
 	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts">Alerts</a>`,
+		"<td>the attempt ended before the supervisor looked</td>",
 		`action="/alerts/3/verdict"`, `value="real"`, "real problem", `value="noise"`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("/alerts lacks %q", want)

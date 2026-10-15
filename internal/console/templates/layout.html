@@ -29,7 +29,7 @@
 </html>
 {{end}}
 
-{{define "supervised"}}{{if .Action}}<strong>{{.Action}}</strong>: {{.Diagnosis}}{{end}}{{end}}
+{{define "supervised"}}{{if .Action}}<strong>{{.Action}}</strong>: {{end}}{{.Diagnosis}}{{end}}
 
 {{define "verdict"}}<form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="real"><button type="submit" aria-label="Alert {{.ID}}: a real problem">real problem</button></form>
 <form method="post" action="/alerts/{{.ID}}/verdict" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><input type="hidden" name="back" value="{{.Back}}"><input type="hidden" name="verdict" value="noise"><button type="submit" class="deny" aria-label="Alert {{.ID}}: noise">noise</button></form>{{end}}
