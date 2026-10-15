@@ -448,10 +448,12 @@ func (a *AcceptanceRig) TaskByIssue(_ context.Context, repository string, issue 
 	return factoryd.Task{}, false, nil
 }
 
-func (a *AcceptanceRig) BoardTasks(context.Context) ([]factoryd.BoardTask, error) {
+func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	cards := slices.DeleteFunc(slices.Clone(a.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat || factoryd.Final(t.Status) })
+	cards := slices.DeleteFunc(slices.Clone(a.tasks), func(t factoryd.BoardTask) bool {
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
 }

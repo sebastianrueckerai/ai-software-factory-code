@@ -2008,7 +2008,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		d.Columns[colDone].Finished = "done"
 	}
 
-	tasks, err := c.cfg.Tasks.BoardTasks(ctx)
+	tasks, err := c.cfg.Tasks.BoardTasks(ctx, shown.Repository)
 	if err != nil {
 		return d, fmt.Errorf("tasks: %w", err)
 	}
@@ -2027,11 +2027,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	escalation := func(k card) need {
 		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: d.Factory && c.approver(r), Back: "/" + d.Query}
 	}
+	// BoardTasks and readFinished read shown.Repository's cards only, so
+	// every byID lookup below stays right: a plan parent not among them
+	// (finished, another project's) is read by planIssue's own read, a
+	// failed card's replacement keeps the failed card's repository, and a
+	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		if t.Repository != shown.Repository {
-			continue
-		}
 		human, col := v.humanLane(t), fiveColumn(t, v.user)
 		// the status line counts the project's cards, whatever the accent;
 		// a plan that waits on its acceptance counts as its approval

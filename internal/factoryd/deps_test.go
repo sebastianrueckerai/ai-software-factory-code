@@ -91,7 +91,7 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if err := s.AddTaskDeps(ctx, "t-y", []string{"t-a"}); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx)
+	tasks, err := s.BoardTasks(ctx, "sf/r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestPGStoreBoardKeepsABlockingFailedCard(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id IN ('t-plan', 't-a', 't-c', 't-d')`); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx)
+	tasks, err := s.BoardTasks(ctx, "sf/r")
 	if err != nil {
 		t.Fatal(err)
 	}

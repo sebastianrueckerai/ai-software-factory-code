@@ -3,18 +3,14 @@ package factoryd
 import (
 	"bytes"
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
-	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
-	"encoding/base64"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sealed"
 )
 
 func consoleSessionStore(t *testing.T) *PGStore {
@@ -30,70 +26,33 @@ func consoleSessionStore(t *testing.T) *PGStore {
 	return s
 }
 
-// The console's own sealing, kept here so the store's test needs no import
-// of the console (which would be a cycle): the same AES-256-GCM key the
-// console derives from Config.SessionKey with the fixed label, and its
-// nonce-first base64url seal. A row this test writes is a row the console
+// The console's own sealing, which its store's test needs without an
+// import of the console (which would be a cycle): the session key the
+// console takes from CONSOLE_SESSION_KEY, its fixed label and the row's
+// id hash as additional data. A row this test writes is a row the console
 // reads back, and one the console writes is one it opens here.
 const consoleTokenKeyLabel = "console-session-tokens-v1"
 
 var consoleTestSessionKey = []byte("0123456789abcdef0123456789abcdef")
 
-func consoleTokenKey() []byte {
-	m := hmac.New(sha256.New, consoleTestSessionKey)
-	m.Write([]byte(consoleTokenKeyLabel)) // #nosec G104 -- a hash write never fails
-	return m.Sum(nil)
-}
-
-// sealConsoleToken seals tok as the console does: AES-256-GCM under the
-// key of the session key, a fresh random nonce in front, the row's id_hash
-// as additional data, base64url without padding.
+// sealConsoleToken seals tok as the console does (internal/sealed).
 func sealConsoleToken(t *testing.T, tok, idHash string) string {
 	t.Helper()
-	if tok == "" {
-		return ""
-	}
-	block, err := aes.NewCipher(consoleTokenKey())
+	sealedTok, err := sealed.Seal(consoleTestSessionKey, consoleTokenKeyLabel, tok, idHash)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		t.Fatal(err)
-	}
-	return base64.RawURLEncoding.EncodeToString(gcm.Seal(nonce, nonce, []byte(tok), []byte(idHash)))
+	return sealedTok
 }
 
 // openConsoleToken is sealConsoleToken's inverse.
-func openConsoleToken(t *testing.T, sealed, idHash string) string {
+func openConsoleToken(t *testing.T, sealedTok, idHash string) string {
 	t.Helper()
-	if sealed == "" {
-		return ""
-	}
-	b, err := base64.RawURLEncoding.DecodeString(sealed)
-	if err != nil {
-		t.Fatalf("the stored token is not base64url: %v", err)
-	}
-	block, err := aes.NewCipher(consoleTokenKey())
-	if err != nil {
-		t.Fatal(err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(b) < gcm.NonceSize() {
-		t.Fatal("the stored token is shorter than a nonce")
-	}
-	pt, err := gcm.Open(nil, b[:gcm.NonceSize()], b[gcm.NonceSize():], []byte(idHash))
+	tok, err := sealed.Open(consoleTestSessionKey, consoleTokenKeyLabel, sealedTok, idHash)
 	if err != nil {
 		t.Fatalf("the stored token does not decrypt under the session key: %v", err)
 	}
-	return string(pt)
+	return tok
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A row one

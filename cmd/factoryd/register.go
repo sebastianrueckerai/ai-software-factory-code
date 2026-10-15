@@ -81,6 +81,8 @@ func registerMain(args []string) {
 		log.Fatalf("open store: %v", err)
 	}
 	defer store.Close()
+	// the mirror tokens the registration reads are sealed under it
+	store.SetSealKey([]byte(mustSecret("CONSOLE_SESSION_KEY")))
 	kube, err := factoryd.NewInClusterKube()
 	if err != nil {
 		log.Fatalf("kube client: %v", err)
