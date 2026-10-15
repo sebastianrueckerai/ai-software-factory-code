@@ -922,13 +922,15 @@ func FileAgentTask(ctx context.Context, store interface {
 // opening one. t.Source names the kind (factoryPRSources); fileEntry gives
 // such a card ready's class and no lane, like a roll, so the workflow
 // starts at once and moves running before its verify reaches in-review.
+// It runs no session, and its budget is its model gates': budget's task
+// default, at most p's card maximum and the task maximum (CardBudget).
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
-	t.PRNumber = prNumber
+	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", 0)
 	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
 }
 

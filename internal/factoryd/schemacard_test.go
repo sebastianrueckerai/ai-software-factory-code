@@ -237,7 +237,7 @@ func schemaCards(store *fakeStore) []Task {
 // TestSchemaCopierFilesCard: the pass that opens the schema pull request
 // files a card of source schema-copy for it (roadmap 187): the pull
 // request set on the row, its issue on the configuration repository,
-// small's budget, ready's class and its workflow started.
+// the policy's task budget, ready's class and its workflow started.
 func TestSchemaCopierFilesCard(t *testing.T) {
 	ctx := context.Background()
 	fj, c, store, wf := cardRig(t)
@@ -256,8 +256,8 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 		!slices.Equal(card.RequiredCapabilities, []string{policy.ClassCoder}) {
 		t.Fatalf("card = %+v, want a queued no-lane card of ready's class, like a roll", card)
 	}
-	if card.BudgetEUR != policy.CardBudget(testCardBudget, nil, "small", 0) || card.RiskClass != "standard" {
-		t.Fatalf("card = %+v, want small's budget of the policy in force", card)
+	if card.BudgetEUR != 2 || card.RiskClass != "standard" {
+		t.Fatalf("card = %+v, want the policy's task default of 2 EUR", card)
 	}
 	if card.Repository != cardUpstream || card.SHA != "0123456789ab" || card.Objective != "Schema copies for 0123456789ab" {
 		t.Fatalf("card = %+v, want it on %s named for this build", card, cardUpstream)

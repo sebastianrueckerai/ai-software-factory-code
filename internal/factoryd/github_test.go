@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // pullsGitHub answers GitHub's REST API for acme/app and records every call
@@ -535,7 +537,8 @@ func TestGitHubSyncFilesCard(t *testing.T) {
 	f, _ := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
 	p := seedProject("sf/r")
-	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}}}
+	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}},
+		Policy: func() policy.Tree { return testTree(testPolicyYAML) }}
 	r.fileSyncCard(ctx, p, Repo{Owner: "factory-agent", Name: "r"}, 9, "abc1234", "abc1234567890abcdef", "sebastian")
 	wantID := syncTaskID("sf/r", 9)
 	row, ok := store.tasks[wantID]
@@ -560,7 +563,8 @@ func TestGitHubSyncIdempotent(t *testing.T) {
 	f, _ := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
 	p := seedProject("sf/r")
-	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}}}
+	r := &Registrar{Forgejo: f, Tasks: store, Workflows: wf, Store: &memProjects{m: map[string]Project{"sf-r": p}},
+		Policy: func() policy.Tree { return testTree(testPolicyYAML) }}
 	fork := Repo{Owner: "factory-agent", Name: "r"}
 	r.fileSyncCard(ctx, p, fork, 9, "abc1234", "abc1234567890abcdef", "sebastian")
 	first := len(store.tasks)

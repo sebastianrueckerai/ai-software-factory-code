@@ -168,7 +168,7 @@ func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int6
 	title := TemplateUpdateTitle + " for " + p.Template
 	body := "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + p.Template +
 		": it brings the template's later changes to this project. Its files: " + files + ". The card's merge merges the pull request.\n"
-	return FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, p, title, body, []string{"improvement"},
+	return FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, []string{"improvement"},
 		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
 }
 

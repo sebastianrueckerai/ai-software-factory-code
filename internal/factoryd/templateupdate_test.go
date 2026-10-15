@@ -338,7 +338,8 @@ func templateCardRig(t *testing.T, main map[string]string, cards bool) (*templat
 	// the scripted pull requests are factory-projects', so a pass without a
 	// card store files no card by itself and reads as it did before
 	// roadmap 187.
-	reg := &Registrar{Forgejo: f, Store: store, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects"}
+	reg := &Registrar{Forgejo: f, Store: store, RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects",
+		Policy: func() policy.Tree { return testTree(testPolicyYAML) }}
 	if cards {
 		reg.Cards, reg.Workflows, reg.Timeline = tasks, wf, &Timeline{Objects: &fakeObjectStore{}}
 	}

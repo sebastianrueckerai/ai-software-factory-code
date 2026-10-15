@@ -465,7 +465,7 @@ func (r *Registrar) fileSyncCard(ctx context.Context, p Project, fork Repo, pr i
 	title := "Sync from GitHub " + short
 	body := fmt.Sprintf("%s's default branch at %s, brought back for %s as pull request #%d; merging this card merges that pull request.",
 		p.Repository, sha, by, pr)
-	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil,
+	if _, ref, err := FileFactoryPRTask(ctx, r.Tasks, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, nil,
 		Task{ID: id, Kind: "agent", Objective: title + "\n\n" + body, Author: by, Source: SourceGitHubSync}, pr); err != nil {
 		log.Printf("project %s: the card of the sync pull request %d: %v", p.Name, pr, err)
 	} else {

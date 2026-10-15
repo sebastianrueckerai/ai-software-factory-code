@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"math"
 	"reflect"
 	"slices"
 	"strings"
@@ -14,6 +15,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 func activityInto[T any](t *testing.T, val converter.EncodedValue, err error) T {
@@ -28,7 +30,7 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	got, ref, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "Schema copies for abc123", "body", []string{"improvement"},
+	got, ref, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), "Schema copies for abc123", "body", []string{"improvement"},
 		Task{ID: "t-schema", Source: SourceSchemaCopy}, 9)
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +60,7 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	p := seedProject("sf/r")
 	p.Process, p.Lanes = "gated", approversLanes
 	store, wf = newFakeStore(), &fakeWorkflows{}
-	got, _, err = FileFactoryPRTask(ctx, store, f, wf, nil, p, "Sync from GitHub abc1234", "body", nil, Task{ID: "t-sync", Source: SourceGitHubSync}, 11)
+	got, _, err = FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, p, "Sync from GitHub abc1234", "body", nil, Task{ID: "t-sync", Source: SourceGitHubSync}, 11)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +68,49 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 		!slices.Equal(got.RequiredCapabilities, []string{policy.ClassCoder}) ||
 		store.tasks["t-sync"].PRNumber != 11 || !slices.Equal(wf.started, []string{"t-sync"}) {
 		t.Fatalf("task = %+v, stored %+v, started %v; want a no-lane card of ready's class with pull request #11 linked and the workflow started", got, store.tasks["t-sync"], wf.started)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a factory
+// pull request card runs no session, only its model gates, so it is filed
+// with the policy's task default, 2 EUR of testCardBudget. On the database
+// the gateway grants from, the review's largest call, a whole diff part
+// and its prompt (64 KiB, a token a byte at 3e-6 EUR) at the gates' output
+// limit of 18432 tokens at 1.5e-5 EUR, takes its hold of 0.473088 EUR, and
+// the audit's like call beside it takes one too.
+func TestFactoryPRCardFundsItsGates(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_factory_card"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	f, _ := fileStub(t)
+	for _, source := range []string{SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceRevert} {
+		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
+			t.Fatal(err)
+		}
+		card, _, err := FileFactoryPRTask(ctx, s, f, &fakeWorkflows{}, nil, testCardBudget, seedProject("sf/r"), "title", "body", nil,
+			Task{ID: "t-gates", Source: source}, 9)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if row, _, _ := s.Task(ctx, "t-gates"); card.BudgetEUR != 2 || row.BudgetEUR != 2 {
+			t.Fatalf("%s: card %v EUR, row %v EUR, want the policy's task default of 2", source, card.BudgetEUR, row.BudgetEUR)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't-gates'`); err != nil {
+			t.Fatal(err)
+		}
+		call := policy.HoldRequest{TaskID: "t-gates", Kind: policy.KindModel, Ref: "review-frontier", Bytes: reviewDiffMax + 16<<10,
+			Price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, WantOut: 2048 + 16384, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
+		review, err := policy.TakeHold(ctx, s.db, call)
+		if err != nil || review.MaxOut != call.WantOut || math.Abs(review.EUR-0.473088) > 1e-9 {
+			t.Fatalf("%s: the review's hold = (%+v, %v), want 0.473088 EUR for all %d output tokens", source, review, err, call.WantOut)
+		}
+		call.Ref = "coding-frontier"
+		if audit, err := policy.TakeHold(ctx, s.db, call); err != nil || audit.MaxOut != call.WantOut {
+			t.Fatalf("%s: the audit's hold beside the review's = (%+v, %v), want all %d output tokens", source, audit, err, call.WantOut)
+		}
 	}
 }
 
@@ -78,18 +123,18 @@ func TestFileFactoryPRTaskInsertsThePullRequestWithTheRow(t *testing.T) {
 	ctx := context.Background()
 	f, labels := fileStub(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t0", Source: SourceSchemaCopy}, 0); err == nil ||
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), "title", "body", nil, Task{ID: "t0", Source: SourceSchemaCopy}, 0); err == nil ||
 		err.Error() != "a schema-copy card needs its pull request" || *labels != nil {
 		t.Fatalf("err %v, labels %v: want the refusal before any issue", err, *labels)
 	}
 	store.createFails = 1
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err == nil {
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err == nil {
 		t.Fatal("want the refused insert's error")
 	}
 	if len(store.tasks) != 0 || len(wf.started) != 0 {
 		t.Fatalf("tasks %v, started %v: a refused insert leaves no card", store.tasks, wf.started)
 	}
-	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err != nil {
+	if _, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), "title", "body", nil, Task{ID: "t1", Source: SourceTemplateUpdate}, 9); err != nil {
 		t.Fatal(err)
 	}
 	if store.createCalls != 2 || store.tasks["t1"].PRNumber != 9 || !slices.Equal(wf.started, []string{"t1"}) {
@@ -111,7 +156,7 @@ func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f, labels := fileStub(t)
 			store, wf := newFakeStore(), &fakeWorkflows{}
-			got, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, seedProject("sf/r"), "title", "body", []string{"improvement"},
+			got, _, err := FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, seedProject("sf/r"), "title", "body", []string{"improvement"},
 				Task{ID: "t1", Source: source}, 9)
 			if err != nil {
 				t.Fatal(err)

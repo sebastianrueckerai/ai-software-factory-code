@@ -18,10 +18,6 @@ import (
 // follows it.
 const schemaBranchPrefix = "factory/schema-"
 
-// schemaCardSize is the size of the card a schema copy files (roadmap 187):
-// small, like every pull request factoryd opened outside a card.
-const schemaCardSize = "small"
-
 // SchemaCopier brings the configuration repository's copies of the
 // generated schemas to this build: once per process it compares main's
 // with its own and opens one pull request for the difference, as the bot
@@ -173,10 +169,9 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		return
 	}
 	title := "Schema copies for " + c.Build
-	eur := policy.CardBudget(c.budget(), p.Budget, schemaCardSize, 0)
-	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, p, title,
+	if _, _, err := FileFactoryPRTask(ctx, c.Store, c.Forgejo, c.Workflows, c.Timeline, c.budget(), p, title,
 		schemaCardBody(ref, repo, c.Build, paths), nil,
-		Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: eur, Objective: title, SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
+		Task{ID: NewTaskID(), RiskClass: "standard", Objective: title, SHA: c.Build, Source: SourceSchemaCopy}, ref.Number); err != nil {
 		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
 	} else {
 		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)
@@ -188,7 +183,7 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 func (c *SchemaCopier) filing() bool { return c.Store != nil && c.Workflows != nil }
 
 // budget is the policy's budget block in force; where factoryd wired none,
-// a small card gets no budget rather than a wrong one.
+// the card gets no budget rather than a wrong one.
 func (c *SchemaCopier) budget() policy.Budget {
 	if c.Budget == nil {
 		return policy.Budget{}

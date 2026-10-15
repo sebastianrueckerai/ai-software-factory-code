@@ -359,8 +359,8 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	if err != nil {
 		return err
 	}
-	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
-		ID: taskID, RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0), Objective: title + "\n\n" + body, SHA: pause.SHA, Source: SourceRevert,
+	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, title, body, nil, Task{
+		ID: taskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: pause.SHA, Source: SourceRevert,
 	}, pr.Number)
 	if err != nil {
 		return err
