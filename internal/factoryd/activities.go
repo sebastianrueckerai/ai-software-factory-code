@@ -132,6 +132,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityDayResume:                   r.DayResume,
 		ActivityRunSplit:                    r.RunSplit,
 		ActivityFileSplit:                   r.FileSplit,
+		ActivityRoutineRun:                  r.RoutineRun,
+		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

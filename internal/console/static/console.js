@@ -312,9 +312,20 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 
 // The whole card opens the drawer (item 226): a click anywhere on the
 // face that is not a link, a button or a field; the title's link is the
-// same door for the keyboard. A selection is left alone.
+// same door for the keyboard. A selection is left alone. A ghost opens
+// its routine's drawer the same way, and so does a card's routine (C16).
 document.addEventListener("click", function (e) {
+  var routine = e.target.closest("[data-routine], [data-open-routine]");
+  if (routine) {
+    location.hash = "#routine=" + (routine.dataset.routine || routine.dataset.openRoutine) + ":overview";
+    return;
+  }
   if (e.target.closest("a, button, input, select, textarea, label, summary, form, details")) return;
+  var ghost = e.target.closest("#board [data-ghost]"), door = ghost && ghost.querySelector("button[data-routine]");
+  if (door && !String(getSelection && getSelection())) {
+    location.hash = "#routine=" + door.dataset.routine + ":overview";
+    return;
+  }
   var card = e.target.closest("#board [data-card]");
   // a card without the title's link belongs to a reader, who has no drawer
   if (!card || !card.querySelector("a.open") || String(getSelection && getSelection())) return;
@@ -368,19 +379,29 @@ document.addEventListener("click", function (e) {
 
 // The card drawer docked at the right edge over the board: #card=<id> in
 // the URL opens it, on load too, and a card links there; #card=<id>:<section>
-// opens it with that section of the overview open. Escape or its ✕
-// closes it.
+// opens it with that section of the overview open. A routine's drawer
+// opens the same way from #routine=<project>/<name>:<tab>. Escape or its
+// ✕ closes it.
 // Its tabs and related cards load into it by hx-get, and the URL follows
-// the card it shows.
+// the card or the routine it shows.
 function drawer() { return document.getElementById("drawer"); }
 function showDrawer() {
-  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash);
+  var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
+    rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
   if (!d) return;
-  document.body.classList.toggle("drawer-open", !!m);
-  d.hidden = !m;
-  if (!m) {
+  d.setAttribute("aria-label", rt ? "The routine" : "The card");
+  document.body.classList.toggle("drawer-open", !!(m || rt));
+  d.hidden = !(m || rt);
+  if (!m && !rt) {
     d.textContent = "";
     document.dispatchEvent(new Event("drawerclosed"));
+    return;
+  }
+  if (rt) {
+    htmx.ajax("GET", "/routines/" + rt[1] + "/drawer" + (rt[2] ? "?tab=" + rt[2] : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+      var h = d.querySelector("h2");
+      if (h) h.focus();
+    });
     return;
   }
   var id;
@@ -393,7 +414,7 @@ function showDrawer() {
   });
 }
 function closeDrawer() {
-  if (location.hash.indexOf("#card=") !== 0) return;
+  if (location.hash.indexOf("#card=") !== 0 && location.hash.indexOf("#routine=") !== 0) return;
   history.replaceState(null, "", location.pathname + location.search);
   showDrawer();
 }
@@ -408,9 +429,10 @@ document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
 // after a tab the focus is on the tab shown, after a steer in its input
 document.addEventListener("htmx:afterSwap", function (e) {
-  var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer]");
+  var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");
   if (!shown) return;
-  if (location.hash !== "#card=" + shown.dataset.drawer) history.replaceState(null, "", "#card=" + shown.dataset.drawer);
+  var hash = shown.dataset.drawer ? "#card=" + shown.dataset.drawer : "#routine=" + shown.dataset.routineDrawer;
+  if (location.hash !== hash) history.replaceState(null, "", hash);
   var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
   if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
   else if (from.id === "steer-form" && steer) steer.focus();
@@ -770,9 +792,14 @@ document.addEventListener("keydown", function (e) {
       facts.title = "";
       if (s.busy) facts.textContent = "· saving…";
       else if (s.err) {
-        facts.className = "doc-facts doc-refused";
-        facts.textContent = "not saved: " + s.err.why + " · retry";
-        facts.title = "the save did not land; Retry sends it again";
+        // only the reason keeps the refusal colour; retry is its own
+        // button, so the keyboard reaches it
+        var why = facts.appendChild(document.createElement("span"));
+        why.className = "doc-refused";
+        why.textContent = "not saved: " + s.err.why;
+        facts.appendChild(document.createTextNode(" · "));
+        facts.appendChild(noteLink("retry", "retry"));
+        facts.title = "the save did not land; retry sends it again";
       } else if (s.landed) {
         facts.className = "doc-facts doc-saved";
         facts.textContent = "Saved: " + s.landed.sha.slice(0, 7) + " on master · " + s.landed.at;
@@ -1052,14 +1079,14 @@ document.addEventListener("keydown", function (e) {
     e.preventDefault();
     createDoc(document.getElementById("doc-name").value);
   });
-  // Read: back to the rendered document, fetched again when the save
-  // that landed is not rendered yet
+  // Read: back to the rendered document — the control marks Read at
+  // once, even while a landed save's fresh rendering is fetched again
   function readMode() {
     var path = current(), ver = versions[path];
     if (!path || !ver) return;
     confirmAsk = null;
-    if (ver.html) setMode("read");
-    else openDoc(path, { push: false });
+    setMode("read");
+    if (!ver.html) openDoc(path, { push: false });
   }
   // leave an unsaved new file: back, else closed; the draft stays, the
   // dot says so
@@ -1096,12 +1123,6 @@ document.addEventListener("keydown", function (e) {
       confirmAsk = null;
       syncDoc();
     }
-  });
-  // the refusal's retry on the path line
-  document.addEventListener("click", function (e) {
-    var f = e.target.closest && e.target.closest("#doc-facts.doc-refused");
-    if (!f || !current()) return;
-    saveDoc(current());
   });
   // every keystroke is the draft; typing back the saved text drops it
   document.addEventListener("input", function (e) {

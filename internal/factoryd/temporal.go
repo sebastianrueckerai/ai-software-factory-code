@@ -20,11 +20,12 @@ import (
 // for redelivery dedupe.
 const DeliveryRetention = 30 * 24 * time.Hour
 
-// Workflows starts and signals task workflows; the intake paths depend on
-// this seam, not on the Temporal client.
+// Workflows starts and signals task workflows and starts routines' runs.
+// The intake paths depend on this seam, not on the Temporal client.
 type Workflows interface {
 	Start(ctx context.Context, taskID string) error
 	Signal(ctx context.Context, taskID, name string, sig TaskSignal) error
+	StartRoutineRun(ctx context.Context, in RoutineRunInput) error
 }
 
 // TemporalWorkflows is Workflows against a Temporal frontend.
@@ -63,6 +64,24 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	}
 	if err == nil {
 		log.Printf("task %s: signal %s from %s delivered", taskID, name, sig.Author)
+	}
+	return err
+}
+
+// StartRoutineRun starts a routine's run. A start for a due time whose run
+// completed or still runs is refused by Temporal and is not an error here.
+// One whose workflow failed starts, but the failed run's row is final: the
+// restart returns its outcome. Run now is the human's retry.
+func (w TemporalWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInput) error {
+	_, err := w.Client.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                                       RoutineRunID(in),
+		TaskQueue:                                TaskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+	}, "RoutineRunWorkflow", in)
+	var started *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &started) {
+		return nil
 	}
 	return err
 }

@@ -684,6 +684,9 @@ type fakeLedger struct {
 	files     map[string]policy.ProjectConfig
 	calls     map[string][]policy.ModelCall // by task
 	risk      policy.Risk
+	routines  []policy.Routine  // policy.yaml's
+	briefs    map[string]string // the routines' briefs by path
+	down      bool              // no policy in force can be read
 }
 
 // testProcesses are the shipped two processes; spec lists its lanes out of
@@ -744,6 +747,9 @@ func (l *fakeLedger) CallTotals(_ context.Context, tasks []string) (map[string]p
 }
 
 func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	if l.down {
+		return policy.Version{}, false, errors.New("the ledger is down")
+	}
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
@@ -751,14 +757,14 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
-			Chat:            l.chat, Risk: l.risk},
+			Chat:            l.chat, Risk: l.risk, Routines: l.routines},
 			Projects: map[string]policy.ProjectConfig{
 				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
 					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
 			},
-			Processes: l.processes, Commands: l.commands}}
+			Processes: l.processes, Commands: l.commands, Briefs: l.briefs}}
 	maps.Copy(v.Tree.Projects, l.files)
 	if l.approvers != nil {
 		v.Document.Approvers = l.approvers
@@ -786,6 +792,7 @@ type rig struct {
 	events    *fakeEvents
 	chat      *fakeChat
 	mirrors   *fakeMirrors
+	routines  *fakeRoutines
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -831,6 +838,7 @@ func newRig(t *testing.T) *rig {
 		resources: &fakeResources{}, alerts: &fakeAlerts{}, projects: &fakeProjects{rows: projectRows()}, metrics: reader,
 		events:      &fakeEvents{bus: factoryd.NewEventBus()},
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
+		routines:    &fakeRoutines{},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
@@ -842,7 +850,7 @@ func newRig(t *testing.T) *rig {
 		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
-		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors,
+		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate

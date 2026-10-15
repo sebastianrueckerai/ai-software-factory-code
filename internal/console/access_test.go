@@ -42,9 +42,10 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		return 0, ""
 	}
 	// path fills pattern's {id} (a card of sf/code (t-c), its pending request,
-	// a resource, an alert, a proposal) and {name} (the leg's project).
+	// a resource, an alert, a proposal), and {project} and {name} with the
+	// leg's project.
 	path := func(pattern, name string) string {
-		p := strings.ReplaceAll(strings.TrimPrefix(pattern, "POST "), "{name}", name)
+		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
 			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
@@ -89,8 +90,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 37 || !slices.Equal(skipped, []string{"POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 37 driven and only logout and the documents' save skipped", pages, skipped)
+	if pages != 39 || !slices.Equal(skipped, []string{"POST /logout", "POST /projects/{name}/docs/{path...}"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 39 driven and only logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -135,8 +136,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 33 || len(tools) != 55 {
-		t.Fatalf("%d of %d tools checked as writes: want 33 of 55", writes, len(tools))
+	if writes != 37 || len(tools) != 60 {
+		t.Fatalf("%d of %d tools checked as writes: want 37 of 60", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -213,7 +214,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		return ""
 	}
 	path := func(pattern, name string) string {
-		p := strings.ReplaceAll(strings.TrimPrefix(pattern, "POST "), "{name}", name)
+		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
 			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
@@ -271,8 +272,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 33 {
-		t.Fatalf("%d write tools driven: want 33", writes)
+	if writes != 37 {
+		t.Fatalf("%d write tools driven: want 37", writes)
 	}
 }
 

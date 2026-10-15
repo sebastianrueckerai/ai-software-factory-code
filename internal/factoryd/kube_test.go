@@ -409,3 +409,95 @@ func TestInClusterKubeSecretsByLabels(t *testing.T) {
 		t.Fatalf("SecretsByLabels = %+v, %v\nwant %+v", got, err, want)
 	}
 }
+
+// kubeAt is the production client against srv, its token a stub.
+func kubeAt(t *testing.T, srv *httptest.Server) *InClusterKube {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	return &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+}
+
+// CronJobs reads a namespace's CronJobs with their schedule, suspension
+// and last runs; a job never run has zero times.
+func TestInClusterKubeCronJobs(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/batch/v1/namespaces/forgejo/cronjobs" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"forgejo-dump"},"spec":{"schedule":"30 2 * * *","suspend":false},`+
+			`"status":{"lastScheduleTime":"2026-10-15T02:30:00Z","lastSuccessfulTime":"2026-10-15T02:31:10Z"}},`+
+			`{"metadata":{"name":"push-mirrors"},"spec":{"schedule":"*/10 * * * *","suspend":true},"status":{}}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).CronJobs(context.Background(), "forgejo")
+	want := []CronJobState{
+		{Kind: KindCronJob, Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *",
+			LastScheduled: time.Date(2026, 10, 15, 2, 30, 0, 0, time.UTC), LastSuccessful: time.Date(2026, 10, 15, 2, 31, 10, 0, time.UTC)},
+		{Kind: KindCronJob, Namespace: "forgejo", Name: "push-mirrors", Schedule: "*/10 * * * *", Suspended: true},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("CronJobs = %+v, %v\nwant %+v", got, err, want)
+	}
+}
+
+// ScheduledBackups reads a namespace's CNPG ScheduledBackups: their
+// six-field schedule as written, suspension and last schedule time. The
+// resource records no success, so LastSuccessful stays zero.
+func TestInClusterKubeScheduledBackups(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/apis/postgresql.cnpg.io/v1/namespaces/platform/scheduledbackups" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		io.WriteString(w, `{"items":[`+
+			`{"metadata":{"name":"sf-cluster-daily"},"spec":{"schedule":"0 0 2 * * *","cluster":{"name":"sf-cluster"}},`+
+			`"status":{"lastCheckTime":"2026-10-15T09:12:00Z","lastScheduleTime":"2026-10-15T02:00:00Z","nextScheduleTime":"2026-10-16T02:00:00Z"}},`+
+			`{"metadata":{"name":"sf-cluster-weekly"},"spec":{"schedule":"0 0 3 * * 0","suspend":true}}]}`)
+	}))
+	defer srv.Close()
+	got, err := kubeAt(t, srv).ScheduledBackups(context.Background(), "platform")
+	want := []CronJobState{
+		{Kind: KindScheduledBackup, Namespace: "platform", Name: "sf-cluster-daily", Schedule: "0 0 2 * * *",
+			LastScheduled: time.Date(2026, 10, 15, 2, 0, 0, 0, time.UTC)},
+		{Kind: KindScheduledBackup, Namespace: "platform", Name: "sf-cluster-weekly", Schedule: "0 0 3 * * 0", Suspended: true},
+	}
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("ScheduledBackups = %+v, %v\nwant %+v", got, err, want)
+	}
+}
+
+// ClusterJobs reads platform, factory and forgejo unless told other
+// namespaces, in their order, each namespace's CronJobs before its
+// ScheduledBackups. A read the cluster refuses fails the whole read and
+// names its namespace.
+func TestClusterJobsReadTheirNamespaces(t *testing.T) {
+	backup := CronJobState{Kind: KindScheduledBackup, Namespace: "platform", Name: "sf-cluster-daily", Schedule: "0 0 2 * * *"}
+	bao := CronJobState{Kind: KindCronJob, Namespace: "platform", Name: "openbao-config", Schedule: "*/10 * * * *"}
+	facts := CronJobState{Kind: KindCronJob, Namespace: "factory", Name: "cluster-facts", Schedule: "0 * * * *"}
+	dump := CronJobState{Kind: KindCronJob, Namespace: "forgejo", Name: "forgejo-dump", Schedule: "30 2 * * *"}
+	other := CronJobState{Kind: KindCronJob, Namespace: "signoz", Name: "retention", Schedule: "0 4 * * *"}
+	k := &fakeKube{cronJobs: map[string][]CronJobState{"platform": {backup, bao}, "factory": {facts}, "forgejo": {dump}, "signoz": {other}}}
+	got, err := ClusterJobs{Kube: k}.CronJobs(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []CronJobState{bao, backup, facts, dump}) {
+		t.Fatalf("by default = %+v, %v", got, err)
+	}
+	got, err = ClusterJobs{Kube: k, Namespaces: []string{"signoz", "forgejo"}}.CronJobs(context.Background())
+	if err != nil || !reflect.DeepEqual(got, []CronJobState{other, dump}) {
+		t.Fatalf("signoz and forgejo = %+v, %v", got, err)
+	}
+	for key, want := range map[string]string{
+		KindCronJob + " factory":          "cronjobs of factory: " + ErrForbidden.Error(),
+		KindScheduledBackup + " platform": "scheduled backups of platform: " + ErrForbidden.Error(),
+	} {
+		k.cronJobsErr = map[string]error{key: ErrForbidden}
+		if got, err := (ClusterJobs{Kube: k}).CronJobs(context.Background()); !errors.Is(err, ErrForbidden) || err.Error() != want || got != nil {
+			t.Errorf("%s forbidden = %+v, %v", key, got, err)
+		}
+	}
+}

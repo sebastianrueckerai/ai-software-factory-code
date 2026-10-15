@@ -16,7 +16,8 @@ import (
 // event classes: a card that needs a human (and one that needs them no
 // more, its question withdrawn), a card stopped by its budget, a terminal
 // failure, a card or plan done, the agent's own starts and filings at
-// assisted and autonomous, and a change of the level. A poke
+// assisted and autonomous, a change of the level, and a routine's run
+// that tells the inbox (roadmap 267). A poke
 // is a row written through the message path: no model turn, one per state
 // change, behind a turn in flight in the inbox as every writer's rows
 // (roadmap 263). A repeat of the newest poke about the same card counts on
@@ -35,7 +36,7 @@ const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
-	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted}
+	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
@@ -111,10 +112,7 @@ func (p *Poker) Pass(ctx context.Context) error {
 			m, ok := pokeOf(e, t)
 			var to []string
 			if ok {
-				to = tree.ApproversOf(e.Repository)
-				if _, c, found := tree.ProjectOf(e.Repository); found && len(c.Notify) > 0 {
-					to = c.Notify
-				}
+				to = pokeTo(tree, e.Repository)
 			}
 			if err := p.poke(ctx, e, to, m); err != nil {
 				return err
@@ -151,6 +149,15 @@ func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessag
 	}
 	copy(ids, got)
 	return nil
+}
+
+// pokeTo are the members a poke on repository tells: its project's
+// notify list, else its approvers.
+func pokeTo(tree policy.Tree, repository string) []string {
+	if _, c, ok := tree.ProjectOf(repository); ok && len(c.Notify) > 0 {
+		return c.Notify
+	}
+	return tree.ApproversOf(repository)
 }
 
 // pokeOf is event e's poke, t the card it names, false for an event that
@@ -208,6 +215,12 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
+	case EventRoutineRan:
+		if str("poke") == "" {
+			return m, false
+		}
+		m.Content = str("poke")
+		m.Decider = fmt.Sprintf("routine %s · run %d · %s", str("routine"), num("run"), str("schedule"))
 	case EventAutonomyChanged:
 		m.TaskID = ""
 		from, to := str("from"), str("to")

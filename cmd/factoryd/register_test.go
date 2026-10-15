@@ -50,6 +50,27 @@ func TestCheckProjectReadsTheHead(t *testing.T) {
 	}
 }
 
+// The chat's project file change reads infra's head the same way, an
+// existing project's file included: a change the loader takes answers no
+// line, one it refuses its lines.
+func TestCheckChangeReadsTheHead(t *testing.T) {
+	files, err := policy.ReadDir("../../internal/policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ladder := factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	file := files["projects/linkshort.yaml"]
+	if refused, err := checkChange(context.Background(), treeSource(files), map[string][]byte{"projects/linkshort.yaml": file}, ladder); refused != nil || err != nil {
+		t.Fatalf("the file as it is: %q, %v", refused, err)
+	}
+	bad := []byte(strings.Replace(string(file), "process: spec", "process: specs", 1))
+	refused, err := checkChange(context.Background(), treeSource(files), map[string][]byte{"projects/linkshort.yaml": bad}, ladder)
+	want := []string{`projects/linkshort.yaml: process "specs": no file processes/specs.yaml (processes: maintenance, spec)`}
+	if err != nil || !slices.Equal(refused, want) {
+		t.Fatalf("refused %q, %v; want %q", refused, err, want)
+	}
+}
+
 // factoryd's default-deny egress resolves GitHub's API, which registration
 // asks whether an import's source is empty and the exports call, and
 // GitHub's git host, and admits each on 443 alone.
@@ -143,6 +164,46 @@ func TestFactorydPodReapsGitHelpers(t *testing.T) {
 				t.Fatal("factoryd's pod does not share its process namespace: killed git helpers stay zombies of PID 1")
 			}
 			return
+		}
+	}
+}
+
+// factoryd's ClusterRole lists the cluster's CronJobs and CNPG's
+// ScheduledBackups for the Resources page and does nothing else with them.
+func TestFactorydOnlyListsTheClustersJobs(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbs := map[string][]string{}
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Rules    []struct {
+				APIGroups []string `yaml:"apiGroups"`
+				Resources []string `yaml:"resources"`
+				Verbs     []string `yaml:"verbs"`
+			} `yaml:"rules"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		if doc.Kind != "ClusterRole" || doc.Metadata.Name != "factoryd" {
+			continue
+		}
+		for _, r := range doc.Rules {
+			for _, g := range r.APIGroups {
+				for _, res := range r.Resources {
+					verbs[g+"/"+res] = append(verbs[g+"/"+res], r.Verbs...)
+				}
+			}
+		}
+	}
+	for _, res := range []string{"batch/cronjobs", "postgresql.cnpg.io/scheduledbackups"} {
+		if !slices.Equal(verbs[res], []string{"list"}) {
+			t.Errorf("factoryd's ClusterRole grants %v on %s, want [list]", verbs[res], res)
 		}
 	}
 }

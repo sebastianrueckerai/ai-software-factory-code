@@ -469,9 +469,10 @@ func TestDocsSaveRefusals(t *testing.T) {
 }
 
 // Every write through the door leaves one doc_written row, via the door
-// it came through: the chat's write_doc lands its commit and one row via
-// chat, and a second write leaves a second row (the 2026-10-15 plan,
-// item 4).
+// it came through: the chat's write_doc — one of the always-confirmed
+// tools — proposes and the member's Do it lands its commit and one row
+// via chat, and a second write leaves a second row (the 2026-10-15
+// plan, item 4).
 func TestDocWrittenForEveryDoorWrite(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
@@ -481,7 +482,11 @@ func TestDocWrittenForEveryDoorWrite(t *testing.T) {
 	edited := strings.Replace(docsPlan, "one week", "two weeks", 1)
 	g.replies = [][]string{{call(1, "write_doc", `{"path":"docs/plans/cache.md","old":"one week","new":"two weeks","base_sha256":"`+
 		factoryd.ContentHash(docsPlan)+`"}`)}, {say("Done.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"edit the plan"}})
+	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"edit the plan"}})
+	if len(tokens) != 1 || !strings.Contains(proposed[0], `"tool":"write_doc"`) {
+		t.Fatalf("the write_doc proposed: %v", proposed)
+	}
+	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	if len(events) == 0 || !strings.Contains(events[0], `"name":"write_doc"`) {
 		t.Fatalf("the write_doc ran: %v", events)
 	}
@@ -491,7 +496,11 @@ func TestDocWrittenForEveryDoorWrite(t *testing.T) {
 	edited2 := strings.Replace(edited, "two weeks", "three weeks", 1)
 	g.replies = [][]string{{call(1, "write_doc", `{"path":"docs/plans/cache.md","old":"two weeks","new":"three weeks","base_sha256":"`+
 		factoryd.ContentHash(edited)+`"}`)}, {say("Done again.")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"again"}})
+	_, proposed, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"again"}})
+	if len(tokens) != 1 || !strings.Contains(proposed[0], `"tool":"write_doc"`) {
+		t.Fatalf("the second write_doc proposed: %v", proposed)
+	}
+	chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", Kind: factoryd.EventDocWritten,
 			Detail: map[string]any{"path": "docs/plans/cache.md", "hash": factoryd.ContentHash(edited), "commit": "c0ffee0"}},

@@ -612,6 +612,12 @@ func (s *accBatchStore) LeaveQueue(ctx context.Context, taskID string) (project 
 	panic("unused")
 }
 func (s *accBatchStore) WaitingQueueHeads(ctx context.Context) ([]string, error) { panic("unused") }
+func (s *accBatchStore) RoutineRunOfTask(ctx context.Context, taskID string) (factoryd.RoutineRun, bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error {
+	panic("unused")
+}
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
 }
@@ -789,6 +795,8 @@ func (f *accBatchChat) PurgeProposals(_ context.Context, before time.Time) (int6
 type batchWorkflows struct{ rig *batchRig }
 
 func (w batchWorkflows) Start(context.Context, string) error { return nil }
+
+func (w batchWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInput) error { return nil }
 
 func (w batchWorkflows) Signal(_ context.Context, taskID, signal string, sig factoryd.TaskSignal) error {
 	w.rig.noteSignal(fmt.Sprintf("%s %s %d %d by %s", signal, taskID, sig.Revision, sig.Index, sig.Author))

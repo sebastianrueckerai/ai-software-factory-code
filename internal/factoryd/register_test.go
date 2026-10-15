@@ -1545,6 +1545,26 @@ func TestMainPushedMakesDeploy(t *testing.T) {
 	}
 }
 
+// A push to a project's main starts its push-main routines, by the
+// project's name. A repository of no project starts none.
+func TestMainPushedStartsTheProjectsRoutines(t *testing.T) {
+	rig := newRegisterRig(t)
+	rig.store.m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: policy.ObjectsSeed, File: true}
+	var pushed []string
+	rig.reg.PushRoutines = func(_ context.Context, project string) error {
+		pushed = append(pushed, project)
+		return nil
+	}
+	for _, repo := range []string{"sf/AI-Software-Factory-Code", "other/other"} {
+		if err := rig.reg.MainPushed(t.Context(), repo); err != nil {
+			t.Fatalf("%s: %v", repo, err)
+		}
+	}
+	if !slices.Equal(pushed, []string{"ai-software-factory-code"}) {
+		t.Fatalf("pushed %v", pushed)
+	}
+}
+
 // Item 69: a Forgejo rebuilt without its git storage keeps deploy's
 // protection but not the branch, and Forgejo refuses to create a branch
 // its protection covers. That is no failure: roll.sh starts deploy on the

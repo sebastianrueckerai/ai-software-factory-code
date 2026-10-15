@@ -63,3 +63,14 @@ project_default:
   standing: {monthly_eur: 5, server_types: [cx23, cx33], max_count: 2}
 approvers: [sebastian]
 bounds: {GateReproduction: 1800}
+time_zone: Europe/Berlin
+routines:
+  - name: template-pass
+    title: Template update
+    schedule:
+      - cron: "3 * * * *"
+      - on: configuration-version
+    files: pull-request
+    pass: template
+    while_open: fold
+    tell: quiet

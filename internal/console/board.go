@@ -48,6 +48,9 @@ var funcs = template.FuncMap{
 		return fmt.Sprintf("%d min", minutes)
 	},
 	"utc": func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") },
+	// ago and schedule word a cluster job's last runs and cron
+	"ago":      jobAge,
+	"schedule": jobSchedule,
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct":    pct,
@@ -342,6 +345,9 @@ func faceWords(k card, a *approvalCard) string {
 	if k.PlanIssue > 0 {
 		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
 	}
+	if k.Routine() {
+		w = append(w, "routine")
+	}
 	if k.Blocked > 0 {
 		w = append(w, fmt.Sprintf("blocked by %d %s", k.Blocked, k.BlockedOn))
 	}
@@ -522,6 +528,9 @@ type card struct {
 func (k card) Closes() bool {
 	return k.MayWriteSummary && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
 }
+
+// Routine: a routine's run filed the card, which wears the chip (C16).
+func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 
 // fine is a card's fine state as a chip in the pill's hues.
 type fine struct{ Words, Class string }
@@ -805,6 +814,30 @@ type column struct {
 	Finished string
 	Whole    int
 	More     *more
+	// Ghosts are the column's routines at its foot (C16), and
+	// GhostsHidden those the board's routines choice hides.
+	Ghosts       []ghost
+	GhostsHidden int
+}
+
+// ghost is a routine as a card that is not yet there (C16): its schedule
+// in words, its next run ("Mon 06:00 · in 20 min · human card"), its last
+// ("last #781 done in 2 d"), a held run's words, the open card (Open) it
+// runs, and its acts, offered to a writer (CSRF set) with the board's
+// filter. Skipped says a Skip once is pending, which its act undoes.
+type ghost struct {
+	Project, Name, Title        string
+	Words, NextWords, LastWords string
+	Soon, Held, Running         bool
+	Skipped                     bool
+	HeldWords                   string
+	Open                        int64
+	Filter                      boardFilter
+	CSRF                        string
+	// Drawer says the acts sit in the routine's drawer, which answers them
+	// on its tab Tab.
+	Drawer bool
+	Tab    string
 }
 
 // Count is the number the column's head shows: its needs, else its
@@ -901,6 +934,9 @@ type boardFilter struct {
 	Shown map[string]int
 	Col   string
 	After factoryd.Cursor
+	// Routines is the routines control's choice (C16): "" shows every
+	// routine's ghost, week those within 7 days, none none.
+	Routines string
 }
 
 // whole: the find or the Done column's show narrows the finished cards,
@@ -956,10 +992,13 @@ func (f *boardFilter) setCol(name string, c colFilter) {
 	}
 }
 
-// readCols reads the menus' choices with get, a value the menu does not
-// offer reading as the default, and how many cards each column of
-// finished cards shows.
+// readCols reads the menus' choices and the routines control's with get,
+// a value the menu does not offer, and all, reading as the default, and
+// how many cards each column of finished cards shows.
 func readCols(f *boardFilter, get func(string) string) {
+	if r := get("routines"); r == "week" || r == "none" {
+		f.Routines = r
+	}
 	for _, key := range factoryd.FinalStatuses {
 		if n, err := strconv.Atoi(get(key + "-shown")); err == nil && n > 0 {
 			if f.Shown == nil {
@@ -996,6 +1035,7 @@ func (f boardFilter) Hidden(except ...string) []hidden {
 		c := f.col(m.Name)
 		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
 	}
+	fields = append(fields, hidden{"routines", f.Routines})
 	var out []hidden
 	for _, h := range fields {
 		if h.Value != "" && !slices.Contains(except, h.Name) {
@@ -1042,6 +1082,9 @@ func (f boardFilter) query() string {
 			q.Set(m.Name+"-only", c.Only)
 		}
 	}
+	if f.Routines != "" {
+		q.Set("routines", f.Routines)
+	}
 	if q.Encode() == "" {
 		return ""
 	}
@@ -1064,6 +1107,11 @@ type statusLine struct {
 	TodayEUR, DayCapEUR float64
 	GitHub              string
 	GitHubURL           string // the export's remote on GitHub, "" when not exported
+	// RoutineCell is the strip's routine cell (C16), the first held run
+	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
+	// ("↻ bump in 20 min"), "" for none.
+	RoutineCell string
+	RoutineHeld bool
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -1123,6 +1171,11 @@ type boardData struct {
 	PolicyVersion int64
 	PolicyCommit  string
 	PolicyTreeURL string
+	// HasRoutines: the four columns show the project's routines, so the
+	// head offers the routines control; AllRoutines is the board with
+	// every ghost, the link of a lane's hidden line (C16).
+	HasRoutines bool
+	AllRoutines string
 }
 
 func pct(spent, cap float64) int {
@@ -1254,6 +1307,9 @@ func (d boardData) faces() string {
 		for _, k := range col.Cards {
 			add(k)
 		}
+		for _, g := range col.Ghosts {
+			fmt.Fprintf(&b, "ghost %s %s\n", g.Name, g.NextWords)
+		}
 		for _, n := range col.Needs {
 			if n.Approval == nil {
 				add(n.Card)
@@ -1351,6 +1407,20 @@ func minutes(d time.Duration) string {
 		return fmt.Sprintf("%d h %d min", m/60, m%60)
 	}
 	return fmt.Sprintf("%d d %d h", m/(24*60), m%(24*60)/60)
+}
+
+// coarse is d in one unit, in minutes()'s words: minutes under an hour,
+// hours under a day, else days.
+func coarse(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "under a minute"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%d h", int(d.Hours()))
+	}
+	return fmt.Sprintf("%d d", int(d.Hours()/24))
 }
 
 // span is a gate's duration to the second under an hour.
@@ -2149,6 +2219,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	if shown.Name != "" {
 		c.statusLine(ctx, v, shown, &d)
 		d.Pulse = c.pulseOf(r, shown)
+		if c.cfg.Routines != nil {
+			c.placeGhosts(ctx, &d)
+		}
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
@@ -2238,6 +2311,139 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 		s.GitHubURL = "https://github.com/" + m.Remote + "/pulls"
 	}
 }
+
+// placeGhosts stands each of the shown project's routines as a ghost at
+// the foot of its lane in the four columns (C16): the dated ones by their
+// next run, then the merge-counted ones by the merges they lack, then the
+// rest. The board's routines choice hides those more than 7 days away, or
+// all, and each lane counts what it hides. The strip's cell names the
+// first held run, else the soonest under an hour away, whatever the choice.
+func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
+	views, err := c.cfg.Routines.Views(ctx, d.Project)
+	if err != nil {
+		log.Printf("console: the routines of %s: %v", d.Project, err)
+		d.Problems = append(d.Problems, "the project's routines could not be read")
+		return
+	}
+	rank := func(rv factoryd.RoutineView) int {
+		switch {
+		case !rv.Next.IsZero():
+			return 0
+		case rv.MergesLeft > 0:
+			return 1
+		}
+		return 2
+	}
+	slices.SortStableFunc(views, func(a, b factoryd.RoutineView) int {
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), a.Next.Compare(b.Next), cmp.Compare(a.MergesLeft, b.MergesLeft))
+	})
+	now := time.Now()
+	if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Held }); i >= 0 {
+		d.Status.RoutineCell, d.Status.RoutineHeld = "↻ "+cellWord(views[i].Routine.Name)+" held", true
+	} else if i := slices.IndexFunc(views, func(rv factoryd.RoutineView) bool { return rv.Soon }); i >= 0 {
+		d.Status.RoutineCell = "↻ " + cellWord(views[i].Routine.Name) + " in " + coarse(views[i].Next.Sub(now))
+	}
+	if d.wide() || len(views) == 0 {
+		return
+	}
+	d.HasRoutines = true
+	all := d.boardFilter
+	all.Routines = "all"
+	d.AllRoutines = all.query()
+	csrf := ""
+	if d.Writes {
+		csrf = d.CSRF
+	}
+	for _, rv := range views {
+		col := &d.Columns[colQueued]
+		if rv.Lane == "needs-you" {
+			col = &d.Columns[colNeedsYou]
+		}
+		if d.Routines == "none" || d.Routines == "week" && rv.Next.Sub(now) > 7*24*time.Hour {
+			col.GhostsHidden++
+			continue
+		}
+		col.Ghosts = append(col.Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+	}
+}
+
+// filesWords are the kinds of work a routine files, as its ghost says them.
+var filesWords = map[string]string{policy.FilesHuman: "human card", policy.FilesAgent: "agent card",
+	policy.FilesPullRequest: "pull request", policy.FilesReport: "report"}
+
+// ghostOf is routine rv's ghost at now. Its next line names the run's
+// time, how soon it comes and what it files. A merge-counted routine's
+// names the merges it lacks, an event's only what it files, as the
+// schedule line names the event. A pending Skip once leads the line, the
+// run it names being the one after the skipped. Its last line names the
+// newest run.
+func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
+	rt := rv.Routine
+	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Skipped: rv.State.SkipNext,
+		Filter: f, CSRF: csrf}
+	when, in, kind := nextWords(rv, now)
+	switch {
+	case in != "":
+		g.NextWords = when + " · in " + in + " · " + kind
+	case when != "":
+		g.NextWords = when
+	default:
+		g.NextWords = kind
+	}
+	switch {
+	case g.Skipped && when == "":
+		g.NextWords = "skipped once · " + kind
+	case g.Skipped:
+		g.NextWords = "skipped once · next " + g.NextWords
+	}
+	if l := runWords(rv.Last); l != "" {
+		g.LastWords = "last " + l
+	}
+	if g.Held {
+		g.HeldWords = rv.Last.Note
+	}
+	if rv.Open != nil {
+		g.Open, g.Running = rv.Open.IssueNumber, rv.Open.Status == "running"
+	}
+	return g
+}
+
+// nextWords are routine rv's next run at now as its ghost and its drawer
+// say it: when it comes ("Mon 06:00", "after 6 more merges", "" for an
+// event's, which the schedule's words name), how soon a dated one comes
+// ("20 min", else ""), and what it files ("human card").
+func nextWords(rv factoryd.RoutineView, now time.Time) (when, in, kind string) {
+	when, kind = rv.NextWords, filesWords[rv.Routine.Files]
+	switch {
+	case !rv.Next.IsZero():
+		in = coarse(rv.Next.Sub(now))
+	case rv.MergesLeft == 0:
+		when = ""
+	}
+	return when, in, kind
+}
+
+// runWords are run l's card, outcome and the card's time once it ended
+// ("#781 done in 2 d", "held"), "" before a routine's first run.
+func runWords(l factoryd.RoutineRun) string {
+	if l.Run == 0 {
+		return ""
+	}
+	var w []string
+	if l.Issue > 0 {
+		w = append(w, fmt.Sprintf("#%d", l.Issue))
+	}
+	w = append(w, l.Outcome)
+	if l.Issue > 0 && !l.Ended.IsZero() {
+		w = append(w, "in "+coarse(l.Ended.Sub(l.Started)))
+	}
+	return strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
+}
+
+// cellWord is the routine name's word in the strip's cell: the name's last
+// segment, "bump" for weekly-bump. A name is a slug ending in a letter or
+// a digit, so the segment is a plain word.
+func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:] }
 
 // monthCap is repository's month cap: its project file's budget.month_eur,
 // else the policy's month_eur.
@@ -2650,6 +2856,9 @@ type drawerData struct {
 	Need *need
 	// Thread is the chat thread the card came from, nil for none.
 	Thread *threadLink
+	// RoutineLine names the routine run that filed the card, nil for a
+	// card no routine filed.
+	RoutineLine *routineProvenance
 }
 
 // threadLink is the chat thread behind a card as its drawer names it:
@@ -2792,6 +3001,15 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
 		var err error
+		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
+			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {
+				problem("routine", err)
+			}
+			// a human card's body ends in the line factoryd filed it with, which the routine line says
+			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], factoryd.RoutineProvenance) {
+				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
+			}
+		}
 		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
 			problem("related cards", err)
 		}

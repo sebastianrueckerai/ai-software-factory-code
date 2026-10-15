@@ -184,6 +184,12 @@ type Config struct {
 	// (factoryd.CheckProjectFile): the refusal's lines, none when it
 	// passes; err when the tree could not be read.
 	CheckProject func(ctx context.Context, name string, file []byte) (refused []string, err error)
+	// CheckChange judges the tree at infra's head with changes made, each
+	// a path under the configuration directory to its new content, nil
+	// deleting the file, the loader's way (factoryd.CheckChange): the
+	// refusal's lines, none when it passes; err when the tree could not
+	// be read.
+	CheckChange func(ctx context.Context, changes map[string][]byte) (refused []string, err error)
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
 	// ReconcileError is Registrar.ReconcileError: why the project's last
@@ -229,6 +235,11 @@ type Config struct {
 	Escalate func(ctx context.Context, repository, question string, choices []string, by string) (int64, error)
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
+	// Routines are the projects' routines; nil offers no routine act.
+	Routines Routines
+	// Jobs are the cluster's CronJobs, which the Resources page lists;
+	// nil lists none.
+	Jobs Jobs
 	// GitHubSync brings a project's GitHub default branch back as a pull
 	// request to main (factoryd's Registrar.GitHubSync); nil offers none.
 	GitHubSync func(ctx context.Context, project, by string) (string, error)
@@ -331,6 +342,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
+		{"GET /routines/{project}/{name}/drawer", c.routineDrawer, "", "a routine's drawer: a fragment of the board page, whose tool is routines"},
 		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
 		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
 		{"GET /projects/{name}/pulse", c.pulseGet, "", "the pulse sentence: every turn's starting context carries it"},
@@ -351,6 +363,7 @@ type postRoute struct {
 // holds each one's rule and New refuses a route missing from it.
 func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
+	routines := func() bool { return c.cfg.Routines != nil }
 	return []postRoute{
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
@@ -391,6 +404,8 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/export", http.HandlerFunc(c.githubExport), mirrors},
 		{"POST /projects/{name}/export/remove", http.HandlerFunc(c.removeGithubExport), mirrors},
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},
+		{"POST /routines/{project}/{name}/skip", http.HandlerFunc(c.routineSkip), routines},
+		{"POST /routines/{project}/{name}/run", http.HandlerFunc(c.routineRun), routines},
 	}
 }
 

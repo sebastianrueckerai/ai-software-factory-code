@@ -173,7 +173,8 @@ type signalLog struct {
 	err error
 }
 
-func (w *signalLog) Start(context.Context, string) error { return nil }
+func (w *signalLog) Start(context.Context, string) error                    { return nil }
+func (w *signalLog) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
 func (w *signalLog) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
 	if w.err != nil {
 		return w.err

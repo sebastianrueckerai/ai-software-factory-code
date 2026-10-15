@@ -128,10 +128,11 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 
 // fakeWorkflows records workflow starts and signals.
 type fakeWorkflows struct {
-	started []string
-	signals []string // "<task> <signal> <author> #<pr>: <body>"
-	err     error    // returned by Signal when set
-	onStart func(taskID string)
+	started     []string
+	signals     []string // "<task> <signal> <author> #<pr>: <body>"
+	err         error    // returned by Signal when set
+	onStart     func(taskID string)
+	routineRuns []RoutineRunInput
 }
 
 func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
@@ -139,6 +140,11 @@ func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {
 	if w.onStart != nil {
 		w.onStart(taskID)
 	}
+	return nil
+}
+
+func (w *fakeWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInput) error {
+	w.routineRuns = append(w.routineRuns, in)
 	return nil
 }
 

@@ -32,6 +32,9 @@ type Tree struct {
 	Templates map[string]map[string]string `json:"templates,omitempty"`
 	// Commands is commands.yaml, the chat's commands.
 	Commands Commands `json:"commands,omitempty"`
+	// Briefs are routines/<name>.md by their slash path: the bodies of
+	// the cards routines file.
+	Briefs map[string]string `json:"briefs,omitempty"`
 }
 
 // The tree's files, relative to its directory.
@@ -39,6 +42,8 @@ const (
 	FilePolicy   = "policy.yaml"
 	DirProjects  = "projects"
 	DirProcesses = "processes"
+	// DirRoutines holds the routines' briefs, routines/<name>.md.
+	DirRoutines = "routines"
 	// DirSchema holds the generated JSON Schemas; the loader reads none.
 	DirSchema = "schema"
 )
@@ -76,7 +81,7 @@ func (t Tree) Validate() error {
 // any other file is an error. Every file's errors are reported, one line
 // each, "<file>: <block>: <reason>".
 func ParseTree(files map[string][]byte) (Tree, error) {
-	t := Tree{Projects: map[string]ProjectConfig{}, Processes: map[string]Process{}, Templates: map[string]map[string]string{}}
+	t := Tree{Projects: map[string]ProjectConfig{}, Processes: map[string]Process{}, Templates: map[string]map[string]string{}, Briefs: map[string]string{}}
 	var errs []error
 	if _, ok := files[FilePolicy]; !ok {
 		errs = append(errs, fmt.Errorf("%s is missing", FilePolicy))
@@ -115,8 +120,14 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 				}
 				t.Templates[dir][file] = string(b)
 			}
+		case path.Dir(name) == DirRoutines && path.Ext(name) == ".md":
+			if !utf8.Valid(b) {
+				err = errors.New("not UTF-8 text: a brief is a card's body")
+				break
+			}
+			t.Briefs[name] = string(b)
 		default:
-			err = fmt.Errorf("unknown file %q: the tree holds %s, %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/ and %s/", name, FilePolicy, FileCommands, DirProcesses, DirProjects, DirSchema)
+			err = fmt.Errorf("unknown file %q: the tree holds %s, %s, %s/<name>.yaml, %s/<name>.yaml, templates/<name>/, %s/<name>.md and %s/", name, FilePolicy, FileCommands, DirProcesses, DirProjects, DirRoutines, DirSchema)
 		}
 		if err != nil {
 			broken = true
@@ -198,7 +209,9 @@ func checkOutputLimits(d Document) error {
 
 // checkLinks judges what the files name in each other: a lane's class of
 // the right session, naming the models the stages call; a project's
-// process; the audit a project switches on.
+// process; the audit a project switches on. It also judges a routine's
+// brief, and that a project's routine is named apart from policy.yaml's
+// routines that run for it.
 func (t Tree) checkLinks() error {
 	var errs []error
 	classes := slices.Sorted(maps.Keys(t.Document.Classes))
@@ -273,6 +286,29 @@ func (t Tree) checkLinks() error {
 	}
 	for _, name := range processes {
 		errs = append(errs, BuildGraph(name, t.Processes[name], t.Document).Check())
+	}
+	briefs := ""
+	if len(t.Briefs) > 0 {
+		briefs = " (briefs: " + strings.Join(slices.Sorted(maps.Keys(t.Briefs)), ", ") + ")"
+	}
+	brief := func(file string, r Routine) {
+		if _, ok := t.Briefs[r.Brief]; r.Brief != "" && !ok {
+			errs = append(errs, fmt.Errorf("%s: routine %q: brief %s: no such file%s", file, r.Name, r.Brief, briefs))
+		}
+	}
+	for _, r := range t.Document.Routines {
+		brief(FilePolicy, r)
+	}
+	for _, name := range slices.Sorted(maps.Keys(t.Projects)) {
+		own := t.Projects[name].Routines
+		for _, r := range own {
+			brief(ProjectFile(name), r)
+		}
+		for _, f := range t.ProjectRoutines(name)[len(own):] {
+			if slices.ContainsFunc(own, func(r Routine) bool { return r.Name == f.Name }) {
+				errs = append(errs, fmt.Errorf("%s: routine %q: policy.yaml's routine of that name runs for this project too: rename this one", ProjectFile(name), f.Name))
+			}
+		}
 	}
 	return errors.Join(errs...)
 }

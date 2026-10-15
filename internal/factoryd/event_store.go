@@ -56,6 +56,23 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardSplit            = "card_split"
 	EventCardFunded           = "card_funded"
+	// EventRoutineSkipped is a Skip once set or, with undo, cleared:
+	// detail {"project", "routine", "undo"}.
+	EventRoutineSkipped = "routine_skipped"
+	// EventRoutineRunNow is a Run now: detail {"project", "routine",
+	// "outcome"}, the run's outcome or "pending" when none came in time.
+	EventRoutineRunNow = "routine_run_now"
+	// EventRoutineWritten is a routine created or changed in its
+	// project's file: detail {"project", "routine", "created"}.
+	EventRoutineWritten = "routine_written"
+	// EventRoutineDeleted is a routine taken out of its project's file:
+	// detail {"project", "routine"}.
+	EventRoutineDeleted = "routine_deleted"
+	// EventRoutineRan is a project routine's run reaching its outcome:
+	// detail {"project", "routine", "run", "outcome", "schedule"}, with
+	// "note" when the run has one and "poke", the inbox's words, when the
+	// run tells the inbox, which the Poker writes.
+	EventRoutineRan = "routine_ran"
 
 	// EventDocWritten is one write of a document through the door,
 	// whatever wrote it: the chat's write_doc, a close-out, the member's

@@ -14,7 +14,8 @@
 <dt>Budget</dt><dd class="{{if .Card.NearBudget}}warn{{else}}muted{{end}}">{{if gt .Card.BudgetEUR 0.0}}<span class="mono">{{eur2 .Card.SpentEUR}} of {{eur2 .Card.BudgetEUR}}, {{pct .Card.SpentEUR .Card.BudgetEUR}} percent</span>{{if .Card.NearBudget}} ⚠{{end}}{{with .Card.CallsText}} <span class="mono" title="the task's model calls to date: the tokens its providers reported and the modeled pay-as-you-go cost of them, never money billed">· {{.}}</span>{{end}}{{else}}<span class="mono">no budget</span>{{end}}</dd>
 <dt>Agent</dt><dd class="muted"><span class="mono">{{with .Card.ModelAlias}}{{.}}{{else}}—{{end}}</span></dd>
 </dl>
-{{if or .Need .Merge (and (eq .Card.Status "failed") .Card.Activity) .Card.Stale .Card.Provider}}<div class="open-need"><h3>Open</h3>
+{{with .RoutineLine}}<p class="provenance">filed by the factory · routine {{if .Title}}<button type="button" class="linkbtn" data-open-routine="{{.Project}}/{{.Name}}">{{.Title}}</button>{{else}}{{.Name}}{{end}} · run {{.Run}}{{with .LastWords}} · last run {{.}}{{end}}</p>
+{{end}}{{if or .Need .Merge (and (eq .Card.Status "failed") .Card.Activity) .Card.Stale .Card.Provider}}<div class="open-need"><h3>Open</h3>
 {{with .Need}}<article class="need" id="need-{{.Card.ID}}{{.Suffix}}">{{template "escalation-actions" .}}</article>
 {{else}}{{with .Merge}}{{template "approval" .}}
 {{else}}{{if eq .Card.Status "failed"}}<div class="open-bad">{{.Card.Activity}}{{with .Card.Retry}}<div class="acts"><form method="post" action="/tasks/{{$.Card.ID}}/retry" hx-post="/tasks/{{$.Card.ID}}/retry" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}<button type="submit" aria-label="Retry #{{$.Card.IssueNumber}}">Retry</button></form></div>{{end}}</div>

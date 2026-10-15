@@ -267,8 +267,6 @@ type RollerStore interface {
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
-	// the weekly upstream card (upstream.go)
-	NewestTaskOf(ctx context.Context, repository, source string) (Task, bool, error)
 }
 
 // Roller opens the roll of the code repository (ruling 178): for the
@@ -298,12 +296,11 @@ type Roller struct {
 	Poll      time.Duration
 }
 
-// Run polls until ctx ends, and files the weekly upstream card; a failed
-// poll logs once until it recovers.
+// Run polls until ctx ends. A failed poll logs once until it recovers.
 func (r *Roller) Run(ctx context.Context) {
 	var last string
 	for {
-		if err := errors.Join(r.poll(ctx), r.upstream(ctx)); err != nil && err.Error() != last {
+		if err := r.poll(ctx); err != nil && err.Error() != last {
 			log.Printf("roller: %v", err)
 			last = err.Error()
 		} else if err == nil {

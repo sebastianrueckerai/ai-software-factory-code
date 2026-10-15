@@ -841,3 +841,32 @@ func TestCheckProjectFile(t *testing.T) {
 		t.Errorf("existing name: %v, want %s", err, want)
 	}
 }
+
+// A change of the tree at infra's head is judged the loader's way, the
+// caller's map left alone: a routine whose brief comes in the same change
+// passes, the same routine without its brief fails, and a nil file deletes
+// one, which fails while a routine names it.
+func TestCheckChange(t *testing.T) {
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	const brief = "routines/demo-app-deps.md"
+	demo := []byte(string(files["projects/demo-app.yaml"]) + "routines:\n  - name: deps\n    title: Deps\n    schedule:\n      - cron: \"0 6 * * 4\"\n" +
+		"    files: human\n    brief: " + brief + "\n")
+	if err := CheckChange(files, map[string][]byte{"projects/demo-app.yaml": demo, brief: []byte("Update them.\n")}, ladder); err != nil {
+		t.Fatalf("the routine with its brief: %v", err)
+	}
+	if _, ok := files[brief]; ok || string(files["projects/demo-app.yaml"]) == string(demo) {
+		t.Error("CheckChange changed the caller's map")
+	}
+	err = CheckChange(files, map[string][]byte{"projects/demo-app.yaml": demo}, ladder)
+	if want := `projects/demo-app.yaml: routine "deps": brief routines/demo-app-deps.md: no such file (briefs: routines/weekly-bump.md)`; err == nil || err.Error() != want {
+		t.Errorf("the routine without its brief: %v, want %s", err, want)
+	}
+	err = CheckChange(files, map[string][]byte{"routines/weekly-bump.md": nil}, ladder)
+	if want := `projects/ai-software-factory-code.yaml: routine "weekly-bump": brief routines/weekly-bump.md: no such file`; err == nil || err.Error() != want {
+		t.Errorf("a named brief deleted: %v, want %s", err, want)
+	}
+}

@@ -9,9 +9,11 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -63,6 +65,32 @@ type projectView struct {
 	Project  string // the repository
 	Envelope envelopeView
 	Rows     []resourceRow
+}
+
+// jobsView is the cluster's jobs, or Failed when the cluster did not
+// answer.
+type jobsView struct {
+	Rows   []factoryd.CronJobState
+	Failed bool
+}
+
+// jobSchedule is a job's cron in words, as a routine's card says it, in
+// its zone: a CronJob's and a ScheduledBackup's run in UTC. A
+// ScheduledBackup's six-field cron loses its seconds first when they are
+// 0.
+func jobSchedule(cron string) string {
+	if f := strings.Fields(cron); len(f) == 6 && f[0] == "0" {
+		cron = strings.Join(f[1:], " ")
+	}
+	return policy.Trigger{Cron: cron}.Words() + " UTC"
+}
+
+// jobAge is how long ago t was, coarse; never when t is zero.
+func jobAge(t time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return coarse(time.Since(t)) + " ago"
 }
 
 // resources lists the agent project's commissions by project and task,
@@ -118,8 +146,17 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		projects = append(projects, pv)
 	}
 	slices.SortFunc(projects, func(a, b *projectView) int { return cmp.Compare(a.Project, b.Project) })
+	var jobs *jobsView
+	if c.cfg.Jobs != nil {
+		jobs = &jobsView{}
+		if jobs.Rows, err = c.cfg.Jobs.CronJobs(r.Context()); err != nil {
+			log.Printf("console: the cluster's jobs: %v", err)
+			jobs.Failed = true
+		}
+	}
 	s := current(r)
-	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Approver": c.approver(r)})
+	c.render(w, "resources.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": projects, "Jobs": jobs,
+		"Approver": c.approver(r)})
 }
 
 // resourceButton is a resources page button: do on the path's commission,

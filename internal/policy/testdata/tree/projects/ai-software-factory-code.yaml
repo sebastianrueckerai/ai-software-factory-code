@@ -7,3 +7,20 @@ process: maintenance
 audit: true
 namespaces: [factory]
 tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}
+routines:
+  - name: weekly-bump
+    title: Weekly bump of the pinned outside inputs
+    schedule:
+      - cron: "0 6 * * 1"
+    files: human
+    brief: routines/weekly-bump.md
+    while_open: hold
+    missed: file-once
+    tell: inbox
+  - name: audit
+    title: "Audit: bug hunt and architecture review"
+    schedule:
+      - merges: 20
+    files: agent
+    skill: audit
+    tell: inbox

@@ -270,6 +270,7 @@ func main() {
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
 		workflow.RegisterOptions{Name: "TaskWorkflow"})
+	taskWorker.RegisterWorkflowWithOptions(factoryd.RoutineRunWorkflow, workflow.RegisterOptions{Name: "RoutineRunWorkflow"})
 	runner.RegisterActivities(taskWorker)
 
 	webhookIntake := &factoryd.Intake{
@@ -303,6 +304,15 @@ func main() {
 	registrar.Cards, registrar.Infra = store, configSource
 	registrar.Workflows, registrar.Timeline = workflows, runner.Timeline()
 	webhookIntake.MainPushed = registrar.MainPushed
+	// the routines' clocks are Temporal schedules, their merge counters and
+	// runs store rows (roadmap 267)
+	routines := &factoryd.Routines{Store: store, Events: store, Current: policyLoader.Current,
+		Schedules: factoryd.TemporalSchedules{Client: temporal}, Workflows: workflows, Now: time.Now}
+	registrar.PushRoutines = routines.MainPushed
+	// a routine's run files its card and records the run in the store, and
+	// pokes through its routine_ran event and the Poker; policy.yaml's
+	// template pass runs the registrar's pass
+	runner.Routines, runner.TemplatePass = store, registrar.TemplateUpdates
 	// SigNoz's webhook channel factoryd (the signoz-objects job creates it),
 	// and the alerts of the factory projects' Kustomizations (roadmap 259)
 	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
@@ -319,6 +329,7 @@ func main() {
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
+	go routines.Loop(ctx, 10*time.Second)
 	go func() {
 		// nudged is the stale sweep's memory of its signals, task id → when
 		nudged := map[string]time.Time{}
@@ -345,7 +356,8 @@ func main() {
 	go completion.SettleLoop(ctx, time.Minute)
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
-	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current}
+	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
+		Timeline: runner.Timeline()}
 	go monthAlarm.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics}
 	go ciRuns.Run(ctx)
@@ -465,6 +477,7 @@ func main() {
 			return runner.RetryPlanCard(ctx, taskID, by)
 		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
+		Jobs:       factoryd.ClusterJobs{Kube: kube},
 		Alerts:     store,
 		Projects:   store,
 		Events:     store,
@@ -476,6 +489,9 @@ func main() {
 		DocsToken:  optionalSecret("FORGEJO_DOCS_TOKEN"),
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
+		},
+		CheckChange: func(ctx context.Context, changes map[string][]byte) ([]string, error) {
+			return checkChange(ctx, configSource, changes, ladder.Aliases())
 		},
 		MainExists: func(ctx context.Context, repo factoryd.Repo) (bool, error) {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
@@ -503,6 +519,7 @@ func main() {
 			*factoryd.Forgejo
 		}{store, forgejo},
 		GitHubSync: registrar.GitHubSync,
+		Routines:   routines,
 		// the projects token registration keeps the repositories with, which
 		// may add a collaborator where the approver's own token may not
 		AddCollaborator:    forgejo.AddProjectCollaborator,

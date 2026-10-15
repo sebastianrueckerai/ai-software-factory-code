@@ -111,15 +111,18 @@ var allDoneMu sync.Mutex
 
 // taskEnded records task t's end in state final, with why when one is
 // told (a failure's reason as its issue comment carries it, which its
-// poke tells), and wakes the cards waiting on it (wf nil wakes none);
-// when t is the last of a plan's cards to turn done, the plan records
-// all_children_done and its issue says so.
+// poke tells), ends the run of a routine's card and wakes the cards
+// waiting on it (wf nil wakes none). When t is the last of a plan's cards
+// to turn done, the plan records all_children_done and its issue says so.
 func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, wf Workflows, t Task, final, why string) {
 	detail := map[string]any{"state": final}
 	if why != "" {
 		detail["reason"] = why
 	}
 	tl.recordEvent(ctx, t.ID, EventTaskEnded, detail)
+	if t.Source == SourceRoutine {
+		endRoutineRun(ctx, store, t, final)
+	}
 	signalDependents(ctx, store, wf, t.ID)
 	// the freed slot goes to the oldest queued card of the same project
 	pullQueued(ctx, store, wf, t.Repository)

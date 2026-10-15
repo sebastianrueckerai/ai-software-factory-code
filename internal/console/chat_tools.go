@@ -74,6 +74,17 @@ type toolInput struct {
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
+	// Name names a routine; the routine tools' other arguments are its
+	// keys, BriefText its brief's text and SkipUndo a Skip once's undo.
+	Name      string           `json:"name,omitempty"`
+	Schedule  []policy.Trigger `json:"schedule,omitempty"`
+	Files     string           `json:"files,omitempty"`
+	Skill     string           `json:"skill,omitempty"`
+	BriefText string           `json:"brief_text,omitempty"`
+	WhileOpen string           `json:"while_open,omitempty"`
+	Missed    string           `json:"missed,omitempty"`
+	Tell      string           `json:"tell,omitempty"`
+	SkipUndo  bool             `json:"undo,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -147,20 +158,22 @@ func fallback(v any, p map[string]any) map[string]any {
 }
 
 var (
-	taskParam = str("the card's task id or issue number")
-	nParam    = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
-	textParam = str("the text")
-	sessionN  = stepParam("the session's number")
-	docPath   = str("the file's path under docs/")
+	taskParam   = str("the card's task id or issue number")
+	routineName = str("the routine's name: lowercase letters, digits and dashes")
+	nParam      = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
+	textParam   = str("the text")
+	sessionN    = stepParam("the session's number")
+	docPath     = str("the file's path under docs/")
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
 // order: steer only where factoryd can reach a session, github_export
-// where it keeps exports, github_sync where it syncs them.
+// where it keeps exports, github_sync where it syncs them, the routine
+// tools where it runs routines.
 func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
 		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil ||
-			t.name == "github_sync" && c.cfg.GitHubSync == nil
+			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
 	})
 }
 
@@ -250,9 +263,12 @@ func (t *turn) byTaskID(in *toolInput) error {
 // describe is one line saying what a proposal of tool with in would do,
 // in pinned to the plan revision an accept_plan names, an approve_merge's
 // with its warning; a card of another project refuses it, and so do an
-// approve_merge without a pending merge request and a github_export the
-// console would refuse.
+// approve_merge or a deny_merge without a pending merge request and a
+// github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
+	if tool.name == "routine_write" || tool.name == "routine_delete" {
+		return t.describeRoutine(tool, *in)
+	}
 	if tool.name == "github_export" {
 		if _, err := t.exportToken(); err != nil {
 			return "", err
@@ -283,12 +299,15 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
-	for _, f := range []struct{ key, v string }{{"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if tool.name == "routine_skip" && in.SkipUndo {
+		parts = append(parts, "undo the pending skip")
 	}
 	if tool.name == "set_autonomy" {
 		if in.BacklogCap > 0 {
@@ -338,6 +357,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 	}
 	desc := strings.Join(parts, ", ")
+	if tool.name == "deny_merge" {
+		if _, err := t.mergeRequest(*in); err != nil {
+			return "", err
+		}
+	}
 	if tool.name == "approve_merge" {
 		if _, err := t.mergeRequest(*in); err != nil {
 			return "", err
@@ -1020,6 +1044,53 @@ var tools = []chatTool{
 			}
 			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
 		}},
+	{name: "routines", title: "Read the routines",
+		about: "The project's routines: each one's schedule, next run, last run and open card.",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			s, err := t.routinesText()
+			return s, nil, err
+		}},
+	{name: "routine_write", title: "Write a routine", write: true,
+		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
+			"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
+				"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
+					"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
+					"merges": map[string]any{"type": "integer", "description": "a run every n merged cards of the project", "minimum": 1},
+					"on":     enum("a run on each such event", policy.RoutineEvents...)}}},
+			"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
+			"skill":      str("the skill an agent routine's card runs, unset keeps it"),
+			"brief_text": str("each filed card's body, Markdown, unset keeps it"),
+			"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenHold, policy.WhileOpenFile),
+			"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
+			"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
+		required: []string{"name", "title", "schedule", "files"},
+		about:    "Create or change one of the project's routines through a pull request on its project file.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.writeRoutine(in)
+			return s, nil, err
+		}},
+	{name: "routine_delete", title: "Delete a routine", write: true,
+		params: map[string]any{"name": routineName}, required: []string{"name"},
+		about: "Delete one of the project's routines through a pull request on its project file.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.deleteRoutine(in)
+			return s, nil, err
+		}},
+	{name: "routine_run", title: "Run a routine now", write: true,
+		params: map[string]any{"name": routineName}, required: []string{"name"},
+		about: "Run one of the project's routines now, as the board's Run now does.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doRoutineRun(t.r.Context(), t.a, t.p.Name, in.Name)
+			return note, nil, err
+		}},
+	{name: "routine_skip", title: "Skip a routine's next run", write: true,
+		params:   map[string]any{"name": routineName, "undo": map[string]any{"type": "boolean", "description": "clears a pending skip"}},
+		required: []string{"name"},
+		about:    "Skip the next run of one of the project's routines, or undo a pending skip.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doRoutineSkip(t.r.Context(), t.a, t.p.Name, in.Name, in.SkipUndo)
+			return note, nil, err
+		}},
 	{name: "notes_read", title: "Read the scratchpad",
 		about: "The project's scratchpad, which every thread of the chat shares.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
@@ -1091,7 +1162,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 
 // toolNotes are what the tools' sentences leave to the manual, each
 // stated once.
-const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
+var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
   new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.

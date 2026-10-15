@@ -108,6 +108,8 @@ type Kube interface {
 	PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error)
 	PersistentVolumes(ctx context.Context) ([]PersistentVolume, error)
 	DeletePersistentVolume(ctx context.Context, name string) error
+	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
+	ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error)
 }
 
 // PodDiagnosis is what the gate supervisor and a pod's start read of a
@@ -634,6 +636,111 @@ func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolu
 func (k *InClusterKube) DeletePersistentVolume(ctx context.Context, name string) error {
 	_, err := k.call(ctx, http.MethodDelete, "/api/v1/persistentvolumes/"+name, nil, nil)
 	return err
+}
+
+// The kinds of a cluster job.
+const (
+	KindCronJob = "CronJob"
+	// KindScheduledBackup is CNPG's: its cron has six fields, seconds
+	// first, and it records no success.
+	KindScheduledBackup = "ScheduledBackup"
+)
+
+// CronJobState is a CronJob or a ScheduledBackup as the console's
+// Resources page lists it. LastScheduled is zero for a job never
+// scheduled, LastSuccessful for one that never succeeded or does not
+// record it.
+type CronJobState struct {
+	Kind, Namespace, Name, Schedule string
+	Suspended                       bool
+	LastScheduled, LastSuccessful   time.Time
+}
+
+// RecordsSuccess is whether the job's resource records its last success:
+// a ScheduledBackup's does not.
+func (j CronJobState) RecordsSuccess() bool { return j.Kind != KindScheduledBackup }
+
+func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Schedule string `json:"schedule"`
+				Suspend  bool   `json:"suspend"`
+			} `json:"spec"`
+			Status struct {
+				LastScheduleTime   time.Time `json:"lastScheduleTime"`
+				LastSuccessfulTime time.Time `json:"lastSuccessfulTime"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/batch/v1/namespaces/"+namespace+"/cronjobs", &list); err != nil {
+		return nil, err
+	}
+	out := make([]CronJobState, 0, len(list.Items))
+	for _, it := range list.Items {
+		out = append(out, CronJobState{Kind: KindCronJob, Namespace: namespace, Name: it.Metadata.Name, Schedule: it.Spec.Schedule,
+			Suspended: it.Spec.Suspend, LastScheduled: it.Status.LastScheduleTime, LastSuccessful: it.Status.LastSuccessfulTime})
+	}
+	return out, nil
+}
+
+// ScheduledBackups lists namespace's CNPG ScheduledBackups. Their status
+// has lastScheduleTime, the last backup started, and no success time.
+func (k *InClusterKube) ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error) {
+	var list struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Spec struct {
+				Schedule string `json:"schedule"`
+				Suspend  bool   `json:"suspend"`
+			} `json:"spec"`
+			Status struct {
+				LastScheduleTime time.Time `json:"lastScheduleTime"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/apis/postgresql.cnpg.io/v1/namespaces/"+namespace+"/scheduledbackups", &list); err != nil {
+		return nil, err
+	}
+	out := make([]CronJobState, 0, len(list.Items))
+	for _, it := range list.Items {
+		out = append(out, CronJobState{Kind: KindScheduledBackup, Namespace: namespace, Name: it.Metadata.Name, Schedule: it.Spec.Schedule,
+			Suspended: it.Spec.Suspend, LastScheduled: it.Status.LastScheduleTime})
+	}
+	return out, nil
+}
+
+// ClusterJobs are the cluster's CronJobs and ScheduledBackups in
+// Namespaces, platform, factory and forgejo when none are set: the
+// console's Resources page lists them.
+type ClusterJobs struct {
+	Kube       Kube
+	Namespaces []string
+}
+
+func (j ClusterJobs) CronJobs(ctx context.Context) ([]CronJobState, error) {
+	namespaces := j.Namespaces
+	if len(namespaces) == 0 {
+		namespaces = []string{"platform", "factory", "forgejo"}
+	}
+	var out []CronJobState
+	for _, ns := range namespaces {
+		jobs, err := j.Kube.CronJobs(ctx, ns)
+		if err != nil {
+			return nil, fmt.Errorf("cronjobs of %s: %w", ns, err)
+		}
+		backups, err := j.Kube.ScheduledBackups(ctx, ns)
+		if err != nil {
+			return nil, fmt.Errorf("scheduled backups of %s: %w", ns, err)
+		}
+		out = append(append(out, jobs...), backups...)
+	}
+	return out, nil
 }
 
 // Deployment reads one Deployment (the factory namespace's roll record).

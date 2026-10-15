@@ -91,11 +91,49 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 	return head + "\n" + strings.TrimSuffix(b.String(), "\n"), nil
 }
 
-// resourcesText is the /resources page as the agent reads it: each
-// commissioned cloud resource with id, kind, state and cost per month by
-// project, its commission's promote and release on the row the page puts
-// them, promote only for an approver.
+// resourcesText is the /resources page as the agent reads it: the
+// commissions, then the cluster's jobs.
 func (c *Console) resourcesText(ctx context.Context, a actor) (string, error) {
+	s, err := c.commissionsText(ctx, a)
+	if err != nil {
+		return "", err
+	}
+	return s + c.jobsText(ctx), nil
+}
+
+// jobsText is the cluster's jobs as the Resources page lists them, a
+// block after the commissions; "" without the port.
+func (c *Console) jobsText(ctx context.Context) string {
+	if c.cfg.Jobs == nil {
+		return ""
+	}
+	jobs, err := c.cfg.Jobs.CronJobs(ctx)
+	if err != nil {
+		log.Printf("console: the cluster's jobs: %v", err)
+		return "\nJobs of the cluster: the cluster did not answer."
+	}
+	if len(jobs) == 0 {
+		return "\nJobs of the cluster: none."
+	}
+	var b strings.Builder
+	b.WriteString("\nJobs of the cluster:")
+	for _, j := range jobs {
+		last := "not reported"
+		if j.RecordsSuccess() {
+			last = jobAge(j.LastSuccessful)
+		}
+		fmt.Fprintf(&b, "\n  %s · %s · %s · last successful %s", j.Name, j.Namespace, jobSchedule(j.Schedule), last)
+		if j.Suspended {
+			b.WriteString(" · suspended")
+		}
+	}
+	return b.String()
+}
+
+// commissionsText is each commissioned cloud resource with id, kind,
+// state and cost per month by project, its commission's promote and
+// release on the row the page puts them, promote only for an approver.
+func (c *Console) commissionsText(ctx context.Context, a actor) (string, error) {
 	rows, err := c.cfg.Resources.Commissions(ctx, time.Now().Add(-closedSince))
 	if err != nil {
 		log.Printf("console: resources: %v", err)

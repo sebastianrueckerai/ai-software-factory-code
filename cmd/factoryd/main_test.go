@@ -174,6 +174,10 @@ func (w *fakeStarter) Signal(ctx context.Context, taskID, name string, sig facto
 	return nil
 }
 
+func (w *fakeStarter) StartRoutineRun(ctx context.Context, in factoryd.RoutineRunInput) error {
+	return nil
+}
+
 func postCreateTask(h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	rec := httptest.NewRecorder()

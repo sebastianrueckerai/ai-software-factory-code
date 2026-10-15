@@ -1,0 +1,314 @@
+package console
+
+import (
+	"bytes"
+	"cmp"
+	"fmt"
+	"log"
+	"net/http"
+	"slices"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
+)
+
+// The chat's routine tools (roadmap 267, C16): routines reads the chat
+// project's routines, routine_write and routine_delete change its file
+// through commitProjectFile after a confirm, and routine_run and
+// routine_skip are the board's Run now and Skip once.
+
+// routinesText is the routines read: one line per routine of the chat's
+// project.
+func (t *turn) routinesText() (string, error) {
+	views, err := t.c.cfg.Routines.Views(t.r.Context(), t.p.Name)
+	if err != nil {
+		log.Printf("console: the routines of %s: %v", t.p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the routines")
+	}
+	if len(views) == 0 {
+		return "Project " + t.p.Name + " has no routines.", nil
+	}
+	lines := make([]string, len(views))
+	for i, v := range views {
+		lines[i] = routineLine(v)
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// routineLine is v on one line: its name, title, schedule in words, what
+// it files, the keys it sets of skill, while_open, missed and tell, its
+// next run, its last run with the card, and the open card.
+func routineLine(v factoryd.RoutineView) string {
+	rt := v.Routine
+	parts := []string{rt.Name, rt.Title, rt.Words(), "files " + rt.Files}
+	for _, key := range []struct{ name, v string }{{"skill", rt.Skill}, {"while open", rt.WhileOpen}, {"missed", rt.Missed}, {"tell", rt.Tell}} {
+		if key.v != "" {
+			parts = append(parts, key.name+" "+key.v)
+		}
+	}
+	if v.NextWords != "" {
+		parts = append(parts, "next "+v.NextWords)
+	}
+	switch last := "last " + cmp.Or(v.Last.Outcome, "running"); {
+	case v.Last.Run == 0:
+		parts = append(parts, "no run yet")
+	case v.Last.Issue > 0:
+		parts = append(parts, fmt.Sprintf("%s (#%d)", last, v.Last.Issue))
+	default:
+		parts = append(parts, last)
+	}
+	if v.Open != nil {
+		parts = append(parts, fmt.Sprintf("open #%d", v.Open.IssueNumber))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// routineChange is what routine_write or routine_delete does to the chat
+// project's file: rt is the routine as it will stand, zero for a deletion,
+// old the routine the file holds, when exists, and extra the files beside
+// the project file the commit writes, a path to its text, "" deleting it.
+type routineChange struct {
+	rt, old policy.Routine
+	exists  bool
+	extra   map[string]string
+}
+
+// routineChange reads in for tool against the configuration in force. A
+// write's routine keeps the keys of the routine it changes that in leaves
+// out: its brief, while_open, missed, tell, and its skill while it files
+// agent. brief_text writes its own brief file, unless the file holds that
+// text, and Routine.Validate judges the routine. A routine of policy.yaml
+// is refused, and so is a deletion of a routine the project lacks. A
+// brief the change leaves that no other routine names is deleted.
+func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
+	ch := routineChange{extra: map[string]string{}}
+	ch.old, ch.exists = t.tree.Routine(t.p.Name, in.Name)
+	runs := slices.ContainsFunc(t.tree.ProjectRoutines(t.p.Name), func(r policy.Routine) bool { return r.Name == in.Name })
+	switch {
+	case runs && !ch.exists:
+		return ch, refuse(http.StatusConflict, fmt.Sprintf("Routine %s is policy.yaml's, a pass over every project: the project's chat cannot change it.", in.Name))
+	case tool == "routine_delete" && !ch.exists:
+		return ch, refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no routine %s. The routines read lists its routines.", t.p.Name, in.Name))
+	case tool == "routine_write":
+		// a cron's spaces made single, as the file and the schedules hold it
+		schedule := slices.Clone(in.Schedule)
+		for i := range schedule {
+			schedule[i].Cron = strings.Join(strings.Fields(schedule[i].Cron), " ")
+		}
+		ch.rt = policy.Routine{Name: in.Name, Title: in.Title, Schedule: schedule, Files: in.Files, Brief: ch.old.Brief, Skill: in.Skill,
+			WhileOpen: cmp.Or(in.WhileOpen, ch.old.WhileOpen), Missed: cmp.Or(in.Missed, ch.old.Missed), Tell: cmp.Or(in.Tell, ch.old.Tell)}
+		if in.Files == policy.FilesAgent {
+			ch.rt.Skill = cmp.Or(in.Skill, ch.old.Skill)
+		}
+		if in.BriefText != "" {
+			// a dot joins them, which no project's or routine's name holds
+			ch.rt.Brief = policy.DirRoutines + "/" + t.p.Name + "." + in.Name + ".md"
+			if text := strings.TrimRight(in.BriefText, "\n") + "\n"; text != t.tree.Briefs[ch.rt.Brief] {
+				ch.extra[ch.rt.Brief] = text
+			}
+		}
+		if err := ch.rt.Validate(policy.ProjectFile(t.p.Name)); err != nil {
+			return ch, refuse(http.StatusUnprocessableEntity, err.Error())
+		}
+	}
+	if ch.old.Brief != "" && ch.old.Brief != ch.rt.Brief && !t.briefNamed(ch.old.Brief, in.Name) {
+		ch.extra[ch.old.Brief] = ""
+	}
+	return ch, nil
+}
+
+// briefNamed says whether a routine of the configuration in force other
+// than the chat project's routine name names the brief at path.
+func (t *turn) briefNamed(path, name string) bool {
+	if slices.ContainsFunc(t.tree.Document.Routines, func(r policy.Routine) bool { return r.Brief == path }) {
+		return true
+	}
+	for project, pc := range t.tree.Projects {
+		if slices.ContainsFunc(pc.Routines, func(r policy.Routine) bool { return r.Brief == path && (project != t.p.Name || r.Name != name) }) {
+			return true
+		}
+	}
+	return false
+}
+
+// describeRoutine is the proposal of a routine_write or a routine_delete:
+// the routine as YAML, as the write puts it in the file or as the file
+// holds what the deletion takes out, with the brief it writes or deletes.
+func (t *turn) describeRoutine(tool chatTool, in toolInput) (string, error) {
+	ch, err := t.routineChange(tool.name, in)
+	if err != nil {
+		return "", err
+	}
+	file := policy.ProjectFile(t.p.Name)
+	shown, where := ch.rt, "new in "+file
+	switch {
+	case tool.name == "routine_delete":
+		shown, where = ch.old, "out of "+file
+	case ch.exists:
+		where = "in place of " + in.Name + " in " + file
+	}
+	entry, err := routineYAML(shown)
+	if err != nil {
+		return "", err
+	}
+	desc := tool.title + ", " + where + ":\n\n" + entry
+	if text := ch.extra[ch.rt.Brief]; ch.rt.Brief != "" && text != "" {
+		desc += "\n\nIts brief, " + ch.rt.Brief + ":\n\n" + strings.TrimRight(text, "\n")
+	}
+	switch text, ok := ch.extra[ch.old.Brief]; {
+	case !ok || text != "":
+	case tool.name == "routine_delete":
+		desc += "\n\nIts brief, " + ch.old.Brief + ", goes too."
+	default:
+		desc += "\n\nIts old brief, " + ch.old.Brief + ", goes."
+	}
+	return sanitize.Inbound(desc), nil
+}
+
+// routineYAML is rt as its entry in a project file's routines.
+func routineYAML(rt policy.Routine) (string, error) {
+	var b bytes.Buffer
+	e := yaml.NewEncoder(&b)
+	e.SetIndent(2)
+	if err := e.Encode([]policy.Routine{rt}); err != nil { // #nosec G117 -- pass names the template pass a pull-request routine runs, not a secret
+		return "", err
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// writeRoutine is routine_write: the routine into the chat project's file
+// in place of the entry of its name, or last, and its brief beside it,
+// one commit, and one routine_written event.
+func (t *turn) writeRoutine(in toolInput) (string, error) {
+	ch, err := t.routineChange("routine_write", in)
+	if err != nil {
+		return "", err
+	}
+	ctx := t.r.Context()
+	created := false
+	pr, err := t.c.commitProjectFile(ctx, t.a, t.p.Name, fmt.Sprintf("Project %s: routine %s", t.p.Name, in.Name),
+		func(doc *yaml.Node) (err error) { created, err = putRoutine(doc, ch.rt); return err }, ch.extra)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("console: %s wrote routine %s of %s via %s (%s#%d)", t.a.s.user, in.Name, t.p.Name, t.a.via, t.c.cfg.InfraRepo, pr)
+	t.c.record(ctx, t.a, t.p.Repository, "", 0, factoryd.EventRoutineWritten, map[string]any{"project": t.p.Name, "routine": in.Name, "created": created})
+	did := []string{"changed routine " + in.Name + " in " + policy.ProjectFile(t.p.Name)}
+	if created {
+		did[0] = "added routine " + in.Name + " to " + policy.ProjectFile(t.p.Name)
+	}
+	if ch.extra[ch.rt.Brief] != "" {
+		did = append(did, "wrote its brief "+ch.rt.Brief)
+	}
+	if text, ok := ch.extra[ch.old.Brief]; ok && text == "" {
+		did = append(did, "deleted its old brief "+ch.old.Brief)
+	}
+	note := did[0]
+	for i, d := range did[1:] {
+		if i == len(did)-2 {
+			note += " and " + d
+		} else {
+			note += ", " + d
+		}
+	}
+	return fmt.Sprintf("Pull request #%d %s. The board shows it once the factory loads the new configuration.", pr, note), nil
+}
+
+// deleteRoutine is routine_delete: the routine out of the chat project's
+// file and its brief, unless another routine names it, deleted, one
+// commit, and one routine_deleted event.
+func (t *turn) deleteRoutine(in toolInput) (string, error) {
+	ch, err := t.routineChange("routine_delete", in)
+	if err != nil {
+		return "", err
+	}
+	ctx := t.r.Context()
+	pr, err := t.c.commitProjectFile(ctx, t.a, t.p.Name, fmt.Sprintf("Project %s: delete routine %s", t.p.Name, in.Name),
+		func(doc *yaml.Node) error { return dropRoutine(doc, in.Name) }, ch.extra)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("console: %s deleted routine %s of %s via %s (%s#%d)", t.a.s.user, in.Name, t.p.Name, t.a.via, t.c.cfg.InfraRepo, pr)
+	t.c.record(ctx, t.a, t.p.Repository, "", 0, factoryd.EventRoutineDeleted, map[string]any{"project": t.p.Name, "routine": in.Name})
+	note := fmt.Sprintf("Pull request #%d deleted routine %s from %s", pr, in.Name, policy.ProjectFile(t.p.Name))
+	if _, ok := ch.extra[ch.old.Brief]; ok {
+		note += ", and its brief " + ch.old.Brief
+	}
+	return note + ".", nil
+}
+
+// putRoutine sets rt in the project file's routines, in place of the
+// entry of its name with that entry's comments kept, or last, the list
+// made when the file has none; created says it went last.
+func putRoutine(doc *yaml.Node, rt policy.Routine) (created bool, err error) {
+	var n yaml.Node
+	if err := n.Encode(rt); err != nil {
+		return false, err
+	}
+	m := doc.Content[0]
+	i := keyIndex(m, "routines")
+	if i < 0 {
+		m.Content = append(m.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "routines"}, &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"})
+		i = len(m.Content) - 2
+	}
+	list := m.Content[i+1]
+	if list.Kind != yaml.SequenceNode {
+		return false, fmt.Errorf("routines in the project file is no list")
+	}
+	if j := routineEntry(list, rt.Name); j >= 0 {
+		keepComments(list.Content[j], &n)
+		list.Content[j] = &n
+		return false, nil
+	}
+	list.Style = 0
+	list.Content = append(list.Content, &n)
+	return true, nil
+}
+
+// keepComments puts the comments of entry old on its replacement n: the
+// entry's own, and those of each key n keeps and of the key's value.
+func keepComments(old, n *yaml.Node) {
+	moved := func(from, to *yaml.Node) {
+		to.HeadComment, to.LineComment, to.FootComment = from.HeadComment, from.LineComment, from.FootComment
+	}
+	moved(old, n)
+	for i := 0; i+1 < len(old.Content); i += 2 {
+		if k := keyIndex(n, old.Content[i].Value); k >= 0 {
+			moved(old.Content[i], n.Content[k])
+			moved(old.Content[i+1], n.Content[k+1])
+		}
+	}
+}
+
+// dropRoutine takes routine name out of the project file's routines, with
+// its comments, and the routines key with the last one; while a routine
+// stays, so do the key's comments.
+func dropRoutine(doc *yaml.Node, name string) error {
+	m := doc.Content[0]
+	i := keyIndex(m, "routines")
+	j := -1
+	if i >= 0 && m.Content[i+1].Kind == yaml.SequenceNode {
+		j = routineEntry(m.Content[i+1], name)
+	}
+	if j < 0 {
+		return fmt.Errorf("the project file holds no routine %s", name)
+	}
+	list := m.Content[i+1]
+	list.Content = slices.Delete(list.Content, j, j+1)
+	if len(list.Content) == 0 {
+		m.Content = slices.Delete(m.Content, i, i+2)
+	}
+	return nil
+}
+
+// routineEntry is the index of routine name's entry in list, -1 for none.
+func routineEntry(list *yaml.Node, name string) int {
+	return slices.IndexFunc(list.Content, func(e *yaml.Node) bool {
+		k := keyIndex(e, "name")
+		return e.Kind == yaml.MappingNode && k >= 0 && e.Content[k+1].Value == name
+	})
+}

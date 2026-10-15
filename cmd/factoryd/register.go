@@ -58,6 +58,18 @@ func registerProject(ctx context.Context, args []string, stdout io.Writer, reg *
 // head with projects/<name>.yaml added, judged as the loader will
 // (factoryd.CheckProjectFile); a refusal is its lines.
 func checkProject(ctx context.Context, src factoryd.ConfigSource, name string, file []byte, ladder []string) ([]string, error) {
+	return atHead(ctx, src, func(files map[string][]byte) error { return factoryd.CheckProjectFile(files, name, file, ladder) })
+}
+
+// checkChange is the judgement of a change of a project's file: the tree
+// at infra's head with changes made, judged as the loader will
+// (factoryd.CheckChange); a refusal is its lines.
+func checkChange(ctx context.Context, src factoryd.ConfigSource, changes map[string][]byte, ladder []string) ([]string, error) {
+	return atHead(ctx, src, func(files map[string][]byte) error { return factoryd.CheckChange(files, changes, ladder) })
+}
+
+// atHead judges the tree at infra's head; a refusal is its lines.
+func atHead(ctx context.Context, src factoryd.ConfigSource, judge func(files map[string][]byte) error) ([]string, error) {
 	head, err := src.Head(ctx)
 	if err != nil {
 		return nil, err
@@ -66,7 +78,7 @@ func checkProject(ctx context.Context, src factoryd.ConfigSource, name string, f
 	if err != nil {
 		return nil, err
 	}
-	if err := factoryd.CheckProjectFile(files, name, file, ladder); err != nil {
+	if err := judge(files); err != nil {
 		return strings.Split(err.Error(), "\n"), nil
 	}
 	return nil, nil

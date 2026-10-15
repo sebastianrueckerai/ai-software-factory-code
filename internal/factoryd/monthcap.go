@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -133,6 +134,7 @@ type MonthSpend struct {
 // MonthBook is what the month alarm reads and keeps.
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -151,6 +153,8 @@ type MonthAlarm struct {
 	Dir     string
 	Config  *ForgejoConfig
 	Current func() policy.Version
+	// Timeline records the card's card_created; nil records none.
+	Timeline *Timeline
 }
 
 // Loop checks every interval until ctx ends.
@@ -238,7 +242,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
 		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, t)
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, t)
 	if err != nil {
 		return err
 	}
@@ -246,29 +250,46 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 }
 
 // fileHumanTask files human task t on repo through FileTask, labelled
-// human, unless the bot's open issue of the same title is there: an issue
-// filed by a check whose task row then failed is taken on, not filed
-// again. number is the issue's.
+// human and labels, unless the bot's open issue of the same title that no
+// task row holds is there: an issue filed by a check whose task row then
+// failed is taken on, not filed again. An issue a task holds is that
+// card's, such as an earlier routine run's still open. number is the
+// issue's. Either way the card records card_created on tl.
 func fileHumanTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, repo Repo, title, body string, t Task) (Task, int64, error) {
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
+}, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task) (Task, int64, error) {
 	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		return Task{}, 0, err
 	}
 	var number int64
 	for _, is := range open {
-		if is.Title == title && is.Poster.UserName == forgejo.BotUser {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return Task{}, 0, err
+		} else if !held {
 			number = is.Index
 		}
 	}
+	labels = append([]string{"human"}, labels...)
 	if number == 0 {
-		t, ref, err := FileTask(ctx, store, forgejo, repo, title, body, []string{"human"}, t)
-		return t, ref.Number, err
+		var ref IssueRef
+		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t); err != nil {
+			return Task{}, 0, err
+		}
+		number = ref.Number
+	} else {
+		t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), number
+		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
+			return Task{}, 0, err
+		}
+		if err := store.CreateTask(ctx, t); err != nil {
+			return Task{}, 0, err
+		}
 	}
-	t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), number
-	if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, []string{"human", "state/waiting-human"}); err != nil {
-		return Task{}, 0, err
-	}
-	return t, number, store.CreateTask(ctx, t)
+	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number})
+	return t, number, nil
 }

@@ -58,6 +58,24 @@ type Document struct {
 	// Chat is the project agent's block: its model, its monthly budget and
 	// the tools that need the member's OK. Absent: DefaultChat.
 	Chat *ChatConfig `yaml:"chat,omitempty" json:"chat,omitempty"`
+	// TimeZone is the IANA zone of every routine's cron schedule, such as
+	// Europe/Berlin. Absent: UTC.
+	TimeZone string `yaml:"time_zone,omitempty" json:"time_zone,omitempty"`
+	// Routines are the factory's routines, each a pass that runs for every
+	// project it applies to: the template pass for every project with a
+	// template.
+	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
+}
+
+// Location is the zone of time_zone, UTC when the file leaves it out.
+func (d Document) Location() (*time.Location, error) {
+	switch d.TimeZone {
+	case "":
+		return time.UTC, nil
+	case "Local":
+		return nil, errors.New("Local is the host's zone, which moves with the host")
+	}
+	return time.LoadLocation(d.TimeZone)
 }
 
 // ChatConfig is the project agent's block of policy.yaml and of a project
@@ -71,7 +89,8 @@ type ChatConfig struct {
 	// absent or 0: the policy's.
 	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
 	// Confirm are the tools a member must OK: a call proposes, and the
-	// member's Do it runs it. An empty list runs every tool at once.
+	// member's Do it runs it. The always-confirm set is confirmed at every
+	// autonomy level, so an empty list confirms that set only.
 	Confirm []string `yaml:"confirm,omitempty" json:"confirm"`
 	// DocRepo is the owner/name of the repository write_doc commits
 	// documents to (the project's document repository, the factory's own
@@ -104,7 +123,8 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-	"read_doc", "write_doc", "set_autonomy", "notes_read", "notes_write", "escalate", "active_threads"}
+	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
+	"notes_read", "notes_write", "escalate", "active_threads"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -113,7 +133,7 @@ var ChatModels = []string{"operator"}
 var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
-		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy"}}
+		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
 // agent may do without its member's OK. Full auto is no level of its
@@ -149,20 +169,21 @@ const DefaultBacklogCap = 8
 
 // assistedOff are the tools that come off the confirm list at assisted:
 // the agent starts and files ready work itself, and every start and
-// filing still passes the ready check.
-var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session"}
+// filing still passes the ready check. routine_run files a routine's
+// card, as new_card files one.
+var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session", "routine_run"}
 
 // AlwaysConfirm are the tools confirmed at every level: merges while the
-// rule is human, invites, the actions outside the project, and the level
-// and cap changes themselves.
+// rule is human, invites, the actions outside the project, and the
+// changes of the project's file: the level, the cap and the routines.
 var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
-	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy"}
+	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
-// base as its files set it, assisted takes the starts and filings off
-// and keeps the always-confirm set, autonomous keeps the always-confirm
-// set only, with merges following the rule.
+// base as its files set it with the always-confirm set, assisted takes
+// the starts and filings off and keeps the always-confirm set, autonomous
+// keeps the always-confirm set only, with merges following the rule.
 func ConfirmFor(level, mergeRule string, base []string) []string {
 	ensure := func(list []string) []string {
 		for _, t := range AlwaysConfirm {
@@ -181,7 +202,7 @@ func ConfirmFor(level, mergeRule string, base []string) []string {
 		}
 		return slices.Clone(AlwaysConfirm)
 	default:
-		return slices.Clone(base)
+		return ensure(slices.Clone(base))
 	}
 }
 
@@ -860,6 +881,25 @@ func (d Document) Validate() error {
 		}
 		if s <= 0 {
 			return fmt.Errorf("policy: supervisor.%s must be a positive number of seconds, is %d", name, s)
+		}
+	}
+	if _, err := d.Location(); err != nil {
+		return fmt.Errorf("policy: time_zone %q: %v, want an IANA zone such as Europe/Berlin", d.TimeZone, err)
+	}
+	for i, r := range d.Routines {
+		if err := r.Validate("policy"); err != nil {
+			return err
+		}
+		if r.Files != FilesPullRequest {
+			return fmt.Errorf("policy: routine %q: a routine of policy.yaml is a pass over the projects, files pull-request, and a project's own routine goes in its project file", r.Name)
+		}
+		for _, t := range r.Schedule {
+			if t.Merges != 0 || t.On == OnPushMain {
+				return fmt.Errorf("policy: routine %q: %s counts one project's work, a trigger of a project's own routine: a routine of policy.yaml runs on cron or on each configuration version", r.Name, t.Words())
+			}
+		}
+		if slices.ContainsFunc(d.Routines[:i], func(o Routine) bool { return o.Name == r.Name }) {
+			return fmt.Errorf("policy: routine %q: given twice", r.Name)
 		}
 	}
 	for name, c := range d.Classes {

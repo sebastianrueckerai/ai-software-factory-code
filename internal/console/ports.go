@@ -42,6 +42,12 @@ type Resources interface {
 	Commission(ctx context.Context, id int64) (cloudres.Resource, bool, error)
 }
 
+// Jobs are the cluster's CronJobs (factoryd.ClusterJobs), which the
+// Resources page lists read-only.
+type Jobs interface {
+	CronJobs(ctx context.Context) ([]factoryd.CronJobState, error)
+}
+
 // Policies reads the policy version being enforced (policy_versions).
 type Policies interface {
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
@@ -170,4 +176,22 @@ type Mirrors interface {
 	SyncPushMirrors(ctx context.Context, repo factoryd.Repo) error
 	DeletePushMirror(ctx context.Context, repo factoryd.Repo, name string) error
 	ClearGitHubFailures(ctx context.Context, repository string) error
+}
+
+// Routines are the projects' routines (factoryd.Routines, roadmap 267),
+// each named by its project's name and its own; a project's board shows
+// policy.yaml's template pass too. A routine the project does not run is
+// factoryd.ErrNotFound.
+type Routines interface {
+	// Views are the project's routines as its board shows them.
+	Views(ctx context.Context, project string) ([]factoryd.RoutineView, error)
+	// Runs are the routine's last limit runs, newest first.
+	Runs(ctx context.Context, project, routine string, limit int) ([]factoryd.RoutineRun, error)
+	// RunOfTask is the run that filed the task.
+	RunOfTask(ctx context.Context, taskID string) (factoryd.RoutineRun, bool, error)
+	// Skip sets the routine's Skip once for by, or with skip false
+	// clears it.
+	Skip(ctx context.Context, project, routine string, skip bool, by string) error
+	// RunNow starts a run due now and returns before its outcome.
+	RunNow(ctx context.Context, project, routine string) error
 }

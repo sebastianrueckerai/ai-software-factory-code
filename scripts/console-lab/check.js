@@ -3,8 +3,10 @@
 // and fails on a control of design/inventory.md that is missing, or a
 // mechanic that does not work: the drawer docked at the right edge and
 // never over the chat, Escape closing it, Do it becoming an applied line,
-// the chat above the board at 390 px, no horizontal scroll at 1440 or 390.
-// Exit 1 and one line per failure.
+// the routines' ghosts at the foot of their lanes with their control and
+// drawer, the chat above the board at 390 px, no horizontal scroll at 1440
+// or 390. Exit 1 and one line per failure.
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 const { chromium } = require("playwright");
@@ -20,6 +22,13 @@ const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .re
   ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
   ".doc-path, .doc-facts, .doc-refused, .doc-dot, .doc-base, .doc-note, .doc-confirm-q, .doc-new-l, .doc-discard, #doc-new, " +
   ".doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
+
+// ghostEl are the routines' text (C16), measured as contrastEl is
+const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.ghost .held, .card.ghost .run, .card.ghost .acts button, " +
+  ".chip.routine, .cell.routine";
+
+// labID is issue's task id in the lab, as lab_test.go's labID makes it.
+const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issue).digest("hex").slice(0, 12);
 
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
@@ -44,7 +53,9 @@ const mustHave = {
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
-    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only"],
+    "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
+    "↻ routines", "within 7 days", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
+    "Skip once", "Run now", "#779"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
@@ -224,8 +235,12 @@ async function text(page) {
         // a landed save with nothing typed since returns to Read, the saved
         // version rendered, the path line keeping its Saved line
         if (await p.page.locator("#doc-edit").isVisible()) fails.push("editor: a landed save stays in the editor");
-        if (!(await p.page.locator("#doc-article").innerText()).includes("The editor check wrote this."))
-          fails.push("editor: the landed save does not render");
+        await p.page.waitForFunction(() => (document.getElementById("doc-article").innerText || "").includes("The editor check wrote this."), null, { timeout: 5000 })
+          .catch(() => fails.push("editor: the landed save does not render"));
+        // the control marks Read again the moment the save lands
+        if ((await p.page.locator("#doc-mode-read").getAttribute("aria-pressed")) !== "true" ||
+          (await p.page.locator("#doc-mode-edit").getAttribute("aria-pressed")) !== "false")
+          fails.push("editor: a landed save leaves the mode control on Edit");
         // a draft outlives the reload: the note says restored, Discard asks
         await p.page.locator("#doc-mode-edit").click();
         await p.page.waitForTimeout(300);
@@ -251,6 +266,34 @@ async function text(page) {
             if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the dot stays after Discard");
           }
         }
+        // a save that refuses (the roadmap's structure): only the reason
+        // keeps the refusal colour, retry is its own button the keyboard
+        // reaches, and it sends the save again
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
+        await p.page.keyboard.press("Control+A");
+        await p.page.keyboard.type("The refusal check wrote this.");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => document.querySelector("#doc-facts .doc-refused"), null, { timeout: 5000 });
+        const refText = (await p.page.locator("#doc-facts .doc-refused").innerText()).trim();
+        if (!refText.startsWith("not saved:")) fails.push('editor: the refusal does not read not saved: ("' + refText + '")');
+        if (refText.includes("retry")) fails.push('editor: the refusal reason carries the retry too ("' + refText + '")');
+        const retry = p.page.locator('#doc-facts [data-act="retry"]');
+        if ((await retry.count()) !== 1 || (await retry.evaluate((e) => e.tagName)) !== "BUTTON")
+          fails.push("editor: the retry is not its own button");
+        else {
+          await retry.focus();
+          if (!(await p.page.evaluate(() => { const e = document.activeElement; return !!e && e.dataset && e.dataset.act === "retry"; })))
+            fails.push("editor: the keyboard cannot reach the retry");
+          await p.page.keyboard.press("Enter");
+          await p.page.waitForTimeout(700);
+          if (!(await p.page.locator("#doc-facts .doc-refused").count())) fails.push("editor: the retry does not send the save again");
+        }
+        await p.page.locator('#doc-view [data-act="discard"]').first().click();
+        await p.page.waitForTimeout(300);
+        await p.page.locator('[data-act="discard-yes"]').click();
+        await p.page.waitForTimeout(600);
+        if (await p.page.locator("#doc-dot").isVisible()) fails.push("editor: the refused draft's dot stays after Discard");
         // the slow save (item 7): three Ctrl+S with typing between them
         // leave exactly two commits, and the path line says saving…
         const count = await p.page.evaluate(async (u) => (await (await fetch(u)).json()).filter((e) => e.kind === "doc_written").length, base + "/projects/ai-software-factory-code/events");
@@ -288,7 +331,78 @@ async function text(page) {
       if (!state.some((s) => s.includes("failed only"))) fails.push("menus: no state line reads failed only under ?done-only=failed (" + state.join(" | ") + ")");
       if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
       if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
-      if ((await p.page.locator("#board .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+      if ((await p.page.locator("#board .column > .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+    }
+    if (sc === "busy") {
+      // the routines (C16): a ghost at the foot of Needs you and of Queued, the control in the
+      // board's head, the strip's cell, the chip, the routine's drawer, Skip once
+      await seed("busy");
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const feet = await p.page.evaluate(() => Array.from(document.querySelectorAll("#board .column")).map((c) => {
+        const kids = Array.from(c.querySelectorAll(":scope > .cards > article.card")), ghost = (k) => k.classList.contains("ghost");
+        return { title: c.querySelector("h3").firstChild.textContent.trim(), first: kids.findIndex(ghost), last: kids.map((k) => !ghost(k)).lastIndexOf(true) };
+      }));
+      for (const t of ["Needs you", "Queued"]) {
+        const f = feet.find((x) => x.title === t);
+        if (!f || f.first < 0) fails.push("routines: no ghost in " + t);
+        else if (f.first < f.last) fails.push("routines: a ghost of " + t + " sits above its last card");
+      }
+      const radios = await p.page.locator("#board .board-head details.col-menu input[type=radio][name=routines]").count();
+      if (radios !== 3) fails.push("routines: the control has " + radios + " radios named routines, not 3");
+      const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
+      if (!cell.includes("↻ bump in 20 min")) fails.push('routines: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump in 20 min');
+      if (!(await p.page.locator('#board [data-card="' + labID(779) + '"] .chip.routine').count())) fails.push("routines: #779 in Done carries no routine chip");
+      const d = p.page.locator("#drawer");
+      await p.page.locator('#board [data-routine="ai-software-factory-code/weekly-bump"]').click();
+      await p.page.waitForTimeout(600);
+      if (!(await d.isVisible())) fails.push("routines: a click on the ghost does not open the drawer");
+      else {
+        const tabs = await d.getByRole("tab").allInnerTexts();
+        if (tabs.join(",") !== "Overview,Runs,Config") fails.push("routines: the drawer's tabs are " + tabs.join(", "));
+        const title = (await d.locator("h2").innerText()).trim();
+        if (title !== "↻ Weekly bump") fails.push('routines: the drawer\'s title is "' + title + '"');
+        await p.page.keyboard.press("Escape");
+        await p.page.waitForTimeout(300);
+        if (await d.isVisible()) fails.push("routines: Escape does not close the routine's drawer");
+      }
+      // the Runs tab links each run's card, #781 the newest
+      await p.page.goto(base + "/#routine=ai-software-factory-code/weekly-bump:runs", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      if (!(await d.locator('a[href="#card=' + labID(781) + '"]').count())) fails.push("routines: the Runs tab does not link #781");
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').getByRole("button", { name: "Skip Weekly bump once" }).click();
+      await p.page.waitForTimeout(800);
+      const note = await p.page.locator("#board .note").allInnerTexts();
+      if (!note.some((t) => t.includes("Skipped once"))) fails.push("routines: Skip once does not re-render the board with Skipped once (" + note.join(" | ") + ")");
+      await p.page.goto(base + "/?routines=none", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      if (await p.page.locator("#board .card.ghost").count()) fails.push("routines: ?routines=none leaves a ghost");
+      const hidden = await p.page.locator("#board .ghosts-hidden").allInnerTexts();
+      if (!hidden.some((t) => t.includes("routines hidden"))) fails.push("routines: ?routines=none does not say routines hidden (" + hidden.join(" | ") + ")");
+    }
+    if (sc === "fire") {
+      // the held run (C16): the ghost and the strip's cell in amber, #781 in Needs you with the chip
+      if (!(await p.page.locator("#board .card.ghost.held").count())) fails.push("fire: no held ghost");
+      const cell = await p.page.locator(".strip .cell.routine").allInnerTexts();
+      if (!cell.includes("↻ bump held")) fails.push('fire: the strip\'s cell reads "' + cell.join(" | ") + '", want ↻ bump held');
+      const k781 = p.page.locator('#needs-you [data-card="' + labID(781) + '"]');
+      if (!(await k781.locator(".chip.routine").count())) fails.push("fire: #781 in Needs you carries no routine chip");
+      // #781's drawer names the run that filed it and links its routine; the menus text() opened close first
+      await p.page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((m) => { m.open = false; }));
+      await k781.click({ position: { x: 4, y: 4 } });
+      await p.page.waitForTimeout(600);
+      const d = p.page.locator("#drawer");
+      const prov = await d.locator(".provenance").allInnerTexts();
+      if (!prov.some((t) => t.includes("filed by the factory · routine Weekly bump · run 14"))) {
+        fails.push('fire: #781\'s drawer lacks "filed by the factory · routine Weekly bump · run 14" (' + prov.join(" | ") + ")");
+      } else {
+        await d.locator(".provenance [data-open-routine]").click();
+        await p.page.waitForTimeout(600);
+        if (!(await d.locator("[data-routine-drawer]").count())) fails.push("fire: the provenance's routine does not open its drawer");
+      }
+      await p.page.keyboard.press("Escape");
     }
     if (sc === "threads") {
       // the thread table starts folded to its marks until the member unfolds it
@@ -431,6 +545,10 @@ async function text(page) {
         .filter((b) => b.offsetParent).map((b) => [b.id || b.className, Math.round(b.getBoundingClientRect().left), Math.round(b.getBoundingClientRect().right)])
         .filter((x) => x[1] < 0 || x[2] > 390));
       if (cut.length) fails.push("phone: a document head control is cut off at 390: " + cut.map((x) => x[0] + " " + x[1] + ".." + x[2]).join(", "));
+      // New document shows its whole text in the Read/Edit row, not a
+      // clipped word in a square box
+      const nb = await pp.page.evaluate(() => { const b = document.getElementById("doc-new"); return { t: b.innerText.trim(), w: b.scrollWidth - b.clientWidth, h: b.scrollHeight - b.clientHeight }; });
+      if (nb.t !== "New document" || nb.w > 1 || nb.h > 1) fails.push('phone: New document does not show its whole text ("' + nb.t + '", ' + nb.w + "x" + nb.h + "px over)");
       const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
       if (psw > 390) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + ")");
       await pp.page.keyboard.press("Escape");
@@ -441,7 +559,8 @@ async function text(page) {
   }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
-    for (const [sc, act] of [["threads", "delete"], ["escalation", "palette"], ["assisted", "level"], ["poke", ""], ["busy", "docs"]]) {
+    for (const [sc, act, sel] of [["threads", "delete", contrastEl], ["escalation", "palette", contrastEl], ["assisted", "level", contrastEl],
+      ["poke", "", contrastEl], ["busy", "docs", contrastEl], ["busy", "", ghostEl], ["fire", "", ghostEl]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
@@ -475,16 +594,19 @@ async function text(page) {
           return out;
         };
         const out = [];
+        let measured = 0;
         for (const el of document.querySelectorAll(sel)) {
           if (!el.offsetParent || !el.textContent.trim()) continue;
+          measured++;
           const cs = getComputedStyle(el), bg = bgOf(el), fg = over(rgb(cs.color), bg);
           const l1 = lum(fg), l2 = lum(bg), r = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
           const big = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
           if (r < (big ? 3 : 4.5)) out.push((el.className || el.tagName) + ' "' + el.textContent.trim().slice(0, 18) + '" ' + r.toFixed(2));
         }
-        return out;
-      }, contrastEl);
-      if (low.length) fails.push(theme + " " + sc + ": under 4.5:1: " + low.join("; "));
+        return { out, measured };
+      }, sel);
+      if (!low.measured) fails.push(theme + " " + sc + ": the contrast check matched no shown text");
+      if (low.out.length) fails.push(theme + " " + sc + ": under 4.5:1: " + low.out.join("; "));
       await cp.ctx.close();
     }
   }
@@ -494,6 +616,16 @@ async function text(page) {
   await ph.page.waitForTimeout(600);
   const sw = await ph.page.evaluate(() => document.documentElement.scrollWidth);
   if (sw > 390) fails.push("phone: horizontal scroll at 390 (" + sw + ")");
+  const ghostTargets = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".card.ghost > button.open, .card.ghost .acts button, .routines-ctl > summary"))
+    .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 20), b.getBoundingClientRect().height]));
+  // every shown ghost opens its drawer from its title, and the control is there
+  const ghostsShown = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".card.ghost")).filter((g) => g.offsetParent)
+    .map((g) => !!g.querySelector(":scope > button.open")));
+  if (!ghostsShown.length) fails.push("phone: no ghost shown");
+  if (ghostsShown.includes(false)) fails.push("phone: a shown ghost has no button to its drawer");
+  if (!(await ph.page.locator(".routines-ctl > summary").first().isVisible())) fails.push("phone: the routines control is not shown");
+  const smallGhost = ghostTargets.filter((x) => x[1] < 43.5);
+  if (smallGhost.length) fails.push("phone: routine targets under 44 px: " + smallGhost.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
   const order = await ph.page.evaluate(() => {
     const c = document.querySelector("#chat"), b = document.querySelector("#board");
     const vis = (e) => e && e.getClientRects().length > 0;

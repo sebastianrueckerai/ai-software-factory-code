@@ -10,7 +10,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -25,17 +24,20 @@ import (
 const (
 	TemplateUpdateBranch = "factory/template-update"
 	TemplateUpdateTitle  = "Template update"
-	templateDelay        = 5 * time.Minute
-	templateEvery        = time.Hour
 )
 
 // TemplateUpdates runs the template pass on every ready factory project
-// with a template, one log line each.
-func (r *Registrar) TemplateUpdates(ctx context.Context) {
+// with a template, one log line each, and counts the cards it filed: the
+// run of policy.yaml's template-pass routine (roadmap 267). A project's
+// failure is its log line, a failed read of the projects the pass's. One
+// pass runs at a time.
+func (r *Registrar) TemplateUpdates(ctx context.Context) (cards int, err error) {
+	r.templateMu.Lock()
+	defer r.templateMu.Unlock()
+	r.templateCards = 0
 	ps, err := r.Store.Projects(ctx)
 	if err != nil {
-		log.Printf("projects: %v", err)
-		return
+		return 0, err
 	}
 	for _, p := range ps {
 		if !p.File || p.Objects != policy.ObjectsFactory || p.ReadyAt.IsZero() || p.Template == "" {
@@ -48,6 +50,7 @@ func (r *Registrar) TemplateUpdates(ctx context.Context) {
 		}
 		log.Printf("project %s: template update: %s", p.Name, c)
 	}
+	return r.templateCards, nil
 }
 
 // templateUpdate renders p's template as the seed does and compares main's
@@ -160,7 +163,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 // fileTemplateCard files the card of the template update pull request
 // number on project p (roadmap 187): source template-update, so its run
 // verifies the open pull request instead of opening one. Without a card
-// store it files none.
+// store it files none. The pass counts the cards filed.
 func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int64, files string) (Task, IssueRef, error) {
 	if r.Cards == nil {
 		return Task{}, IssueRef{}, nil
@@ -168,8 +171,12 @@ func (r *Registrar) fileTemplateCard(ctx context.Context, p Project, number int6
 	title := TemplateUpdateTitle + " for " + p.Template
 	body := "factoryd opened pull request #" + strconv.FormatInt(number, 10) + " (" + TemplateUpdateTitle + ") for template " + p.Template +
 		": it brings the template's later changes to this project. Its files: " + files + ". The card's merge merges the pull request.\n"
-	return FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, []string{"improvement"},
+	t, ref, err := FileFactoryPRTask(ctx, r.Cards, r.Forgejo, r.Workflows, r.Timeline, r.Policy().Document.Budget, p, title, body, []string{"improvement"},
 		Task{ID: NewTaskID(), Source: SourceTemplateUpdate}, number)
+	if err == nil {
+		r.templateCards++
+	}
+	return t, ref, err
 }
 
 // cardByPR is the newest card the template update pull request number on

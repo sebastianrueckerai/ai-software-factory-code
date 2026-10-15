@@ -866,6 +866,15 @@ func (s *acceptanceStore) CountBacklog(context.Context, string) (int, error) { r
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
+// RoutineRunOfTask: no routine files a card here.
+func (s *acceptanceStore) RoutineRunOfTask(context.Context, string) (factoryd.RoutineRun, bool, error) {
+	return factoryd.RoutineRun{}, false, nil
+}
+
+func (s *acceptanceStore) EndRoutineRun(context.Context, string, string, int, string, string, string, int64, float64) error {
+	return nil
+}
+
 func (s *acceptanceStore) OverHoldCall(context.Context, string, time.Time) (*factoryd.OverHoldCall, error) {
 	return nil, nil
 }

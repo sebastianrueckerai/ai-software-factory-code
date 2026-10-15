@@ -473,6 +473,10 @@ type Store interface {
 	QueueHead(ctx context.Context, project string) (string, bool, error)
 	LeaveQueue(ctx context.Context, taskID string) (project string, left bool, err error)
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
+	// RoutineRunOfTask and EndRoutineRun end the run of a routine's card
+	// when the card ends (taskEnded, RoutineStore).
+	RoutineRunOfTask(ctx context.Context, taskID string) (RoutineRun, bool, error)
+	EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning
@@ -627,11 +631,6 @@ func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 
 func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
 	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
-}
-
-// NewestTaskOf is repository's newest task of source, if any.
-func (s *PGStore) NewestTaskOf(ctx context.Context, repository, source string) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND source = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, repository, source)
 }
 
 func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {

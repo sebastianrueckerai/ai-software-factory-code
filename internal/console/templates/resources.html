@@ -25,7 +25,21 @@
 {{template "envelope" .Envelope}}
 </section>
 {{end}}
+{{with .Jobs}}<section aria-labelledby="jobs">
+<h3 id="jobs">Jobs of the cluster</h3>
+{{if .Failed}}<p>The cluster did not answer.</p>
+{{else}}<table>
+<caption>The cluster's scheduled jobs by namespace</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th></tr></thead>
+<tbody>
+{{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.Namespace}}</td><td title="{{.Schedule}}">{{schedule .Schedule}}</td>{{template "age" .LastScheduled}}{{if .RecordsSuccess}}{{template "age" .LastSuccessful}}{{else}}<td>not reported</td>{{end}}<td>{{if .Suspended}}yes{{else}}no{{end}}</td></tr>
+{{else}}<tr><td colspan="7">No jobs.</td></tr>{{end}}
+</tbody>
+</table>
+{{end}}</section>
+{{end}}
 {{template "foot"}}
+{{define "age"}}{{if .IsZero}}<td>never</td>{{else}}<td title="{{utc .}}">{{ago .}}</td>{{end}}{{end}}
 {{define "envelope"}}<div class="envelope">
 <h4>Envelope: what tasks may commission without a human</h4>
 <p class="meta">{{if .File}}The project's file sets it: <a href="{{.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>

@@ -281,14 +281,27 @@ func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
 
 // CheckProjectFile judges a new project's file the loader's way before the
 // console files it (stage11-design.md section 5): files is the tree at
-// infra's head, file becomes projects/<name>.yaml, and CheckTree judges.
+// infra's head, file becomes projects/<name>.yaml, and CheckChange judges.
 func CheckProjectFile(files map[string][]byte, name string, file []byte, ladder []string) error {
 	path := policy.ProjectFile(name)
 	if _, ok := files[path]; ok {
 		return fmt.Errorf("%s: the file exists at infra's head: the project is there already", path)
 	}
+	return CheckChange(files, map[string][]byte{path: file}, ladder)
+}
+
+// CheckChange judges a change of the tree the loader's way before the
+// console commits it: files is the tree at infra's head, changes maps a
+// path to its new content, nil deleting the file, and CheckTree judges.
+func CheckChange(files, changes map[string][]byte, ladder []string) error {
 	tree := maps.Clone(files)
-	tree[path] = file
+	for path, b := range changes {
+		if b == nil {
+			delete(tree, path)
+		} else {
+			tree[path] = b
+		}
+	}
 	_, err := CheckTree(tree, ladder)
 	return err
 }

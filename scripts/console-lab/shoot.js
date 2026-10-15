@@ -150,6 +150,25 @@ async function main() {
             await p.idle();
           }, false);
         }
+        // the routines (C16): the ghosts at the foot of Needs you and Queued, each
+        // column's body scrolled to its foot; the routine's drawer, the control at
+        // none, the held run, the phone at the Queued section's ghosts
+        const feet = async (p) => {
+          await p.page.evaluate(() => document.querySelectorAll("#board .column > .cards").forEach((b) => {
+            if (b.querySelector(".card.ghost, .ghosts-hidden")) b.scrollTop = b.scrollHeight;
+          }));
+          await p.page.waitForTimeout(200);
+        };
+        if (s === "busy") await shot("routines-1440.png", desk, "/", feet, false);
+        if (s === "busy" && theme === "dark") {
+          await shot("routine-drawer-1440.png", desk, "/#routine=ai-software-factory-code/weekly-bump:overview", null, false);
+          await shot("routines-hidden-1440.png", desk, "/?routines=none", feet, false);
+          await shot("phone-ghosts-390.png", phone, "/", async (p) => {
+            await p.page.locator("#board .column").filter({ has: p.page.locator("h3", { hasText: "Queued" }) }).locator(".card.ghost").first().scrollIntoViewIfNeeded();
+            await p.page.waitForTimeout(200);
+          }, false);
+        }
+        if (s === "fire" && theme === "dark") await shot("held-1440.png", desk, "/", feet, false);
         if (s !== "busy") continue;
         // the documents (roadmap 277): the roadmap read, a link into a
         // plan, Back, the hover peek, wide, and the phone
