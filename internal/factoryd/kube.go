@@ -643,10 +643,20 @@ func (k *InClusterKube) Deployment(ctx context.Context, namespace, name string) 
 	return d, err
 }
 
-// KustomizationReady reads the Ready condition of the Flux Kustomization
-// name in namespace: true when it is True, else false with Flux's
-// message, "" while Flux has set none.
-func (k *InClusterKube) KustomizationReady(ctx context.Context, namespace, name string) (bool, string, error) {
+// FluxState is a Flux Kustomization as its status tells it.
+type FluxState struct {
+	// Ready is the Ready condition's status: True, False, or Unknown while
+	// Flux reconciles; "" while Flux has set none.
+	Ready string
+	// Message is Flux's message on the Ready condition.
+	Message string
+	// Applied is the revision Flux last applied whole, set with Ready
+	// True: "" while it never has, as on a path no green build wrote.
+	Applied string
+}
+
+// KustomizationState reads the Flux Kustomization name in namespace.
+func (k *InClusterKube) KustomizationState(ctx context.Context, namespace, name string) (FluxState, error) {
 	var ks struct {
 		Status struct {
 			Conditions []struct {
@@ -654,17 +664,19 @@ func (k *InClusterKube) KustomizationReady(ctx context.Context, namespace, name 
 				Status  string `json:"status"`
 				Message string `json:"message"`
 			} `json:"conditions"`
+			LastAppliedRevision string `json:"lastAppliedRevision"`
 		} `json:"status"`
 	}
 	if err := k.getJSON(ctx, "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/"+namespace+"/kustomizations/"+name, &ks); err != nil {
-		return false, "", err
+		return FluxState{}, err
 	}
+	s := FluxState{Applied: ks.Status.LastAppliedRevision}
 	for _, c := range ks.Status.Conditions {
 		if c.Type == "Ready" {
-			return c.Status == "True", c.Message, nil
+			s.Ready, s.Message = c.Status, c.Message
 		}
 	}
-	return false, "", nil
+	return s, nil
 }
 
 func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error {

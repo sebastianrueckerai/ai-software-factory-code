@@ -814,3 +814,147 @@ func TestCapacityAlertFilesHumanCard(t *testing.T) {
 		t.Fatalf("task %+v, started %v", task, r.flows.started)
 	}
 }
+
+// fakeFlux is each Kustomization's state by namespace/name; one it lacks
+// is ErrNotFound.
+type fakeFlux map[string]FluxState
+
+func (f fakeFlux) KustomizationState(_ context.Context, namespace, name string) (FluxState, error) {
+	s, ok := f[namespace+"/"+name]
+	if !ok {
+		return FluxState{}, ErrNotFound
+	}
+	return s, nil
+}
+
+// fluxRig is the alert rig with demo-app's environments, deploy/staging
+// applied once and now failing, deploy/prod never written by a green
+// build, and t0 the first pass.
+func fluxRig(t *testing.T) (*alertRig, fakeFlux, Project) {
+	t.Helper()
+	r := newAlertRig(t)
+	flux := fakeFlux{
+		"demo-staging/demo-app": fluxBroken,
+		"demo-prod/demo-app": {Ready: "False",
+			Message: "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory"},
+	}
+	r.in.Flux = flux
+	return r, flux, Project{Name: "demo-app", Environments: []Environment{{Namespace: "demo-staging", Path: "deploy/staging"},
+		{Namespace: "demo-prod", Path: "deploy/prod"}}}
+}
+
+var (
+	t0         = time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	fluxBroken = FluxState{Ready: "False", Message: `Secret/demo-staging/db dry-run failed: secrets "db" not found`,
+		Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}
+	fluxReady = FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:0d805847b1c58eed2c5524a91e5c009f895ffdc0",
+		Applied: "deploy@sha1:0d805847b1c58eed2c5524a91e5c009f895ffdc0"}
+)
+
+// Roadmap 259: an environment whose Kustomization applied once and reads
+// False files one agent card through the alert intake once it has read so
+// for fluxGrace, naming the environment, Flux's message and the action; a
+// pass while it still fails says nothing more, and Ready again comments
+// the resolve once. A path no green build wrote raises nothing.
+func TestFluxAlertFiresAfterTheGraceAndResolves(t *testing.T) {
+	r, flux, p := fluxRig(t)
+	ctx := context.Background()
+	for _, at := range []time.Duration{0, time.Minute, fluxGrace - time.Second} {
+		r.in.FluxPass(ctx, p, t0.Add(at))
+	}
+	if len(r.fj.issues) != 0 || len(r.store.alertRows()) != 0 {
+		t.Fatalf("inside the grace: %d issues, %d alert rows; want none", len(r.fj.issues), len(r.store.alertRows()))
+	}
+	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
+	want := "alert: Kustomization not Ready in demo-staging\n\n" +
+		"factoryd: Flux fires the alert Kustomization not Ready in namespace demo-staging of project demo-app.\n\n" +
+		"Firing since 2026-10-15T09:00:00Z.\n\n" +
+		"Value and annotations:\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n" +
+		"action=fix on main what Flux's message names: main's green builds write deploy/staging to the deploy branch, which Flux applies to demo-staging. " +
+		"A cause outside the repository is a question for a human.\n" +
+		"applied=deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456\n```\n\n" +
+		"Labels:\n\n```\nalertname=Kustomization not Ready\nkustomization=demo-app\nnamespace=demo-staging\npath=deploy/staging\n```\n\n" +
+		"filed by factoryd from Flux alert flux/demo-staging/demo-app"
+	if len(r.fj.issues) != 1 || r.fj.issues[0] != want || r.fj.repos[0] != "demo-app/demo-app" {
+		t.Fatalf("issues %q on %v, want one on demo-app/demo-app:\n%s", r.fj.issues, r.fj.repos, want)
+	}
+	var task Task
+	for _, task = range r.store.tasks {
+	}
+	if len(r.store.tasks) != 1 || task.Kind != "agent" || task.Source != SourceAlert || task.Objective != want ||
+		task.AlertFingerprint != "flux/demo-staging/demo-app" || !slices.Equal(r.flows.started, []string{task.ID}) {
+		t.Fatalf("%d tasks, task %+v, started %v; want one agent card started", len(r.store.tasks), task, r.flows.started)
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 1 || rows[0].Kind != AlertSigNoz || rows[0].Source != "Kustomization not Ready" || rows[0].TaskID != task.ID ||
+		rows[0].Detail["starts_at"] != "2026-10-15T09:00:00Z" {
+		t.Fatalf("alert rows %+v", rows)
+	}
+	r.in.FluxPass(ctx, p, t0.Add(fluxGrace+time.Minute))
+	if len(r.fj.issues) != 1 || len(r.fj.comments) != 0 || len(r.store.alertRows()) != 1 {
+		t.Fatalf("still failing: %d issues, %d comments, %d rows; want 1, 0, 1", len(r.fj.issues), len(r.fj.comments), len(r.store.alertRows()))
+	}
+	flux["demo-staging/demo-app"] = fluxReady
+	r.in.FluxPass(ctx, p, t0.Add(12*time.Minute))
+	r.in.FluxPass(ctx, p, t0.Add(13*time.Minute))
+	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:12:00Z"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
+		t.Fatalf("Ready again: comments %q, %d issues; want %q, 1", r.fj.comments, len(r.fj.issues), want)
+	}
+}
+
+// The grace counts an unbroken run of False reads: Ready restarts it, and
+// Unknown, Flux mid-reconcile, neither starts nor fires it.
+func TestFluxAlertGraceCountsFalseReads(t *testing.T) {
+	r, flux, p := fluxRig(t)
+	ctx := context.Background()
+	unknown := FluxState{Ready: "Unknown", Message: "Reconciliation in progress", Applied: fluxBroken.Applied}
+	for _, read := range []struct {
+		at time.Duration
+		s  FluxState
+	}{
+		{0, unknown}, {time.Minute, fluxBroken}, {5 * time.Minute, fluxReady}, {6 * time.Minute, fluxBroken},
+		{15 * time.Minute, fluxBroken}, {16 * time.Minute, unknown},
+	} {
+		flux["demo-staging/demo-app"] = read.s
+		r.in.FluxPass(ctx, p, t0.Add(read.at))
+		if len(r.fj.issues) != 0 {
+			t.Fatalf("%s read at +%s filed %q", read.s.Ready, read.at, r.fj.issues)
+		}
+	}
+	flux["demo-staging/demo-app"] = fluxBroken
+	r.in.FluxPass(ctx, p, t0.Add(16*time.Minute))
+	if len(r.fj.issues) != 1 || !strings.Contains(r.fj.issues[0], "\n\nFiring since 2026-10-15T09:06:00Z.\n\n") {
+		t.Fatalf("False ten minutes after the run's first: issues %q, want one firing since 09:06", r.fj.issues)
+	}
+}
+
+// A restart of factoryd forgets FluxPass's reads, not the alert: a fresh
+// intake on the same store finds the open alert's start on its row, so the
+// still failing environment files and says nothing more, and Ready again
+// still comments the resolve. A later break waits out the grace again and,
+// its card still open, is a comment on it.
+func TestFluxAlertKeepsItsStartAcrossARestart(t *testing.T) {
+	r, flux, p := fluxRig(t)
+	ctx := context.Background()
+	r.in.FluxPass(ctx, p, t0)
+	r.in.FluxPass(ctx, p, t0.Add(fluxGrace))
+	restarted := &AlertIntake{Namespaces: r.ns, Projects: r.in.Projects, Store: r.store, Forgejo: r.in.Forgejo, Workflows: r.flows,
+		Budget: testBudget, Flux: flux}
+	restarted.FluxPass(ctx, p, t0.Add(20*time.Minute))
+	if len(r.fj.issues) != 1 || len(r.fj.comments) != 0 || len(r.store.alertRows()) != 1 {
+		t.Fatalf("after the restart: %d issues, %d comments, %d rows; want 1, 0, 1", len(r.fj.issues), len(r.fj.comments), len(r.store.alertRows()))
+	}
+	flux["demo-staging/demo-app"] = fluxReady
+	restarted.FluxPass(ctx, p, t0.Add(21*time.Minute))
+	flux["demo-staging/demo-app"] = fluxBroken
+	restarted.FluxPass(ctx, p, t0.Add(30*time.Minute))
+	restarted.FluxPass(ctx, p, t0.Add(39*time.Minute))
+	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:21:00Z"}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("resolved, then failing again inside the grace: comments %q, want %q", r.fj.comments, want)
+	}
+	restarted.FluxPass(ctx, p, t0.Add(40*time.Minute))
+	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:21:00Z",
+		"#1 factoryd: the alert fired again at 2026-10-15T09:30:00Z.\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n```"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
+		t.Fatalf("failing again past the grace: comments %q, %d issues; want %q, 1", r.fj.comments, len(r.fj.issues), want)
+	}
+}

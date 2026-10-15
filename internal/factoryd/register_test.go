@@ -1622,6 +1622,25 @@ func TestReconcileLoopSetsBackAHandEdit(t *testing.T) {
 	}
 }
 
+// Each poll hands every ready factory project to FluxAlerts (roadmap
+// 259), no other: a seed project's Kustomizations are the infra
+// repository's, and an unready one or one without a file applies nothing.
+func TestPollRaisesTheFluxAlertsOfReadyFactoryProjects(t *testing.T) {
+	ready := time.Date(2026, 10, 15, 9, 0, 0, 0, time.UTC)
+	prod := []Environment{{Namespace: "x-prod", Path: "deploy/prod"}}
+	var got []string
+	reg := &Registrar{Store: &memProjects{m: map[string]Project{
+		"live":  {Name: "live", Objects: policy.ObjectsFactory, File: true, ReadyAt: ready, Environments: prod},
+		"fresh": {Name: "fresh", Objects: policy.ObjectsFactory, File: true, Environments: prod},
+		"seed":  {Name: "seed", Objects: policy.ObjectsSeed, File: true, ReadyAt: ready, Environments: prod},
+		"gone":  {Name: "gone", Objects: policy.ObjectsFactory, ReadyAt: ready, Environments: prod},
+	}}, FluxAlerts: func(_ context.Context, p Project, _ time.Time) { got = append(got, p.Name) }}
+	reg.poll(context.Background())
+	if !slices.Equal(got, []string{"live"}) {
+		t.Fatalf("FluxAlerts on %q, want [live]", got)
+	}
+}
+
 // Ruling 179: a seed project's reconcile keeps the labels and (agents
 // coder) the bot's fork as the bot, reads the webhook with the project's
 // read token and each namespace's factory/project label, reports them, and

@@ -182,11 +182,10 @@ type Config struct {
 	// ReconcileError is Registrar.ReconcileError: why the project's last
 	// reconcile failed, "" when it was clean.
 	ReconcileError func(name string) string
-	// FluxReady reads the Ready condition of the Flux Kustomization name
-	// in namespace (factoryd's InClusterKube.KustomizationReady): true,
-	// else false with Flux's message; factoryd.ErrNotFound when there is
-	// none. nil shows no environment's deploy state.
-	FluxReady func(ctx context.Context, namespace, name string) (bool, string, error)
+	// Kustomization reads the Flux Kustomization name in namespace
+	// (factoryd's InClusterKube.KustomizationState); factoryd.ErrNotFound
+	// when there is none. nil shows no environment's deploy state.
+	Kustomization func(ctx context.Context, namespace, name string) (factoryd.FluxState, error)
 	// MergeRetryPause is the wait before a retry of a merge Forgejo refused
 	// with 405 while it re-checks mergeability (nil = 1 s).
 	MergeRetryPause *time.Duration

@@ -38,6 +38,20 @@ const restartWindowAlert = "5xx rate above 5 %"
 // count as the roll's own restart, not a real problem (ruling 237).
 const restartWindow = 10 * time.Minute
 
+// fluxAlert is FluxPass's alert: an environment whose Flux Kustomization
+// applied once stands not Ready (roadmap 259).
+const fluxAlert = "Kustomization not Ready"
+
+// fluxPrefix starts a fluxAlert's fingerprint, flux/<namespace>/<name>;
+// SigNoz's fingerprints are hexadecimal.
+const fluxPrefix = "flux/"
+
+// fluxGrace is how long a Kustomization that applied once reads not
+// Ready before its alert fires: ten of its one-minute reconciles, so a
+// failure Flux's own retry heals (an API server or Forgejo blip) files
+// nothing, while a broken environment files within the grace and a poll.
+const fluxGrace = 10 * time.Minute
+
 // SigNozAlert is one alert of a SigNoz v0.143.0 webhook notification (the
 // Alertmanager v4 message).
 type SigNozAlert struct {
@@ -63,6 +77,11 @@ type DeployedCommitReader interface {
 	DeployedCommit(ctx context.Context, deployment string) (string, bool, error)
 }
 
+// FluxReader reads a Flux Kustomization (InClusterKube).
+type FluxReader interface {
+	KustomizationState(ctx context.Context, namespace, name string) (FluxState, error)
+}
+
 // AlertBook is what the alert intake keeps: the task rows it files and one
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
@@ -80,7 +99,8 @@ type AlertBook interface {
 // the first firing of a fingerprint files a bug issue on the project's
 // repository as the bot and starts its task, a later firing is a comment
 // on it while the task runs and a new issue once it ended, and a resolve
-// is a comment. An alert no project owns is logged and dropped.
+// is a comment. An alert no project owns is logged and dropped. FluxPass
+// takes factoryd's own alert of a broken environment the same way.
 type AlertIntake struct {
 	User, Password string
 	Namespaces     NamespaceLabeler
@@ -107,11 +127,15 @@ type AlertIntake struct {
 	// LinkHosts is the policy's link_hosts, besides the Forgejo host and a
 	// project's own environment hosts, allowed unmangled in a posted alert.
 	LinkHosts func() []string
+	// Flux reads the Kustomizations FluxPass watches.
+	Flux FluxReader
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
 	mu        sync.Mutex
 	projectOf map[string]string // namespace -> its factory/project label
+	// a fluxAlert's fingerprint -> its first False read since the last Ready
+	fluxSince map[string]time.Time
 }
 
 func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -231,6 +255,79 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	// fingerprint (item 127, fix round 2), so it is judged again rather than
 	// filed outright
 	return in.fileUnlessRestartWindow(ctx, a, p, ns, at, name)
+}
+
+// FluxPass raises fluxAlert, through take as a SigNoz alert would, on each
+// environment of factory project p whose Kustomization applied once and
+// has read False for fluxGrace, with Flux's message and the action, and
+// resolves it once the Kustomization is Ready again (roadmap 259). A path
+// no green build wrote never applied, so it raises none; Unknown, Flux
+// mid-reconcile, changes nothing. A fired alert's start is its alerts
+// row's, so a restart of factoryd neither fires it anew nor misses its
+// resolve.
+func (in *AlertIntake) FluxPass(ctx context.Context, p Project, now time.Time) {
+	for _, e := range p.Environments {
+		s, err := in.Flux.KustomizationState(ctx, e.Namespace, p.Name)
+		if err == nil {
+			err = in.flux(ctx, p.Name, e, s, now)
+		}
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			log.Printf("project %s: %s flux alert: %v", p.Name, e.Namespace, err)
+		}
+	}
+}
+
+// flux is FluxPass on environment e, whose Kustomization name reads s.
+func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s FluxState, now time.Time) error {
+	fp := fluxPrefix + e.Namespace + "/" + name
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	row, _, err := in.Store.AlertByFingerprint(ctx, AlertSigNoz, fp)
+	if err != nil {
+		return err
+	}
+	start, open := firingSince(row)
+	a := SigNozAlert{Status: "firing", StartsAt: start, Fingerprint: fp,
+		Labels: map[string]string{"alertname": fluxAlert, "namespace": e.Namespace, "path": e.Path, "kustomization": name},
+		Annotations: map[string]string{"value": s.Message, "applied": s.Applied,
+			"action": "fix on main what Flux's message names: main's green builds write " + e.Path + " to the deploy branch, " +
+				"which Flux applies to " + e.Namespace + ". A cause outside the repository is a question for a human."}}
+	switch {
+	case s.Ready == "True":
+		delete(in.fluxSince, fp)
+		if !open {
+			return nil
+		}
+		a.Status, a.EndsAt = "resolved", now
+	case s.Ready != "False":
+		return nil
+	case s.Applied == "":
+		delete(in.fluxSince, fp)
+		return nil
+	case !open:
+		since, ok := in.fluxSince[fp]
+		if !ok {
+			if in.fluxSince == nil {
+				in.fluxSince = map[string]time.Time{}
+			}
+			in.fluxSince[fp] = now
+			return nil
+		}
+		if now.Sub(since) < fluxGrace {
+			return nil
+		}
+		a.StartsAt = since
+	}
+	return in.take(ctx, a)
+}
+
+// firingSince is the start alerts row a records, and whether it still
+// fires: no resolve recorded at or after that start.
+func firingSince(a Alert) (time.Time, bool) {
+	at, _ := a.Detail["starts_at"].(string)
+	resolved, _ := a.Detail["resolved_at"].(string)
+	start, err := time.Parse(time.RFC3339, at)
+	return start, err == nil && resolved < at
 }
 
 // fileUnlessRestartWindow files a as a fresh issue and task, unless it is
@@ -466,7 +563,10 @@ func alertService(labels map[string]string) string {
 // the values one line each inside fences. The text goes to Forgejo, so it
 // is sanitised Outbound: hosts is the links left unmangled.
 func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
-	name, on := oneLine(a.Labels["alertname"]), ""
+	name, on, source := oneLine(a.Labels["alertname"]), "", "SigNoz"
+	if strings.HasPrefix(a.Fingerprint, fluxPrefix) {
+		source = "Flux"
+	}
 	if s := alertService(a.Labels); s != "" {
 		on = " on service " + s
 		title = "alert: " + name + " on " + s + " in " + ns
@@ -474,7 +574,7 @@ func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body 
 		title = "alert: " + name + " in " + ns
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "factoryd: SigNoz fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", name, on, ns, project, stamp(a.StartsAt))
+	fmt.Fprintf(&b, "factoryd: %s fires the alert %s%s in namespace %s of project %s.\n\nFiring since %s.", source, name, on, ns, project, stamp(a.StartsAt))
 	if safeLink(a.GeneratorURL) {
 		b.WriteString(" SigNoz: " + a.GeneratorURL)
 	}
@@ -490,8 +590,8 @@ func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body 
 			labels = append(labels, oneLine(k)+"="+oneLine(a.Labels[k]))
 		}
 	}
-	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from SigNoz alert %s",
-		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), oneLine(a.Fingerprint))
+	fmt.Fprintf(&b, "\n\nValue and annotations:\n\n%s\n\nLabels:\n\n%s\n\nfiled by factoryd from %s alert %s",
+		fenced(strings.Join(notes, "\n")), fenced(strings.Join(labels, "\n")), source, oneLine(a.Fingerprint))
 	return sanitize.Outbound(title, hosts), sanitize.Outbound(b.String(), hosts)
 }
 

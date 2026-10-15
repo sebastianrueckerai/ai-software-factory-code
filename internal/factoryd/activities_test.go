@@ -2168,6 +2168,40 @@ func TestAlertPreCheckPassesWhenFiring(t *testing.T) {
 	}
 }
 
+// A Flux alert's card (roadmap 259): SigNoz never lists factoryd's own
+// alert, so its pre-check reads the alert's row instead, firing until the
+// row records a resolve at or after its start.
+func TestAlertPreCheckReadsAFluxAlertsRow(t *testing.T) {
+	fj := &prForgejo{}
+	task := prTask
+	task.Source, task.AlertFingerprint = SourceAlert, "flux/demo-staging/demo-app"
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	id, _ := store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "Kustomization not Ready", TaskID: "t1", Fingerprint: "flux/demo-staging/demo-app",
+		Detail: map[string]any{"starts_at": "2026-10-15T09:00:00Z"}})
+	alerts := &fakeAlerts{list: []FiringAlert{firing("active", map[string]string{"alertname": "gateway restarts"}, "restarts")}}
+	r.alerts = alerts
+	precheck := func() bool {
+		t.Helper()
+		val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+		var got bool
+		if err != nil || val.Get(&got) != nil {
+			t.Fatalf("AlertPreCheck: %v", err)
+		}
+		return got
+	}
+	if !precheck() {
+		t.Fatal("pre-check = false while the row has no resolve, want true")
+	}
+	store.MergeAlertDetail(ctx, id, map[string]any{"resolved_at": "2026-10-15T09:12:00Z"})
+	if precheck() {
+		t.Fatal("pre-check = true after the row's resolve, want false")
+	}
+	if alerts.calls.Load() != 0 {
+		t.Fatalf("the pre-check asked SigNoz %d times about factoryd's own alert", alerts.calls.Load())
+	}
+}
+
 // stubPrices is a Pricer answering one price for every alias.
 type stubPrices struct {
 	price policy.Price

@@ -102,6 +102,10 @@ type Registrar struct {
 	// import's source is empty, and githubPass takes the cards of the
 	// exports of mode pull_requests there; nil takes none.
 	GitHub *GitHub
+	// FluxAlerts raises and resolves the alerts of a ready factory
+	// project's environments every poll (AlertIntake.FluxPass, roadmap
+	// 259); nil raises none.
+	FluxAlerts func(ctx context.Context, p Project, now time.Time)
 	// githubAt is githubPass's last read of the GitHub pull requests'
 	// states.
 	githubAt time.Time
@@ -270,10 +274,11 @@ func (r *Registrar) ReconcileLoop(ctx context.Context, version func() int64, pol
 
 // poll keeps, between the reconciles, what must not wait for the next:
 // each ready factory project's staging secrets, so a Secret Flux applies
-// reaches CI within the poll, and the import rows of projects no file
-// names: a row whose filing is gone (filingGone) is deleted with its
-// token, any other kept for registration. A row that records no pull
-// request, or whose filing cannot be read, stays and is reported.
+// reaches CI within the poll, its environments' Flux alerts, and the
+// import rows of projects no file names: a row whose filing is gone
+// (filingGone) is deleted with its token, any other kept for
+// registration. A row that records no pull request, or whose filing
+// cannot be read, stays and is reported.
 func (r *Registrar) poll(ctx context.Context) {
 	ps, err := r.Store.Projects(ctx)
 	if err != nil {
@@ -287,6 +292,9 @@ func (r *Registrar) poll(ctx context.Context) {
 		}
 		if _, ok := p.Staging(); ok && p.File && p.Objects == policy.ObjectsFactory && !p.ReadyAt.IsZero() {
 			r.refreshStaging(ctx, p)
+		}
+		if r.FluxAlerts != nil && p.File && p.Objects == policy.ObjectsFactory && !p.ReadyAt.IsZero() {
+			r.FluxAlerts(ctx, p, time.Now())
 		}
 	}
 	if r.Mirrors == nil || r.Infra == nil {

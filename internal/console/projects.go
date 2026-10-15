@@ -94,27 +94,27 @@ const fluxPathNotFound = "kustomization path not found"
 // green build of main writes. Registration makes the Kustomization once
 // the project is minted. "" without a reader.
 func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factoryd.Environment) string {
-	if c.cfg.FluxReady == nil {
+	if c.cfg.Kustomization == nil {
 		return ""
 	}
 	if !p.Minted() {
 		return "no Flux Kustomization yet"
 	}
-	ready, msg, err := c.cfg.FluxReady(ctx, e.Namespace, p.Name)
+	s, err := c.cfg.Kustomization(ctx, e.Namespace, p.Name)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "no Flux Kustomization yet"
 	case err != nil:
 		log.Printf("console: the Kustomization %s/%s: %v", e.Namespace, p.Name, err)
 		return "deploy state unreadable"
-	case ready:
+	case s.Ready == "True":
 		return "ready"
-	case strings.HasPrefix(msg, fluxPathNotFound):
+	case strings.HasPrefix(s.Message, fluxPathNotFound):
 		return "not deployed yet: no green build has written " + e.Path
-	case msg == "":
+	case s.Message == "":
 		return "not ready: Flux has not reconciled it yet"
 	}
-	return "not ready: " + msg
+	return "not ready: " + s.Message
 }
 
 // projects shows every project read-only (ruling 183): its file's

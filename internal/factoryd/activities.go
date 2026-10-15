@@ -1961,6 +1961,12 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 	if !seen || row.TaskID != taskID {
 		return true, nil
 	}
+	if strings.HasPrefix(t.AlertFingerprint, fluxPrefix) {
+		// SigNoz never lists factoryd's own Flux alert: it fires until
+		// FluxPass records its resolve
+		_, open := firingSince(row)
+		return open, nil
+	}
 	if r.alerts == nil {
 		return true, nil
 	}

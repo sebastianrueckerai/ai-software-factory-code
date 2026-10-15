@@ -68,11 +68,13 @@ func TestLab(t *testing.T) {
 	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
 	demo := &r.projects.rows[slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
 	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
-	r.c.cfg.FluxReady = func(_ context.Context, namespace, _ string) (bool, string, error) {
+	r.c.cfg.Kustomization = func(_ context.Context, namespace, _ string) (factoryd.FluxState, error) {
 		if namespace == "demo-prod" {
-			return false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory", nil
+			return factoryd.FluxState{Ready: "False",
+				Message: "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory"}, nil
 		}
-		return true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456", nil
+		return factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
+			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil
 	}
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
 		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}

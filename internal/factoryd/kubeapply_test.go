@@ -103,13 +103,19 @@ func TestKubeDeployments(t *testing.T) {
 	}
 }
 
-// KustomizationReady reads the Ready condition: True is ready, False and
-// Unknown carry Flux's message, none is not ready with no message, and a
-// missing Kustomization is ErrNotFound.
-func TestKubeKustomizationReady(t *testing.T) {
+// KustomizationState reads the Ready condition's status and message and
+// the last applied revision: a Kustomization that applied once keeps its
+// revision while it fails, one that never applied has none, one without
+// a Ready condition reads "", and a missing Kustomization is ErrNotFound.
+func TestKubeKustomizationState(t *testing.T) {
 	bodies := map[string]string{
 		"ready": `{"status":{"conditions":[{"type":"Ready","status":"True","reason":"ReconciliationSucceeded",
-			"message":"Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}]}}`,
+			"message":"Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}],
+			"lastAppliedRevision":"deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}}`,
+		"broken": `{"status":{"conditions":[{"type":"Ready","status":"False","reason":"ReconciliationFailed",
+			"message":"Secret/broken/db dry-run failed: secrets \"db\" not found"}],
+			"lastAppliedRevision":"deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
+			"lastAttemptedRevision":"deploy@sha1:0d805847b1c58eed2c5524a91e5c009f895ffdc0"}}`,
 		"missing": `{"status":{"conditions":[{"type":"Reconciling","status":"True","message":"Fetching manifests"},
 			{"type":"Ready","status":"False","reason":"ArtifactFailed",
 			"message":"kustomization path not found: stat /tmp/kustomization-103304189/deploy/staging: no such file or directory"}]}}`,
@@ -129,21 +135,21 @@ func TestKubeKustomizationReady(t *testing.T) {
 		}
 		io.WriteString(w, body)
 	})
-	for ns, want := range map[string]struct {
-		ready bool
-		msg   string
-	}{
-		"ready":       {true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"},
-		"missing":     {false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/staging: no such file or directory"},
-		"progressing": {false, "Reconciliation in progress"},
-		"new":         {false, ""},
+	for ns, want := range map[string]FluxState{
+		"ready": {"True", "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
+			"deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"},
+		"broken": {"False", `Secret/broken/db dry-run failed: secrets "db" not found`,
+			"deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"},
+		"missing":     {"False", "kustomization path not found: stat /tmp/kustomization-103304189/deploy/staging: no such file or directory", ""},
+		"progressing": {"Unknown", "Reconciliation in progress", ""},
+		"new":         {},
 	} {
-		ready, msg, err := k.KustomizationReady(context.Background(), ns, "app")
-		if err != nil || ready != want.ready || msg != want.msg {
-			t.Errorf("%s: %v %q, %v; want %v %q", ns, ready, msg, err, want.ready, want.msg)
+		got, err := k.KustomizationState(context.Background(), ns, "app")
+		if err != nil || got != want {
+			t.Errorf("%s: %+v, %v; want %+v", ns, got, err, want)
 		}
 	}
-	if _, _, err := k.KustomizationReady(context.Background(), "gone", "app"); !errors.Is(err, ErrNotFound) {
+	if _, err := k.KustomizationState(context.Background(), "gone", "app"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a missing Kustomization: %v, want ErrNotFound", err)
 	}
 }

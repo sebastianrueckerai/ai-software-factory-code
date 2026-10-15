@@ -123,21 +123,21 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		factory("waiting", false, factoryd.Environment{Namespace: "waiting-staging", Path: "deploy/staging"}),
 	}
 	type ready struct {
-		ok  bool
-		msg string
+		s   factoryd.FluxState
 		err error
 	}
 	flux := map[string]ready{
-		"demo-staging/demo-app": {true, "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456", nil},
-		"demo-prod/demo-app":    {false, "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory", nil},
-		"broken-staging/broken": {false, "Deployment/broken-staging/app dry-run failed: no matches for kind Thing", nil},
+		"demo-staging/demo-app": {factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil},
+		"demo-prod/demo-app": {factoryd.FluxState{Ready: "False",
+			Message: "kustomization path not found: stat /tmp/kustomization-103304189/deploy/prod: no such file or directory"}, nil},
+		"broken-staging/broken": {factoryd.FluxState{Ready: "False", Message: "Deployment/broken-staging/app dry-run failed: no matches for kind Thing"}, nil},
 		"broken-prod/broken":    {},
 		"broken-new/broken":     {err: factoryd.ErrNotFound},
 		"broken-locked/broken":  {err: factoryd.ErrForbidden},
 	}
 	var mu sync.Mutex
 	var read []string
-	r.c.cfg.FluxReady = func(_ context.Context, namespace, name string) (bool, string, error) {
+	r.c.cfg.Kustomization = func(_ context.Context, namespace, name string) (factoryd.FluxState, error) {
 		mu.Lock()
 		defer mu.Unlock()
 		read = append(read, namespace+"/"+name)
@@ -145,7 +145,7 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 		if !ok {
 			t.Errorf("read the Kustomization %s/%s", namespace, name)
 		}
-		return f.ok, f.msg, f.err
+		return f.s, f.err
 	}
 	readOnce := []string{"broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken", "demo-prod/demo-app", "demo-staging/demo-app"}
 
@@ -201,7 +201,7 @@ func TestProjectsReadTheKustomizationsAtOnce(t *testing.T) {
 	all := make(chan struct{})
 	var mu sync.Mutex
 	started, inFlight, most := 0, 0, 0
-	r.c.cfg.FluxReady = func(context.Context, string, string) (bool, string, error) {
+	r.c.cfg.Kustomization = func(context.Context, string, string) (factoryd.FluxState, error) {
 		mu.Lock()
 		started, inFlight = started+1, inFlight+1
 		most = max(most, inFlight)
@@ -216,7 +216,7 @@ func TestProjectsReadTheKustomizationsAtOnce(t *testing.T) {
 		mu.Lock()
 		inFlight--
 		mu.Unlock()
-		return true, "", nil
+		return factoryd.FluxState{Ready: "True"}, nil
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
 	if rec.Code != http.StatusOK {

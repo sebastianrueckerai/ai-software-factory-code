@@ -300,6 +300,18 @@ func main() {
 	registrar.Cards, registrar.Infra = store, configSource
 	registrar.Workflows, registrar.Timeline = workflows, runner.Timeline()
 	webhookIntake.MainPushed = registrar.MainPushed
+	// SigNoz's webhook channel factoryd (the signoz-objects job creates it),
+	// and the alerts of the factory projects' Kustomizations (roadmap 259)
+	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
+		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
+		Kube: kube, Namespace: kube.Namespace(),
+		// a signal card's filing pins the deployed build's commit as its
+		// reproduction base (roadmap 194), from the rolls this factoryd
+		// records of its own Deployments
+		Rolls:     store,
+		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
+		Flux:      kube}
+	registrar.FluxAlerts = alertIntake.FluxPass
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
@@ -354,15 +366,7 @@ func main() {
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
-	// SigNoz's webhook channel factoryd (the signoz-objects job creates it)
-	mux.Handle("POST /webhooks/signoz", &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
-		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
-		Kube: kube, Namespace: kube.Namespace(),
-		// a signal card's filing pins the deployed build's commit as its
-		// reproduction base (roadmap 194), from the rolls this factoryd
-		// records of its own Deployments
-		Rolls:     store,
-		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts }})
+	mux.Handle("POST /webhooks/signoz", alertIntake)
 	// the gateway's hand-over of an agent's escalate_to_human
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
@@ -459,7 +463,7 @@ func main() {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
 		},
 		ReconcileError: registrar.ReconcileError,
-		FluxReady:      kube.KustomizationReady,
+		Kustomization:  kube.KustomizationState,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
 		AttemptFunded:  runner.AttemptFunded,
