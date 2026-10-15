@@ -463,6 +463,33 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 	}
 }
 
+// Roadmap 278: the review judges the change, not who merges it. Its
+// prompt and its input name no merge rule, so a human merge rule gives the
+// model no reason for concerns about a change it finds sound.
+func TestModelReviewReadsNoMergeRule(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: "auto", Paths: []string{"Makefile"}, MergeRule: "human"}}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
+		t.Fatal(err)
+	}
+	msgs := ll.chats[0]["messages"].([]any)
+	system, user := msgs[0].(map[string]any)["content"].(string), msgs[1].(map[string]any)["content"].(string)
+	for _, text := range []string{system, user} {
+		if strings.Contains(strings.ToLower(text), "merge rule") || strings.Contains(text, "MergeRule") || strings.Contains(text, `"human"`) {
+			t.Fatalf("the review reads the merge rule: %s", text)
+		}
+	}
+	var in reviewInput
+	if err := json.Unmarshal([]byte(user), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Gates.Policy.Class != "normal" || !slices.Equal(in.Gates.Policy.Paths, []string{"Makefile"}) {
+		t.Fatalf("review policy = %+v, want class normal over Makefile", in.Gates.Policy)
+	}
+}
+
 // The review call waits the supervisor_timeout of the version the task
 // started under, not the current one.
 func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
