@@ -512,6 +512,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .count b { font-weight: 500; color: var(--accent); }
 #needs-you.lit > h3 .count b { color: inherit; }
 .none-match { margin: 0 4px 6px; color: var(--text-faint); font: 11.5px var(--font-mono); }
+.more { margin: 0 0 6px; }
+.more button { width: 100%; }
 /* the column menus (C13): a ▾ at the head's right opens the column's
    orders and shows as two radio groups; a column in another order or
    with a show says so in cyan under its head, with × back to the default */

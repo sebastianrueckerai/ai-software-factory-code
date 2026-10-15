@@ -186,7 +186,7 @@ func TestQueueOneAtATime(t *testing.T) {
 		if err := s.SetGate(ctx, "a2", GateMergeQueue, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		board, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+		board, err := s.BoardTasks(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

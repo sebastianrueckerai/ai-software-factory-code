@@ -23,18 +23,18 @@
 <section aria-labelledby="agent-lane">
 <h2 id="agent-lane">Agent lane</h2>
 <div class="lane">
-{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
-<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}</div>
+{{range $i, $col := .Columns}}<section class="column" aria-labelledby="col-{{$i}}"{{with $col.Lane}} data-lane="{{.}}"{{end}}{{with $col.Finished}} data-finished="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
+<div class="cards">{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}</div>
 </section>
 {{end}}</div>
 </section>
 {{else}}<div class="lane five">
-{{range $i, $col := .Columns}}<section class="column{{if eq $col.Title "Done"}} fold{{end}}{{if and (eq $i 0) $col.Total}} lit{{end}}" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
+{{range $i, $col := .Columns}}<section class="column{{if eq $col.Title "Done"}} fold{{end}}{{if and (eq $i 0) $col.Total}} lit{{end}}" aria-labelledby="col-{{$i}}"{{if eq $i 0}} id="needs-you"{{end}}{{with $col.Finished}} data-finished="{{.}}"{{end}}><h3 id="col-{{$i}}">{{$col.Title}} <span class="count">{{template "count" $col}}</span></h3>
 {{with $m := $col.Menu}}<details class="col-menu"><summary{{if .State}} class="on"{{end}} aria-label="Order and show, {{$col.Title}}{{with .State}}: {{.}}{{end}}" title="Order and show"></summary>
 <form method="get" action="/" class="menu-pop auto-submit">{{range $.Hidden .Name .OnlyName}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Order</legend>{{range .Orders}}<label><input type="radio" name="{{$m.Name}}" value="{{.Value}}"{{if eq .Value $m.Order}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset><fieldset><legend>Show</legend>{{range .Onlys}}<label><input type="radio" name="{{$m.OnlyName}}" value="{{.Value}}"{{if eq .Value $m.Only}} checked{{end}}><span>{{.Label}}</span></label>{{end}}</fieldset></form></details>
 {{with .State}}<p class="col-state"><span>{{.}}</span><a class="col-x" href="/{{$m.ClearQuery}}" aria-label="Back to newest first and all" title="Back to newest first and all">×</a></p>{{end}}
 {{end}}<div class="cards">{{if and $col.Total (not $col.Count)}}<p class="none-match">none match</p>{{end}}{{range $col.Needs}}{{if .Approval}}{{template "approval" .Approval}}{{else if .Escalated}}{{template "escalation" .}}{{else}}{{template "card" .Card}}{{end}}{{end}}
-{{range $col.Cards}}{{template "card" .}}{{end}}</div>
+{{range $col.Cards}}{{template "card" .}}{{end}}{{with $col.More}}{{template "more" .}}{{end}}</div>
 </section>
 {{end}}</div>
 {{end}}</div>{{end}}
@@ -58,6 +58,10 @@
 
 {{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}
 <div id="status-line" hx-swap-oob="innerHTML">{{template "status" .}}</div>{{end}}{{end}}
+
+{{define "more"}}<form class="more" method="get" action="/" hx-get="/board/finished" hx-trigger="submit, intersect once" hx-swap="outerHTML">{{template "filter" .Filter}}<input type="hidden" name="col" value="{{.Key}}"><input type="hidden" name="after" value="{{.AfterAt}}"><input type="hidden" name="after-id" value="{{.After.ID}}"><input type="hidden" name="{{.Key}}-shown" value="{{.Shown}}"><button type="submit" id="more-{{.Key}}" aria-label="Load more of {{.Title}}">Load more</button></form>{{end}}
+
+{{define "finished-page"}}{{range .Cards}}{{template "card" .}}{{end}}{{with .More}}{{template "more" .}}{{end}}{{end}}
 
 {{define "count"}}{{if ne .Total .Count}}<b>{{.Count}}</b> of {{.Total}}{{else}}{{.Count}}{{end}}{{end}}
 

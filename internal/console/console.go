@@ -55,10 +55,12 @@ type Tasks interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
 	// TaskByIssue is repository's card of issue number issue.
 	TaskByIssue(ctx context.Context, repository string, issue int64) (factoryd.Task, bool, error)
-	// BoardTasks lists at most limit tasks: those not done or failed
-	// first, then those finished after since, each with its latest
-	// escalation's reason.
-	BoardTasks(ctx context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error)
+	// BoardTasks lists the open tasks, each with its latest escalation's
+	// reason.
+	BoardTasks(ctx context.Context) ([]factoryd.BoardTask, error)
+	// FinishedTasks lists the page of a project's finished cards q asks
+	// for, and how many the read leaves from the page on.
+	FinishedTasks(ctx context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error)
 	// BoardTask is task id as BoardTasks reads it, listed there or not.
 	BoardTask(ctx context.Context, id string) (factoryd.BoardTask, bool, error)
 	// PlanRevision is revision n of plan task id's plan, the newest for 0.
@@ -315,6 +317,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /auth/callback", http.HandlerFunc(c.callback), "", "the OAuth provider's callback: no page"},
 		{"GET /{$}", c.board, "board", ""},
 		{"GET /board", c.board, "board", ""},
+		{"GET /board/finished", c.finishedPage, "", "the next page of a column of finished cards: a fragment of the board page, whose tool is board"},
 		{"GET /tasks/new", c.newTaskForm, "", "the new task's form: the chat files cards (new_card), not tasks"},
 		{"GET /tasks/{id}/timeline", c.timeline, "", "a card's timeline fragment: the card read names where its reviews, checks and plan are"},
 		{"GET /costs", c.costs, "costs", ""},

@@ -19,6 +19,14 @@ function busy(el) {
 document.addEventListener("htmx:beforeRequest", function (e) {
   if (e.detail.elt.id === "board" && busy(e.detail.elt)) e.preventDefault();
 });
+// A board that loaded more finished cards keeps them: what answers the
+// board, a swap or an action, reads as many of each column's as it shows.
+document.addEventListener("htmx:configRequest", function (e) {
+  if (!e.detail.target || e.detail.target.id !== "board") return;
+  document.querySelectorAll("#board [data-finished]").forEach(function (col) {
+    e.detail.parameters[col.dataset.finished + "-shown"] = col.querySelectorAll("[data-card]").length;
+  });
+});
 
 // A refused board action (a move the lane does not take from you) answers
 // one sentence; htmx swaps nothing on an error, so show it.

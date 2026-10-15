@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -50,10 +51,16 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "low", Kind: "comment", Author: "sebastian", Body: "not an escalation"}); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 10)
+	tasks, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatalf("BoardTasks: %v", err)
 	}
+	// the finished ones of the week, "old" finished before it
+	done, rest, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: time.Now().Add(-7 * 24 * time.Hour)})
+	if err != nil || rest != 1 {
+		t.Fatalf("FinishedTasks = %+v, %d, %v", done, rest, err)
+	}
+	tasks = append(tasks, done...)
 	var ids, reasons []string
 	for _, tk := range tasks {
 		ids = append(ids, tk.ID)
@@ -89,16 +96,11 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	if _, ok, err := s.BoardTask(ctx, "t-gone"); err != nil || ok {
 		t.Fatalf("BoardTask(t-gone) = %v, %v; want no task", ok, err)
 	}
-	// bounded, open tasks first
-	tasks, err = s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 2)
-	if err != nil || len(tasks) != 2 || tasks[0].ID != "high" || tasks[1].ID != "low" {
-		t.Fatalf("BoardTasks limit 2 = %+v, %v", tasks, err)
-	}
 }
 
 // The Done column orders finished cards by date, not by rank (roadmap
 // 234): the newest first however low its priority, an unstampable card
-// last, and the active block before it all, still most urgent first.
+// at its filing; the open cards stay most urgent first.
 func TestPGStoreBoardDoneOrder(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -125,32 +127,125 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 days' WHERE id = 'older';
 		UPDATE tasks SET finished_at = now() WHERE id = 'roll';
+		UPDATE tasks SET created_at = now() - interval '1 day' WHERE id = 'unstamped';
 		INSERT INTO task_deps (task_id, depends_on) VALUES ('waiter', 'unstamped')`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
-	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 20)
+	open, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatalf("BoardTasks: %v", err)
 	}
-	var ids []string
-	for _, tk := range tasks {
-		ids = append(ids, tk.ID)
+	q := FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: time.Now().Add(-7 * 24 * time.Hour)}
+	done, _, err := s.FinishedTasks(ctx, q)
+	if err != nil {
+		t.Fatalf("FinishedTasks: %v", err)
 	}
-	// the active block stays most urgent first (q2, waiter, q0), the roll
-	// finished newest heads Done, the older card follows however higher its
-	// rank, and the card that never got a stamp sits last
-	if want := []string{"q2", "waiter", "q0", "roll", "older", "unstamped"}; !slices.Equal(ids, want) {
-		t.Fatalf("BoardTasks = %v, want %v", ids, want)
+	ids := func(tasks []BoardTask) []string {
+		var out []string
+		for _, tk := range tasks {
+			out = append(out, tk.ID)
+		}
+		return out
 	}
-	// the in-memory fakes sort with the same order
-	SortBoardTasks(tasks)
-	ids = ids[:0]
-	for _, tk := range tasks {
-		ids = append(ids, tk.ID)
+	// the open cards stay most urgent first (q2, waiter, q0); the roll
+	// finished newest heads Done, the card that never got a stamp sits at
+	// its filing a day ago, and the older card follows however higher its
+	// rank
+	if want := []string{"q2", "waiter", "q0"}; !slices.Equal(ids(open), want) {
+		t.Fatalf("BoardTasks = %v, want %v", ids(open), want)
 	}
-	if want := []string{"q2", "waiter", "q0", "roll", "older", "unstamped"}; !slices.Equal(ids, want) {
-		t.Fatalf("SortBoardTasks = %v, want %v", ids, want)
+	if want := []string{"roll", "unstamped", "older"}; !slices.Equal(ids(done), want) {
+		t.Fatalf("FinishedTasks = %v, want %v", ids(done), want)
 	}
+	// the in-memory fakes sort and page with the same orders
+	all := append(slices.Clone(done), open...)
+	SortBoardTasks(open)
+	if want := []string{"q2", "waiter", "q0"}; !slices.Equal(ids(open), want) {
+		t.Fatalf("SortBoardTasks = %v, want %v", ids(open), want)
+	}
+	if page, _ := FinishedPage(all, q); !slices.Equal(ids(page), ids(done)) {
+		t.Fatalf("FinishedPage = %v, want %v", ids(page), ids(done))
+	}
+}
+
+// The board pages a project's finished cards by arrival and id: ties on
+// the arrival go by id, a card without a finish stamp arrives at its
+// filing, each page
+// starts after the card the one before ended with, so cards finishing
+// between two pages neither repeat nor push one off; a page says how
+// many cards are left from it on. Requires FACTORYD_TEST_DATABASE_URL.
+func TestPGStoreFinishedPages(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	minute := func(n int) *time.Time { at := base.Add(time.Duration(-n) * time.Minute); return &at }
+	week := base.AddDate(0, 0, -8)
+	for _, tk := range []struct {
+		Task
+		at *time.Time
+	}{
+		{Task{ID: "a", Status: "done"}, minute(0)},
+		{Task{ID: "b", Status: "failed"}, minute(1)},
+		{Task{ID: "c", Status: "done"}, minute(1)},
+		{Task{ID: "d", Status: "closed"}, minute(1)},
+		{Task{ID: "e", Status: "done"}, minute(2)},
+		{Task{ID: "f", Status: "failed", PlanKey: "k", CreatedAt: base.Add(-90 * time.Second)}, nil},
+		{Task{ID: "g", Status: "done"}, &week},
+		{Task{ID: "h", Status: "done", Kind: "human"}, minute(0)},
+		{Task{ID: "i", Status: "closed", Kind: KindChat}, minute(0)},
+		{Task{ID: "j", Status: "done", Repository: "sf/other"}, minute(0)},
+		{Task{ID: "k", Status: "running"}, nil},
+		{Task{ID: "w", Status: "waiting-deps"}, nil},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, cmp.Or(tk.Repository, "sf/r"), cmp.Or(tk.Kind, "agent")
+		if err := s.CreateTask(ctx, tk.Task); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = $2 WHERE id = $1`, tk.ID, tk.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddTaskDeps(ctx, "w", []string{"f"}); err != nil {
+		t.Fatal(err)
+	}
+	page := func(q FinishedQuery, want []string, wantRest int) []BoardTask {
+		t.Helper()
+		q.Repository, q.Since = "sf/r", base.AddDate(0, 0, -7)
+		if q.Statuses == nil {
+			q.Statuses = FinalStatuses
+		}
+		got, rest, err := s.FinishedTasks(ctx, q)
+		var ids []string
+		for _, b := range got {
+			ids = append(ids, b.ID)
+		}
+		if err != nil || !slices.Equal(ids, want) || rest != wantRest {
+			t.Fatalf("FinishedTasks(%+v) = %v, %d, %v; want %v, %d", q, ids, rest, err, want, wantRest)
+		}
+		return got
+	}
+	page(FinishedQuery{}, []string{"a", "b", "c", "d", "f", "e"}, 6)
+	page(FinishedQuery{Oldest: true}, []string{"e", "f", "b", "c", "d", "a"}, 6)
+	page(FinishedQuery{Statuses: []string{"failed"}}, []string{"b", "f"}, 2)
+	page(FinishedQuery{After: Cursor{At: *minute(1), ID: "c"}}, []string{"d", "f", "e"}, 3)
+	page(FinishedQuery{After: Cursor{At: *minute(1), ID: "c"}, Oldest: true}, []string{"d", "a"}, 2)
+	page(FinishedQuery{After: Cursor{At: *minute(2), ID: "e"}}, nil, 0)
+	first := page(FinishedQuery{Limit: 2}, []string{"a", "b"}, 6)
+	second := page(FinishedQuery{Limit: 2, After: CursorOf(first[1].Task)}, []string{"c", "d"}, 4)
+	// a card finishes now, newer than every page: the next page goes on
+	// where the last ended, and only a first page shows it
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 'k'`); err != nil {
+		t.Fatal(err)
+	}
+	page(FinishedQuery{Limit: 2, After: CursorOf(second[1].Task)}, []string{"f", "e"}, 2)
+	page(FinishedQuery{Limit: 2}, []string{"k", "a"}, 7)
 }
 
 // A writer's summary and accent land on the task row and read back on the
@@ -174,7 +269,7 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("Task = %v, %v", ok, err)
 		}
-		board, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+		board, err := s.BoardTasks(ctx)
 		if err != nil || len(board) != 1 {
 			t.Fatalf("BoardTasks = %+v, %v", board, err)
 		}
@@ -297,7 +392,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human' WHERE id = 'api'`); err != nil {
 		t.Fatal(err)
 	}
-	board, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+	board, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +432,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	if a := alerts[0]; len(alerts) != 1 || a.Verdict != VerdictReal || a.ResolvedBy != "sebastian" || a.ResolvedAt == nil {
 		t.Fatalf("escalation after the verdict = %+v", alerts)
 	}
-	board, _ = s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+	board, _ = s.BoardTasks(ctx)
 	for _, b := range board {
 		if b.ID == "api" && b.EscalationAlert != 0 {
 			t.Fatalf("board still offers the judged alert %d", b.EscalationAlert)

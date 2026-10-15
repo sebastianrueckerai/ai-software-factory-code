@@ -386,16 +386,23 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 	return factoryd.Task{}, false, nil
 }
 
-// BoardTasks lists the cards, as the store does, in its order: a chat
-// task is none, nor a final card finished before since.
-func (s *fakeTasks) BoardTasks(_ context.Context, since time.Time, limit int) ([]factoryd.BoardTask, error) {
+// BoardTasks lists the open cards, as the store does, in its order: a
+// chat task is none.
+func (s *fakeTasks) BoardTasks(context.Context) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Kind == factoryd.KindChat || factoryd.Final(t.Status) && t.FinishedAt != nil && t.FinishedAt.Before(since)
+		return t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
 	})
 	factoryd.SortBoardTasks(cards)
-	return cards[:min(limit, len(cards))], nil
+	return cards, nil
+}
+
+func (s *fakeTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page, rest := factoryd.FinishedPage(s.tasks, q)
+	return page, rest, nil
 }
 
 func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask, bool, error) {

@@ -91,7 +91,7 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	if err := s.AddTaskDeps(ctx, "t-y", []string{"t-a"}); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx, time.Now().Add(-time.Hour), 10)
+	tasks, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,10 +882,15 @@ func TestPGStoreBoardKeepsABlockingFailedCard(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '8 days' WHERE id IN ('t-plan', 't-a', 't-c', 't-d')`); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx, time.Now().Add(-7*24*time.Hour), 10)
+	tasks, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
+	done, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: time.Now().Add(-7 * 24 * time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks = append(tasks, done...)
 	var ids []string
 	for _, b := range tasks {
 		ids = append(ids, b.ID)

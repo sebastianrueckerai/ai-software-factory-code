@@ -549,17 +549,18 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 // of open cards takes in a card that ended.
 func boardWords(d boardData) string {
 	var b strings.Builder
-	listed := func(prefix string, lines []string) {
-		for i, l := range lines {
-			if i == boardListed {
-				fmt.Fprintf(&b, "%sand %d more", prefix, len(lines)-i)
-				break
-			}
+	// listed writes up to boardListed of the whole's lines and counts the rest
+	listed := func(prefix string, lines []string, whole int) {
+		shown := min(len(lines), boardListed)
+		for _, l := range lines[:shown] {
 			b.WriteString(prefix + l)
 		}
+		if whole > shown {
+			fmt.Fprintf(&b, "%sand %d more", prefix, whole-shown)
+		}
 	}
-	list := func(title string, cards []card) {
-		fmt.Fprintf(&b, "%s (%d):", title, len(cards))
+	list := func(title string, whole int, cards []card) {
+		fmt.Fprintf(&b, "%s (%d):", title, whole)
 		lines := make([]string, len(cards))
 		for i, k := range cards {
 			lines[i] = cardLine(k.Task)
@@ -570,26 +571,26 @@ func boardWords(d boardData) string {
 				lines[i] += ", " + providerWords
 			}
 		}
-		listed("\n  ", lines)
+		listed("\n  ", lines, whole)
 		b.WriteString("\n")
 	}
 	b.WriteString("Open cards:\n")
 	for _, col := range d.Columns {
-		if !col.Finished {
-			list(col.Title, col.Cards)
+		if col.Finished == "" {
+			list(col.Title, len(col.Cards), col.Cards)
 		}
 	}
-	list("Human lane", d.HumanTasks)
+	list("Human lane", len(d.HumanTasks), d.HumanTasks)
 	escalated := make([]card, 0, len(d.Escalations))
 	for _, n := range d.Escalations {
 		escalated = append(escalated, n.Card)
 	}
-	list("Escalated, waiting on an answer", escalated)
-	if i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished }); i >= 0 {
+	list("Escalated, waiting on an answer", len(escalated), escalated)
+	if i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished != "" }); i >= 0 {
 		fmt.Fprintf(&b, "Finished cards, ended in the last %d days and open no more:\n", finishedSince/(24*time.Hour))
 		for _, col := range d.Columns[i:] {
-			if col.Finished {
-				list(col.Title, col.Cards)
+			if col.Finished != "" {
+				list(col.Title, col.Count(), col.Cards)
 			}
 		}
 	}
@@ -604,8 +605,8 @@ func boardWords(d boardData) string {
 			requests[i] += fmt.Sprintf(", pull request #%d", a.PRNumber)
 		}
 	}
-	listed("\n  ", requests)
-	listed("\nNote: ", d.Problems)
+	listed("\n  ", requests, len(requests))
+	listed("\nNote: ", d.Problems, len(d.Problems))
 	return b.String()
 }
 

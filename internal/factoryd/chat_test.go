@@ -62,7 +62,7 @@ func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "t-card", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", IssueNumber: 4}); err != nil {
 		t.Fatal(err)
 	}
-	board, err := s.BoardTasks(ctx, oct.Add(-time.Hour), 10)
+	board, err := s.BoardTasks(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -787,9 +787,6 @@ type planCards struct {
 type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
-	// Finished: the wide view's column of a final state, its cards ended
-	// within finishedSince.
-	Finished bool
 	// Total is the column's count before the find narrowed it (C13); the
 	// head reads "n of m" when they differ.
 	Total int
@@ -800,15 +797,41 @@ type column struct {
 	// Needs is the five columns' Needs you: what the wide view's human
 	// lane holds and every card that needs the viewer, oldest first.
 	Needs []need
+	// Finished is a column of finished cards' key, the status it holds
+	// (done for the four columns' Done, which holds all three): the col of
+	// its next page and the name of its <key>-shown. Whole is how many
+	// finished cards it has when Cards holds the newest pages of them, and
+	// More the form of the next page, nil when Cards holds them all.
+	Finished string
+	Whole    int
+	More     *more
 }
 
-// Count is the number the column's head shows: its needs, else its cards.
+// Count is the number the column's head shows: its needs, else its
+// finished cards when it pages them, else its cards.
 func (c column) Count() int {
-	if len(c.Needs) > 0 {
+	switch {
+	case len(c.Needs) > 0:
 		return len(c.Needs)
+	case c.Whole > 0:
+		return c.Whole
 	}
 	return len(c.Cards)
 }
+
+// more is the form of a column's next page of finished cards: scrolled to
+// or pressed, it asks GET /board/finished for the page after the card
+// After names; without script it asks for the board showing Shown of the
+// column's cards.
+type more struct {
+	Filter     boardFilter
+	Key, Title string
+	After      factoryd.Cursor
+	Shown      int
+}
+
+// AfterAt is the arrival time After names.
+func (m more) AfterAt() string { return m.After.At.UTC().Format(time.RFC3339Nano) }
 
 // colMenu is a column's menu as its head renders it: its query names,
 // the choices with the current one, the non-default choices' labels as
@@ -870,7 +893,19 @@ type boardFilter struct {
 	// read from queued, queued-only, progress, progress-only, done and
 	// done-only in the query.
 	Queued, Progress, Done colFilter
+	// Shown is how many cards each column of finished cards shows at
+	// least, by its key (<key>-shown): a board that loaded more of them
+	// keeps them. Col and After ask for the page of Col after the card
+	// After names (GET /board/finished). The query and the forms carry
+	// none of the three.
+	Shown map[string]int
+	Col   string
+	After factoryd.Cursor
 }
+
+// whole: the find or the Done column's show narrows the finished cards,
+// so the board reads them all rather than a page.
+func (f boardFilter) whole() bool { return f.Q != "" || !f.wide() && f.Done.Only != "" }
 
 // colFilter is a column's order and show from its menu (C13): "" is the
 // default, arrival newest first and every card.
@@ -922,8 +957,17 @@ func (f *boardFilter) setCol(name string, c colFilter) {
 }
 
 // readCols reads the menus' choices with get, a value the menu does not
-// offer reading as the default.
+// offer reading as the default, and how many cards each column of
+// finished cards shows.
 func readCols(f *boardFilter, get func(string) string) {
+	for _, key := range factoryd.FinalStatuses {
+		if n, err := strconv.Atoi(get(key + "-shown")); err == nil && n > 0 {
+			if f.Shown == nil {
+				f.Shown = map[string]int{}
+			}
+			f.Shown[key] = n
+		}
+	}
 	for _, m := range colMenus {
 		c := colFilter{Order: get(m.Name), Only: get(m.Name + "-only")}
 		if !slices.ContainsFunc(m.Orders, func(o option) bool { return o.Value == c.Order }) {
@@ -1224,8 +1268,8 @@ func (d boardData) faces() string {
 	return b.String()
 }
 
-// boardLimit bounds the tasks one board render reads.
-const boardLimit = 300
+// finishedPerPage is how many finished cards a column reads at a time.
+const finishedPerPage = 50
 
 func (c *Console) card(t factoryd.Task) card {
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + t.Repository
@@ -1324,19 +1368,8 @@ var errNoProject = errors.New("no such project")
 
 // board renders the whole page, or only the board for htmx's poll.
 func (c *Console) board(w http.ResponseWriter, r *http.Request) {
-	f := urlFilter(r)
-	if f.View != "" && !f.wide() {
-		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
-		return
-	}
-	d, err := c.boardOf(r, f)
-	switch {
-	case errors.Is(err, errNoProject):
-		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
-		return
-	case err != nil:
-		log.Printf("console: board: %v", err)
-		http.Error(w, "cannot read the board", http.StatusInternalServerError)
+	d, ok := c.readBoard(w, r, urlFilter(r))
+	if !ok {
 		return
 	}
 	d.Filed = r.URL.Query().Get("filed")
@@ -1345,6 +1378,51 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 		name = "board-fragment"
 	}
 	c.render(w, name, d)
+}
+
+// readBoard is the board under f for a GET, false after it answered the
+// refusal.
+func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilter) (boardData, bool) {
+	if f.View != "" && !f.wide() {
+		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
+		return boardData{}, false
+	}
+	d, err := c.boardOf(r, f)
+	switch {
+	case errors.Is(err, errNoProject):
+		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
+		return d, false
+	case err != nil:
+		log.Printf("console: board: %v", err)
+		http.Error(w, "cannot read the board", http.StatusInternalServerError)
+		return d, false
+	}
+	return d, true
+}
+
+// finishedPage answers GET /board/finished: the page of the column of
+// finished cards col after the card that after (its arrival time) and
+// after-id name, its cards and the form of the page after
+// it, which htmx puts in place of the form that asked.
+func (c *Console) finishedPage(w http.ResponseWriter, r *http.Request) {
+	f, q := urlFilter(r), r.URL.Query()
+	f.Col, f.After.ID = q.Get("col"), q.Get("after-id")
+	at, err := time.Parse(time.RFC3339Nano, q.Get("after"))
+	if err != nil || f.After.ID == "" || f.whole() {
+		http.Error(w, "a page of finished cards follows a card (after, its arrival time in RFC 3339, and after-id), and a find or a show reads them all", http.StatusBadRequest)
+		return
+	}
+	f.After.At = at
+	d, ok := c.readBoard(w, r, f)
+	if !ok {
+		return
+	}
+	i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished == f.Col })
+	if i < 0 {
+		http.Error(w, "the board has no column of finished cards "+f.Col, http.StatusBadRequest)
+		return
+	}
+	c.render(w, "finished-page", d.Columns[i])
 }
 
 // showBoard answers a board action with the board of the form's project:
@@ -1803,21 +1881,30 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		for _, col := range stateColumns {
 			byStatus[col.Status] = len(d.Columns)
-			d.Columns = append(d.Columns, column{Title: col.Title, Finished: factoryd.Final(col.Status)})
+			k := column{Title: col.Title}
+			if factoryd.Final(col.Status) {
+				k.Finished = col.Status
+			}
+			d.Columns = append(d.Columns, k)
 		}
 		byStatus["closing"] = byStatus["running"]
 	} else {
 		for _, title := range columnTitles {
 			d.Columns = append(d.Columns, column{Title: title})
 		}
+		d.Columns[colDone].Finished = "done"
 	}
 
-	tasks, err := c.cfg.Tasks.BoardTasks(ctx, time.Now().Add(-finishedSince), boardLimit)
+	tasks, err := c.cfg.Tasks.BoardTasks(ctx)
 	if err != nil {
 		return d, fmt.Errorf("tasks: %w", err)
 	}
-	if len(tasks) == boardLimit {
-		d.Problems = append(d.Problems, fmt.Sprintf("the board shows the first %d tasks", boardLimit))
+	if shown.Name != "" {
+		finished, err := c.readFinished(ctx, &d, f, shown.Repository)
+		if err != nil {
+			return d, fmt.Errorf("finished tasks: %w", err)
+		}
+		tasks = append(tasks, finished...)
 	}
 	for _, bt := range tasks {
 		v.byID[bt.ID] = bt.Task
@@ -1943,6 +2030,50 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	}
 	d.Problems = append(d.Problems, v.problems...)
 	return d, nil
+}
+
+// readFinished reads repository's finished cards for d's columns of them:
+// all of them under a find or a show, which narrow them all; else each
+// column its first page, or as many as the board showed (f.Shown), or
+// for GET /board/finished f.Col's page after f.After, and the column
+// gets its whole count and the form of its next page.
+func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter, repository string) ([]factoryd.BoardTask, error) {
+	q := factoryd.FinishedQuery{Repository: repository, Since: time.Now().Add(-finishedSince), Oldest: !f.wide() && f.Done.Order == "oldest"}
+	if f.whole() {
+		q.Statuses = factoryd.FinalStatuses
+		all, _, err := c.cfg.Tasks.FinishedTasks(ctx, q)
+		return all, err
+	}
+	var out []factoryd.BoardTask
+	for i := range d.Columns {
+		col := &d.Columns[i]
+		if col.Finished == "" || f.Col != "" && col.Finished != f.Col {
+			continue
+		}
+		q.Statuses, q.After, q.Limit = []string{col.Finished}, f.After, max(finishedPerPage, f.Shown[col.Finished])
+		if !f.wide() {
+			q.Statuses = factoryd.FinalStatuses
+		}
+		if f.Col != "" {
+			q.Limit = finishedPerPage
+		}
+		page, rest, err := c.cfg.Tasks.FinishedTasks(ctx, q)
+		if err != nil {
+			return nil, err
+		}
+		col.Whole = rest
+		if rest > len(page) {
+			// the form asking for this page said how many the column then shows
+			upTo := len(page)
+			if f.Col != "" {
+				upTo = f.Shown[col.Finished]
+			}
+			col.More = &more{Filter: f, Key: col.Finished, Title: col.Title, After: factoryd.CursorOf(page[len(page)-1].Task),
+				Shown: upTo + finishedPerPage}
+		}
+		out = append(out, page...)
+	}
+	return out, nil
 }
 
 // statusLine completes the board's status line with the project's state

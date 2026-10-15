@@ -183,7 +183,8 @@ type labScene struct {
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
-	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene}
+	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
+	"history": historyScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -317,7 +318,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke or escalation", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation or history", name)
 	}
 	now := time.Now()
 	s := scene(now)
@@ -765,6 +766,26 @@ func idleScene(now time.Time) labScene {
 		{ID: 62, Kind: factoryd.AlertMonthCap, Source: "100", RaisedAt: now.Add(-20 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/100"},
 		{ID: 55, Kind: factoryd.AlertMonthCap, Source: "80", RaisedAt: now.Add(-3 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/80"},
 		{ID: 37, Kind: factoryd.AlertMonthCap, Source: "50", RaisedAt: now.Add(-7 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/50"},
+	}
+	return s
+}
+
+// historyScene is the idle board after a busy week: 320 more cards
+// finished, one every 30 minutes, every seventh failed, more than the
+// Done column reads at once.
+func historyScene(now time.Time) labScene {
+	s := idleScene(now)
+	titles := []string{"Board: keep the column's scroll across a swap", "Gateway: log the provider's request id",
+		"Costs: the week's total under the table", "Drawer: link the pull request's checks", "Chat: the thread list's unread dot",
+		"Intake: refuse an issue without a body", "Pulse: name the oldest waiting card", "Alerts: group a flapping rule's alerts"}
+	for i := range 320 {
+		status := "done"
+		if i%7 == 6 {
+			status = "failed"
+		}
+		age := time.Duration(i+1) * 30 * time.Minute
+		s.tasks = append(s.tasks, factoryd.BoardTask{Task: finished(labCard(now, int64(1319-i), status, "ready", age+40*time.Minute,
+			titles[i%len(titles)], "Done as the issue asks."), now, age, 0.25)})
 	}
 	return s
 }

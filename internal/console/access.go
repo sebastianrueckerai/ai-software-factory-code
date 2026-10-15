@@ -76,6 +76,7 @@ var accessTable = map[string]accessRule{
 	"GET /auth/callback":                      {},
 	"GET /{$}":                                rMember,
 	"GET /board":                              rMember,
+	"GET /board/finished":                     rMember,
 	"GET /tasks/new":                          rFactory,
 	"GET /tasks/{id}/timeline":                {need: writer, scope: scTask},
 	"GET /costs":                              rFactory,

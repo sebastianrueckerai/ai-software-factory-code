@@ -924,9 +924,9 @@ func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
 	d := boardData{Columns: []column{
 		{Title: "Ready", Cards: []card{task(1, "queued", "Fix the cache.")}},
 		{Title: "Running", Cards: []card{task(2, "running", "Speed up the board.")}},
-		{Title: "Done", Finished: true, Cards: []card{task(3, "done", "Add the feed.")}},
-		{Title: "Failed", Finished: true, Cards: []card{task(4, "failed", "Port the store."), task(5, "failed", "Drop the cache."), task(6, "failed", "Rename the page.")}},
-		{Title: "Closed", Finished: true},
+		{Title: "Done", Finished: "done", Cards: []card{task(3, "done", "Add the feed.")}},
+		{Title: "Failed", Finished: "failed", Cards: []card{task(4, "failed", "Port the store."), task(5, "failed", "Drop the cache."), task(6, "failed", "Rename the page.")}},
+		{Title: "Closed", Finished: "closed"},
 	}}
 	equal(t, "the board's text", boardWords(d), `Open cards:
 Ready (1):
@@ -948,7 +948,7 @@ Approval requests waiting (0):`)
 
 // Every list of the board's text is bounded as a column's cards are: 25
 // lines, then how many more; the cards, the approval requests and the
-// notes alike.
+// notes alike. A finished column counts its whole, not the page it holds.
 func TestBoardWordsBoundsEveryList(t *testing.T) {
 	var d boardData
 	var cards []card
@@ -957,9 +957,14 @@ func TestBoardWordsBoundsEveryList(t *testing.T) {
 		d.Approvals = append(d.Approvals, approvalCard{ApprovalRequest: factoryd.ApprovalRequest{ID: int64(i), Kind: "merge", TaskID: fmt.Sprintf("t-%d", i)}})
 		d.Problems = append(d.Problems, fmt.Sprintf("problem %d", i))
 	}
-	d.Columns = []column{{Title: "Backlog", Cards: cards}}
+	done := []card{
+		{Task: factoryd.Task{ID: "t-90", IssueNumber: 90, Status: "done", Objective: "Ship."}},
+		{Task: factoryd.Task{ID: "t-91", IssueNumber: 91, Status: "done", Objective: "Ship."}},
+	}
+	d.Columns = []column{{Title: "Backlog", Cards: cards}, {Title: "Done", Finished: "done", Whole: 60, Cards: done}}
 	got := boardWords(d)
 	for _, want := range []string{
+		"\nDone (60):\n  #90 t-90 \"Ship.\" done (is done)\n  #91 t-91 \"Ship.\" done (is done)\n  and 58 more\nApproval requests waiting (27):",
 		"Backlog (27):\n  #1 t-1 \"Fix.\" backlog (waits in the backlog until a member moves it into a lane)\n",
 		"\n  #25 t-25 \"Fix.\" backlog (waits in the backlog until a member moves it into a lane)\n  and 2 more\nHuman lane (0):\n",
 		"\nApproval requests waiting (27):\n  merge request 1 of t-1\n",

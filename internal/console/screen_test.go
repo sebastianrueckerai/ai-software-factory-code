@@ -36,7 +36,8 @@ func columnItems(t *testing.T, body, title string) []string {
 }
 
 // screenRig is the code project with a card in every status, two pending
-// approval requests and a card of another project. Needs you holds, for
+// approval requests and a card of another project; the final cards
+// finished one, two and three minutes ago. Needs you holds, for
 // sebastian, oldest waiting first: approval 4 (4 h), t-me waiting on him
 // as its author (3 h), the escalated t-esc (2 h), approval 3 (1 h) and the
 // human task t-human (20 min).
@@ -56,11 +57,16 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	me.Author, me.GateSince = "sebastian", ago(3*time.Hour)
 	other := factoryd.BoardTask{Task: task("t-other", "waiting-poster", "ready")}
 	other.Author, other.GateSince = "alice", ago(5*time.Hour)
+	finished := func(id, status string, d time.Duration) factoryd.BoardTask {
+		k := factoryd.BoardTask{Task: task(id, status, "ready")}
+		k.CreatedAt, k.FinishedAt = now.Add(-time.Hour), ago(d)
+		return k
+	}
 	r.tasks.tasks = []factoryd.BoardTask{esc, me, other,
 		{Task: factoryd.Task{ID: "t-human", Kind: "human", Status: "queued", Repository: "sf/code", Objective: "rotate the key", CreatedAt: now.Add(-20 * time.Minute)}},
 		{Task: task("t-back", "backlog", "backlog")}, {Task: task("t-queue", "queued", "ready")}, {Task: task("t-deps", "waiting-deps", "ready"), WaitingOn: "#9"},
 		{Task: task("t-run", "running", "ready")}, {Task: task("t-close", "closing", "ready")}, {Task: task("t-rev", "in-review", "ready")},
-		{Task: task("t-done", "done", "ready")}, {Task: task("t-fail", "failed", "ready")}, {Task: task("t-closed", "closed", "ready")},
+		finished("t-done", "done", time.Minute), finished("t-fail", "failed", 2*time.Minute), finished("t-closed", "closed", 3*time.Minute),
 		{Task: factoryd.Task{ID: "t-elsewhere", Kind: "agent", Status: "running", Repository: "demo-app/demo-app", Objective: "elsewhere", CreatedAt: now}},
 	}
 	r.approvals.rows[0].CreatedAt = now.Add(-time.Hour)
@@ -1156,5 +1162,128 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 	plain := page("")
 	if strings.Contains(plain, "col-state") || strings.Contains(plain, `<summary class="on"`) || strings.Count(plain, `<details class="col-menu">`) != 3 || strings.Contains(col(t, plain, "Needs you"), "col-menu") {
 		t.Error("by default the board shows a state line, a marked menu, not three menus, or one on Needs you")
+	}
+}
+
+// The Done column reads its finished cards a page at a time, past the
+// 300 one read once bounded the board to: the newest 50 of the week,
+// then the form of the next page, which htmx asks for
+// once the viewer scrolls to it and its button asks for by keyboard, or
+// without script asks for the board showing 50 more. A page starts after
+// the card the one before ended with, ties on the stamp by id, so a card
+// finishing meanwhile repeats none; the head counts them all and no line
+// says the board stops. A find or a show reads them all; the wide view
+// pages each final status.
+func TestDonePagesItsFinishedCards(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	now := time.Now()
+	// t-d000 to t-d329 finish in threes a minute apart, t-d000 newest:
+	// t-d048, t-d049 and t-d050 share a stamp across the first page's end
+	fin := func(i int) *time.Time { at := now.Add(-time.Duration(i/3) * time.Minute); return &at }
+	task := func(id, status string, finished *time.Time) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: id,
+			CreatedAt: now.Add(-3 * time.Hour), FinishedAt: finished}}
+	}
+	ids := func(n, m int) []string {
+		var out []string
+		for i := n; i < m; i++ {
+			out = append(out, fmt.Sprintf("t-d%03d", i))
+		}
+		return out
+	}
+	for i := range 330 {
+		r.tasks.tasks = append(r.tasks.tasks, task(fmt.Sprintf("t-d%03d", i), "done", fin(i)))
+	}
+	old := now.AddDate(0, 0, -8)
+	elsewhere := task("t-elsewhere", "done", fin(0))
+	elsewhere.Repository = "demo-app/demo-app"
+	r.tasks.tasks = append(r.tasks.tasks, task("t-f", "failed", fin(600)), task("t-old", "done", &old), elsewhere, task("t-run", "running", nil))
+	get := func(target string) (int, string) {
+		rec := r.do(httptest.NewRequest(http.MethodGet, target, nil), ck)
+		return rec.Code, rec.Body.String()
+	}
+	form := func(i, shown int) string {
+		return `<form class="more" method="get" action="/" hx-get="/board/finished" hx-trigger="submit, intersect once" hx-swap="outerHTML">` +
+			`<input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="col" value="done">` +
+			`<input type="hidden" name="after" value="` + fin(i).UTC().Format(time.RFC3339Nano) + `"><input type="hidden" name="after-id" value="` + fmt.Sprintf("t-d%03d", i) + `">` +
+			`<input type="hidden" name="done-shown" value="` + strconv.Itoa(shown) + `"><button type="submit" id="more-done" aria-label="Load more of Done">Load more</button></form>`
+	}
+	page := func(after, shown int) string {
+		return fmt.Sprintf("/board/finished?project=ai-software-factory-code&col=done&after=%s&after-id=t-d%03d&done-shown=%d",
+			url.QueryEscape(fin(after).UTC().Format(time.RFC3339Nano)), after, shown)
+	}
+	cards := func(body string) []string {
+		var out []string
+		for _, m := range regexp.MustCompile(`data-card="([^"]+)"`).FindAllStringSubmatch(body, -1) {
+			out = append(out, m[1])
+		}
+		return out
+	}
+
+	_, body := get("/")
+	if got := columnItems(t, body, "Done"); !slices.Equal(got, ids(0, 50)) {
+		t.Fatalf("Done holds %v, want t-d000 to t-d049", got)
+	}
+	if p := regexp.MustCompile(`<p class="problem"[^>]*>[^<]*`).FindAllString(body, -1); len(p) > 0 {
+		t.Errorf("the board says %q", p)
+	}
+	for _, want := range []string{`data-finished="done"><h3 id="col-3">Done <span class="count">331</span></h3>`, form(49, 100) + "</div>"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+
+	// t-new finishes while the viewer reads; the next page goes on after t-d049
+	r.tasks.mu.Lock()
+	later := now.Add(time.Second)
+	r.tasks.tasks = append(r.tasks.tasks, task("t-new", "done", &later))
+	r.tasks.mu.Unlock()
+	code, body := get(page(49, 100))
+	if code != http.StatusOK || !slices.Equal(cards(body), ids(50, 100)) || !strings.HasPrefix(body, `<article class="card face final d-done" data-card="t-d050"`) ||
+		!strings.HasSuffix(body, form(99, 150)) {
+		t.Fatalf("the page after t-d049 = %d %v, want the cards t-d050 to t-d099 and the form after t-d099:\n%s", code, cards(body), body)
+	}
+	if _, body = get(page(299, 350)); !slices.Equal(cards(body), append(ids(300, 330), "t-f")) || strings.Contains(body, `class="more"`) {
+		t.Fatalf("the last page = %v, want t-d300 to t-d329 and t-f without a form", cards(body))
+	}
+
+	// the board asked to show 100 (a reload, a swap, the button without script)
+	_, body = get("/?done-shown=100")
+	if got := columnItems(t, body, "Done"); !slices.Equal(got, append([]string{"t-new"}, ids(0, 99)...)) || !strings.Contains(body, form(98, 150)) ||
+		!strings.Contains(body, `Done <span class="count">332</span>`) {
+		t.Errorf("Done showing 100 holds %v, want t-new and t-d000 to t-d098, the form after t-d098 and the count 332", got)
+	}
+	for _, c := range []struct{ query, count string }{{"?q=t-f", "<b>1</b> of 332"}, {"?done-only=failed", "<b>1</b> of 332"}} {
+		_, body = get("/" + c.query)
+		if got := columnItems(t, body, "Done"); !slices.Equal(got, []string{"t-f"}) || strings.Contains(body, `class="more"`) ||
+			!strings.Contains(body, `Done <span class="count">`+c.count+`</span>`) {
+			t.Errorf("%s: Done holds %v, want t-f of all 332 and no form", c.query, got)
+		}
+	}
+	if _, body = get("/?done=oldest"); !slices.Equal(columnItems(t, body, "Done")[:5], []string{"t-f", "t-d327", "t-d328", "t-d329", "t-d324"}) ||
+		len(columnItems(t, body, "Done")) != 50 {
+		t.Errorf("Done oldest first holds %v, want t-f, t-d327 to t-d329, then t-d324, 50 in all", columnItems(t, body, "Done"))
+	}
+
+	// the wide view: Done pages its own, Failed and Closed hold theirs
+	_, body = get("/?view=wide")
+	if got := columnItems(t, body, "Done"); !slices.Equal(got, append([]string{"t-new"}, ids(0, 49)...)) ||
+		!strings.Contains(body, `data-finished="failed"><h3 id="col-`) || !slices.Equal(columnItems(t, body, "Failed"), []string{"t-f"}) ||
+		strings.Contains(col(t, body, "Failed"), `class="more"`) || !strings.Contains(col(t, body, "Done"), `<input type="hidden" name="view" value="wide">`) {
+		t.Errorf("the wide view's Done holds %v and Failed %v, want 50 with the form and t-f alone", got, columnItems(t, body, "Failed"))
+	}
+
+	for _, target := range []string{
+		"/board/finished?col=done",                                                        // after no card
+		"/board/finished?col=done&after-id=t-d049",                                        // no arrival
+		"/board/finished?col=done&after=yesterday&after-id=t-d049",                        // no time
+		"/board/finished?col=done&after=2026-10-15T00:00:00Z&after-id=t-d049&q=t-f",       // a find reads them all
+		"/board/finished?col=failed&after=2026-10-15T00:00:00Z&after-id=t-d049",           // the four columns' Done holds failed
+		"/board/finished?col=done&after=2026-10-15T00:00:00Z&after-id=t-d049&view=narrow", // no such view
+	} {
+		if code, body := get(target); code != http.StatusBadRequest {
+			t.Errorf("%s = %d %q, want 400", target, code, body)
+		}
 	}
 }
