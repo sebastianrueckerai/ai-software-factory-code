@@ -53,9 +53,11 @@ func TestLab(t *testing.T) {
 	}))
 	t.Cleanup(forgejo.Close)
 	// the project's documents (roadmap 277): sf/docs over the lab's Forgejo,
-	// the roadmap and the two plans it names
+	// the roadmap and the two plans it names; the writer token is minted,
+	// as the factory mints its tokens, never a literal
 	_, docs := docsOver(t, forgejo.URL, labDocs)
-	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, "docs-token"
+	docsToken, _ := factoryd.NewReadToken()
+	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
