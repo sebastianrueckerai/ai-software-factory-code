@@ -27,7 +27,8 @@ const (
 		"the infra repository's manifests, HelmReleases, chart sources and ts-go template there (its " +
 		"`scripts/upstream-images-test/test.sh`, which config-check runs). A line marked bootstrap (Forgejo, CNPG, cert-manager, " +
 		"local-path, Flux, Talos's Kubernetes, Cilium) is an upgrade of what Forgejo or the nodes run on: read its release notes " +
-		"first; Talos's and Cilium's lines move with their upgrade.\n" +
+		"first; Talos's and Cilium's lines move with their upgrade, and the infra re-seed runbook's hand installs (Cilium, the " +
+		"Forgejo and cert-manager charts) name the bootstrap digests too, which the infra test holds to the list.\n" +
 		"- **Debian snapshot**: `DEBIAN_SNAPSHOT` in Dockerfile.runner and Dockerfile.sandbox, one snapshot.debian.org time for both, " +
 		"moved with the `debian:bookworm-slim` line.\n" +
 		"- **PostgreSQL**: `POSTGRESQL_VERSION`, `LIBPQ_VERSION` and `POSTGRESQL_COMMON_VERSION` in both Dockerfiles, the versions " +
