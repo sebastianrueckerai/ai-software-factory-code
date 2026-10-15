@@ -12,16 +12,31 @@
 <button type="button" id="doc-back" class="xs" aria-label="Nothing back" title="Nothing back" disabled>&#8249;</button>
 <button type="button" id="doc-fwd" class="xs" aria-label="Nothing forward" title="Nothing forward" disabled>&#8250;</button>
 <details id="doc-recent" class="doc-recent"><summary aria-haspopup="menu">Recent &#9662;</summary><div class="doc-recent-menu" id="doc-recent-menu" role="menu"></div></details>
-<span class="seg doc-mode"><button type="button" id="doc-mode-read" aria-pressed="true">Read</button><button type="button" id="doc-mode-edit" disabled title="Editing the documents arrives with the next card">Edit</button></span>
+<button type="button" id="doc-new" class="xs" title="Write a new document under docs/">New document</button>
+<span class="seg doc-mode"><button type="button" id="doc-mode-read" aria-pressed="true">Read</button><button type="button" id="doc-mode-edit" aria-pressed="false">Edit</button></span>
 <span class="doc-gap" aria-hidden="true"></span>
 <a id="doc-forgejo" class="doc-forgejo" target="_blank" rel="noopener" hidden>Open in Forgejo &#8599;</a>
 <button type="button" id="doc-wide" class="xs" aria-pressed="false" title="Wide: across the board and the chat">Wide</button>
 <button type="button" id="doc-close" class="xs doc-x" aria-label="Close the document" title="Close the document">&#215;</button>
 </div>
-<p class="doc-pathline" id="doc-pathline"><span class="doc-file"><span class="doc-path" id="doc-path"></span></span><span class="doc-facts" id="doc-facts"></span></p>
+<form id="doc-new-form" class="doc-row doc-new" autocomplete="off" hidden>
+<label class="doc-new-l" for="doc-name">New document</label>
+<span class="doc-new-at" aria-hidden="true">docs/</span>
+<input id="doc-name" class="doc-name" name="name" placeholder="goal" spellcheck="false">
+<span class="doc-new-at" aria-hidden="true">.md</span>
+<button type="submit" class="primary doc-sm">Create</button>
+<button type="button" id="doc-new-cancel">Cancel</button>
+</form>
+<p class="doc-pathline" id="doc-pathline"><span class="doc-file"><span class="doc-dot" id="doc-dot" aria-hidden="true" hidden>&#9679;</span><span class="doc-path" id="doc-path"></span></span><span class="doc-facts" id="doc-facts"></span></p>
 </div>
 <nav class="doc-pins" id="doc-pins" aria-label="Pinned documents"></nav>
+<p class="doc-note" id="doc-note" role="status" hidden></p>
 <article id="doc-article"></article>
+<div id="doc-edit" class="doc-edit" hidden>
+<label class="doc-vh" for="doc-editor">The Markdown of the document</label>
+<textarea id="doc-editor" spellcheck="true"></textarea>
+<div class="doc-edit-row" id="doc-edit-row"></div>
+</div>
 </aside>{{end}}
 </div>
 <footer id="live" role="status"></footer>
@@ -33,6 +48,7 @@
 <dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, the status in detail, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
 <dt><kbd>f</kbd></dt><dd>find on the board: a word or a ref, or <code>plan:558</code>, <code>stage:verifying</code>, <code>is:failed</code> (blocked, stale, provider, near), <code>by:sebastian</code>, <code>model:coding-cheap</code>; <kbd>Escape</kbd> in the box clears it</dd>
+<dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>in the document's editor: save the draft as one commit on master</dd>
 {{template "chat-keys" .}}</dl>
 <button type="button" id="keys-close">Close</button>
 </div>

@@ -368,6 +368,15 @@ func (c *Console) readDoc(ctx context.Context, docRepo, path, find string) (stri
 	return head + "\n\n" + b.String(), nil
 }
 
+// docWritten is the write door's one event per commit it lands, whatever
+// wrote through it: the chat's write_doc or the member's save in the
+// console (roadmap 277, the 2026-10-15 plan, item 4). project is the
+// repository of the project the write belongs to.
+func (c *Console) docWritten(ctx context.Context, a actor, project, path, hash, commit string) {
+	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: project, Kind: factoryd.EventDocWritten,
+		Actor: a.s.user, Via: a.via, Detail: map[string]any{"path": path, "hash": hash, "commit": commit}})
+}
+
 // docEdit is write_doc's change: Old replaced by New in an existing file,
 // or Content for a new one, against the file read with hash Base.
 type docEdit struct{ Old, New, Content, Base string }
@@ -378,7 +387,9 @@ type docEdit struct{ Old, New, Content, Base string }
 // the roadmap's structure check, the repository's one commit at a time,
 // and the content-hash compare-and-swap, whose stale refusal names the
 // file's current hash and whether the edit's passage is still there.
-func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path string, edit docEdit) (string, error) {
+// project is the repository of the project the write belongs to, which
+// the door's one doc_written event names.
+func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, path string, edit docEdit) (string, error) {
 	repo, err := c.docRepoOf(docRepo, path)
 	if err != nil {
 		return "", err
@@ -441,6 +452,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path string,
 		http.StatusCreated, &committed); err != nil {
 		return "", &forgejoRefusal{"commit the document", err}
 	}
+	c.docWritten(ctx, a, project, path, factoryd.ContentHash(next), committed.Commit.SHA)
 	log.Printf("console: %s wrote %s on %s via %s", a.s.user, path, docRepo, a.via)
 	return fmt.Sprintf("Committed %s to %s@master: %s, now base_sha256 %s.", cmp.Or(committed.Commit.SHA, "the change"), docRepo, path,
 		factoryd.ContentHash(next)), nil

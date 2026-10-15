@@ -495,12 +495,49 @@ document.addEventListener("keydown", function (e) {
 // paragraph after 400ms, never on a coarse pointer or a narrow screen.
 (function () {
   var nav = { stack: [], index: -1 }, peeks = {}, hoverTimer = null, peekEl = null, peekFor = null;
+  // the editor (the 2026-10-15 plan, item 3): versions hold each
+  // document's last read or landed save — its text, content hash, commit
+  // and time — saves each path's save state (busy, queued, the refusal,
+  // the landed commit), and edit is the open document's mode. The draft
+  // itself lives in localStorage, so it outlives the tab; the dot — on
+  // the path line, the pins, Recent and the Documents button — says a
+  // draft is there from the first keystroke to the save that lands.
+  var versions = {}, saves = {}, edit = { path: "", mode: "read" }, confirmAsk = null, restoredFor = "";
 
   function view() { return document.getElementById("doc-view"); }
   function board() { return document.getElementById("board"); }
   function project() { return board() && board().dataset.project || ""; }
   function visible() { var v = view(); return !!v && !v.hidden; }
   function label(path) { return path.split("/").pop().replace(/\.md$/, ""); }
+  function current() { return nav.stack[nav.index] || ""; }
+  function timeOfDay(at) { var d = at ? new Date(at) : new Date(); return ("0" + d.getHours()).slice(-2) + ":" + ("0" + d.getMinutes()).slice(-2); }
+
+  // the draft: localStorage per project and path, the text and the time
+  // it began
+  function draftKey(path) { return "doc:" + project() + ":draft:" + path; }
+  function draftOf(path) {
+    try {
+      var v = localStorage.getItem(draftKey(path));
+      var d = v ? JSON.parse(v) : null;
+      return d && typeof d.text === "string" ? d : null;
+    } catch (err) { return null; }
+  }
+  function keepDraft(path, text) {
+    try {
+      var d = draftOf(path);
+      localStorage.setItem(draftKey(path), JSON.stringify({ text: text, at: d ? d.at : timeOfDay() }));
+    } catch (err) {}
+  }
+  function dropDraft(path) { try { localStorage.removeItem(draftKey(path)); } catch (err) {} }
+  function anyDraft() {
+    try {
+      var pre = "doc:" + project() + ":draft:";
+      for (var i = 0; i < localStorage.length; i++) {
+        if (localStorage.key(i).indexOf(pre) === 0) return true;
+      }
+    } catch (err) {}
+    return false;
+  }
 
   function load(key, fallback) {
     try {
@@ -541,7 +578,7 @@ document.addEventListener("keydown", function (e) {
       b.dataset.doc = p;
       b.title = p;
       if (p === current) b.setAttribute("aria-current", "page");
-      b.textContent = label(p);
+      b.textContent = (draftOf(p) ? "● " : "") + label(p);
     });
     if (current && list.indexOf(current) < 0) {
       var add = navEl.appendChild(document.createElement("button"));
@@ -576,7 +613,10 @@ document.addEventListener("keydown", function (e) {
   }
   function syncButton(open) {
     var b = document.getElementById("documents");
-    if (b) b.setAttribute("aria-expanded", String(open));
+    if (!b) return;
+    b.setAttribute("aria-expanded", String(open));
+    // the dot: a draft waits in the editor
+    b.textContent = (anyDraft() ? "● " : "") + "Documents";
   }
   function syncNav() {
     var back = document.getElementById("doc-back"), fwd = document.getElementById("doc-fwd");
@@ -606,7 +646,8 @@ document.addEventListener("keydown", function (e) {
       row.dataset.doc = p;
       row.setAttribute("role", "menuitem");
       row.appendChild(document.createElement("span")).className = "doc-recent-label";
-      row.firstChild.textContent = (p === current ? "● " : "") + label(p);
+      // ✓ the open document, ● a draft of it waiting in the editor
+      row.firstChild.textContent = (p === current ? "✓ " : "") + (draftOf(p) ? "● " : "") + label(p);
     });
   }
   function remember(path) {
@@ -623,17 +664,13 @@ document.addEventListener("keydown", function (e) {
   function show(d, frag) {
     var v = view(), art = document.getElementById("doc-article");
     if (!v || !art) return;
+    var path = d.path, draft = draftOf(path);
+    versions[path] = { text: null, html: d.html, sha256: d.sha256, commit: d.commit, at: d.at, forgejo: d.forgejo, title: d.title };
     art.textContent = "";
     art.innerHTML = d.html;
-    var facts = document.getElementById("doc-facts"), at = d.at ? new Date(d.at) : null;
     var pathEl = document.getElementById("doc-path");
     pathEl.textContent = d.path;
     pathEl.title = d.path;
-    // the path line's state: the short commit and its time of day, the day
-    // itself on the hover
-    var day = at ? ("0" + at.getHours()).slice(-2) + ":" + ("0" + at.getMinutes()).slice(-2) : "";
-    facts.textContent = (d.commit ? d.commit.slice(0, 7) : "") + (d.commit && at ? " · " : "") + day;
-    facts.title = "content " + d.sha256 + (d.commit ? "\ncommit " + d.commit + (at ? " · " + at.toLocaleString() : "") : "");
     var link = document.getElementById("doc-forgejo");
     if (d.forgejo) { link.hidden = false; link.href = d.forgejo; } else link.hidden = true;
     v.classList.toggle("wide", !!load("wide", false));
@@ -643,6 +680,8 @@ document.addEventListener("keydown", function (e) {
     var at = frag && art.querySelector('[id="' + CSS.escape(frag) + '"]');
     if (at) at.scrollIntoView();
     else art.scrollTop = load("scroll:" + d.path, 0) || 0;
+    // a draft reopens in the editor, the note saying it was restored
+    if (draft) { restoredFor = path; enterEdit(); } else setMode("read");
     v.focus({ preventScroll: true });
   }
   function failDoc(text, status) {
@@ -651,6 +690,198 @@ document.addEventListener("keydown", function (e) {
     art.textContent = "";
     art.appendChild(document.createElement("p")).className = "doc-none";
     art.firstChild.textContent = text.trim() || "The document cannot be read (" + status + ").";
+  }
+
+  // the editor and its states (the 2026-10-15 plan, item 3): the mode
+  // buttons, the textarea with its row — Save as commit, Cancel, Discard,
+  // based on — and the note line under the head. The path line carries
+  // the state: the dot from the first keystroke, saving…, the amber
+  // reason a save refused, the landed commit, else the version's commit
+  // and time. One save is in flight; one more is queued behind it and
+  // only runs when the member kept typing.
+  function setMode(mode) {
+    edit.mode = mode;
+    var art = document.getElementById("doc-article"), box = document.getElementById("doc-edit");
+    var read = document.getElementById("doc-mode-read"), ed = document.getElementById("doc-mode-edit");
+    if (!art || !box || !read || !ed) return;
+    var ver = versions[current()];
+    art.hidden = mode !== "read";
+    box.hidden = mode !== "edit";
+    read.setAttribute("aria-pressed", String(mode === "read"));
+    ed.setAttribute("aria-pressed", String(mode === "edit"));
+    read.disabled = !ver;
+    read.title = ver ? "" : "Not saved yet";
+    syncDoc();
+  }
+  function enterEdit() {
+    var path = current(), ver = versions[path], draft = draftOf(path);
+    var ed = document.getElementById("doc-editor");
+    if (!ed) return;
+    // the text the editor starts from: the draft, else the version's,
+    // fetched raw — a new file starts from nothing
+    if (draft) { ed.value = draft.text; setMode("edit"); ed.focus({ preventScroll: true }); return; }
+    if (ver && ver.text !== null) { ed.value = ver.text; setMode("edit"); ed.focus({ preventScroll: true }); return; }
+    ed.value = ver ? "Reading " + label(path) + "…" : "";
+    setMode("edit");
+    if (!ver) { ed.value = ""; ed.focus({ preventScroll: true }); return; }
+    fetch(docURL(path) + "?raw=1").then(function (r) { return r.ok ? r.text() : Promise.reject(r.status); }).then(function (text) {
+      if (current() !== path || versions[path] !== ver) return;
+      ver.text = text;
+      if (!draftOf(path)) { ed.value = text; syncDoc(); }
+      ed.focus({ preventScroll: true });
+    }).catch(function () {
+      if (current() === path) { ed.value = ""; syncDoc(); }
+    });
+  }
+  // the path line's state and the dot before the path
+  function syncDoc() {
+    var path = current(), ver = versions[path], s = saves[path] || {};
+    var draft = !!draftOf(path);
+    var dot = document.getElementById("doc-dot");
+    if (dot) dot.hidden = !draft;
+    var facts = document.getElementById("doc-facts");
+    if (facts) {
+      facts.textContent = "";
+      facts.className = "doc-facts";
+      facts.title = "";
+      if (s.busy) facts.textContent = "· saving…";
+      else if (s.err) {
+        facts.className = "doc-facts doc-refused";
+        facts.textContent = "not saved: " + s.err.why + " · retry";
+        facts.title = "the save did not land; Retry sends it again";
+      } else if (s.landed) {
+        facts.className = "doc-facts doc-saved";
+        facts.textContent = "Saved: " + s.landed.sha.slice(0, 7) + " on master · " + s.landed.at;
+        facts.title = "commit " + s.landed.sha;
+      } else if (ver && !draft && ver.commit) {
+        facts.textContent = ver.commit.slice(0, 7) + " · " + timeOfDay(ver.at);
+        facts.title = "content " + ver.sha256 + "\ncommit " + ver.commit;
+      }
+    }
+    syncPins();
+    syncRecent(path);
+    syncNote();
+    syncEditRow();
+  }
+  // the note line: a confirm ask, else the restored draft
+  function syncNote() {
+    var note = document.getElementById("doc-note");
+    if (!note) return;
+    note.textContent = "";
+    note.hidden = true;
+    if (!current()) return;
+    if (confirmAsk && confirmAsk.at === "note") { note.hidden = false; note.appendChild(confirmHTML()); return; }
+    var draft = draftOf(current());
+    if (restoredFor === current() && draft) {
+      note.hidden = false;
+      note.appendChild(document.createTextNode("draft from " + draft.at + " restored · "));
+      note.appendChild(noteLink("discard", "discard"));
+    }
+  }
+  function noteLink(act, text) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "linkbtn";
+    b.dataset.act = act;
+    b.textContent = text;
+    return b;
+  }
+  function confirmHTML() {
+    var span = document.createElement("span");
+    span.className = "doc-confirm";
+    span.setAttribute("role", "group");
+    span.setAttribute("aria-label", "Discard your changes?");
+    span.appendChild(document.createElement("span")).className = "doc-confirm-q";
+    span.firstChild.textContent = "Discard your changes?";
+    var yes = span.appendChild(document.createElement("button"));
+    yes.type = "button";
+    yes.className = "deny";
+    yes.dataset.act = "discard-yes";
+    yes.textContent = "Discard";
+    var no = span.appendChild(document.createElement("button"));
+    no.type = "button";
+    no.dataset.act = "confirm-no";
+    no.textContent = "Keep";
+    return span;
+  }
+  // the editor's row: the ask while one is open, else Save as commit,
+  // Cancel, Discard when a draft is there, and what it is based on
+  function syncEditRow() {
+    var row = document.getElementById("doc-edit-row");
+    if (!row || edit.mode !== "edit" || !current()) return;
+    row.textContent = "";
+    if (confirmAsk && confirmAsk.at === "row") { row.appendChild(confirmHTML()); return; }
+    var save = row.appendChild(document.createElement("button"));
+    save.type = "button";
+    save.className = "primary";
+    save.dataset.act = "save";
+    save.title = "Ctrl+S";
+    save.setAttribute("aria-keyshortcuts", "Control+S Meta+S");
+    save.textContent = "Save as commit";
+    var cancel = row.appendChild(document.createElement("button"));
+    cancel.type = "button";
+    cancel.dataset.act = "cancel";
+    cancel.textContent = "Cancel";
+    if (draftOf(current())) {
+      var drop = row.appendChild(document.createElement("button"));
+      drop.type = "button";
+      drop.className = "linkbtn doc-discard";
+      drop.dataset.act = "discard";
+      drop.textContent = "Discard";
+    }
+    var base = row.appendChild(document.createElement("span"));
+    base.className = "doc-base";
+    var ver = versions[current()];
+    base.textContent = ver && ver.commit ? "based on " + ver.commit.slice(0, 7) : "a new file: the first save creates it";
+  }
+  // the text a save would take: the editor's, else the draft's
+  function typedText(path) {
+    var ed = document.getElementById("doc-editor");
+    if (ed && edit.mode === "edit" && current() === path) return ed.value;
+    var d = draftOf(path);
+    return d ? d.text : versions[path] && versions[path].text || "";
+  }
+  function saveDoc(path) {
+    if (!path) return;
+    var s = saves[path] = saves[path] || {};
+    if (s.busy) { s.queued = true; return; }
+    var ver = versions[path];
+    var text = typedText(path);
+    s.busy = true; s.queued = false; s.err = null; s.landed = null;
+    confirmAsk = null;
+    syncDoc();
+    var csrf = document.querySelector('input[name="csrf"]');
+    fetch(docURL(path), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": csrf ? csrf.value : "" },
+      body: JSON.stringify({ text: text, base: ver ? ver.sha256 || "" : "", commit: ver ? ver.commit || "" : "" })
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) { if (!r.ok) throw j; return j; });
+    }).then(function (ans) { landed(path, text, ans); }).catch(function (j) { failed(path, j); });
+  }
+  // a save landed: the answer's hash, commit and time become the
+  // version; the draft goes when nothing more was typed, and one queued
+  // save runs when something was
+  function landed(path, text, ans) {
+    var s = saves[path] = saves[path] || {};
+    s.busy = false;
+    versions[path] = { text: text, html: null, sha256: ans.sha256, commit: ans.commit, at: ans.at };
+    s.landed = { sha: ans.commit, at: timeOfDay(ans.at) };
+    if (restoredFor === path) restoredFor = "";
+    var typed = typedText(path);
+    if (typed === text) dropDraft(path); else keepDraft(path, typed);
+    if (s.queued) {
+      s.queued = false;
+      if (typed !== text) { saveDoc(path); return; }
+    }
+    syncDoc();
+  }
+  function failed(path, j) {
+    var s = saves[path] = saves[path] || {};
+    s.busy = false;
+    s.queued = false;
+    s.err = { why: j && j.reason || "the save did not land; try again" };
+    syncDoc();
   }
   function openDoc(path, opts) {
     opts = opts || {};
@@ -670,6 +901,11 @@ document.addEventListener("keydown", function (e) {
     art.textContent = "";
     art.appendChild(document.createElement("p")).className = "doc-none";
     art.firstChild.textContent = "Reading " + label(path) + "…";
+    art.hidden = false;
+    document.getElementById("doc-edit").hidden = true;
+    confirmAsk = null;
+    cancelNew();
+    restoredFor = "";
     var pathEl = document.getElementById("doc-path");
     pathEl.textContent = path;
     pathEl.title = path;
@@ -679,6 +915,23 @@ document.addEventListener("keydown", function (e) {
       if (!r.ok) return r.text().then(function (t) { throw { status: r.status, text: t }; });
       return r.json();
     }).then(function (d) { show(d, opts.frag); }).catch(function (e) {
+      if (e && e.status === 404) {
+        // a draft of a file master does not hold: a new file, opened in
+        // the editor for its first save to create, its draft seeded with
+        // the name the member gave
+        if (!draftOf(path) && seedTitle) {
+          keepDraft(path, "# " + seedTitle + "\n\n");
+          seedTitle = "";
+          restoredFor = "";
+        }
+        if (draftOf(path)) {
+          versions[path] = null;
+          restoredFor = "";
+          document.getElementById("doc-article").textContent = "";
+          enterEdit();
+          return;
+        }
+      }
       failDoc(e && e.text || "", e && e.status);
     });
     if (opts.push !== false) history.pushState({ doc: path }, "", urlPath(path));
@@ -690,6 +943,8 @@ document.addEventListener("keydown", function (e) {
     keepScroll();
     hidePeek();
     closeRecent();
+    cancelNew();
+    confirmAsk = null;
     v.hidden = true;
     syncButton(false);
     if (push !== false) history.pushState({ doc: null }, "", urlPath(null));
@@ -733,6 +988,110 @@ document.addEventListener("keydown", function (e) {
     } else if (e.target.closest(".doc-recent-row")) openDoc(e.target.closest(".doc-recent-row").dataset.doc);
     else if (e.target.closest(".doc-pin")) openDoc(e.target.closest(".doc-pin").dataset.doc);
     else if (e.target.closest(".doc-pin-add")) pinOpen();
+    else if (e.target.closest("#doc-new")) openNew();
+    else if (e.target.closest("#doc-new-cancel")) cancelNew();
+    else if (e.target.closest("#doc-mode-read")) readMode();
+    else if (e.target.closest("#doc-mode-edit")) { confirmAsk = null; enterEdit(); }
+  });
+  // a new document: docs/<name>.md, its draft seeded with the name, the
+  // first save creating it; a name master already holds opens the file
+  // itself, read, nothing seeded
+  var seedTitle = "";
+  function openNew() {
+    var form = document.getElementById("doc-new-form"), line = document.getElementById("doc-pathline");
+    if (!form || !line || edit.mode !== "read") return;
+    form.hidden = false;
+    line.hidden = true;
+    var i = document.getElementById("doc-name");
+    i.value = "";
+    i.focus();
+  }
+  function cancelNew() {
+    var form = document.getElementById("doc-new-form"), line = document.getElementById("doc-pathline");
+    if (form) form.hidden = true;
+    if (line) line.hidden = false;
+  }
+  function createDoc(name) {
+    name = name.trim().replace(/\.md$/i, "");
+    var slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    if (!slug) { document.getElementById("doc-name").focus(); return; }
+    cancelNew();
+    seedTitle = name.charAt(0).toUpperCase() + name.slice(1);
+    openDoc("docs/" + slug + ".md");
+  }
+  document.addEventListener("submit", function (e) {
+    if (!e.target.closest || e.target.id !== "doc-new-form") return;
+    e.preventDefault();
+    createDoc(document.getElementById("doc-name").value);
+  });
+  // Read: back to the rendered document, fetched again when the save
+  // that landed is not rendered yet
+  function readMode() {
+    var path = current(), ver = versions[path];
+    if (!path || !ver) return;
+    confirmAsk = null;
+    if (ver.html) setMode("read");
+    else openDoc(path, { push: false });
+  }
+  // leave an unsaved new file: back, else closed; the draft stays, the
+  // dot says so
+  function leaveNew() {
+    if (nav.index > 0) openDoc(nav.stack[nav.index - 1]);
+    else closeDoc();
+  }
+  // the editor's row and the note's links: save, retry, cancel, discard
+  // with its ask
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest && e.target.closest("[data-act]");
+    if (!b || !b.closest("#doc-view")) return;
+    var path = current(), ver = versions[path];
+    var act = b.dataset.act;
+    if (act === "save" || act === "retry") {
+      saveDoc(path);
+      var ed = document.getElementById("doc-editor");
+      if (ed && act === "retry") ed.focus({ preventScroll: true });
+    } else if (act === "cancel") {
+      confirmAsk = null;
+      if (ver) readMode(); else leaveNew();
+    } else if (act === "discard") {
+      confirmAsk = { at: b.closest("#doc-edit-row") ? "row" : "note" };
+      syncDoc();
+      var no = document.querySelector('#doc-view [data-act="confirm-no"]');
+      if (no) no.focus();
+    } else if (act === "discard-yes") {
+      dropDraft(path);
+      saves[path] = {};
+      confirmAsk = null;
+      restoredFor = "";
+      if (ver) readMode(); else leaveNew();
+    } else if (act === "confirm-no") {
+      confirmAsk = null;
+      syncDoc();
+    }
+  });
+  // the refusal's retry on the path line
+  document.addEventListener("click", function (e) {
+    var f = e.target.closest && e.target.closest("#doc-facts.doc-refused");
+    if (!f || !current()) return;
+    saveDoc(current());
+  });
+  // every keystroke is the draft; typing back the saved text drops it
+  document.addEventListener("input", function (e) {
+    if (e.target.id !== "doc-editor" || !current()) return;
+    var path = current(), ver = versions[path];
+    if (ver && ver.text !== null && e.target.value === ver.text) dropDraft(path);
+    else keepDraft(path, e.target.value);
+    var s = saves[path];
+    if (s) s.landed = null;
+    syncDoc();
+  });
+  // Ctrl+S in the editor saves; Escape leaves the ask or the new form,
+  // and never closes the view from inside a field
+  document.addEventListener("keydown", function (e) {
+    if (e.target.id === "doc-editor" && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+      e.preventDefault();
+      saveDoc(current());
+    }
   });
   function closeRecent() {
     var d = document.getElementById("doc-recent");
@@ -756,8 +1115,9 @@ document.addEventListener("keydown", function (e) {
     if (path) openDoc(path, { push: false });
     else if (visible()) closeDoc(false);
   });
-  // Escape: the Recent menu, the peek, the document — the keys list and
-  // the status band close first
+  // Escape: the Recent menu, the peek, the editor's ask and the new
+  // form, the document — the keys list and the status band close first,
+  // and from inside a field the view stays open, the draft with it
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
     var keys = document.getElementById("keys"), panel = document.getElementById("status-panel");
@@ -765,6 +1125,11 @@ document.addEventListener("keydown", function (e) {
     var d = e.target.closest && e.target.closest("#doc-recent");
     if (d && d.open) { d.open = false; e.stopPropagation(); return; }
     if (peekEl) { hidePeek(); e.stopPropagation(); return; }
+    var field = e.target.closest && e.target.closest("#doc-editor, #doc-name");
+    var form = document.getElementById("doc-new-form");
+    if (confirmAsk) { confirmAsk = null; syncDoc(); e.stopPropagation(); return; }
+    if (form && !form.hidden) { cancelNew(); e.stopPropagation(); return; }
+    if (field) { e.stopPropagation(); return; }
     if (visible() && location.hash.indexOf("#card=") !== 0) { closeDoc(); e.stopPropagation(); }
   }, true);
 
