@@ -487,11 +487,15 @@ func TestOpencodeRunKillsLeftoverProcesses(t *testing.T) {
 }
 
 // A line longer than 1 MiB is dropped up to its newline without buffering
-// it; the lines around it still arrive.
+// it; the lines around it still arrive, and the drop is reported once with
+// the line's head and size.
 func TestLineWriterCapsALine(t *testing.T) {
 	var lines []string
-	tooLong := 0
-	w := &lineWriter{line: func(b []byte) { lines = append(lines, string(b)) }, tooLong: func() { tooLong++ }}
+	var heads, sizes []int
+	w := &lineWriter{
+		line:    func(b []byte) { lines = append(lines, string(b)) },
+		tooLong: func(head []byte, size int) { heads, sizes = append(heads, len(head)), append(sizes, size) },
+	}
 	exact := strings.Repeat("x", 1<<20)
 	chunks := []string{"a\n", exact[:1000], exact[1000:] + "\n"}
 	for range 3 { // 3 MiB of one line, written 1 MiB at a time
@@ -510,16 +514,58 @@ func TestLineWriterCapsALine(t *testing.T) {
 	if len(lines) != 3 || lines[0] != "a" || lines[1] != exact || lines[2] != "b" {
 		t.Fatalf("lines = %d (first %q), want a, the exactly-1-MiB line, b", len(lines), lines[0])
 	}
-	if tooLong != 1 {
-		t.Fatalf("tooLong = %d, want 1", tooLong)
+	if len(sizes) != 1 || sizes[0] != 3<<20+1 || heads[0] != 1<<20 {
+		t.Fatalf("dropped lines' sizes = %v, heads = %v, want one 3 MiB 1 byte line with its 1 MiB head", sizes, heads)
 	}
 }
 
-func TestOpencodeRunFailsOnOversizeLine(t *testing.T) {
+// A dropped too-long line leaves one note naming its size and, where its
+// first bytes show them, its event type and part id. Only the head's first
+// bytes matter, so the filler stays short; the size is the reader's count,
+// not the head's.
+func TestSkippedLineNote(t *testing.T) {
+	ev := skippedLineNote([]byte("data: "+`{"id":"evt_1","type":"message.part.updated","properties":{"part":{"id":"prt_1"`+strings.Repeat("x", 64)), 2<<20+80)
+	if ev.Kind != harness.EventNote || ev.Detail["bytes"] != 2<<20+80 || ev.Detail["event"] != "message.part.updated" || ev.Detail["part"] != "prt_1" {
+		t.Fatalf("note = %+v, want the 2 MiB 80 byte message.part.updated line prt_1", ev)
+	}
+	ev = skippedLineNote([]byte("garbage without a newline"), 25)
+	if ev.Detail["bytes"] != 25 {
+		t.Fatalf("note = %+v, want the line's size", ev)
+	}
+	if _, ok := ev.Detail["event"]; ok {
+		t.Fatalf("note = %+v, a head that shows no event type carries none", ev)
+	}
+}
+
+// One opencode event line over 1 MiB (a large tool output) no longer ends
+// the session: the reader drops the line, the events around it still
+// arrive, and the session's timeline holds one note on the drop.
+func TestOpencodeRunSurvivesAnOversizeLine(t *testing.T) {
 	oc, _ := fakeServeOpencode(t, "oversize")
-	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {})
-	if res.Success || res.Summary != "opencode output line exceeds 1 MiB" {
-		t.Fatalf("result = %v, %.100q; want a failure naming the oversize line", res.Success, res.Summary)
+	var events []harness.Event
+	res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(ev harness.Event) { events = append(events, ev) })
+	if !res.Success {
+		t.Fatalf("result = %+v (%s): a dropped line must not fail the session", res, res.Summary)
+	}
+	if len(events) < 2 || events[0].Kind != harness.EventCheckpoint || events[1].Kind != harness.EventNote {
+		t.Fatalf("events start with %v, want the event before the drop, then the note", kinds(events))
+	}
+	note := events[1].Detail
+	if note["bytes"] != oversizeLen || note["event"] != "message.part.updated" || note["part"] != "prt_2mib" {
+		t.Fatalf("note = %v, want the dropped line's size, event type and part id", note)
+	}
+	// the fixture's own three steps still arrive after the dropped line
+	if got := kinds(events); got[len(got)-1] != harness.EventFinished {
+		t.Fatalf("events end at %v, want the finished event", got[len(got)-1])
+	}
+	var checkpoints int
+	for _, ev := range events {
+		if ev.Kind == harness.EventCheckpoint {
+			checkpoints++
+		}
+	}
+	if checkpoints != 4 {
+		t.Fatalf("checkpoints = %d, want 4: one before the dropped line, the fixture's three after", checkpoints)
 	}
 }
 
