@@ -41,10 +41,16 @@ func (t *turn) routinesText() (string, error) {
 }
 
 // routineLine is v on one line: its name, title, schedule in words, what
-// it files, its next run, its last run with the card, and the open card.
+// it files, the keys it sets of skill, while_open, missed and tell, its
+// next run, its last run with the card, and the open card.
 func routineLine(v factoryd.RoutineView) string {
 	rt := v.Routine
 	parts := []string{rt.Name, rt.Title, rt.Words(), "files " + rt.Files}
+	for _, key := range []struct{ name, v string }{{"skill", rt.Skill}, {"while open", rt.WhileOpen}, {"missed", rt.Missed}, {"tell", rt.Tell}} {
+		if key.v != "" {
+			parts = append(parts, key.name+" "+key.v)
+		}
+	}
 	if v.NextWords != "" {
 		parts = append(parts, "next "+v.NextWords)
 	}
@@ -98,10 +104,12 @@ type routineChange struct {
 }
 
 // routineChange reads in for tool against the configuration in force. A
-// write's routine takes brief_text's file as its brief, else its own, and
-// Routine.Validate judges it. A routine of policy.yaml is refused, and so
-// is a deletion of a routine the project lacks. A brief the change leaves
-// that no other routine names is deleted.
+// write's routine keeps the keys of the routine it changes that in leaves
+// out: its brief, while_open, missed, tell, and its skill while it files
+// agent. brief_text writes its own brief file, unless the file holds that
+// text, and Routine.Validate judges the routine. A routine of policy.yaml
+// is refused, and so is a deletion of a routine the project lacks. A
+// brief the change leaves that no other routine names is deleted.
 func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 	ch := routineChange{extra: map[string]string{}}
 	ch.old, ch.exists = t.tree.Routine(t.p.Name, in.Name)
@@ -117,10 +125,15 @@ func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 			return ch, refuse(http.StatusBadRequest, err.Error())
 		}
 		ch.rt = policy.Routine{Name: in.Name, Title: in.Title, Schedule: schedule, Files: in.Files, Brief: ch.old.Brief, Skill: in.Skill,
-			WhileOpen: in.WhileOpen, Missed: in.Missed, Tell: in.Tell}
+			WhileOpen: cmp.Or(in.WhileOpen, ch.old.WhileOpen), Missed: cmp.Or(in.Missed, ch.old.Missed), Tell: cmp.Or(in.Tell, ch.old.Tell)}
+		if in.Files == policy.FilesAgent {
+			ch.rt.Skill = cmp.Or(in.Skill, ch.old.Skill)
+		}
 		if in.BriefText != "" {
 			ch.rt.Brief = policy.DirRoutines + "/" + t.p.Name + "-" + in.Name + ".md"
-			ch.extra[ch.rt.Brief] = strings.TrimRight(in.BriefText, "\n") + "\n"
+			if text := strings.TrimRight(in.BriefText, "\n") + "\n"; text != t.tree.Briefs[ch.rt.Brief] {
+				ch.extra[ch.rt.Brief] = text
+			}
 		}
 		if err := ch.rt.Validate(policy.ProjectFile(t.p.Name)); err != nil {
 			return ch, refuse(http.StatusUnprocessableEntity, err.Error())
@@ -199,11 +212,25 @@ func (t *turn) writeRoutine(in toolInput) (string, error) {
 	}
 	log.Printf("console: %s wrote routine %s of %s via %s (%s#%d)", t.a.s.user, in.Name, t.p.Name, t.a.via, t.c.cfg.InfraRepo, pr)
 	t.c.record(ctx, t.a, t.p.Repository, "", 0, factoryd.EventRoutineWritten, map[string]any{"project": t.p.Name, "routine": in.Name, "created": created})
-	did := "changed routine " + in.Name + " in"
+	did := []string{"changed routine " + in.Name + " in " + policy.ProjectFile(t.p.Name)}
 	if created {
-		did = "added routine " + in.Name + " to"
+		did[0] = "added routine " + in.Name + " to " + policy.ProjectFile(t.p.Name)
 	}
-	return fmt.Sprintf("Pull request #%d %s %s. The board shows it once the factory loads the new configuration.", pr, did, policy.ProjectFile(t.p.Name)), nil
+	if ch.extra[ch.rt.Brief] != "" {
+		did = append(did, "wrote its brief "+ch.rt.Brief)
+	}
+	if text, ok := ch.extra[ch.old.Brief]; ok && text == "" {
+		did = append(did, "deleted its old brief "+ch.old.Brief)
+	}
+	note := did[0]
+	for i, d := range did[1:] {
+		if i == len(did)-2 {
+			note += " and " + d
+		} else {
+			note += ", " + d
+		}
+	}
+	return fmt.Sprintf("Pull request #%d %s. The board shows it once the factory loads the new configuration.", pr, note), nil
 }
 
 // deleteRoutine is routine_delete: the routine out of the chat project's
@@ -230,7 +257,7 @@ func (t *turn) deleteRoutine(in toolInput) (string, error) {
 }
 
 // putRoutine sets rt in the project file's routines, in place of the
-// entry of its name with the comment above it kept, or last, the list
+// entry of its name with that entry's comments kept, or last, the list
 // made when the file has none; created says it went last.
 func putRoutine(doc *yaml.Node, rt policy.Routine) (created bool, err error) {
 	var n yaml.Node
@@ -248,7 +275,7 @@ func putRoutine(doc *yaml.Node, rt policy.Routine) (created bool, err error) {
 		return false, fmt.Errorf("routines in the project file is no list")
 	}
 	if j := routineEntry(list, rt.Name); j >= 0 {
-		n.HeadComment = list.Content[j].HeadComment
+		keepComments(list.Content[j], &n)
 		list.Content[j] = &n
 		return false, nil
 	}
@@ -257,8 +284,24 @@ func putRoutine(doc *yaml.Node, rt policy.Routine) (created bool, err error) {
 	return true, nil
 }
 
-// dropRoutine takes routine name out of the project file's routines, and
-// the routines key with the last one.
+// keepComments puts the comments of entry old on its replacement n: the
+// entry's own, and those of each key n keeps and of the key's value.
+func keepComments(old, n *yaml.Node) {
+	moved := func(from, to *yaml.Node) {
+		to.HeadComment, to.LineComment, to.FootComment = from.HeadComment, from.LineComment, from.FootComment
+	}
+	moved(old, n)
+	for i := 0; i+1 < len(old.Content); i += 2 {
+		if k := keyIndex(n, old.Content[i].Value); k >= 0 {
+			moved(old.Content[i], n.Content[k])
+			moved(old.Content[i+1], n.Content[k+1])
+		}
+	}
+}
+
+// dropRoutine takes routine name out of the project file's routines, with
+// its comments, and the routines key with the last one; while a routine
+// stays, so do the key's comments.
 func dropRoutine(doc *yaml.Node, name string) error {
 	m := doc.Content[0]
 	i := keyIndex(m, "routines")

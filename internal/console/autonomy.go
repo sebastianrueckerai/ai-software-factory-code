@@ -93,7 +93,8 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 // commit lock it reads the file with the config token, applies edit to
 // its YAML with every other line and comment kept, and judges the tree
 // with the change and extra's files the loader's way. extra maps a path
-// under the configuration directory to its text, "" deleting the file.
+// under the configuration directory to its text, "" deleting the file. A
+// change that leaves every file as it is refuses.
 // One commit with message lands on a new branch, its pull request opens
 // with message as its title, and the member merges it.
 func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message string, edit func(doc *yaml.Node) error, extra map[string]string) (int64, error) {
@@ -132,6 +133,9 @@ func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message 
 			change["operation"], change["content"], changes[p] = "create", base64.StdEncoding.EncodeToString([]byte(text)), []byte(text)
 		}
 		files = append(files, change)
+	}
+	if len(files) == 1 && bytes.Equal(out, raw) {
+		return 0, refuse(http.StatusConflict, "Nothing changes: "+path+" already holds this.")
 	}
 	if c.cfg.CheckChange != nil {
 		refused, err := c.cfg.CheckChange(ctx, changes)

@@ -138,7 +138,8 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 		`Update the dependencies and run the tests.","id":"TOKEN","tool":"routine_write"}`, `done {}`})
 	_, done, _ = chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "the change's Do it", done, ran("routine_write", args,
-		"Pull request #12 changed routine dependency-update in projects/demo-app.yaml. The board shows it once the factory loads the new configuration."))
+		"Pull request #12 changed routine dependency-update in projects/demo-app.yaml and wrote its brief routines/demo-app-dependency-update.md. "+
+			"The board shows it once the factory loads the new configuration."))
 	changed := original + "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n      - cron: 0 6 * * 4\n      - merges: 20\n" +
 		"    files: agent\n    brief: routines/demo-app-dependency-update.md\n    skill: deps\n"
 	equal(t, "the change's commit", lastCommit(t, infra), []string{"update factory/projects/demo-app.yaml blob1\n" + changed,
@@ -248,18 +249,20 @@ func TestRoutineDeleteRemovesTheRoutineAndItsBrief(t *testing.T) {
 }
 
 // The routines read is one line per routine of the chat's project: its
-// name, title, schedule in words, what it files, its next run, its last
-// run with the card, and the open card; a project without routines says
-// so.
+// name, title, schedule in words, what it files, the keys it sets of
+// skill, while_open, missed and tell, its next run, its last run with the
+// card, and the open card; a project without routines says so.
 func TestRoutinesReadListsTheProject(t *testing.T) {
 	r, _, g := newChatRig(t)
 	audit := factoryd.RoutineView{Project: "ai-software-factory-code",
-		Routine:   policy.Routine{Name: "audit", Title: "Audit pair", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{Merges: 20}}},
+		Routine: policy.Routine{Name: "audit", Title: "Audit pair", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{Merges: 20}},
+			WhileOpen: policy.WhileOpenFold},
 		NextWords: "after 6 more merges", Last: factoryd.RoutineRun{Run: 2, Outcome: "filed", Issue: 790}, Open: &factoryd.Task{IssueNumber: 790}, Held: true}
 	bump := weeklyBump()
 	bump.Last = factoryd.RoutineRun{Run: 3, Outcome: "merged", Issue: 781}
 	nightly := factoryd.RoutineView{Project: "ai-software-factory-code",
-		Routine:   policy.Routine{Name: "nightly", Title: "Nightly report", Files: policy.FilesReport, Schedule: []policy.Trigger{{Cron: "0 2 * * *"}, {On: policy.OnPushMain}}},
+		Routine: policy.Routine{Name: "nightly", Title: "Nightly report", Files: policy.FilesReport, Schedule: []policy.Trigger{{Cron: "0 2 * * *"}, {On: policy.OnPushMain}},
+			Missed: policy.MissedSkip, Tell: policy.TellQuiet},
 		NextWords: "Tue 02:00"}
 	r.routines.views = []factoryd.RoutineView{bump, audit, nightly}
 	read := func(project string) string {
@@ -274,8 +277,8 @@ func TestRoutinesReadListsTheProject(t *testing.T) {
 	}
 	equal(t, "the code project's routines", read("ai-software-factory-code"),
 		"weekly-bump · Weekly bump · every Monday 06:00 · files human · next Mon 20 Oct 06:00 · last merged (#781)\n"+
-			"audit · Audit pair · every 20 merges · files agent · next after 6 more merges · last filed (#790) · open #790\n"+
-			"nightly · Nightly report · daily 02:00 · on each push to main · files report · next Tue 02:00 · no run yet")
+			"audit · Audit pair · every 20 merges · files agent · skill audit · while open fold · next after 6 more merges · last filed (#790) · open #790\n"+
+			"nightly · Nightly report · daily 02:00 · on each push to main · files report · missed skip · tell quiet · next Tue 02:00 · no run yet")
 	equal(t, "demo-app's", read("demo-app"), "Project demo-app has no routines.")
 }
 
@@ -346,4 +349,89 @@ func TestRoutineEditsKeepTheFile(t *testing.T) {
 
 	out, err = editProjectFile([]byte(head+"routines: []\n"), func(doc *yaml.Node) (err error) { _, err = putRoutine(doc, audit); return err })
 	equal(t, "an empty flow list", []any{string(out), err}, []any{head + "routines:\n  - name: audit\n    title: Audit\n    schedule:\n      - \"on\": push-main\n    files: report\n", error(nil)})
+}
+
+// A write keeps the keys of the routine it changes that its call leaves
+// out, so a schedule-only change keeps the agent routine's skill and its
+// while_open. A write that leaves the file as it is refuses and commits
+// nothing.
+func TestRoutineWriteKeepsTheKeysItLeavesOut(t *testing.T) {
+	r, g, infra, files := routineRig(t)
+	ck, s := r.loggedIn(t)
+	original := string(files["projects/demo-app.yaml"])
+	routine := func(cron string) string {
+		return "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n      - cron: " + cron + "\n" +
+			"    files: agent\n    skill: deps\n    while_open: fold\n"
+	}
+	files["projects/demo-app.yaml"] = []byte(original + routine("0 6 * * 4"))
+	headAt(t, r, infra, files)
+	before := r.events.count()
+	write := func(cron string) []string {
+		t.Helper()
+		args := `{"name":"dependency-update","title":"Dependency update","schedule":"` + cron + `","files":"agent"}`
+		g.replies = [][]string{{call(1, "routine_write", args)}}
+		_, _, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"move it"}})
+		_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
+		return done
+	}
+	equal(t, "the same routine", write("0 6 * * 4"), []string{`tool {"arguments":{"name":"dependency-update","title":"Dependency update",` +
+		`"schedule":"0 6 * * 4","files":"agent"},"duration_ms":0,"name":"routine_write","result":"Refused: Nothing changes: projects/demo-app.yaml already holds this."}`,
+		`done {}`})
+	if len(infra.contents) != 0 || len(infra.pulls) != 0 || r.events.count() != before {
+		t.Fatalf("nothing to change committed %+v, opened %+v or recorded %d rows", infra.contents, infra.pulls, r.events.count()-before)
+	}
+	write("0 7 * * 4")
+	equal(t, "the schedule-only change", lastCommit(t, infra), []string{"update factory/projects/demo-app.yaml blob1\n" + original + routine("0 7 * * 4")})
+}
+
+// A write with a brief_text moves a routine's brief to its own file: the
+// commit writes routines/<project>-<name>.md and deletes the old brief,
+// which no other routine names, and the proposal and the result say so.
+func TestRoutineWriteMovesItsBrief(t *testing.T) {
+	r, g, infra, files := routineRig(t)
+	ck, s := r.loggedIn(t)
+	original := string(files["projects/demo-app.yaml"])
+	files["projects/demo-app.yaml"] = []byte(original + "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n" +
+		"      - cron: 0 6 * * 4\n    files: human\n    brief: routines/deps.md\n")
+	files["routines/deps.md"] = []byte("Update them.\n")
+	headAt(t, r, infra, files)
+	args := `{"name":"dependency-update","title":"Dependency update","schedule":"0 6 * * 4","files":"human","brief_text":"Update them and run the tests."}`
+	g.replies = [][]string{{call(1, "routine_write", args)}}
+	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"give it a better brief"}})
+	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
+		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: human\n  brief: routines/demo-app-dependency-update.md` +
+		`\n\nIts brief, routines/demo-app-dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","id":"TOKEN","tool":"routine_write"}`,
+		`done {}`})
+	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
+	equal(t, "Do it", done, ran("routine_write", args, "Pull request #12 changed routine dependency-update in projects/demo-app.yaml, "+
+		"wrote its brief routines/demo-app-dependency-update.md and deleted its old brief routines/deps.md. The board shows it once the factory loads the new configuration."))
+	equal(t, "the commit", lastCommit(t, infra), []string{
+		"update factory/projects/demo-app.yaml blob1\n" + original + "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n" +
+			"      - cron: 0 6 * * 4\n    files: human\n    brief: routines/demo-app-dependency-update.md\n",
+		"create factory/routines/demo-app-dependency-update.md\nUpdate them and run the tests.\n",
+		"delete factory/routines/deps.md blob1\n"})
+}
+
+// A change keeps the comments of the entry it replaces where their keys
+// stay: the entry's own, a value's line comment and a key's foot comment.
+// A deletion keeps the routines key's comments while a routine stays, and
+// every comment of the other entries and of the file.
+func TestRoutineEditsKeepTheComments(t *testing.T) {
+	const top = "# the project\nrepository: sf/code # its repository\n# the routines\nroutines: # all of them\n"
+	const bump = "  # the bump\n  - name: weekly-bump # the bump's name\n    title: Bump\n    schedule:\n      - cron: \"0 6 * * 1\"\n" +
+		"    files: human\n    # foot of the bump\n"
+	const audit = "  # the audit\n  - name: audit\n    title: Audit\n    schedule:\n      - on: push-main\n    files: report\n"
+	const tail = "# foot of the list\n\n# after the routines\ntokens: {read: x}\n"
+	raw := []byte(top + bump + audit + tail)
+	same, err := editProjectFile(raw, func(*yaml.Node) error { return nil })
+	equal(t, "the fixture as the encoder writes it", []any{string(same), err}, []any{string(raw), error(nil)})
+
+	changed := policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}, Files: policy.FilesHuman}
+	out, err := editProjectFile(raw, func(doc *yaml.Node) error { _, err := putRoutine(doc, changed); return err })
+	equal(t, "the change", []any{string(out), err}, []any{top + "  # the bump\n  - name: weekly-bump # the bump's name\n    title: Weekly bump\n" +
+		"    schedule:\n      - cron: 0 6 * * 1\n    files: human\n    # foot of the bump\n" + audit + tail, error(nil)})
+	out, err = editProjectFile(raw, func(doc *yaml.Node) error { return dropRoutine(doc, "weekly-bump") })
+	equal(t, "the first deleted", []any{string(out), err}, []any{top + audit + tail, error(nil)})
+	out, err = editProjectFile(raw, func(doc *yaml.Node) error { return dropRoutine(doc, "audit") })
+	equal(t, "the second deleted", []any{string(out), err}, []any{top + bump + tail, error(nil)})
 }

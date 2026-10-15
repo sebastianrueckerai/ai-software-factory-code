@@ -1050,11 +1050,11 @@ var tools = []chatTool{
 		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
 			"schedule":   str("a cron, merges:<n> or on:<event>, split by semicolons"),
 			"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
-			"skill":      str("the skill an agent routine's card runs"),
-			"brief_text": str("the body of each card a run files, Markdown"),
-			"while_open": enum("what a run does while the last card is open", policy.WhileOpenValues...),
-			"missed":     enum("what a run does when the factory was down", policy.MissedValues...),
-			"tell":       enum("whether a filing tells the inbox", policy.TellValues...)},
+			"skill":      str("the skill an agent routine's card runs, unset keeps it"),
+			"brief_text": str("each filed card's body, Markdown, unset keeps it"),
+			"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenValues...),
+			"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
+			"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
 		required: []string{"name", "title", "schedule", "files"},
 		about:    "Create or change one of the project's routines through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -1154,7 +1154,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 
 // toolNotes are what the tools' sentences leave to the manual, each
 // stated once.
-const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
+var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
   new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
@@ -1162,7 +1162,9 @@ const toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, proj
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
-  routine_write's schedule lists its triggers split by ";", such as "0 6 * * 4; merges:20; on:push-main": a cron of five fields in the factory's time zone, merges:<n> for every n merged cards, or on:configuration-version or on:push-main.
+  routine_write's schedule lists its triggers split by ";", such as "0 6 * * 4; merges:20; on:` + policy.OnPushMain +
+	`": a cron of five fields in the factory's time zone, merges:<n> for every n merged cards, or on:` +
+	strings.Join(policy.RoutineEvents, " or on:") + `.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
 `
