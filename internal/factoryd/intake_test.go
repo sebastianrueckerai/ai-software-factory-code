@@ -67,6 +67,12 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			}
 			io.WriteString(w, `{"commit":{"id":"sha-branch-head"}}`)
 		case strings.Contains(r.URL.Path, "/pulls/"):
+			// pull request 33 is a factory pull request card's: the template
+			// update branch on the projects fork, not the agent's factory/<id>
+			if strings.HasSuffix(r.URL.Path, "/pulls/33") {
+				io.WriteString(w, `{"head":{"ref":"factory/template-update","repo":{"full_name":"factory-projects/ai-software-factory-code"}}}`)
+				return
+			}
 			io.WriteString(w, `{"head":{"ref":"factory/t-pr","repo":{"full_name":"factory-agent/ai-software-factory-code"}}}`)
 		case strings.HasSuffix(r.URL.Path, "/labels") && r.Method == http.MethodGet:
 			names := labels[r.URL.Path]
@@ -642,6 +648,80 @@ func TestIntakeReviewOnUnknownTaskIgnored(t *testing.T) {
 	postWebhook(in, "pull_request_review_rejected", body, sign(webhookSecret, body))
 	if len(store.intakeEvents) != 0 {
 		t.Fatalf("an event was recorded for an unknown task")
+	}
+}
+
+// factoryPRReviewBody is a review on a factory pull request card's pull
+// request number: its head is the template update branch on the projects
+// fork, not the agent's factory/<task id> (roadmap 275).
+func factoryPRReviewBody(number int64, sender, content string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"pull_request": map[string]any{"number": number, "head": prHead("factory/template-update", "factory-projects/ai-software-factory-code")},
+		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":       map[string]string{"login": sender},
+		"review":       map[string]string{"content": content, "type": "pull_request_review_rejected"},
+	})
+	return b
+}
+
+func factoryPRCommentBody(number int64) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"action":     "created",
+		"issue":      map[string]any{"number": number},
+		"comment":    map[string]any{"id": 71, "user": map[string]string{"login": "sebastian"}, "body": "one nit"},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"is_pull":    true,
+	})
+	return b
+}
+
+// A review or a comment written in Forgejo on a factory pull request
+// card's pull request reaches that card as it reaches an agent card's
+// (roadmap 275): the card records the pull request's number, which
+// resolves it, for its head is not the agent's factory/<task id>.
+func TestIntakeReviewOnFactoryPRCardReachesTheCard(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-tmpl"] = Task{ID: "t-tmpl", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: 33}
+	body := factoryPRReviewBody(33, "sebastian", "redo the workflow file")
+	if rr := postWebhook(in, "pull_request_review_rejected", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-tmpl changes_requested sebastian #33: redo the workflow file" {
+		t.Fatalf("signals = %q, want the card's workflow asked for changes", got)
+	}
+	if ev := store.intakeEvents; len(ev) != 1 || ev[0].TaskID != "t-tmpl" || ev[0].Kind != "pull_request_review_rejected" || !ev[0].Trusted || !ev[0].Signalled {
+		t.Fatalf("intake events = %+v, want one trusted, signalled rejection on t-tmpl", ev)
+	}
+}
+
+func TestIntakeCommentOnFactoryPRCardReachesTheCard(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-tmpl"] = Task{ID: "t-tmpl", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: 33}
+	body := factoryPRCommentBody(33)
+	if rr := postWebhook(in, "pull_request_comment", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if ev := store.intakeEvents; len(ev) != 1 || ev[0].TaskID != "t-tmpl" || ev[0].Kind != "pull_request_comment" || ev[0].CommentID != 71 || !ev[0].Trusted || !ev[0].Signalled {
+		t.Fatalf("intake events = %+v, want one trusted, signalled pull_request_comment 71 on t-tmpl", ev)
+	}
+}
+
+// A pull request whose number matches no card, or only a card already
+// ended, is dropped as before: the number resolves an open factory pull
+// request card or nothing.
+func TestIntakeOnFactoryPRWithoutOpenCardDropped(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-done"] = Task{ID: "t-done", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: 34}
+	review := factoryPRReviewBody(34, "sebastian", "changes")
+	if rr := postWebhook(in, "pull_request_review_rejected", review, sign(webhookSecret, review)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	comment := factoryPRCommentBody(35)
+	if rr := postWebhook(in, "pull_request_comment", comment, sign(webhookSecret, comment)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.intakeEvents) != 0 || len(workflowsOf(in).signals) != 0 {
+		t.Fatalf("events %+v, signals %q: want a pull request with no open card dropped", store.intakeEvents, workflowsOf(in).signals)
 	}
 }
 

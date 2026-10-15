@@ -1076,9 +1076,9 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	if p.Action != "closed" || p.Sender.UserName == in.BotUser {
 		return nil
 	}
-	taskID, ok := in.taskOfHead(p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref)
-	if !ok {
-		return nil
+	taskID, ok, err := in.taskOfHead(ctx, p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref, p.PullRequest.Index)
+	if err != nil || !ok {
+		return err
 	}
 	t, ok, err := in.agentTask(ctx, taskID)
 	if err != nil || !ok {
@@ -1115,22 +1115,42 @@ func (in *Intake) agentTask(ctx context.Context, id string) (Task, bool, error) 
 }
 
 // taskOfHead is the task whose pull request has head ref in headRepo: a
-// factory/<id> branch on the bot's fork of repo. The same branch name on
-// repo itself or on anyone else's fork is not the task's (ruling 97).
-func (in *Intake) taskOfHead(repo, headRepo, ref string) (string, bool) {
-	base, err := SplitRepo(repo)
-	if err != nil || headRepo != in.Forgejo.Fork(base).String() {
-		return "", false
+// factory/<id> branch on the bot's fork of repo, and an agent card is
+// resolved by that head alone (ruling 97: the same branch name on repo
+// itself or on anyone else's fork is not the task's). A pull request
+// factoryd opened outside any card's workflow has another head (a
+// template update, a GitHub sync) or a factory/schema-* one that is no
+// task id, so when the head names no task, pr resolves the factory pull
+// request card that records that number, if it is still open.
+func (in *Intake) taskOfHead(ctx context.Context, repo, headRepo, ref string, pr int64) (string, bool, error) {
+	if base, err := SplitRepo(repo); err == nil && headRepo == in.Forgejo.Fork(base).String() {
+		if id, ok := strings.CutPrefix(ref, "factory/"); ok {
+			if _, have, err := in.Store.Task(ctx, id); err != nil {
+				return "", false, fmt.Errorf("task of head %s: %w", ref, err)
+			} else if have {
+				return id, true, nil
+			}
+		}
 	}
-	return strings.CutPrefix(ref, "factory/")
+	cards, err := in.Store.TasksByPR(ctx, repo, pr)
+	if err != nil {
+		return "", false, fmt.Errorf("the cards of pull request %d: %w", pr, err)
+	}
+	for _, t := range cards {
+		if factoryPRSources(t.Source) && !Final(t.Status) {
+			return t.ID, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 // handleIssueComment records a new comment as an intake event against the
 // task it belongs to: directly by issue number for an issue comment, or by
-// resolving the pull request's head branch (factory/<task id>) for a pull
-// request comment. A comment on anything else the factory did not file
-// (no matching task) is silently dropped, and so are edits and deletions:
-// the workflow saw the comment when it was created.
+// resolving the pull request for a pull request comment (the factory/<task
+// id> head of an agent card's, or the factory pull request card its number
+// names). A comment on anything else the factory did not file (no matching
+// task) is silently dropped, and so are edits and deletions: the workflow
+// saw the comment when it was created.
 func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType, delivery string) error {
 	var p issueCommentPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -1151,9 +1171,9 @@ func (in *Intake) handleIssueComment(ctx context.Context, body []byte, eventType
 		if err != nil {
 			return fmt.Errorf("pull request head: %w", err)
 		}
-		id, ok := in.taskOfHead(repo, pr.HeadRepo, pr.Head)
-		if !ok {
-			return nil
+		id, ok, err := in.taskOfHead(ctx, repo, pr.HeadRepo, pr.Head, p.Issue.Index)
+		if err != nil || !ok {
+			return err
 		}
 		taskID = id
 	} else {
@@ -1392,9 +1412,9 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if p.Sender.UserName == in.BotUser {
 		return nil
 	}
-	taskID, ok := in.taskOfHead(p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref)
-	if !ok {
-		return nil
+	taskID, ok, err := in.taskOfHead(ctx, p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref, p.PullRequest.Index)
+	if err != nil || !ok {
+		return err
 	}
 	t, ok, err := in.agentTask(ctx, taskID)
 	if err != nil || !ok {

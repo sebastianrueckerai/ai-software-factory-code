@@ -147,14 +147,31 @@ func (s *accBatchTasks) ListQueuedByRepository(_ context.Context, repository str
 }
 
 func (s *accBatchTasks) TaskByPR(_ context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
+	cards, err := s.TasksByPR(context.Background(), repository, pr)
+	if err != nil || len(cards) == 0 {
+		return factoryd.Task{}, false, err
+	}
+	return cards[0], true, nil
+}
+
+// TasksByPR lists every card linked to pr on repository, newest first, as
+// the SQL store does.
+func (s *accBatchTasks) TasksByPR(_ context.Context, repository string, pr int64) ([]factoryd.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var cards []factoryd.Task
 	for _, bt := range s.tasks {
 		if bt.Task.Repository == repository && bt.Task.PRNumber == pr && pr != 0 {
-			return bt.Task, true, nil
+			cards = append(cards, bt.Task)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(cards, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return b.CreatedAt.Compare(a.CreatedAt)
+		}
+		return strings.Compare(b.ID, a.ID)
+	})
+	return cards, nil
 }
 
 func (s *accBatchTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
@@ -421,6 +438,9 @@ func (s *accBatchStore) TaskByIssue(ctx context.Context, repository string, issu
 }
 func (s *accBatchStore) TaskByPR(ctx context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
 	return s.tasks.TaskByPR(ctx, repository, pr)
+}
+func (s *accBatchStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]factoryd.Task, error) {
+	return s.tasks.TasksByPR(ctx, repository, pr)
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
