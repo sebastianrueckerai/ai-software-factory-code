@@ -14,6 +14,11 @@
 #     a chart archive of an HTTP chart repository, uploaded to the store's
 #     Helm repository, /api/packages/upstream/helm, which keeps a version
 #     as it was first uploaded.
+#   <https URL>@sha256:<the file's sha256> onto <name>:<tag>
+#     a file a pod needs, made the one added layer of an image on the
+#     store's copy of that line, upstream/files/<the file's name>:<12 hex>:
+#     nothing in the store is readable without a login, and a pod's pull
+#     secret is a login only for its kubelet.
 # A copy the store holds already is not made again, so only a new line
 # touches its upstream. crane reads the store's login from its docker
 # config; the Helm repository's take REGISTRY_USER and REGISTRY_PASSWORD.
@@ -53,7 +58,7 @@ fetch() {
   file=$work/${url##*/}
   curl -fsSL --retry 5 -o "$file" "$url" && echo "$hex  $file" | sha256sum -c --quiet -
 }
-while read -r ref kind; do
+while read -r ref kind base; do
   case "$ref" in '' | '#'*) continue ;; esac
   case "$ref" in
     https://*@sha256:*) ;;
@@ -77,7 +82,21 @@ while read -r ref kind; do
         fail "$ref: the upload failed"
       fi
       ;;
-    *) fail "$ref: a file line ends in helm" ;;
+    onto)
+      dst=$store/files/$name:${hex:0:12}
+      if crane digest "$dst" >/dev/null 2>&1; then
+        continue
+      fi
+      on=$(awk -v b="$base@sha256:" 'index($1, b) == 1 { print $1; exit }' "$list")
+      if [ -z "$on" ]; then
+        fail "$ref: no line $base to put it onto"
+      elif fetch "$ref" && crane append -b "$store/${base%:*}@${on#*@}" -f "$file" -t "$dst"; then
+        echo "made $dst"
+      else
+        fail "$ref: the image failed"
+      fi
+      ;;
+    *) fail "$ref: a file line ends in helm or onto <name>:<tag>" ;;
   esac
 done < "$list"
 exit "$status"

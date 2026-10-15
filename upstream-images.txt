@@ -5,7 +5,8 @@
 # the factory's store, org upstream of git.aisoftwarefactory.world, from
 # them, and CI's upstream job runs it on every push to main. Every
 # reference names the copy, git.aisoftwarefactory.world/upstream/<the
-# line>, or for a chart archive the store's Helm repository: this
+# line>, or for a chart archive the store's Helm repository and for a
+# file a pod needs the image that carries it: this
 # repository's Dockerfiles and workflows, and the infra repository's
 # manifests, HelmReleases and their sources, and its runner's job image. A
 # line marked bootstrap is referenced at its upstream: Forgejo serves the
@@ -44,6 +45,7 @@ docker.io/signoz/signoz-otel-collector:v0.144.11@sha256:c9fe68529e7a035dac786cb7
 docker.io/signoz/zookeeper:3.7.1@sha256:1e6c92e8656c299818acfaf72f11e59d68a92bfe39fc1b1137cd78d6ab6741aa
 docker.io/clickhouse/clickhouse-server:25.12.5@sha256:10f54f04de6c61b756c4eaf9f1d17464a4ac3e1f94b5b410e0dec92a24dbeda8
 docker.io/library/alpine:3.18.2@sha256:25fad2a32ad1f6f510e528448ae1ec69a28ef81916a004d3629874104f8a7f70
+https://github.com/SigNoz/signoz/releases/download/histogram-quantile%2Fv0.0.1/histogram-quantile_linux_amd64.tar.gz@sha256:33997073eb6d82b7be4f27f9fc8ec9e28a395e0f20674d5d54bb2fa28a75488d onto docker.io/library/alpine:3.18.2
 docker.io/altinity/clickhouse-operator:0.21.2@sha256:f972ef4aec9959313a4d4407a83803c75f0be215af4a6811b3f2b890c15ba893
 docker.io/altinity/metrics-exporter:0.21.2@sha256:084a75d8ab0ba5c31ed9d923d301745d24f0e8a3cadf54cdbfe298443eda8da9
 docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c

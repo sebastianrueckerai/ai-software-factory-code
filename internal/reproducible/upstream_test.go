@@ -19,11 +19,13 @@ const store = "git.aisoftwarefactory.world/upstream/"
 
 // upstreamLine is one line of upstream-images.txt: an image or OCI chart
 // (ref name:tag@sha256:<digest>, kind "" or bootstrap), or a file (ref
-// https URL@sha256:<sha256>, kind helm).
+// https URL@sha256:<sha256>, kind helm, or onto and the base image's
+// name:tag).
 type upstreamLine struct {
 	ref       string
 	bootstrap bool
 	kind      string
+	base      string
 }
 
 // upstreamRef is a line's reference: a name Forgejo's registry takes
@@ -54,8 +56,10 @@ func readUpstreamImages(t *testing.T) []upstreamLine {
 		case len(fields) == 2 && l.kind == "bootstrap":
 			l.bootstrap = true
 		case len(fields) == 2 && l.kind == "helm":
+		case len(fields) == 3 && l.kind == "onto":
+			l.base = fields[2]
 		case len(fields) != 1:
-			t.Errorf("upstream-images.txt: %q: want a reference, then nothing, bootstrap or helm", sc.Text())
+			t.Errorf("upstream-images.txt: %q: want a reference, then nothing, bootstrap, helm or onto <name>:<tag>", sc.Text())
 		}
 		lines = append(lines, l)
 	}
@@ -75,9 +79,12 @@ func TestUpstreamImagesPinEachImageByDigest(t *testing.T) {
 		t.Fatal("upstream-images.txt lists no image")
 	}
 	seen := map[string]bool{}
-	for _, l := range lines {
+	for i, l := range lines {
+		if l.kind == "onto" && !slices.ContainsFunc(lines[:i], func(b upstreamLine) bool { return strings.HasPrefix(b.ref, l.base+"@") && !b.bootstrap }) {
+			t.Errorf("upstream-images.txt: %s goes onto %s, which no image line before it names", l.ref, l.base)
+		}
 		if strings.HasPrefix(l.ref, "https://") {
-			if !fileRef.MatchString(l.ref) || l.kind != "helm" {
+			if !fileRef.MatchString(l.ref) || (l.kind != "helm" && l.kind != "onto") {
 				t.Errorf("upstream-images.txt: %q %s is not an https URL@sha256:<64 hex> of a file and what the store makes of it", l.ref, l.kind)
 			}
 		} else if !upstreamRef.MatchString(l.ref) || (l.kind != "" && !l.bootstrap) {
@@ -309,5 +316,57 @@ func TestUpstreamCopyUploadsChartArchives(t *testing.T) {
 	}
 	if !strings.Contains(string(calls), "-u u:p -X POST --upload-file ") {
 		t.Errorf("the upload is not a POST of the file with the login: %s", calls)
+	}
+}
+
+// A file a pod needs becomes the one added layer of an image on the
+// store's copy of its base line, under upstream/files/<its name>, unless
+// the store holds that image: a stub curl serves the file, a stub crane
+// the store, which has the first file's image only.
+func TestUpstreamCopyPutsFilesOntoTheirBase(t *testing.T) {
+	dir := t.TempDir()
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("udf bytes")))
+	const base = "docker.io/library/alpine:3.18.2@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+	body := base + "\n" +
+		"https://example.org/x%2Fv1/held.tar.gz@sha256:" + sum + " onto docker.io/library/alpine:3.18.2\n" +
+		"https://example.org/x%2Fv1/udf.tar.gz@sha256:" + sum + " onto docker.io/library/alpine:3.18.2\n"
+	list := filepath.Join(dir, "list")
+	if err := os.WriteFile(list, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "calls")
+	const s = "git.aisoftwarefactory.world/upstream/"
+	crane := "#!/bin/sh\necho \"crane $*\" >> " + log + "\n" +
+		"case \"$*\" in\n" +
+		"\"digest " + s + "files/held.tar.gz:" + sum[:12] + "\") echo sha256:held ;;\n" +
+		"manifest*|digest*) exit 1 ;;\n" +
+		"esac\n"
+	curl := "#!/bin/sh\necho \"curl $*\" >> " + log + "\nprev=\nfor a; do [ \"$prev\" = -o ] && printf 'udf bytes' > \"$a\"; prev=$a; done\n"
+	for name, script := range map[string]string{"crane": crane, "curl": curl} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "upstream-copy"), list)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("upstream-copy: %v: %s", err, out)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var appends []string
+	for _, l := range strings.Split(string(calls), "\n") {
+		if strings.HasPrefix(l, "crane append ") {
+			appends = append(appends, strings.Join(strings.Fields(l)[2:4], " ")+" "+strings.Join(strings.Fields(l)[6:], " "))
+		}
+	}
+	want := []string{"-b " + s + "docker.io/library/alpine@sha256:2222222222222222222222222222222222222222222222222222222222222222 -t " + s + "files/udf.tar.gz:" + sum[:12]}
+	if !slices.Equal(appends, want) {
+		t.Errorf("crane appends %q, want %q", appends, want)
+	}
+	if !strings.Contains(string(calls), "curl -fsSL --retry 5 -o ") || !strings.Contains(string(calls), " https://example.org/x%2Fv1/udf.tar.gz") {
+		t.Errorf("the file was not fetched: %s", calls)
 	}
 }
