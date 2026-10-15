@@ -368,6 +368,16 @@ func (r *Runner) BootSweep(ctx context.Context) {
 	}
 }
 
+// readable is the repositories the session's read token covers: its task
+// repository, extra, and the document repository when there is one.
+func (s sessionSpec) readable(extra ...Repo) []Repo {
+	repos := append([]Repo{s.repo}, extra...)
+	if s.docs != (Repo{}) {
+		repos = append(repos, s.docs)
+	}
+	return repos
+}
+
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
@@ -382,6 +392,9 @@ type sessionSpec struct {
 	// progress starts past it
 	base string
 	repo Repo
+	// docs is the project's document repository (chat.doc_repo), which the
+	// session reads at /workspace/docs; the zero Repo when it has none
+	docs Repo
 	// cache is the project's cache claim in the task namespace
 	cache string
 	// policy is the task's pinned version's: its limits and detectors
@@ -1471,6 +1484,10 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "BRANCH", "value": taskBranch(t)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
+	}
+	if s.docs != (Repo{}) {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "DOCS_URL", "value": r.repoURL(s.docs)})
+		env = append(env, map[string]any{"name": "DOCS_DIR", "value": "/workspace/docs"})
 	}
 	if s.pull != 0 {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PULL", "value": strconv.FormatInt(s.pull, 10)})

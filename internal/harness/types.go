@@ -46,6 +46,11 @@ type TaskBrief struct {
 	// carried list's cap, 128 KiB an environment variable): the brief says
 	// them in factoryd's own words, outside every quoted block.
 	LeftOut []string `json:"left_out,omitempty"`
+	// Docs says the project's document repository is cloned at
+	// /workspace/docs; DocsFailed, when it is set instead, why that clone
+	// failed. Both empty for a project without a document repository.
+	Docs       bool   `json:"docs,omitempty"`
+	DocsFailed string `json:"docs_failed,omitempty"`
 }
 
 // Author standings (ruling 152).

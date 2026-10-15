@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -258,6 +259,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		CardRole:       s.env.cardRole,
 		LeftOut:        s.env.leftOut,
 	}
+	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
 		return s, startError{"repository map", err}
 	}
@@ -456,6 +458,11 @@ type workerEnv struct {
 	// taskPR is the task's own pull request (TASK_PR): a closed one's head
 	// stays on the task's repository after its branch left the fork
 	taskPR string
+	// docsDir (DOCS_DIR) is where the clone put the project's document
+	// repository; "" when the project has none
+	docsDir string
+	// docsURL (DOCS_URL) is the clone container's source for it
+	docsURL string
 	// egressCanary (EGRESS_CANARY, a name and a port) and egressDirectIP
 	// (EGRESS_DIRECT_IP, an IP and a port) are public targets the egress
 	// probe must not reach
@@ -483,6 +490,7 @@ func loadEnv() (workerEnv, error) {
 	e.home = str("HOME")
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
+	e.docsDir = str("DOCS_DIR")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,
@@ -563,14 +571,66 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 }
 
 // runClone is the clone init container's mode, into ws: it alone holds
-// the read token, on the task's repository and the bot's fork.
+// the read token, on the task's repository, the bot's fork and the
+// project's document repository (DOCS_URL), whose clone failing is recorded
+// for the brief and does not fail the session.
 func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	if err == nil {
-		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR")}
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR"), docsURL: os.Getenv("DOCS_URL")}
 		err = cloneBase(e, filepath.Join(ws, "repo"))
+		if err == nil && e.docsURL != "" {
+			recordDocs(log, ws, cloneDocs(e, filepath.Join(ws, "docs")))
+		}
 	}
 	return recordFetch(log, ws, err)
+}
+
+// docPatterns are the files the document clone keeps: text, for reading.
+var docPatterns = []string{"*.md", "*.html", "*.js", "*.css", "*.yaml", "*.yml", "*.txt", "*.json", "*.svg"}
+
+// cloneDocs clones the default branch of the document repository
+// into dir, shallow and partial, and checks out the text files only: the
+// repository's images are most of its size. The checkout fetches the
+// blobs, so it carries the token too.
+func cloneDocs(e workerEnv, dir string) error {
+	if err := e.gitAuth(e.repoToken, "", "clone", "-q", "--depth", "1", "--filter=blob:none", "--no-checkout", e.docsURL, dir); err != nil {
+		return err
+	}
+	if _, err := e.git(dir, append([]string{"sparse-checkout", "set", "--no-cone"}, docPatterns...)...); err != nil {
+		return err
+	}
+	return e.gitAuth(e.repoToken, dir, "checkout", "-q")
+}
+
+// docsFailed is where the clone container leaves why the document
+// repository could not be cloned.
+func docsFailed(ws string) string { return filepath.Join(ws, "docs-failed") }
+
+func recordDocs(log func(string, ...any), ws string, err error) {
+	if err == nil {
+		return
+	}
+	if werr := os.WriteFile(docsFailed(ws), []byte(err.Error()), 0o600); werr != nil {
+		log("record the document clone failure %q: %v", err, werr)
+	}
+}
+
+// docsState is what the brief says of the document repository: cloned
+// (docsDir set and no failure recorded), or why it was not.
+func docsState(ws, docsDir string) (cloned bool, failed string) {
+	if docsDir == "" {
+		return false, ""
+	}
+	why, err := os.ReadFile(docsFailed(ws))
+	switch {
+	case err == nil:
+		return false, textutil.Truncate(strings.TrimSpace(string(why)), 400)
+	case errors.Is(err, fs.ErrNotExist):
+		return true, ""
+	default:
+		return false, err.Error()
+	}
 }
 
 // cloneBase clones the task's repository at its base, with the head of a

@@ -219,6 +219,28 @@ func forgejoTerminal(err error) bool {
 	return errors.Is(err, ErrRefused) || errors.Is(err, errForgejoNotFound)
 }
 
+// docRepo is the document repository of task t's project under the
+// pinned policy version (chat.doc_repo); the zero Repo when it has none.
+func (r *Runner) docRepo(ctx context.Context, t Task, pin int64) (Repo, error) {
+	v, err := r.pinnedVersion(ctx, pin)
+	if err != nil {
+		return Repo{}, err
+	}
+	name, project, ok := v.ProjectOf(t.Repository)
+	if !ok {
+		return Repo{}, nil
+	}
+	doc := v.Document.ChatOf(project).DocRepo
+	if doc == "" {
+		return Repo{}, nil
+	}
+	repo, err := SplitRepo(doc)
+	if err != nil {
+		return Repo{}, fmt.Errorf("project %s chat.doc_repo: %w", name, err)
+	}
+	return repo, nil
+}
+
 func (r *Runner) task(ctx context.Context, id string) (Task, Repo, error) {
 	t, ok, err := r.store.Task(ctx, id)
 	if err != nil {
@@ -580,6 +602,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("policy", err)
 	}
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
+	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
+		return SessionResult{}, named("document repository", err)
+	}
 	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
@@ -642,11 +667,12 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}()
 	var deadline, startedAt time.Time
 	if live == nil {
-		// least privilege (ruling 97): read on the task's repository and the
-		// bot's fork for the clone init container (a resumed branch's head is
-		// on the fork), nothing else on sf; the write token on the fork is
-		// minted when the worker asks for it, its agent dead (answerPush)
-		base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo, r.forgejo.Fork(repo)})
+		// least privilege (ruling 97): read on the task's repository, the
+		// bot's fork (a resumed branch's head is on the fork) and the
+		// project's document repository for the clone init container,
+		// nothing else on sf; the write token on the fork is minted when
+		// the worker asks for it, its agent dead (answerPush)
+		base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", s.readable(r.forgejo.Fork(repo)))
 		if err != nil {
 			return SessionResult{}, named("read token", err)
 		}

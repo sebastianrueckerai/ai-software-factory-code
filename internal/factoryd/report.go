@@ -135,7 +135,8 @@ type reportEnd struct {
 
 // reportSession runs one worker in report mode, with guide, findings and
 // a human's answers, in the task's own sandbox: the read token on the
-// repository, no push token, no fork.
+// repository and the project's document repository, no push token, no
+// fork.
 func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
 	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber}
@@ -147,6 +148,9 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 		return reportEnd{}, err
 	}
 	s.agentTime, s.checkIn = tc.AgentTime, tc.CheckIn
+	if s.docs, err = r.docRepo(ctx, t, pin); err != nil {
+		return reportEnd{}, err
+	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -159,7 +163,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 			log.Printf("task %s: revoke report session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", s.readable())
 	if err != nil {
 		return reportEnd{}, err
 	}

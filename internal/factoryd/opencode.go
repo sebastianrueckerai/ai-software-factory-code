@@ -619,6 +619,12 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		}
 		b.WriteString("\n")
 	}
+	switch {
+	case brief.Docs:
+		b.WriteString("The project's document repository (the roadmap, the plans, the architecture, the design rounds and their prototypes) is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n")
+	case brief.DocsFailed != "":
+		fmt.Fprintf(&b, "The project's document repository could not be read: %s\n", brief.DocsFailed)
+	}
 	if brief.IssueURL != "" {
 		fmt.Fprintf(&b, "Issue: %s\n", brief.IssueURL)
 	}
