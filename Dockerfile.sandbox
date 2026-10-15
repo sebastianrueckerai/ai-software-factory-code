@@ -50,22 +50,38 @@ LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-
 # useradd dates the worker's /etc/shadow entry by SOURCE_DATE_EPOCH, else
 # by the build's day.
 ARG SOURCE_DATE_EPOCH
-# PostgreSQL 17's server for scripts/pg-test.sh, from the PGDG repository:
-# apt takes its packages only signed by the key of this fingerprint, and the
-# install creates no cluster.
+ARG DEBIAN_SNAPSHOT=20261015T000000Z
+ARG POSTGRESQL_VERSION=17.11-1.pgdg12+2
+ARG LIBPQ_VERSION=18.6-1.pgdg12+2
+ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
+# Debian's packages come from snapshot.debian.org at DEBIAN_SNAPSHOT, and
+# PostgreSQL 17's server for scripts/pg-test.sh from the PGDG archive at the
+# versions named, as in Dockerfile.runner, which says why. The install
+# creates no cluster.
 # The install's clocks go with it: ssl-cert (postgresql-common depends on
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
 # alternatives logs carry the build's time.
 ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
-      && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
-           > /etc/apt/sources.list.d/pgdg.list \
+      && printf '%s\n' 'Acquire::Retries "8";' 'Acquire::http::Timeout "60";' 'Acquire::https::Timeout "60";' 'Acquire::Check-Valid-Until "false";' \
+           > /etc/apt/apt.conf.d/80snapshot \
+      && rm /etc/apt/sources.list.d/debian.sources \
+      && printf '%s\n' "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" \
+           "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm-updates main" \
+           "deb http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT} bookworm-security main" > /etc/apt/sources.list \
+      && printf '%s\n' 'Package: *' 'Pin: origin apt-archive.postgresql.org' 'Pin-Priority: 1' > /etc/apt/preferences.d/pgdg-archive \
       && mkdir -p /etc/postgresql-common/createcluster.d \
       && echo "create_main_cluster = false" > /etc/postgresql-common/createcluster.d/no-main-cluster.conf \
       && DEBIAN_FRONTEND=noninteractive apt-get update \
+      && apt-get install -y --no-install-recommends ca-certificates \
+      && echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc,B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8] https://apt-archive.postgresql.org/pub/repos/apt bookworm-pgdg-archive main" \
+           > /etc/apt/sources.list.d/pgdg.list \
+      && apt-get update \
       && apt-get install -y --no-install-recommends git ca-certificates tzdata curl ripgrep openssh-client xz-utils \
-           gcc libc6-dev make python3 postgresql-17 \
+           gcc libc6-dev make python3 \
+           postgresql-17=${POSTGRESQL_VERSION} postgresql-client-17=${POSTGRESQL_VERSION} libpq5=${LIBPQ_VERSION} \
+           postgresql-common=${POSTGRESQL_COMMON_VERSION} postgresql-client-common=${POSTGRESQL_COMMON_VERSION} \
       && rm -rf /var/lib/apt/lists/* \
       && useradd -m -u 1000 -s /bin/bash worker \
       && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \

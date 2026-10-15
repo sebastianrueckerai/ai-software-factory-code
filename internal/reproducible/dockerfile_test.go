@@ -575,3 +575,114 @@ func TestRunnerEpochHasADefault(t *testing.T) {
 		t.Errorf("Dockerfile.runner: ARG SOURCE_DATE_EPOCH defaults to %q, want a number a build without the arg can use", v)
 	}
 }
+
+// The ARGs that date or pin every apt source: one Debian snapshot and one
+// version of each PGDG package for both images, as one Go builds them all.
+var aptPins = []string{"DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION"}
+
+const pgdgArchive = "https://apt-archive.postgresql.org/pub/repos/apt"
+
+var (
+	snapshotDate = regexp.MustCompile(`^[0-9]{8}T[0-9]{6}Z$`)
+	debSource    = regexp.MustCompile(`"deb (?:\[[^\]]*\] )?(\S+) (\S+)`)
+	snapshotURL  = regexp.MustCompile(`^http://snapshot\.debian\.org/archive/(debian|debian-security)/\$\{DEBIAN_SNAPSHOT\}$`)
+	installArgs  = regexp.MustCompile(`apt-get install -y --no-install-recommends ((?:[^&]|&[^&])*)`)
+	versionArg   = regexp.MustCompile(`^\$\{[A-Z_]+_VERSION\}$`)
+)
+
+// Every apt source an image installs from is dated or version-pinned
+// (roadmap 242): a cache miss on a later day installs the same packages.
+// Debian's come from snapshot.debian.org at DEBIAN_SNAPSHOT, the base
+// image's undated deb.debian.org source removed before the first update;
+// PGDG's from its archive, pinned at priority 1 so that apt takes from it
+// only a package named with its version, and every PostgreSQL package is
+// named so. apt retries a slow snapshot. Hand-derived from the two
+// Dockerfiles: these stages run apt-get install.
+func TestDockerfilesTakeAptFromDatedOrVersionPinnedSources(t *testing.T) {
+	want := []struct {
+		file   string
+		stages []string
+	}{
+		{"Dockerfile", nil},
+		{"Dockerfile.sandbox", []string{"final"}},
+		{"Dockerfile.runner", []string{"final"}},
+	}
+	pins := map[string]string{}
+	for _, w := range want {
+		t.Run(w.file, func(t *testing.T) {
+			stages, got := stagesWhere(t, filepath.Join("..", "..", w.file), func(s *dockerfileStage) bool {
+				return strings.Contains(strings.Join(s.runs, "\n"), "apt-get install")
+			})
+			if !reflect.DeepEqual(got, w.stages) {
+				t.Fatalf("%s: stages running apt-get install = %v, want %v", w.file, got, w.stages)
+			}
+			for _, s := range stages {
+				if !snapshotDate.MatchString(s.args["DEBIAN_SNAPSHOT"]) {
+					t.Errorf("%s stage %s: ARG DEBIAN_SNAPSHOT=%q, want a snapshot.debian.org time such as 20261015T000000Z", w.file, s.name, s.args["DEBIAN_SNAPSHOT"])
+				}
+				for _, arg := range aptPins {
+					v := s.args[arg]
+					if v == "" {
+						t.Errorf("%s stage %s: no ARG %s with a value, so its apt step reads it empty", w.file, s.name, arg)
+						continue
+					}
+					if prev, ok := pins[arg]; ok && prev != v {
+						t.Errorf("%s: ARG %s=%s, another image pins %s: one snapshot and one PostgreSQL for every image", w.file, arg, v, prev)
+					}
+					pins[arg] = v
+				}
+				for _, run := range s.runs {
+					if !strings.Contains(run, "apt-get install") {
+						continue
+					}
+					checkAptRun(t, w.file+" stage "+s.name, run)
+				}
+			}
+		})
+	}
+}
+
+func checkAptRun(t *testing.T, where, run string) {
+	t.Helper()
+	update := strings.Index(run, "apt-get update")
+	if rm := strings.Index(run, "rm /etc/apt/sources.list.d/debian.sources "); rm < 0 || rm > update {
+		t.Errorf("%s: the base image's undated debian.sources is not removed before the first apt-get update", where)
+	}
+	for _, conf := range []string{"Acquire::Retries", "Acquire::http::Timeout", "Acquire::https::Timeout", "Acquire::Check-Valid-Until \"false\""} {
+		if i := strings.Index(run, "'"+conf); i < 0 || i > update {
+			t.Errorf("%s: no %s in apt's configuration before the first apt-get update", where, conf)
+		}
+	}
+	sources := debSource.FindAllStringSubmatch(run, -1)
+	if len(sources) == 0 {
+		t.Fatalf("%s: no deb source found in the apt step", where)
+	}
+	archive := false
+	for _, m := range sources {
+		switch {
+		case snapshotURL.MatchString(m[1]):
+		case m[1] == pgdgArchive && m[2] == "bookworm-pgdg-archive":
+			archive = true
+		default:
+			t.Errorf("%s: apt source %s %s is neither snapshot.debian.org at ${DEBIAN_SNAPSHOT} nor PGDG's archive", where, m[1], m[2])
+		}
+	}
+	if archive && !strings.Contains(run, `'Package: *' 'Pin: origin apt-archive.postgresql.org' 'Pin-Priority: 1' > /etc/apt/preferences.d/`) {
+		t.Errorf("%s: PGDG's archive is not pinned at priority 1, so apt would take its newest version of a package not named with one", where)
+	}
+	installs := installArgs.FindAllStringSubmatch(run, -1)
+	if len(installs) == 0 {
+		t.Fatalf("%s: no apt-get install -y --no-install-recommends", where)
+	}
+	for _, m := range installs {
+		for _, pkg := range strings.Fields(m[1]) {
+			if !strings.HasPrefix(pkg, "postgresql") && !strings.HasPrefix(pkg, "libpq") {
+				continue
+			}
+			name, version, _ := strings.Cut(pkg, "=")
+			if !versionArg.MatchString(version) {
+				t.Errorf("%s: %s installs without a pinned version ARG", where, name)
+			}
+		}
+	}
+}
