@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
@@ -26,15 +27,18 @@ type RoutineRunResult struct {
 	Issue                 int64
 }
 
-// scheduledStart is the search attribute a Temporal schedule sets on the
-// workflow it starts: the time the run was due.
-var scheduledStart = temporal.NewSearchAttributeKeyTime("TemporalScheduledStartTime")
-
 // RoutineRunWorkflow is one run of a routine (roadmap 267): the schedule, the merge pass or Run now starts it,
 // its one activity files the card and writes the run, and the ID keyed on the due time makes a second start a no-op.
 func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
-	if due, ok := workflow.GetTypedSearchAttributes(ctx).GetTime(scheduledStart); ok {
-		in.Due = due
+	// a schedule sets the time the run was due on the workflow it starts,
+	// read untyped: the typed read drops a payload without type metadata
+	if p, ok := workflow.GetInfo(ctx).SearchAttributes.GetIndexedFields()["TemporalScheduledStartTime"]; ok {
+		if err := converter.GetDefaultDataConverter().FromPayload(p, &in.Due); err != nil {
+			return terminalError("routine %s/%s: the scheduled start time: %v", in.Project, in.Routine, err)
+		}
+	}
+	if in.Due.IsZero() {
+		return terminalError("routine %s/%s: the run has no due time", in.Project, in.Routine)
 	}
 	ctx = workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout:    5 * time.Minute,
@@ -46,12 +50,14 @@ func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 
 // routineRunPrefix is the workflow ID of a routine's runs without the due
 // time: a schedule's action, to which Temporal appends the scheduled time.
-func routineRunPrefix(in RoutineRunInput) string { return "routine-" + in.Project + "-" + in.Routine }
+// The joiner is the schedule IDs' "/", which no project or routine name
+// holds, so no two routines share a prefix.
+func routineRunPrefix(in RoutineRunInput) string { return "routine/" + in.Project + "/" + in.Routine }
 
 // RoutineRunID is a run's workflow ID: Temporal refuses a second start for
 // the same due time.
 func RoutineRunID(in RoutineRunInput) string {
-	return routineRunPrefix(in) + "-" + in.Due.UTC().Format("20060102T1504")
+	return routineRunPrefix(in) + "/" + in.Due.UTC().Format("20060102T1504")
 }
 
 // RoutineRun is a routine run's activity. It files nothing yet.

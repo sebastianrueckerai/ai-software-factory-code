@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -32,36 +33,64 @@ func TestRoutineRunWorkflowCallsTheRunOnce(t *testing.T) {
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil || calls != 1 {
 		t.Fatalf("completed %v err %v calls %d", env.IsWorkflowCompleted(), env.GetWorkflowError(), calls)
 	}
-	if got := RoutineRunID(in); got != "routine-ai-software-factory-code-weekly-bump-20261013T0400" {
+	if got := RoutineRunID(in); got != "routine/ai-software-factory-code/weekly-bump/20261013T0400" {
 		t.Fatalf("id %q", got)
 	}
 }
 
-// A schedule's run is due at the time the schedule set on it, not at the
-// time its input carries.
-func TestRoutineRunWorkflowTakesTheScheduledTime(t *testing.T) {
+// routineRunEnv runs RoutineRunWorkflow and records the inputs its
+// activity receives.
+func routineRunEnv() (*testsuite.TestWorkflowEnvironment, *[]RoutineRunInput) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 	env.RegisterWorkflowWithOptions(RoutineRunWorkflow, workflow.RegisterOptions{Name: "RoutineRunWorkflow"})
-	var due time.Time
+	var runs []RoutineRunInput
 	env.RegisterActivityWithOptions(func(ctx context.Context, in RoutineRunInput) (RoutineRunResult, error) {
-		due = in.Due
+		runs = append(runs, in)
 		return RoutineRunResult{Outcome: "filed"}, nil
 	}, activity.RegisterOptions{Name: "RoutineRun"})
+	return env, &runs
+}
+
+// A schedule's run is due at the time the schedule set on it, not at the
+// time its input carries, whether or not the attribute names its type.
+func TestRoutineRunWorkflowTakesTheScheduledTime(t *testing.T) {
 	scheduled := time.Date(2026, 10, 13, 4, 0, 0, 0, time.UTC)
-	if err := env.SetTypedSearchAttributesOnStart(temporal.NewSearchAttributes(
-		temporal.NewSearchAttributeKeyTime("TemporalScheduledStartTime").ValueSet(scheduled))); err != nil {
-		t.Fatal(err)
+	for name, set := range map[string]func(env *testsuite.TestWorkflowEnvironment) error{
+		"typed": func(env *testsuite.TestWorkflowEnvironment) error {
+			return env.SetTypedSearchAttributesOnStart(temporal.NewSearchAttributes(
+				temporal.NewSearchAttributeKeyTime("TemporalScheduledStartTime").ValueSet(scheduled)))
+		},
+		"without type metadata": func(env *testsuite.TestWorkflowEnvironment) error {
+			return env.SetSearchAttributesOnStart(map[string]any{"TemporalScheduledStartTime": scheduled})
+		},
+	} {
+		env, runs := routineRunEnv()
+		if err := set(env); err != nil {
+			t.Fatal(err)
+		}
+		env.ExecuteWorkflow("RoutineRunWorkflow", RoutineRunInput{Project: "ai-software-factory-code", Routine: "weekly-bump", Trigger: "cron",
+			Due: time.Date(2026, 10, 1, 9, 30, 0, 0, time.UTC)})
+		if env.GetWorkflowError() != nil || len(*runs) != 1 || !(*runs)[0].Due.Equal(scheduled) {
+			t.Fatalf("%s: err %v runs %+v, want one due %v", name, env.GetWorkflowError(), *runs, scheduled)
+		}
 	}
-	env.ExecuteWorkflow("RoutineRunWorkflow", RoutineRunInput{Project: "ai-software-factory-code", Routine: "weekly-bump", Trigger: "cron",
-		Due: time.Date(2026, 10, 1, 9, 30, 0, 0, time.UTC)})
-	if env.GetWorkflowError() != nil || !due.Equal(scheduled) {
-		t.Fatalf("err %v due %v, want %v", env.GetWorkflowError(), due, scheduled)
+}
+
+// A run with no due time would share its store key with every other such
+// run of the routine: it fails before its activity, and is not retried.
+func TestRoutineRunWorkflowFailsWithoutADueTime(t *testing.T) {
+	env, runs := routineRunEnv()
+	env.ExecuteWorkflow("RoutineRunWorkflow", RoutineRunInput{Project: "ai-software-factory-code", Routine: "weekly-bump", Trigger: "cron"})
+	var app *temporal.ApplicationError
+	if err := env.GetWorkflowError(); !errors.As(err, &app) || !app.NonRetryable() || len(*runs) != 0 {
+		t.Fatalf("err %v runs %+v, want a non-retryable failure and no run", err, *runs)
 	}
 }
 
 // A second start for the same due time meets the first run and is no
-// error. A run that failed may start again.
+// error. A run that failed may start again. Any other refusal is the
+// caller's to see.
 func TestStartRoutineRunIsKeyedOnTheDueTime(t *testing.T) {
 	c := &mocks.Client{}
 	var opts client.StartWorkflowOptions
@@ -72,15 +101,23 @@ func TestStartRoutineRunIsKeyedOnTheDueTime(t *testing.T) {
 	if err := (TemporalWorkflows{Client: c}).StartRoutineRun(context.Background(), in); err != nil {
 		t.Fatalf("StartRoutineRun = %v, want an already-started refusal to be success", err)
 	}
-	if opts.ID != "routine-ai-software-factory-code-audit-20261013T0400" || opts.TaskQueue != TaskQueue ||
+	if opts.ID != "routine/ai-software-factory-code/audit/20261013T0400" || opts.TaskQueue != TaskQueue ||
 		opts.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY || !opts.WorkflowExecutionErrorWhenAlreadyStarted {
 		t.Fatalf("options = %+v", opts)
+	}
+
+	down := &mocks.Client{}
+	down.On("ExecuteWorkflow", mock.Anything, mock.Anything, "RoutineRunWorkflow", in).Return(nil, serviceerror.NewUnavailable("frontend down"))
+	var unavailable *serviceerror.Unavailable
+	if err := (TemporalWorkflows{Client: down}).StartRoutineRun(context.Background(), in); !errors.As(err, &unavailable) {
+		t.Fatalf("StartRoutineRun = %v, want the frontend's refusal", err)
 	}
 }
 
 // Temporal compiles a cron into calendars and never describes it back:
 // List reads back what Create and Update wrote, the cron included, and
-// an Update keeps a pause someone set in Temporal's UI.
+// an Update keeps a pause someone set in Temporal's UI and restores the
+// overlap policy.
 func TestTemporalSchedulesReadBackWhatTheyWrote(t *testing.T) {
 	ctx := context.Background()
 	want := ScheduleSpec{ID: "routine/ai-software-factory-code/weekly-bump/0", Cron: "0 6 * * 1", TimeZone: "Europe/Berlin", CatchupWindow: 24 * time.Hour,
@@ -95,7 +132,7 @@ func TestTemporalSchedulesReadBackWhatTheyWrote(t *testing.T) {
 		t.Fatal(err)
 	}
 	action := created.Action.(*client.ScheduleWorkflowAction)
-	if created.ID != want.ID || created.Overlap != enumspb.SCHEDULE_OVERLAP_POLICY_SKIP || action.ID != "routine-ai-software-factory-code-weekly-bump" ||
+	if created.ID != want.ID || created.Overlap != enumspb.SCHEDULE_OVERLAP_POLICY_SKIP || action.ID != "routine/ai-software-factory-code/weekly-bump" ||
 		action.Workflow != "RoutineRunWorkflow" || action.TaskQueue != TaskQueue || !reflect.DeepEqual(created.Spec.CronExpressions, []string{"0 6 * * 1"}) {
 		t.Fatalf("created %+v action %+v", created, action)
 	}
@@ -130,6 +167,7 @@ func TestTemporalSchedulesReadBackWhatTheyWrote(t *testing.T) {
 	}
 
 	desc.Schedule.State = &client.ScheduleState{Paused: true, Note: "held for the release"}
+	desc.Schedule.Policy.Overlap = enumspb.SCHEDULE_OVERLAP_POLICY_ALLOW_ALL
 	h.On("Update", mock.Anything, mock.Anything).Run(func(a mock.Arguments) {
 		up, err := a.Get(1).(client.ScheduleUpdateOptions).DoUpdate(client.ScheduleUpdateInput{Description: *desc})
 		if err != nil {

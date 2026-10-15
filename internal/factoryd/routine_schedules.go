@@ -79,15 +79,15 @@ func (t TemporalSchedules) Create(ctx context.Context, s ScheduleSpec) error {
 	return err
 }
 
-// Update replaces the schedule's spec, action and catch-up window and
-// keeps its state: a pause set in Temporal's UI stays.
+// Update replaces the schedule's spec, action, overlap and catch-up window
+// and keeps its state: a pause set in Temporal's UI stays.
 func (t TemporalSchedules) Update(ctx context.Context, s ScheduleSpec) error {
 	spec, action := scheduleOf(s)
 	return t.Client.ScheduleClient().GetHandle(ctx, s.ID).Update(ctx, client.ScheduleUpdateOptions{
 		DoUpdate: func(in client.ScheduleUpdateInput) (*client.ScheduleUpdate, error) {
 			sch := in.Description.Schedule
 			sch.Spec, sch.Action = &spec, action
-			sch.Policy.CatchupWindow = s.CatchupWindow
+			sch.Policy.Overlap, sch.Policy.CatchupWindow = enumspb.SCHEDULE_OVERLAP_POLICY_SKIP, s.CatchupWindow
 			return &client.ScheduleUpdate{Schedule: &sch}, nil
 		},
 	})
