@@ -318,6 +318,14 @@ func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, number 
 	return factoryd.Task{}, false, nil
 }
 
+func (s *acceptanceStore) TasksByPR(ctx context.Context, repository string, number int64) ([]factoryd.Task, error) {
+	t, ok, err := s.TaskByPR(ctx, repository, number)
+	if !ok || err != nil {
+		return nil, err
+	}
+	return []factoryd.Task{t}, nil
+}
+
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

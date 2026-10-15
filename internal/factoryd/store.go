@@ -275,6 +275,10 @@ type Store interface {
 	// any card's workflow (roadmap 187); false means no task is linked to
 	// that pull request yet.
 	TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
+	// TasksByPR lists the tasks linked to pull request pr on repository,
+	// newest first: a webhook on a factory pull request resolves the
+	// still-open card of its number among them (roadmap 275).
+	TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error)
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)

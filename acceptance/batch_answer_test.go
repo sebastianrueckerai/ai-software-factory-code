@@ -420,6 +420,9 @@ func (s *accBatchStore) TaskByIssue(ctx context.Context, repository string, issu
 func (s *accBatchStore) TaskByPR(ctx context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
 	return s.tasks.TaskByPR(ctx, repository, pr)
 }
+func (s *accBatchStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]factoryd.Task, error) {
+	panic("unused")
+}
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
