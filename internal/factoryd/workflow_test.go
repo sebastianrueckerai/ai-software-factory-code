@@ -756,6 +756,105 @@ func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
 	}
 }
 
+// Three sessions in a row that got no model answer ask a human, naming the
+// last stop, and a session that got one starts the count again. Two starved
+// sessions, an answered one and three starved ones (the fifth climbing the
+// rung) run as attempts 1 1 1 2 2 2; the question comes after the sixth, and
+// its answer buys agent time but no attempt, so the seventh runs as attempt 2
+// on the stronger rung.
+func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
+	h := newWorkflowHarness(t)
+	starved := func(o SessionOutcome, stop string) SessionResult {
+		return SessionResult{Outcome: o, SessionID: "starved", Summary: stop}
+	}
+	h.onSessions(starved(OutcomeNoPush, "stop 1"), starved(OutcomeNoPush, "stop 2"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Summary: "no changes to push"},
+		starved(OutcomeNoPush, "stop 4"), starved(OutcomeRetryStronger, "stop 5"), starved(OutcomeNoPush, "stop 6"),
+		pushed("s7", "c7"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 1, 1, 2, 2, 2, 2}) {
+		t.Fatalf("attempts = %v, want 1 1 1 2 2 2 2", attempts)
+	}
+	want := "No session got a model answer: 3 sessions in a row ended without one and took no number of the session cap. " +
+		"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: stop 6"
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "no_answer" {
+		t.Fatalf("escalations = %q, want %q from source no_answer", h.escalated, want)
+	}
+	if in := h.sessions[6]; in.Model != "factory/coding-frontier" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
+		t.Fatalf("seventh session = %+v, want the stronger rung with the answer", in)
+	}
+	if u := h.usage[len(h.usage)-1]; u != (TaskUsage{Attempts: 2}) {
+		t.Fatalf("usage = %+v, want two sessions counted and no attempt bought", u)
+	}
+}
+
+// The session_started record names the model the session started on; a
+// climb inside the session is model_switched's record (roadmap 222, item 5).
+func TestWorkflowSessionAnsweredNamesTheStartModel(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Model: "factory/coding-frontier", Summary: "no changes to push"}, pushed("s2", "c2"))
+	var models []string
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) {
+			models = append(models, in.Model)
+			return true, nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if want := []string{"factory/coding-cheap", "factory/coding-frontier"}; !slices.Equal(models, want) {
+		t.Fatalf("recorded models = %q, want %q: the first session started cheap and climbed, the second started where it ended", models, want)
+	}
+}
+
+// A session reattached after a restart began before this run: its own start
+// is the since of the answer read, so the calls it made before the restart
+// count. A fresh session carries no start and the read takes the run's.
+func TestWorkflowReattachedSessionIsReadSinceItsOwnStart(t *testing.T) {
+	h := newWorkflowHarness(t)
+	podStart := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	var ran []time.Time
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			ran = append(ran, h.env.Now())
+			if len(h.sessions) == 1 {
+				return SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push", Started: podStart}, nil
+			}
+			return pushed("s2", "c2"), nil
+		})
+	var since []time.Time
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) {
+			since = append(since, in.Since)
+			return true, nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(since) != 2 || !since[0].Equal(podStart) || !since[1].Equal(ran[1]) {
+		t.Fatalf("since = %v, want the reattached pod's start %v, then the second session's run %v", since, podStart, ran[1])
+	}
+}
+
 // The budget branch used to discard the change requests that answered it
 // and to count the refused attempt: session 1 pushes, the red checks go back,
 // the floor refuses session 2, a change request on the pull request answers
@@ -1283,7 +1382,7 @@ func TestWorkflowChangeRequestAtTheTimeCapBuysTheTimeAlone(t *testing.T) {
 		usage    []TaskUsage
 	}{
 		"gated": {false, []int{1, 1}, []TaskUsage{
-			{AgentTime: 20 * time.Minute}, {AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute},
+			{AgentTime: 20 * time.Minute, LastUncounted: true}, {AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, LastUncounted: true},
 			{AgentTime: 21 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute}}},
 		"before the gate": {true, []int{1, 2}, []TaskUsage{
 			{AgentTime: 20 * time.Minute, Attempts: 1}, {AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
@@ -1321,9 +1420,8 @@ func TestWorkflowChangeRequestAtTheTimeCapBuysTheTimeAlone(t *testing.T) {
 
 // The agent-time cap card's answer buys an attempt only at the session cap
 // (versionSessionLadder), whatever the last session counted: a restarted
-// run finds attempt 1 and the 20 minutes spent, and cannot know whether
-// the session that spent them took a number. Its cap card's answer buys
-// the 5 minute slice alone, and the next session runs as attempt 2. Attempt
+// run finds attempt 1 and the 20 minutes spent, and its cap card's answer
+// buys the 5 minute slice alone, and the next session runs as attempt 2. Attempt
 // 3 spending the last 5 minutes is at the cap: the answer buys attempt 4
 // with the slice. A run from before the gate bought an attempt with every
 // answer.
@@ -1421,6 +1519,59 @@ func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing
 		}
 		if len(h.usage) != 2 || h.usage[0] != tc.granted {
 			t.Fatalf("%s: usage = %+v, want %+v recorded by the answer, then the session's", name, h.usage, tc.granted)
+		}
+	}
+}
+
+// A run restarted while a question that is not the cap's waits takes its
+// answer by the rule of the loop's (versionSessionLadder): the row says
+// whether the last session took a number. After one that took none the
+// answer buys the 5 minute slice alone, after one that took one it buys an
+// attempt with it, and an answer to a floor's refusal buys nothing, as the
+// live wait's answer does. The session after it is attempt 2, a minute
+// long. A run from before the gate bought an attempt with any answer.
+func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
+	const pod = "the pod could not start: image pull refused"
+	floor := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+	for name, tc := range map[string]struct {
+		pinned   bool
+		question string
+		used     TaskUsage
+		usage    []TaskUsage
+	}{
+		"uncounted": {question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, LastUncounted: true},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute}}},
+		"counted": {question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
+		"uncounted, before the gate": {pinned: true, question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1, LastUncounted: true},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
+		"a floor's refusal": {question: floor, used: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}, usage: []TaskUsage{
+			{AgentTime: 6 * time.Minute, Attempts: 2}}},
+		"a floor's refusal, before the gate": {pinned: true, question: floor, used: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}, usage: []TaskUsage{
+			{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1},
+			{AgentTime: 6 * time.Minute, Attempts: 2, ExtraAttempts: 1}}},
+	} {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.state = RunState{Status: "waiting-human", Question: tc.question, Usage: tc.used}
+		h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the registry is back", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].Attempt != 2 {
+			t.Fatalf("%s: sessions = %+v, want one, attempt 2", name, h.sessions)
+		}
+		if !slices.Equal(h.usage, tc.usage) {
+			t.Fatalf("%s: usage = %+v, want %+v", name, h.usage, tc.usage)
 		}
 	}
 }

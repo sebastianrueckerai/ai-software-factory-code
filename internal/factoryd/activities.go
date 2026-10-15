@@ -415,22 +415,21 @@ func floorRefused(reason string) bool {
 	return BudgetRefusal(reason)
 }
 
-// AttemptFunded is the answer path's floor (ruling 322, finding 215): ""
-// when the free headroom can fund the cheapest call of model, a call of
-// no prompt and policy.MinCallTokens output tokens, else the refusal the
-// waiting-human card carries. It guards the console's answer (DayCapped)
-// and every attempt of a run from before versionSessionLadder, which
-// schedules it on replay; a newer run asks SessionFunded before each
-// session.
+// AttemptFunded is the attempt floor of a run from before
+// versionSessionLadder (ruling 322, finding 215), which schedules it on
+// replay: "" when the free headroom can fund the cheapest call of model, a
+// call of no prompt and policy.MinCallTokens output tokens, else the
+// refusal the waiting-human card carries. A newer run and the console's
+// answer ask SessionFunded.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }
 
-// SessionFunded is the floor of every session's start (roadmap 243, plan
-// A): "" when the free headroom can fund a session's opening calls on
-// model and the policy's floor of its rung, else the refusal naming the
-// amount. A card the answer path's floor admits may still hold too little
-// to start a session; the console offers it the Fund action.
+// SessionFunded is the floor of every session's start and of the console's
+// answer (roadmap 243, plan A): "" when the free headroom can fund a
+// session's opening calls on model and the policy's floor of its rung,
+// else the refusal naming the amount; the console offers Fund on the
+// budget's.
 func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, true)
 }
@@ -438,13 +437,16 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 // SessionAnswered reports whether the session of a task that began at in.Since
 // got a model answer, and records the session_started event of one that did:
 // a pod that started and made no answered call is no session. The ledger, not
-// the timeline, is the fact the session cap counts.
+// the timeline, is the fact the session cap counts. A session whose activity
+// failed has no id: it counts, and no record names it.
 func (r *Runner) SessionAnswered(ctx context.Context, in SessionAnswerInput) (bool, error) {
 	answered, err := r.store.ModelAnswered(ctx, in.TaskID, in.Since)
 	if err != nil || !answered {
 		return false, err
 	}
-	r.timeline.recordEvent(ctx, in.TaskID, EventSessionStarted, map[string]any{"session": in.SessionID, "model": aliasOf(in.Model), "attempt": in.Attempt})
+	if in.SessionID != "" {
+		r.timeline.recordEvent(ctx, in.TaskID, EventSessionStarted, map[string]any{"session": in.SessionID, "model": aliasOf(in.Model), "attempt": in.Attempt})
+	}
 	return true, nil
 }
 
@@ -738,7 +740,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, err
 	}
 	res := sessionResult(s, out)
-	res.Model = s.model
+	res.Model, res.Started = s.model, startedAt
 	if res.Outcome == OutcomePushed {
 		r.timeline.recordEvent(ctx, t.ID, EventSessionPushed, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt,
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})

@@ -101,6 +101,8 @@ func escalationSource(reason string) string {
 		return "start"
 	case strings.HasPrefix(reason, podNeverStarted):
 		return "capacity"
+	case strings.HasPrefix(reason, noModelAnswer):
+		return "no_answer"
 	case strings.HasPrefix(reason, contentFilterRefusal):
 		return "content_filter"
 	}

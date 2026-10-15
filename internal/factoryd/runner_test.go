@@ -1539,6 +1539,15 @@ func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
 			t.Errorf("timeline lacks %s:\n%s", want, tl)
 		}
 	}
+	// a session whose activity failed has no id: it counts, and no record
+	// names a session ""
+	in.SessionID = ""
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("answered session without an id = (%v, %v), want true", ok, err)
+	}
+	if tl, _ = objects.Get(t.Context(), "sessions/t2/timeline.jsonl"); strings.Count(string(tl), `"event":"session_started"`) != 1 {
+		t.Fatalf("timeline = %s, want the one session_started of s1", tl)
+	}
 }
 
 // What a session that ended without a push did does not reach its result as
@@ -2234,8 +2243,8 @@ func TestRunSessionReattachesToTheLivePod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID {
-		t.Fatalf("result = %+v, want the live session's push as its own", res)
+	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID || !res.Started.Equal(first.StartedAt) {
+		t.Fatalf("result = %+v, want the live session's push as its own, started when its pod did (%v)", res, first.StartedAt)
 	}
 	if len(kube.podOrder) != 1 {
 		t.Fatalf("pods created %d, want the one the first factoryd made", len(kube.podOrder))
@@ -2265,13 +2274,15 @@ func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4}}
+	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4,
+		StartedAt: time.Now().Add(-time.Hour)}}
+	before := time.Now()
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.SessionID == "s-gone" || len(kube.podOrder) != 1 {
-		t.Fatalf("result = %+v, pods %d; want a fresh session in a new pod", res, len(kube.podOrder))
+	if res.Outcome != OutcomePushed || res.SessionID == "s-gone" || len(kube.podOrder) != 1 || res.Started.Before(before) {
+		t.Fatalf("result = %+v, pods %d; want a fresh session in a new pod, started after %v", res, len(kube.podOrder), before)
 	}
 	if _, ok := store.liveSessions["t1"]; ok {
 		t.Fatal("a live row survived the fresh session's end")

@@ -305,6 +305,9 @@ type SessionResult struct {
 	Acceptance *AcceptanceHit
 	// Capped is a day_cap session's refusal.
 	Capped *CapRefusal `json:",omitempty"`
+	// Started is when the session began, its pod's first start for a
+	// session reattached after a restart: the since of its answer read.
+	Started time.Time `json:",omitzero"`
 }
 
 type PullRequest struct {
@@ -933,18 +936,22 @@ const (
 	versionFactoryPRActions workflow.Version = 1
 	// versionSessionLadder (change id "session-ladder"): the session cap
 	// counts the sessions that got a model answer (SessionAnswered), read
-	// after every session whatever ended it, so a starved or refused session
-	// takes no number and no branch of the loop corrects the count, and an
-	// answer after a session that took none buys agent time but no attempt;
-	// an answer at a cap (a change request, the cap card, the cap question
-	// after a restart) buys an attempt only at the session cap, whatever the
-	// last session counted, else the agent time alone; the check before a
-	// session is SessionFunded (the opening calls and the floor of the
-	// rung); every wait for a human adds the change requests that answered
-	// it to the next session's findings. A run from before counts every
-	// session that ran and every attempt the budget refused, buys an attempt
-	// with every answer at a cap, funds on AttemptFunded and drops the
-	// budget wait's change requests.
+	// after every session whatever ended it, since the session's own start
+	// (a reattached session's pod start), so a starved or refused session
+	// takes no number and no branch of the loop corrects the count; an
+	// answer after a session that took none buys agent time but no attempt,
+	// in a restarted run too (TaskUsage.LastUncounted), and the
+	// unansweredSessions-th such session in a row asks a human; a restarted
+	// run's answer to a floor's refusal buys nothing, as the live wait's
+	// does; an answer at a cap (a change request, the cap card, the cap
+	// question after a restart) buys an attempt only at the session cap,
+	// whatever the last session counted, else the agent time alone; the
+	// check before a session is SessionFunded (the opening calls and the
+	// floor of the rung); every wait for a human adds the change requests
+	// that answered it to the next session's findings. A run from before
+	// counts every session that ran and every attempt the budget refused,
+	// buys an attempt with every answer at a cap or after a restart, funds
+	// on AttemptFunded and drops the budget wait's change requests.
 	versionSessionLadder workflow.Version = 1
 	// versionReviewRemark (change id "review-remark"): a review that
 	// answers concerns and names no finding is a remark on the card, not a
@@ -1144,15 +1151,14 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		return false
 	}
-	// counted: the last session took a number; an answer after one that
-	// took none buys agent time but no attempt (versionSessionLadder)
-	counted := true
+	// buy is what an answer after a session buys: an attempt, or agent time
+	// alone after one that took no number (u.LastUncounted)
 	buy := func() {
-		if counted {
-			t.grant(&u)
+		if u.LastUncounted {
+			t.grantTime(&u)
 			return
 		}
-		t.grantTime(&u)
+		t.grant(&u)
 	}
 	// held ends every wait for a human of this loop: the task's final state
 	// when the wait decided one, else the change requests that answered it join
@@ -1162,6 +1168,24 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = append(findings, answer...)
 		}
 		return final, why
+	}
+	// unanswered is how many sessions in a row got no model answer
+	// (versionSessionLadder); at unansweredSessions of them askUnanswered
+	// asks a human, whose answer buys agent time, and counts again
+	unanswered := 0
+	askUnanswered := func() (final, why string) {
+		if unanswered < unansweredSessions {
+			return "", ""
+		}
+		ask := fmt.Sprintf(noModelAnswer+"%d sessions in a row ended without one and took no number of the session cap. "+
+			"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: %s",
+			unanswered, reason)
+		unanswered = 0
+		if final, why := held(t.awaitHuman(ask, nil)); final != "" {
+			return final, why
+		}
+		buy()
+		return "", ""
 	}
 	// verifyAtCap takes the branch's head past the base through verify
 	// when no verification judged it (versionKeepWork): head "" for none.
@@ -1305,8 +1329,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			case t.v5 < versionPersistUsage:
 			case AtSessionCap(st.Question):
 				capAnswer()
-			default:
+			case t.sessionLadder < versionSessionLadder:
 				t.grant(&u)
+			case floorRefused(st.Question):
+				// the floor's wait buys nothing: the next session's
+				// floor decides
+			default:
+				buy()
 			}
 		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
 			t.pr, startRef = st.PR, st.Head
@@ -1469,9 +1498,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		}
-		counted = t.sessionLadder < versionSessionLadder || t.sessionAnswered(res, began, attempt, model)
-		if counted {
-			u.Attempts, taken = attempt, 0
+		u.LastUncounted = t.sessionLadder >= versionSessionLadder && !t.sessionAnswered(res, began, attempt, model)
+		if u.LastUncounted {
+			unanswered++
+		} else {
+			u.Attempts, taken, unanswered = attempt, 0, 0
 		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
@@ -1501,6 +1532,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
+			}
 			continue
 		}
 		parent = res.SessionID
@@ -1546,12 +1580,18 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v18 >= versionSessionCap {
 				t.sessionReturn(res, attempt, last)
 			}
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
+			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap, OutcomeNotStarted:
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
 				}
+			}
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
 			}
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
@@ -1609,6 +1649,14 @@ func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
 // podWaits is how many sessions in a row may find their pod never
 // started before the card asks a human.
 const podWaits = 3
+
+// unansweredSessions is how many sessions in a row may get no model answer
+// before the card asks a human, with noModelAnswer opening the question
+// (versionSessionLadder).
+const (
+	unansweredSessions = 3
+	noModelAnswer      = "No session got a model answer: "
+)
 
 // podNeverStarted opens the question of a card whose pods never started.
 const podNeverStarted = "No node started the session's pod: "
@@ -1811,12 +1859,14 @@ func (t *taskRun) unfunded(model string) string {
 	return why
 }
 
-// sessionAnswered reports whether the session that ran since began got a
-// model answer (versionSessionLadder), and records its start. A failed read
+// sessionAnswered reports whether the session that started on model got a
+// model answer (versionSessionLadder), and records its start. The read runs
+// from the session's own start when its result carries one, which for a
+// session reattached after a restart lies before began. A failed read
 // counts the session: a broken ledger must not loosen the cap.
 func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt int, model string) bool {
 	var ok bool
-	in := SessionAnswerInput{TaskID: t.taskID, SessionID: res.SessionID, Model: cmp.Or(res.Model, model), Attempt: attempt, Since: began}
+	in := SessionAnswerInput{TaskID: t.taskID, SessionID: res.SessionID, Model: model, Attempt: attempt, Since: cmp.Or(res.Started, began)}
 	if err := workflow.ExecuteActivity(t.short, ActivitySessionAnswered, in).Get(t.ctx, &ok); err != nil {
 		workflow.GetLogger(t.ctx).Warn("read whether the session got an answer", "task", t.taskID, "error", err)
 		return true
