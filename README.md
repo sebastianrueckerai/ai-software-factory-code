@@ -1681,7 +1681,14 @@ process, template, merge rule) writes the file with one staging namespace
 deployed from `deploy/staging` and no hostname. factoryd judges the file with
 `CheckProjectFile`, which runs the loader's `CheckTree` over infra's head
 with the file added. The human's token then commits the file to a new
-branch `project-<name>` and opens its pull request. The status panel
+branch `project-<name>` and opens its pull request, and the console
+records the `project_filed` event with the pull request's number. When
+the opening answers an error, the console reads infra's open pull
+requests (newest first, `forgejo-config` token) and keeps the one from
+the branch into main as the filing's. Any later step that fails (no pull
+request, the import row or the event not written) undoes the filing as
+the human: its pull request is closed and its branch deleted, so the
+name can be filed again. The status panel
 `/projects/<name>/status` polls every 3 s until its four steps are done:
 1. the pull request, read with the `forgejo-config` token by the number
    the name's last `project_filed` event records, so a second filing of
@@ -1700,11 +1707,11 @@ token for a private one. The console stores it as the name's
 `project_mirrors` row (direction `import`, state `pending`) before the pull
 request, and the pull request's number on the row (`pr`) once it opens;
 the file, the pull request and the `project_filed` event never hold the
-token. A pull request that does not open deletes the row with its token
-and the console reports the failure; one the row cannot record is closed
-as the human, then the row is deleted (if the close fails, the row stays
-so a merge still imports, and the console says so). Registration then
-makes the repository with Forgejo's
+token. An undone filing deletes the row with its token once no pull
+request of the filing can merge: none opened, it was closed, or its
+branch is gone. If neither the close nor the branch's deletion succeeds,
+the row stays so a merge still imports, and the console names what is
+left open. Registration then makes the repository with Forgejo's
 migrate (`POST /api/v1/repos/migrate` as the site admin, private, no
 mirror) in place of the empty create. The migrate runs in a goroutine of
 its own, one per project at most, so no other project's reconcile waits

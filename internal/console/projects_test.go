@@ -247,7 +247,14 @@ type infraFake struct {
 	pullAuth    []string
 	contents    []recorded
 	pulls       []recorded
-	pullsStatus int // the pull request's opening; 0: 201
+	pullsStatus int              // the pull request's opening; 0: 201
+	open        []map[string]any // GET pulls?state=open
+	// branches, when set, are infra's branches besides main: a new branch
+	// that exists is refused, a deleted one goes. branchDeletes are the
+	// deletions, branchStatus their answer, 0: 204.
+	branches      map[string]bool
+	branchDeletes []recorded
+	branchStatus  int
 	// merges and closes are the calls on a pull request, its path theirs;
 	// closeStatus answers a close, 0: 201
 	merges, closes []recorded
@@ -297,10 +304,18 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			f.reads = append(f.reads, req.Header.Get("Authorization"))
 			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": "blob1"})
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
-			f.contents = append(f.contents, rec())
+			c := rec()
+			f.contents = append(f.contents, c)
 			if f.contentsStatus != 0 {
 				w.WriteHeader(f.contentsStatus)
 				return
+			}
+			if branch, _ := c.body["new_branch"].(string); f.branches != nil {
+				if f.branches[branch] {
+					http.Error(w, `{"message":"branch already exists"}`, http.StatusUnprocessableEntity)
+					return
+				}
+				f.branches[branch] = true
 			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"commit":{"sha":"c0ffee"}}`))
@@ -312,6 +327,17 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			}
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{"number":12}`))
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/infra/pulls" && req.URL.Query().Get("state") == "open":
+			f.pullAuth = append(f.pullAuth, req.Header.Get("Authorization"))
+			json.NewEncoder(w).Encode(append([]map[string]any{}, f.open...))
+		case req.Method == http.MethodDelete && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"):
+			f.branchDeletes = append(f.branchDeletes, rec())
+			if f.branchStatus != 0 {
+				w.WriteHeader(f.branchStatus)
+				return
+			}
+			delete(f.branches, strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/branches/"))
+			w.WriteHeader(http.StatusNoContent)
 		case req.Method == http.MethodGet && numbered && !merge:
 			f.pullAuth = append(f.pullAuth, req.Header.Get("Authorization"))
 			if f.pull == nil || fmt.Sprint(f.pull["number"]) != number {
@@ -710,6 +736,37 @@ func TestStatusStopsPolling(t *testing.T) {
 	s.main = true
 	if body := s.status(t); strings.Contains(body, "hx-trigger") || strings.Contains(body, "hx-get") {
 		t.Fatalf("the final panel still polls:\n%s", body)
+	}
+}
+
+// A failed filing deletes its branch project-<name> as the human, so the
+// name can be filed again: with Forgejo refusing a branch that exists, the
+// filing after a refused pull request makes its branch and opens its own.
+func TestFailedFilingDeletesItsBranch(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	infra.mu.Lock()
+	infra.branches, infra.pullsStatus = map[string]bool{}, http.StatusUnprocessableEntity
+	infra.mu.Unlock()
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusBadGateway {
+		t.Fatalf("a refused pull request: POST /projects = %d %q, want 502", rec.Code, rec.Body.String())
+	}
+	infra.mu.Lock()
+	infra.pullsStatus = 0
+	deletes := slices.Clone(infra.branchDeletes)
+	infra.mu.Unlock()
+	if len(deletes) != 1 || deletes[0].path != "/api/v1/repos/sf/infra/branches/project-linkshort" || deletes[0].auth != "Bearer access-1" {
+		t.Errorf("branch deletes %+v, want project-linkshort deleted as the human", deletes)
+	}
+	if rec := r.do(post("/projects", linkshortForm(s.csrf)), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the second filing: POST /projects = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	infra.mu.Lock()
+	defer infra.mu.Unlock()
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || !infra.branches["project-linkshort"] {
+		t.Errorf("%d contents and %d pull calls, branches %v; want two each and project-linkshort", len(infra.contents), len(infra.pulls), infra.branches)
 	}
 }
 

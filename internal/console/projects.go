@@ -219,11 +219,13 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 
 // createProject writes the new project's file, judges it the loader's way
 // against infra's head, and files it as the human: a new branch
-// project-<name> off main with the one file, and its pull request. A
-// GitHub repository to start from is the name's import row, with its
-// token, put once the branch exists, before the pull request, which it
-// records once open. A pull request that does not open, or that the row
-// cannot record and so is closed, takes the row and its token with it.
+// project-<name> off main with the one file, its pull request, and the
+// project_filed event that records the pull request. A GitHub repository
+// to start from is the name's import row, with its token, put once the
+// branch exists, before the pull request, which it records once open.
+// A pull request whose opening errs may have opened all the same: the
+// open one from the branch is the filing's. Any step after the branch
+// that fails undoes the filing (failFiling).
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
 		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
@@ -266,7 +268,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p, refused)
 		return
 	}
-	infra := "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
+	infra := c.infraAPI()
 	branch := "project-" + p.Name
 	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
 		"branch": "main", "new_branch": branch,
@@ -287,42 +289,95 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the GitHub import of %s: %v", p.Name, err)
-			http.Error(w, "cannot store the GitHub import; see the factoryd log", http.StatusInternalServerError)
+			c.failFiling(w, r, p, 0, true, http.StatusInternalServerError, "cannot store the GitHub import")
 			return
 		}
 	}
-	var pull struct {
-		Number int64 `json:"number"`
-	}
+	var pull infraPull
 	if err := c.asUser(r, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": "Project " + p.Name},
 		http.StatusCreated, &pull); err != nil {
-		c.dropImport(r.Context(), p)
-		c.forgejoFailed(w, r, "open the pull request", err)
-		return
+		log.Printf("console: %s could not open the pull request from %s: %v", user, branch, err)
+		open, found, rerr := c.openPullFrom(r.Context(), branch)
+		if rerr != nil || !found {
+			if rerr != nil {
+				log.Printf("console: the open pull requests of %s: %v", c.cfg.InfraRepo, rerr)
+			}
+			c.failFiling(w, r, p, 0, rerr == nil, http.StatusBadGateway, "Forgejo refused to open the pull request")
+			return
+		}
+		log.Printf("console: %s#%d from %s is open all the same: the filing keeps it", c.cfg.InfraRepo, open.Number, branch)
+		pull = open
 	}
 	if p.Source != "" {
 		if err := c.cfg.Mirrors.SetImportPR(r.Context(), p.Name, pull.Number); err != nil {
 			log.Printf("console: the GitHub import of %s: record %s#%d: %v", p.Name, c.cfg.InfraRepo, pull.Number, err)
-			msg := fmt.Sprintf("cannot record %s#%d on the GitHub import, so it was closed; see the factoryd log", c.cfg.InfraRepo, pull.Number)
-			if err := c.asUser(r, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", infra, pull.Number), map[string]string{"state": "closed"},
-				http.StatusCreated, nil); err != nil {
-				// the row stays, so a merge still imports
-				log.Printf("console: %s could not close %s#%d: %v", user, c.cfg.InfraRepo, pull.Number, err)
-				msg = fmt.Sprintf("cannot record %s#%d on the GitHub import, nor close it; see the factoryd log", c.cfg.InfraRepo, pull.Number)
-			} else {
-				c.dropImport(r.Context(), p)
-			}
-			http.Error(w, msg, http.StatusInternalServerError)
+			c.failFiling(w, r, p, pull.Number, false, http.StatusInternalServerError,
+				fmt.Sprintf("cannot record %s#%d on the GitHub import", c.cfg.InfraRepo, pull.Number))
 			return
 		}
 	}
-	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
 	detail := map[string]any{"name": p.Name, "pr": pull.Number}
 	if p.Source != "" {
 		detail["source"] = p.Source
 	}
-	c.act(r, p.Name+"/"+p.Name, "", 0, factoryd.EventProjectFiled, detail)
+	if _, err := c.cfg.Events.Record(r.Context(), factoryd.Event{Repository: p.Name + "/" + p.Name, Kind: factoryd.EventProjectFiled,
+		Actor: user, Via: factoryd.ViaButton, Detail: detail}); err != nil {
+		log.Printf("console: event %s of %s: %v", factoryd.EventProjectFiled, p.Name, err)
+		c.failFiling(w, r, p, pull.Number, false, http.StatusInternalServerError,
+			fmt.Sprintf("cannot record the filing of %s#%d", c.cfg.InfraRepo, pull.Number))
+		return
+	}
+	log.Printf("console: %s filed projects/%s.yaml as %s#%d", user, p.Name, c.cfg.InfraRepo, pull.Number)
 	http.Redirect(w, r, "/projects/"+p.Name+"/status", http.StatusSeeOther)
+}
+
+// failFiling undoes p's filing, failed for why once its branch existed,
+// and answers code: it closes the filing's pull request number (0: none
+// known) and deletes the branch, so the name can be filed again. The
+// import row goes with its token once no pull request of the filing can
+// merge: none opened, it closed, or its branch is gone. Otherwise the row
+// stays, so a merge still imports, and the answer names what is left.
+func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProject, number int64, none bool, code int, why string) {
+	user, branch := current(r).user, "project-"+p.Name
+	closed := false
+	if number > 0 {
+		err := c.asUser(r, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", c.infraAPI(), number), map[string]string{"state": "closed"},
+			http.StatusCreated, nil)
+		if err != nil {
+			log.Printf("console: %s could not close %s#%d: %v", user, c.cfg.InfraRepo, number, err)
+		}
+		closed = err == nil
+	}
+	err := c.asUser(r, http.MethodDelete, c.infraAPI()+"/branches/"+url.PathEscape(branch), nil, http.StatusNoContent, nil)
+	if err != nil {
+		log.Printf("console: %s could not delete branch %s: %v", user, branch, err)
+	}
+	deleted := err == nil
+	gone := none || closed || deleted
+	if gone && p.Source != "" {
+		if err := c.cfg.Mirrors.DeleteMirror(r.Context(), p.Name, factoryd.MirrorImport); err != nil {
+			log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
+		}
+	}
+	msg := why
+	switch {
+	case gone:
+	case number > 0:
+		msg += fmt.Sprintf("; %s#%d may stay open: close it", c.cfg.InfraRepo, number)
+	default:
+		msg += "; a pull request from " + branch + " may be open: close it"
+	}
+	if deleted {
+		msg += "; the filing was undone"
+	} else {
+		msg += "; delete branch " + branch + " to file the name again"
+	}
+	http.Error(w, msg+"; see the factoryd log", code)
+}
+
+// infraAPI is the infra repository's API path.
+func (c *Console) infraAPI() string {
+	return "/api/v1/repos/" + url.PathEscape(c.cfg.InfraRepo.Owner) + "/" + url.PathEscape(c.cfg.InfraRepo.Name)
 }
 
 type infraPull struct {
@@ -333,17 +388,32 @@ type infraPull struct {
 	User    struct {
 		Login string `json:"login"`
 	} `json:"user"`
+	Head struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+	Base struct {
+		Ref string `json:"ref"`
+	} `json:"base"`
 }
 
-// dropImport deletes p's import row, with its token, when the filing
-// named a GitHub repository.
-func (c *Console) dropImport(ctx context.Context, p newProject) {
-	if p.Source == "" {
-		return
+// openPullFrom reads infra's open pull requests, newest first as Forgejo
+// lists them, for the one from branch into main, with factoryd's config
+// token; ok false when there is none.
+func (c *Console) openPullFrom(ctx context.Context, branch string) (pr infraPull, ok bool, err error) {
+	var open []infraPull
+	if err := c.api(ctx, c.cfg.InfraToken, http.MethodGet, c.infraAPI()+"/pulls?state=open&limit=50", nil, http.StatusOK, &open); err != nil {
+		return pr, false, err
 	}
-	if err := c.cfg.Mirrors.DeleteMirror(ctx, p.Name, factoryd.MirrorImport); err != nil {
-		log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
+	i := slices.IndexFunc(open, func(o infraPull) bool {
+		return o.Head.Ref == branch && o.Head.Repo.FullName == c.cfg.InfraRepo.String() && o.Base.Ref == "main"
+	})
+	if i < 0 {
+		return pr, false, nil
 	}
+	return open[i], true, nil
 }
 
 // pullOf reads, with factoryd's config token, the infra pull request of
@@ -355,7 +425,7 @@ func (c *Console) pullOf(ctx context.Context, name string) (pr infraPull, ok boo
 	if err != nil || !filed {
 		return pr, false, err
 	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(c.cfg.InfraRepo.Owner), url.PathEscape(c.cfg.InfraRepo.Name), number)
+	path := fmt.Sprintf("%s/pulls/%d", c.infraAPI(), number)
 	err = c.api(ctx, c.cfg.InfraToken, http.MethodGet, path, nil, http.StatusOK, &pr)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
 		return pr, false, nil

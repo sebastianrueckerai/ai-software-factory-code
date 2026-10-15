@@ -388,12 +388,17 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	r.mirrors.put = errors.New("db down")
 	rec := r.do(post("/projects", form("acme/other", ghToken)), ck)
 	infra.mu.Lock()
-	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 2 || len(infra.pulls) != 1 {
-		t.Errorf("an unstored row: %d, %d contents and %d pull calls; want 500, two and one", rec.Code, len(infra.contents), len(infra.pulls))
+	if rec.Code != http.StatusInternalServerError || len(infra.contents) != 2 || len(infra.pulls) != 1 || len(infra.branchDeletes) != 1 {
+		t.Errorf("an unstored row: %d, %d contents, %d pull calls and %d branch deletes; want 500, two, one and one",
+			rec.Code, len(infra.contents), len(infra.pulls), len(infra.branchDeletes))
 	}
 	infra.contentsStatus = http.StatusUnprocessableEntity
 	infra.mu.Unlock()
 	r.mirrors.put = nil
+	if m, ok := r.mirrors.rows["linkshort import"]; ok {
+		t.Errorf("the undone filing left the name's import row %+v", m)
+	}
+	r.mirrors.rows["linkshort import"] = want
 	for _, f := range []url.Values{form("acme/other", ghToken), linkshortForm(s.csrf)} {
 		if rec := r.do(post("/projects", f), ck); rec.Code != http.StatusBadGateway || r.mirrors.rows["linkshort import"] != want {
 			t.Errorf("a refused filing with source %q: %d, import row %+v; want 502 and %+v", f.Get("source"), rec.Code, r.mirrors.rows["linkshort import"], want)
@@ -432,43 +437,53 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	}
 }
 
-// A filing whose pull request does not open takes its import row and
-// token with it, and the console says so. One whose pull request the row
-// cannot record closes that pull request as the human, then drops the
-// row; if the close fails too, the row stays, so a merge still imports,
-// and the console says the pull request is open. None leaves an event.
+// importForm is linkshort's form with the GitHub repository acme/app and
+// its token.
+func importForm(csrf string) url.Values {
+	form := linkshortForm(csrf)
+	form.Set("source", "acme/app")
+	form.Set("token", ghToken)
+	return form
+}
+
+// A failed filing takes its import row and token with it once no pull
+// request of the filing can merge, and says the filing was undone: a pull
+// request that does not open, or one the row cannot record, closed as the
+// human, or whose branch is deleted. If neither the close nor the delete
+// succeeds, the row stays, so a merge still imports, and the console names
+// the pull request and the branch left. None leaves an event.
 func TestFailedFilingDropsItsImport(t *testing.T) {
 	r := newRig(t)
 	infra := withInfra(t, r)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 	ck, s := r.loggedIn(t)
-	form := linkshortForm(s.csrf)
-	form.Set("source", "acme/app")
-	form.Set("token", ghToken)
 	file := func(want int, says string) {
 		t.Helper()
-		if rec := r.do(post("/projects", form), ck); rec.Code != want || !strings.Contains(rec.Body.String(), says) {
+		if rec := r.do(post("/projects", importForm(s.csrf)), ck); rec.Code != want || !strings.Contains(rec.Body.String(), says) {
 			t.Errorf("POST /projects = %d %q, want %d saying %q", rec.Code, rec.Body.String(), want, says)
 		}
 	}
+	set := func(pulls, closes, branches int) {
+		infra.mu.Lock()
+		infra.pullsStatus, infra.closeStatus, infra.branchStatus = pulls, closes, branches
+		infra.mu.Unlock()
+	}
+	calls := func() (closes, deletes []recorded) {
+		infra.mu.Lock()
+		defer infra.mu.Unlock()
+		return slices.Clone(infra.closes), slices.Clone(infra.branchDeletes)
+	}
 
-	infra.mu.Lock()
-	infra.pullsStatus = http.StatusUnprocessableEntity
-	infra.mu.Unlock()
-	file(http.StatusBadGateway, "Forgejo refused to open the pull request")
+	set(http.StatusUnprocessableEntity, 0, 0)
+	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone; see the factoryd log")
 	if m, ok := r.mirrors.rows["linkshort import"]; ok || !slices.Equal(r.mirrors.deletes, []string{"linkshort import"}) {
 		t.Errorf("an unopened pull request: import row %+v (%v), deletes %q; want none, one delete", m, ok, r.mirrors.deletes)
 	}
 
-	infra.mu.Lock()
-	infra.pullsStatus = 0
-	infra.mu.Unlock()
+	set(0, 0, 0)
 	r.mirrors.setPR = errors.New("db down")
-	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import, so it was closed")
-	infra.mu.Lock()
-	closes := infra.closes
-	infra.mu.Unlock()
-	if len(closes) != 1 || closes[0].path != "/api/v1/repos/sf/infra/pulls/12" || closes[0].auth != "Bearer access-1" ||
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; the filing was undone")
+	if closes, _ := calls(); len(closes) != 1 || closes[0].path != "/api/v1/repos/sf/infra/pulls/12" || closes[0].auth != "Bearer access-1" ||
 		!reflect.DeepEqual(closes[0].body, map[string]any{"state": "closed"}) {
 		t.Errorf("closes %+v, want #12 closed as the human", closes)
 	}
@@ -476,16 +491,95 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 		t.Errorf("an unrecorded pull request: import row %+v (%v), deletes %q; want none, two deletes", m, ok, r.mirrors.deletes)
 	}
 
-	infra.mu.Lock()
-	infra.closeStatus = http.StatusForbidden
-	infra.mu.Unlock()
-	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import, nor close it")
+	set(0, http.StatusForbidden, 0)
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; the filing was undone")
+	if m, ok := r.mirrors.rows["linkshort import"]; ok || len(r.mirrors.deletes) != 3 {
+		t.Errorf("an unclosed pull request on a deleted branch: import row %+v (%v), deletes %q; want none, three deletes", m, ok, r.mirrors.deletes)
+	}
+
+	set(0, http.StatusForbidden, http.StatusForbidden)
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; sf/infra#12 may stay open: close it; "+
+		"delete branch project-linkshort to file the name again; see the factoryd log")
 	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending"}
-	if got := r.mirrors.rows["linkshort import"]; got != want || len(r.mirrors.deletes) != 2 {
-		t.Errorf("an unclosed pull request: import row %+v, deletes %q; want %+v kept", got, r.mirrors.deletes, want)
+	if got := r.mirrors.rows["linkshort import"]; got != want || len(r.mirrors.deletes) != 3 {
+		t.Errorf("an open pull request on its branch: import row %+v, deletes %q; want %+v kept", got, r.mirrors.deletes, want)
+	}
+	if closes, deletes := calls(); len(closes) != 3 || len(deletes) != 4 {
+		t.Errorf("%d closes and %d branch deletes, want 3 and 4", len(closes), len(deletes))
 	}
 	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); ok || err != nil {
 		t.Errorf("FiledPR = %d, %v, %v; want no filing recorded", pr, ok, err)
+	}
+}
+
+// A pull request whose opening answers an error may have opened all the
+// same: the filing reads infra's open pull requests with the config token
+// and keeps the one from its branch into main, not a fork's of that name,
+// recording it on the import row and in the project_filed event instead
+// of deleting the row.
+func TestFilingKeepsAPullRequestOpenedDespiteAnError(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	pull := func(number int, branch, repo string) map[string]any {
+		return map[string]any{"number": number, "state": "open", "base": map[string]any{"ref": "main"},
+			"head": map[string]any{"ref": branch, "repo": map[string]any{"full_name": repo}}}
+	}
+	infra.mu.Lock()
+	infra.pullsStatus = http.StatusInternalServerError
+	infra.open = []map[string]any{pull(13, "project-linkshort", "mallory/infra"), pull(12, "project-linkshort", "sf/infra"), pull(9, "project-other", "sf/infra")}
+	infra.mu.Unlock()
+	if rec := r.do(post("/projects", importForm(s.csrf)), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/projects/linkshort/status" {
+		t.Fatalf("POST /projects = %d %q, want 303 to the panel", rec.Code, rec.Body.String())
+	}
+	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending", PR: 12}
+	if got := r.mirrors.rows["linkshort import"]; got != want {
+		t.Errorf("import row %+v, want %+v", got, want)
+	}
+	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); pr != 12 || !ok || err != nil {
+		t.Errorf("FiledPR = %d, %v, %v; want #12", pr, ok, err)
+	}
+	infra.mu.Lock()
+	defer infra.mu.Unlock()
+	if len(infra.closes) != 0 || len(infra.branchDeletes) != 0 || !slices.Equal(infra.pullAuth, []string{"Bearer config-token"}) {
+		t.Errorf("closes %+v, branch deletes %+v, reads %q; want none, none and one with the config token", infra.closes, infra.branchDeletes, infra.pullAuth)
+	}
+}
+
+// The project_filed event is part of the filing: when it cannot be
+// written, the filing fails as a whole. Its pull request is closed and its
+// branch deleted as the human, and its import row goes, so the panel never
+// lacks a filing's pull request.
+func TestFilingFailsWithoutItsEvent(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	r.events.mu.Lock()
+	r.events.fail = errors.New("db down")
+	r.events.mu.Unlock()
+	rec := r.do(post("/projects", importForm(s.csrf)), ck)
+	if body := rec.Body.String(); rec.Code != http.StatusInternalServerError || !strings.Contains(body, "cannot record the filing of sf/infra#12; the filing was undone") {
+		t.Fatalf("POST /projects = %d %q, want 500 saying the filing was undone", rec.Code, body)
+	}
+	infra.mu.Lock()
+	closes, deletes := infra.closes, infra.branchDeletes
+	infra.mu.Unlock()
+	if len(closes) != 1 || closes[0].path != "/api/v1/repos/sf/infra/pulls/12" || closes[0].auth != "Bearer access-1" {
+		t.Errorf("closes %+v, want #12 closed as the human", closes)
+	}
+	if len(deletes) != 1 || deletes[0].path != "/api/v1/repos/sf/infra/branches/project-linkshort" || deletes[0].auth != "Bearer access-1" {
+		t.Errorf("branch deletes %+v, want project-linkshort deleted as the human", deletes)
+	}
+	if m, ok := r.mirrors.rows["linkshort import"]; ok {
+		t.Errorf("import row %+v kept, want none", m)
+	}
+	r.events.mu.Lock()
+	r.events.fail = nil
+	r.events.mu.Unlock()
+	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); ok || err != nil {
+		t.Errorf("FiledPR = %d, %v, %v; want no filing", pr, ok, err)
 	}
 }
 

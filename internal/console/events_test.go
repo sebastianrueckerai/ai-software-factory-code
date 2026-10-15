@@ -33,6 +33,8 @@ type fakeEvents struct {
 	rows []factoryd.Event
 	next int64
 	bus  *factoryd.EventBus
+	// fail, when set, is every Record's answer
+	fail error
 }
 
 func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -41,6 +43,9 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.fail != nil {
+		return 0, f.fail
+	}
 	answer := func(kind string) bool {
 		return kind == factoryd.EventQuestionAnswered || kind == factoryd.EventSessionGranted
 	}
