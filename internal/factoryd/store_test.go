@@ -249,12 +249,28 @@ func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNum
 }
 
 func (s *fakeStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
+	cards, _ := s.TasksByPR(ctx, repository, pr)
+	if len(cards) == 0 {
+		return Task{}, false, nil
+	}
+	return cards[0], true, nil
+}
+
+func (s *fakeStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {
+	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.PRNumber == pr && pr != 0 {
-			return t, true, nil
+		if t.Repository == repository && t.PRNumber == pr {
+			out = append(out, t)
 		}
 	}
-	return Task{}, false, nil
+	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID)) })
+	return out, nil
+}
+
+func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) {
+	return slices.ContainsFunc(s.events, func(e Event) bool {
+		return e.TaskID == id && e.Kind == EventTaskStatus && e.Detail["status"] == "in-review"
+	}), nil
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {

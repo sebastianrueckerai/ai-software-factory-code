@@ -37,7 +37,6 @@ type SchemaCopier struct {
 	// the unfinished ones it looks a build's card up in.
 	Store interface {
 		CreateTask(ctx context.Context, t Task) error
-		SetTaskPR(ctx context.Context, id string, number int64) error
 		TransitionTask(ctx context.Context, id string, from []string, to string) error
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
@@ -151,9 +150,8 @@ func schemaCardBody(pr PullRequestRef, repo, build string, paths []string) strin
 // FileFactoryPRTask, as the roller files its roll task: source
 // schema-copy, small's budget, the open pull request linked to the row. An
 // unfinished card of this build covers the pull request already: the pass
-// files none twice, and heals one whose filing died before it linked the
-// number. A failure costs only the log: the pull request stands, and the
-// next pass files the card again.
+// files none twice. A failure costs only the log: the pull request stands,
+// and the next pass files the card again.
 func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []string) {
 	if !c.filing() {
 		return
@@ -163,7 +161,6 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		log.Printf("schema copies: the cards of build %s on %s: %v", c.Build, repo, err)
 		return // a store that will not answer must not cost a second card
 	} else if len(open) > 0 {
-		c.healCardPR(ctx, open, ref)
 		return
 	}
 	p, ok, err := c.Store.ProjectByRepository(ctx, repo)
@@ -183,22 +180,6 @@ func (c *SchemaCopier) card(ctx context.Context, ref PullRequestRef, paths []str
 		log.Printf("schema copies: file the card of pull request #%d: %v", ref.Number, err)
 	} else {
 		log.Printf("schema copies: filed the card of pull request #%d on %s", ref.Number, repo)
-	}
-}
-
-// healCardPR links the pull request of this build's open cards that carry
-// no number: a filing that died between the row and the link leaves such a
-// card, which would otherwise run its workflow blind.
-func (c *SchemaCopier) healCardPR(ctx context.Context, cards []Task, ref PullRequestRef) {
-	for _, t := range cards {
-		if t.PRNumber != 0 {
-			continue
-		}
-		if err := c.Store.SetTaskPR(ctx, t.ID, ref.Number); err != nil {
-			log.Printf("schema copies: link pull request #%d to the card %s: %v", ref.Number, t.ID, err)
-			continue
-		}
-		log.Printf("schema copies: linked pull request #%d to the card %s", ref.Number, t.ID)
 	}
 }
 

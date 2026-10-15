@@ -192,15 +192,20 @@ func ResourceQuotaHard(q policy.Quota) map[string]any {
 
 // FactoryPRCardStore is what a pass that turns a pull request factoryd
 // opened into a card needs from the store (roadmap 187): to file the row
-// and link the open pull request, and to read the card a pull request
-// already has so it never refiles one. PGStore answers to it; a test may
-// give a Registrar both this and ProjectStore in one Store.
+// with the open pull request linked, to read the cards a pull request already
+// has and whether one reached the gates, so it files again only what its
+// own failure ended, and to record its close of the card it replaces.
+// PGStore answers to it; a test may give a Registrar both this and
+// ProjectStore in one Store.
 type FactoryPRCardStore interface {
 	CreateTask(ctx context.Context, t Task) error
-	SetTaskPR(ctx context.Context, id string, number int64) error
-	// TaskByPR looks up the card whose row links pull request number on
-	// repository; false means the pull request has none yet.
-	TaskByPR(ctx context.Context, repository string, number int64) (Task, bool, error)
+	// TasksByPR are the cards whose rows link pull request number on
+	// repository, newest first; none means the pull request has none yet.
+	TasksByPR(ctx context.Context, repository string, number int64) ([]Task, error)
+	// ReachedReview reports whether task id ever moved to in-review: its
+	// pull request reached the gates.
+	ReachedReview(ctx context.Context, id string) (bool, error)
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }
 
 // ProjectStore is the projects: the configuration's files joined with

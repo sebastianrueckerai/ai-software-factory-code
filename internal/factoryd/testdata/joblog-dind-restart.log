@@ -1,0 +1,26 @@
+2026-10-15T07:04:34.0359444Z s21(version:v12.7.3) received task 2 of job j, be triggered by event: push
+2026-10-15T07:04:34.0371832Z workflow prepared
+2026-10-15T07:04:34.0372910Z 🚀  Start image=node:20-bookworm
+2026-10-15T07:04:34.0674753Z   🐳  docker pull image=node:20-bookworm platform=linux/amd64 username= forcePull=false
+2026-10-15T07:04:34.1193980Z Cleaning up network for job j, and network name is: WORKFLOW-5314b00358cae639372383b60f2342f3
+2026-10-15T07:04:34.1689220Z   🐳  docker create image=node:20-bookworm platform=linux/amd64 entrypoint=["tail" "-f" "/dev/null"] cmd=[] network="WORKFLOW-5314b00358cae639372383b60f2342f3"
+2026-10-15T07:04:34.2468203Z   🐳  docker run image=node:20-bookworm platform=linux/amd64 entrypoint=["tail" "-f" "/dev/null"] cmd=[] network="WORKFLOW-5314b00358cae639372383b60f2342f3"
+2026-10-15T07:04:34.5620231Z ⭐ Run Main echo start
+2026-10-15T07:04:34.5827656Z   🐳  docker exec cmd=[sh /var/run/act/ef80bc0095331826.sh] user= workdir=
+2026-10-15T07:04:34.6720408Z   🐳  docker exec cmd=[bash --noprofile --norc -e -o pipefail /var/run/act/workflow/0.sh] user= workdir=
+2026-10-15T07:04:34.7249928Z start
+2026-10-15T07:04:34.9440732Z tick 1
+2026-10-15T07:04:35.9408118Z tick 2
+2026-10-15T07:04:36.9418701Z tick 3
+2026-10-15T07:04:37.9431702Z tick 4
+2026-10-15T07:04:38.9443367Z tick 5
+2026-10-15T07:04:39.9454253Z tick 6
+2026-10-15T07:04:40.9465992Z tick 7
+2026-10-15T07:04:41.9475488Z tick 8
+2026-10-15T07:04:42.9486848Z tick 9
+2026-10-15T07:04:43.9498057Z tick 10
+2026-10-15T07:04:44.9508283Z tick 11
+2026-10-15T07:04:45.9518830Z tick 12
+2026-10-15T07:04:46.5203102Z ⚙️ [runner]: failed to inspect exec: Cannot connect to the Docker daemon at tcp://127.0.0.1:2376. Is the docker daemon running?\nCannot connect to the Docker daemon at tcp://127.0.0.1:2376. Is the docker daemon running?\nCannot connect to the Docker daemon at tcp://127.0.0.1:2376. Is the docker daemon running?
+2026-10-15T07:04:46.5231406Z 🏁  Job failed
+2026-10-15T07:04:49.0041574Z Job 'j' failed

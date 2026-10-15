@@ -425,6 +425,7 @@ type sessionOutcome struct {
 	digest    string
 	noResult  string
 	start     *startFailure // the session could not start
+	pending   *podPending   // its pod never left Pending: no session ran
 	model     string        // the model the session ended on
 	findings  []string
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
@@ -527,7 +528,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, err
 		}
 		out.noResult = err.Error()
-		errors.As(err, &out.start)
+		if !errors.As(err, &out.start) {
+			errors.As(err, &out.pending)
+		}
 		return out, nil
 	}
 	progress(0, nil)
@@ -1001,7 +1004,8 @@ func (r *Runner) abandon(recorder *SessionRecorder, trip *Trip) *Trip {
 // for a configuration error, once the same container has waited with it
 // for r.configGrace, since the kubelet's view of a secret written just
 // before the pod can lag. factoryd stopping ends it with errWorkerStop
-// (the retry creates the pod anew); a timeout says what the pod waits on.
+// (the retry creates the pod anew); a timeout is a *podPending, which says
+// what the pod waits on.
 func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout time.Duration, workerStop <-chan struct{}) error {
 	deadline := time.Now().Add(timeout)
 	// configSince is when each container's configuration error began
@@ -1043,11 +1047,24 @@ func (r *Runner) awaitPodStart(ctx context.Context, ns, podName string, timeout 
 		case <-time.After(min(r.startPoll, time.Until(deadline))):
 		}
 	}
-	why := fmt.Sprintf("pod %s still pending after %s", podName, timeout)
-	if on := waitsOn(last); on != "" {
-		why += ": " + on
+	return &podPending{pod: podName, after: timeout, on: waitsOn(last)}
+}
+
+// podPending is a pod still Pending when its start's wait ran out: on is
+// what it waits on (waitsOn), a node with the capacity it requests or a
+// pull that has not failed for good. No container of it ran.
+type podPending struct {
+	pod   string
+	after time.Duration
+	on    string
+}
+
+func (p *podPending) Error() string {
+	why := fmt.Sprintf("pod %s still pending after %s", p.pod, p.after)
+	if p.on != "" {
+		why += ": " + p.on
 	}
-	return errors.New(why)
+	return why
 }
 
 // configErrorGrace is how long a container may wait with a configuration
@@ -1501,7 +1518,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	clone["env"] = cloneEnv
 	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}}
 	spec["initContainers"] = []any{clone}
-	return pod
+	return requestEmptyDirs(pod)
 }
 
 // SandboxUID is the sandbox's uid and gid: its pods' runAsUser and
@@ -1593,6 +1610,34 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			"volumes": volumes,
 		},
 	}
+}
+
+// requestEmptyDirs has pod request, as ephemeral-storage, the sum of its
+// emptyDir sizeLimits (each in whole Gi), so the scheduler counts what
+// they may fill against a node's allocatable. Its one container and its
+// init containers each request it, as they share every other request: a
+// pod's request is the larger of its init containers' and its containers'
+// sum, so the pod's is the sum.
+func requestEmptyDirs(pod map[string]any) map[string]any {
+	spec := pod["spec"].(map[string]any)
+	gi := 0
+	for _, v := range spec["volumes"].([]any) {
+		if dir, ok := v.(map[string]any)["emptyDir"].(map[string]any); ok {
+			limit, _ := dir["sizeLimit"].(string)
+			n, _ := strconv.Atoi(strings.TrimSuffix(limit, "Gi"))
+			gi += n
+		}
+	}
+	for _, key := range []string{"initContainers", "containers"} {
+		list, _ := spec[key].([]any)
+		for _, c := range list {
+			res := c.(map[string]any)["resources"].(map[string]any)
+			requests := maps.Clone(res["requests"].(map[string]any))
+			requests["ephemeral-storage"] = fmt.Sprintf("%dGi", gi)
+			res["requests"] = requests
+		}
+	}
+	return pod
 }
 
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research

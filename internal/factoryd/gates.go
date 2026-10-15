@@ -712,7 +712,7 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, pr int64, commit, at string) ma
 		fetch["env"] = append(fetch["env"].([]map[string]any), map[string]any{"name": "CHECKOUT_SHA", "value": at})
 	}
 	spec["initContainers"] = []any{fetch}
-	return pod
+	return requestEmptyDirs(pod)
 }
 
 // The model review and the audit read a diff in at most reviewChunks

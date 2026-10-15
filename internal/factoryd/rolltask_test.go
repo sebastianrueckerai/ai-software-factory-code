@@ -211,11 +211,19 @@ type rollForgejo struct {
 	rolled      map[string][]string            // commit -> the files it changes against the commit the last merged roll rolled; unlisted: touched, else main.go
 	forkParents map[string][]string            // fork commit -> its parents (a merge commit has several)
 	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
-	statuses    map[string][]map[string]string // commit -> its statuses (status, context)
+	statuses    map[string][]map[string]string // commit -> its statuses (status, context, target_url, created_at)
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
+	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
+}
+
+// job tells a job page the fake serves: one with a log, though empty, or
+// one whose log is unreadable.
+func (f *rollForgejo) job(p string) bool {
+	_, ok := f.logs[p]
+	return ok || f.unreadable[p]
 }
 
 // mergeCommit is a test's multi-parent (merge) commit: it lists its
@@ -375,8 +383,11 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply(map[string]any{"commit": map[string]string{"sha": fmt.Sprintf("roll-commit-%d", len(f.commits))}})
 		case r.Method == "POST" && p == "/user/login":
 			http.Redirect(w, r, "/", http.StatusSeeOther)
-		case r.Method == "GET" && (p == "/" || f.logs[p] != ""):
-		case r.Method == "GET" && f.logs[strings.TrimSuffix(p, "/logs")] != "":
+		case r.Method == "GET" && (p == "/" || f.job(p)):
+		case r.Method == "GET" && f.unreadable[strings.TrimSuffix(p, "/logs")]:
+			// actions.Logs on a log file no runner ever wrote
+			http.Error(w, `dbfs open "actions_log/sf/ai-software-factory-code/00/0.log": file does not exist`, http.StatusInternalServerError)
+		case r.Method == "GET" && f.job(strings.TrimSuffix(p, "/logs")):
 			// as Forgejo's actions.Logs serves it
 			http.ServeContent(w, r, "", time.Time{}, strings.NewReader(f.logs[strings.TrimSuffix(p, "/logs")]))
 		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):

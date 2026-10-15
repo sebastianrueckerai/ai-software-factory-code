@@ -177,7 +177,11 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 	}
 	if len(found) > 0 {
 		r.record(ctx, taskID, "split_invalid", map[string]any{"findings": found})
-		return PlanResult{Findings: found, Capped: end.capped}, nil
+		res := PlanResult{Findings: found, Capped: end.capped}
+		if end.pending != nil {
+			res.NotStarted = why
+		}
+		return res, nil
 	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
@@ -285,6 +289,12 @@ func (t *taskRun) split(sig TaskSignal) (verdict, bool) {
 			findings = []string{"split: " + cmp.Or(v.reason, v.escalate)}
 		case err != nil:
 			findings = []string{"split: the session failed: " + errMessage(err)}
+		case t.podWait >= versionPodWait && res.NotStarted != "":
+			// no session ran: no try
+			if ask = t.notStarted(res.NotStarted); ask == "" {
+				try--
+				continue
+			}
 		case res.StartFailed:
 			// a second session could not start either
 			ask = res.Escalate

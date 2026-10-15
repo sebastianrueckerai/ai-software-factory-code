@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,10 +82,6 @@ func recordFetch(log func(string, ...any), ws string, err error) int {
 	return 0
 }
 
-// fetchRetry is how long a fetch that failed on the way to Forgejo waits
-// for its one retry.
-var fetchRetry = 30 * time.Second
-
 var (
 	// gitStatus is the HTTP status git reports a refused request with
 	gitStatus = regexp.MustCompile(`(?:returned error:|HTTP) ([0-9]{3})`)
@@ -94,8 +91,8 @@ var (
 )
 
 // transientFetch reports whether a fetch failed on the way to Forgejo, a
-// 5xx or a network error, which a retry may get past, unlike a repository,
-// ref or commit that is missing.
+// 5xx or a network error, which a later start may get past, unlike a
+// repository, ref or commit that is missing.
 func transientFetch(err error) bool {
 	if m := gitStatus.FindStringSubmatch(err.Error()); m != nil {
 		return m[1][0] == '5'
@@ -103,26 +100,27 @@ func transientFetch(err error) bool {
 	return gitNetwork.MatchString(err.Error())
 }
 
-// retried runs fetch, and once more fetchRetry later when it failed
-// transiently: only a second failure reaches the card.
-func retried(log func(string, ...any), fetch func() error) error {
-	err := fetch()
-	if err == nil || !transientFetch(err) {
+// fetched is the init container's fetch failure, nil when it fetched; one
+// on the way to Forgejo is transient (transientFetch).
+func fetched(ws string) error {
+	failed, err := os.ReadFile(fetchFailed(ws))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	log("fetch failed on the way to Forgejo, once more in %s: %v", fetchRetry, err)
-	time.Sleep(fetchRetry)
-	if err := fetch(); err != nil {
-		return fmt.Errorf("failed again on its one retry %s after a network error or a 5xx: %w", fetchRetry, err)
+	if err = errors.New(string(failed)); transientFetch(err) {
+		return transient{err}
 	}
-	return nil
+	return err
 }
 
 // runReproFetch is the init container's repro-fetch mode, into ws.
 func runReproFetch(log func(string, ...any), ws string) int {
 	e, err := loadFetchEnv()
 	if err == nil {
-		err = retried(log, func() error { return fetchHead(e, filepath.Join(ws, "repo")) })
+		err = fetchHead(e, filepath.Join(ws, "repo"))
 	}
 	return recordFetch(log, ws, err)
 }
@@ -144,15 +142,18 @@ func runRepro(log func(string, ...any), initErr error, probe func(workerEnv) egr
 }
 
 // reproEnvelope is the repro mode's report on ws: the start failure of a
-// worker that is not its container's init (initErr) or of a sandbox other
-// than its policy (the egress probe runs before the repository's code),
-// else the repro report.
+// worker that is not its container's init (initErr), of a sandbox other
+// than its policy (the egress probe runs before the repository's code) or
+// of a fetch that failed on the way to Forgejo, else the repro report.
 func reproEnvelope(ctx context.Context, ws string, initErr error, probe func(workerEnv) egressProbe) harness.WorkerEnvelope {
 	var err error
 	if initErr != nil {
 		err = startError{"init", initErr}
 	} else {
 		err = probeRepro(ctx, probe)
+	}
+	if f := fetched(ws); err == nil && errors.As(f, new(transient)) {
+		err = startError{"fetch", f}
 	}
 	if err != nil {
 		res := startFailed(err)

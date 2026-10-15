@@ -177,6 +177,9 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			if body["state"] == "closed" && pr().state == "open" {
 				s.closePR(pr().number, false)
 			}
+			if body["state"] == "open" && pr().state == "closed" {
+				pr().state, pr().closed = "open", 0
+			}
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{})
 		case r.Method == http.MethodPost && p == up+"/issues":
@@ -425,6 +428,155 @@ func TestTemplateUpdateKeepDoesNotRefile(t *testing.T) {
 	}
 	if _, ok, err := tasks.TaskByPR(ctx, "demo-app/demo-app", 2); err != nil || !ok {
 		t.Fatalf("card by pull request #2: %v %v", ok, err)
+	}
+}
+
+// failTemplateCard fails pull request #1's card id as finding 224's
+// cards failed: its run ends it, and Finish closes the pull request as
+// the bot; reviewed says whether its run took it to in-review first.
+func failTemplateCard(t *testing.T, fj *templateForgejo, tasks *fakeStore, id string, reviewed bool) {
+	t.Helper()
+	if reviewed {
+		tasks.events = append(tasks.events, Event{TaskID: id, Kind: EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": GateApproval}})
+	}
+	if err := tasks.TransitionTask(context.Background(), id, []string{"queued"}, "failed"); err != nil {
+		t.Fatal(err)
+	}
+	fj.closePR(1, false)
+}
+
+// templateCards are the ids of pull request #1's cards, newest first.
+func templateCards(t *testing.T, tasks *fakeStore) []string {
+	t.Helper()
+	cards, err := tasks.TasksByPR(context.Background(), "demo-app/demo-app", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, c := range cards {
+		ids = append(ids, c.ID)
+	}
+	return ids
+}
+
+// Finding 224's cards: a template update card that failed before any gate
+// judged its pull request, and whose failure closed it, is no person's
+// close (ruling 296). The next pass reopens that pull request as the bot
+// that closed it and files its card again; no second pull request opens,
+// and the failed card closes as factoryd's, naming its successor. Once per
+// pull request: a second card that fails the same way leaves the close
+// standing until the template's next change.
+func TestTemplateUpdateRefilesACardItsFailureClosed(t *testing.T) {
+	fj, reg, _, tasks, wf := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	first := templateCards(t, tasks)
+	if len(first) != 1 {
+		t.Fatalf("cards %v, want the opening pass's one", first)
+	}
+	failTemplateCard(t, fj, tasks, first[0], false)
+	writes, logs := len(fj.writes), captureLog(t)
+	reg.TemplateUpdates(ctx)
+	cards := templateCards(t, tasks)
+	if len(fj.prs) != 1 || fj.prs[0].state != "open" || len(cards) != 2 || cards[1] != first[0] {
+		t.Fatalf("pull requests %+v, cards %v: want #1 reopened with a second card", fj.prs, cards)
+	}
+	again := tasks.tasks[cards[0]]
+	if again.Source != SourceTemplateUpdate || again.Status != "queued" || again.IssueNumber != 2 || !slices.Equal(wf.started, []string{first[0], again.ID}) {
+		t.Fatalf("card %+v, started %v: want a queued card on issue #2 whose run started", again, wf.started)
+	}
+	if want := "project demo-app: template update: reopened pull request #1: card " + first[0] + " failed before any gate judged it, filed again\n"; !strings.Contains(logs.String(), want) {
+		t.Fatalf("log:\n%s\nwant %q", logs, want)
+	}
+	if !slices.Contains(fj.writes[writes:], "PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by basic factory-agent") {
+		t.Fatalf("writes %q, want the bot's reopen", fj.writes[writes:])
+	}
+	if fj.issues[0].state != "closed" || !slices.Contains(fj.comments, "#1 by basic factory-agent: factoryd: Filed again as #2.") ||
+		!slices.ContainsFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.TaskID == first[0] && e.Kind == IntakeFactoryClosed }) {
+		t.Fatalf("issues %+v, comments %q, intake events %+v: want the failed card closed as factoryd's", fj.issues, fj.comments, tasks.intakeEvents)
+	}
+	reg.TemplateUpdates(ctx)
+	if len(templateCards(t, tasks)) != 2 || len(fj.issues) != 2 || len(fj.prs) != 1 {
+		t.Fatalf("cards %v, issues %d, pull requests %d: the kept pull request has its card", templateCards(t, tasks), len(fj.issues), len(fj.prs))
+	}
+	failTemplateCard(t, fj, tasks, again.ID, false)
+	reg.TemplateUpdates(ctx)
+	if fj.prs[0].state != "closed" || len(templateCards(t, tasks)) != 2 || len(fj.issues) != 2 ||
+		!strings.Contains(logs.String(), "project demo-app: template update: waiting: #1 closed unmerged; the template's next change reopens it\n") {
+		t.Fatalf("pull requests %+v, cards %v\n%s: want the second failure's close to stand", fj.prs, templateCards(t, tasks), logs)
+	}
+}
+
+// A card that reached its gates was judged there, by a gate or a person:
+// the close its failure made stands (ruling 296), and no pass reopens the
+// pull request or files its card again.
+func TestTemplateUpdateJudgedCloseStands(t *testing.T) {
+	fj, reg, _, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	failTemplateCard(t, fj, tasks, templateCards(t, tasks)[0], true)
+	writes, logs := len(fj.writes), captureLog(t)
+	reg.TemplateUpdates(ctx)
+	if len(fj.writes) != writes || fj.prs[0].state != "closed" || len(templateCards(t, tasks)) != 1 || fj.issues[0].state != "open" ||
+		!strings.Contains(logs.String(), "project demo-app: template update: waiting: #1 closed unmerged; the template's next change reopens it\n") {
+		t.Fatalf("writes %q, pull requests %+v, issues %+v\n%s", fj.writes[writes:], fj.prs, fj.issues, logs)
+	}
+}
+
+// An open pull request whose one card failed before its gates, as a pass
+// that stopped between its reopen and its filing leaves it, gets the card
+// it is due from keepTemplateUpdate.
+func TestTemplateUpdateKeepFilesTheDueCard(t *testing.T) {
+	fj, reg, _, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	reg.TemplateUpdates(ctx)
+	first := templateCards(t, tasks)[0]
+	failTemplateCard(t, fj, tasks, first, false)
+	fj.prs[0].state = "open"
+	reg.TemplateUpdates(ctx)
+	if cards := templateCards(t, tasks); len(cards) != 2 || cards[1] != first || tasks.tasks[cards[0]].Status != "queued" || fj.issues[0].state != "closed" {
+		t.Fatalf("cards %v, issues %+v: want the due card filed and the failed one closed", cards, fj.issues)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a card's
+// row is inserted with its pull request; a pull request's cards come newest
+// first, TaskByPR is the newest, and only a card whose status moved to
+// in-review reached the gates (cardDue).
+func TestPGStoreTasksByPRAndReachedReview(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	at := time.Date(2026, 10, 13, 20, 19, 0, 0, time.UTC)
+	for i, c := range []struct {
+		id string
+		pr int64
+	}{{"t-new", 9}, {"t-old", 9}, {"t-other", 10}} {
+		if err := s.CreateTask(ctx, Task{ID: c.id, Kind: "agent", Status: "queued", Repository: "sf/r", Source: SourceTemplateUpdate,
+			PRNumber: c.pr, CreatedAt: at.Add(-time.Duration(i) * time.Minute)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards, err := s.TasksByPR(ctx, "sf/r", 9)
+	if err != nil || len(cards) != 2 || cards[0].ID != "t-new" || cards[1].ID != "t-old" || cards[1].PRNumber != 9 {
+		t.Fatalf("TasksByPR(sf/r, 9) = %+v, %v; want t-new, then t-old", cards, err)
+	}
+	if card, ok, err := s.TaskByPR(ctx, "sf/r", 9); err != nil || !ok || card.ID != "t-new" {
+		t.Fatalf("TaskByPR(sf/r, 9) = %s, %v, %v; want the newest, t-new", card.ID, ok, err)
+	}
+	if err := s.MarkStarted(ctx, "t-old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionTask(ctx, "t-old", []string{"running"}, "in-review"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"t-old", "t-new"} {
+		if err := s.TransitionTask(ctx, id, []string{"queued", "in-review"}, "failed"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, want := range map[string]bool{"t-old": true, "t-new": false} {
+		if got, err := s.ReachedReview(ctx, id); err != nil || got != want {
+			t.Errorf("ReachedReview(%s) = %v, %v; want %v", id, got, err, want)
+		}
 	}
 }
 

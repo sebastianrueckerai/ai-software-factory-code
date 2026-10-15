@@ -341,7 +341,7 @@ func TestCloneModeClones(t *testing.T) {
 			if code := runClone(nolog, ws); code != 0 {
 				t.Fatalf("clone exit %d", code)
 			}
-			if err := cloned(ws); err != nil {
+			if err := fetched(ws); err != nil {
 				t.Fatal(err)
 			}
 			repo := filepath.Join(ws, "repo")
@@ -370,8 +370,8 @@ func TestCloneModeClones(t *testing.T) {
 		t.Setenv(k, v)
 	}
 	ws := t.TempDir()
-	if code := runClone(nolog, ws); code != 0 || cloned(ws) != nil {
-		t.Fatalf("clone exit %d: %v", code, cloned(ws))
+	if code := runClone(nolog, ws); code != 0 || fetched(ws) != nil {
+		t.Fatalf("clone exit %d: %v", code, fetched(ws))
 	}
 	if got := run("-C", filepath.Join(ws, "repo"), "rev-parse", "pull/7"); got != wip {
 		t.Fatalf("pull/7 = %s, want the pull request's head %s", got, wip)
@@ -390,19 +390,18 @@ func TestCloneModeClones(t *testing.T) {
 		if code := runClone(nolog, ws); code != 0 {
 			t.Fatalf("clone exit %d, want 0: the worker reports the failure", code)
 		}
-		err := cloned(ws)
+		err := fetched(ws)
 		if err == nil || !strings.Contains(err.Error(), "missing.git") || strings.Contains(err.Error(), "r3ad-tok") {
 			t.Fatalf("cloned = %v, want the clone's failure without the token", err)
 		}
 	})
 }
 
-// The clone init container tells a failure on the way to Forgejo, a 5xx or
-// a network error, from a repository, ref or commit that is missing: only
-// the first is tried once more, so one blip of Forgejo's sends no card to a
-// human, and one that lasts reaches the card saying it was retried.
-func TestCloneModeRetriesATransientFailureOnce(t *testing.T) {
-	quickFetchRetry(t)
+// The clone init container tries once and leaves its failure for the
+// session's start: one on the way to Forgejo, a 5xx or a network error, is
+// transient, which the session activity's retry answers; a repository,
+// ref or commit that is missing is not, and goes to a human at once.
+func TestCloneModeLeavesATransientFailureForTheRetry(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
 	run := func(args ...string) string {
@@ -420,24 +419,23 @@ func TestCloneModeRetriesATransientFailureOnce(t *testing.T) {
 	head := run("-C", seed, "rev-parse", "HEAD")
 	git := &cgi.Handler{Path: filepath.Join(run("--exec-path"), "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
 	for name, tc := range map[string]struct {
-		refused   int    // how many clones Forgejo answers 502
+		down      bool   // Forgejo answers 502
 		repo      string // the repository asked for
-		tries     int
-		failed    string // in the failure the card reads, "" for a clone
-		notFailed string // not in it
+		failed    string // in the failure the session reads
+		transient bool
 	}{
-		"a blip":            {refused: 1, repo: "repo.git", tries: 2},
-		"an outage":         {refused: 2, repo: "repo.git", tries: 2, failed: "failed again on its one retry 0s after a network error or a 5xx: git clone"},
-		"a missing project": {repo: "missing.git", tries: 1, failed: "not found", notFailed: "retry"},
+		"Forgejo down":      {down: true, repo: "repo.git", failed: "The requested URL returned error: 502", transient: true},
+		"a missing project": {repo: "missing.git", failed: "not found"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tries := 0
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/info/refs") {
-					if tries++; tries <= tc.refused {
-						http.Error(w, "upstream down", http.StatusBadGateway)
-						return
-					}
+					tries++
+				}
+				if tc.down {
+					http.Error(w, "upstream down", http.StatusBadGateway)
+					return
 				}
 				git.ServeHTTP(w, r)
 			}))
@@ -449,21 +447,9 @@ func TestCloneModeRetriesATransientFailureOnce(t *testing.T) {
 			if code := runClone(nolog, ws); code != 0 {
 				t.Fatalf("clone exit %d, want 0: the worker reports the failure", code)
 			}
-			if tries != tc.tries {
-				t.Fatalf("%d clones, want %d", tries, tc.tries)
-			}
-			err := cloned(ws)
-			if tc.failed == "" {
-				if err != nil {
-					t.Fatalf("cloned = %v, want the retry's clone", err)
-				}
-				if got := run("-C", filepath.Join(ws, "repo"), "rev-parse", "HEAD"); got != head {
-					t.Fatalf("HEAD = %s, want %s", got, head)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), tc.failed) || tc.notFailed != "" && strings.Contains(err.Error(), tc.notFailed) {
-				t.Fatalf("cloned = %v, want a failure with %q and without %q", err, tc.failed, tc.notFailed)
+			err := fetched(ws)
+			if tries != 1 || err == nil || !strings.Contains(err.Error(), tc.failed) || errors.As(err, new(transient)) != tc.transient {
+				t.Fatalf("%d clones, fetched = %v; want one clone and a failure with %q, transient %v", tries, err, tc.failed, tc.transient)
 			}
 		})
 	}
@@ -504,6 +490,7 @@ func TestTransientFetchFailures(t *testing.T) {
 // as transient.
 func TestSessionStartFailureLeavesAResult(t *testing.T) {
 	const cloneErr = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: repository 'http://forgejo/sf/repo.git/' not found"
+	const cloneDown = "git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: fatal: unable to access 'http://forgejo/sf/repo.git/': The requested URL returned error: 502"
 	huge := strings.Repeat("\x01", 2<<20)
 	closed := closedSandbox(t)
 	open := closed
@@ -523,7 +510,9 @@ func TestSessionStartFailureLeavesAResult(t *testing.T) {
 			want: "start failed: egress probe: direct IP " + open.directIP + " answered: connected to " + open.directIP},
 		"egress probe, the gateway restarting": {taskID: "t1", probe: silent, step: "egress probe", transient: true,
 			want: "start failed: egress probe: gateway: " + silent.gateway + "/healthz answered 503 Service Unavailable"},
-		"clone":        {taskID: "t1", probe: closed, fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
+		"clone": {taskID: "t1", probe: closed, fetchFailed: cloneErr, step: "clone", want: "start failed: clone: " + cloneErr},
+		"clone, Forgejo down": {taskID: "t1", probe: closed, fetchFailed: cloneDown, step: "clone", transient: true,
+			want: "start failed: clone: " + cloneDown},
 		"prepare repo": {taskID: "t1", probe: closed, step: "prepare repo", want: "start failed: prepare repo: open WS/repo/.git/info/exclude: no such file or directory"},
 		// "clone: " and 2 MiB, cut at 16 KiB
 		"huge clone error": {taskID: "t1", probe: closed, fetchFailed: huge, step: "clone",

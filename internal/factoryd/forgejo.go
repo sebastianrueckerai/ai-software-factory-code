@@ -1141,12 +1141,14 @@ func (f *Forgejo) FindPullRequestByHead(ctx context.Context, owner, repo, base s
 
 // CommitStatus is one check reported against a commit (most often a
 // Forgejo Actions job): State is one of "pending", "success", "error",
-// "failure" or "warning".
+// "failure" or "warning". Created is when Forgejo recorded it; a finished
+// job's, when Forgejo learned the job ended.
 type CommitStatus struct {
-	State       string `json:"status"`
-	Context     string `json:"context"`
-	TargetURL   string `json:"target_url"`
-	Description string `json:"description"`
+	State       string    `json:"status"`
+	Context     string    `json:"context"`
+	TargetURL   string    `json:"target_url"`
+	Description string    `json:"description"`
+	Created     time.Time `json:"created_at,omitzero"`
 }
 
 // CombinedStatus is a commit's aggregate state across every reported check.
@@ -1337,6 +1339,12 @@ func (f *Forgejo) ClosePullRequest(ctx context.Context, owner, repo string, numb
 		return err
 	}
 	_, err = f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), payload, http.StatusCreated)
+	return err
+}
+
+// ReopenPullRequest reopens closed pull request number.
+func (f *Forgejo) ReopenPullRequest(ctx context.Context, owner, repo string, number int64) error {
+	_, err := f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", owner, repo, number), mustJSON(map[string]string{"state": "open"}), http.StatusCreated)
 	return err
 }
 

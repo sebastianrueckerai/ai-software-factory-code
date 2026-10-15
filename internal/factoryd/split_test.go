@@ -413,6 +413,32 @@ func TestSplitFailsTwiceThenAsksAHuman(t *testing.T) {
 	}
 }
 
+// A split session whose pod never left Pending is no try
+// (versionPodWait): two of them, then two failing answers, take four
+// sessions, the first three with no findings, before the split asks a
+// human with the last answer's.
+func TestSplitSessionWhosePodNeverStartedIsNoTry(t *testing.T) {
+	why := podPendingWhy("s1")
+	waited := PlanResult{Findings: []string{"plan: the session ended without a last message: " + why}, NotStarted: why}
+	missing := []string{"split: no card's directories cover web/app.css"}
+	four := []string{"plan: 4 cards; this process allows 2 to 3"}
+	g, calls := newSplitHarness(t, waited, waited, PlanResult{Findings: missing}, PlanResult{Findings: four})
+	g.signalAfter(time.Hour, SignalSplit, TaskSignal{Author: "sebastian"})
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v", final, g.finals)
+	}
+	want := []string{"run factory/coding-frontier 7 []", "run factory/coding-frontier 7 []", "run factory/coding-frontier 7 []",
+		`run factory/coding-frontier 7 ["split: no card's directories cover web/app.css"]`}
+	if !slices.Equal(*calls, want) {
+		t.Fatalf("calls %q, want %q", *calls, want)
+	}
+	ask := "The split failed its check twice; approve, deny or split the pull request again. The findings:\n- plan: 4 cards; this process allows 2 to 3"
+	if !slices.Equal(g.escalated, []string{ask}) {
+		t.Fatalf("escalated %q", g.escalated)
+	}
+}
+
 // A split whose session could not start asks a human at once, with the
 // start failure and the split's own way on, instead of a second session
 // that would fail the same way; the approval wait goes on.

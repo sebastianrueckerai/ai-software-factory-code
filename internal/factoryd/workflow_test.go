@@ -1586,6 +1586,122 @@ func providerBackoffs(h *workflowHarness) *[]int {
 	return backoffs
 }
 
+// podPendingWhy is why a session's pod never started: the scheduler found
+// no node with the ephemeral-storage its emptyDirs request.
+func podPendingWhy(session string) string {
+	return "pod worker-" + session + " still pending after 10m0s: Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."
+}
+
+// notStartedSession is a session whose pod never left Pending, as
+// sessionResult ends it.
+func notStartedSession(session string) SessionResult {
+	why := podPendingWhy(session)
+	return SessionResult{Outcome: OutcomeNotStarted, SessionID: session, Summary: why,
+		Findings: []string{"previous session ended without a pushed commit: " + why}}
+}
+
+// podWaitHarness answers RunSession with waits sessions whose pods never
+// started, 10 minutes each, then with then after 5 minutes.
+func podWaitHarness(t *testing.T, waits int, then SessionResult) *workflowHarness {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(10 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return notStartedSession(fmt.Sprintf("s%d", len(h.sessions))), nil
+		}).Times(waits)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return then, nil
+		})
+	return h
+}
+
+// A session whose pod never left Pending ran no agent (versionPodWait):
+// no attempt, no agent time, and the next starts at once with the same
+// input. Two pods waited 10 minutes each and the third session pushed
+// after 5: one attempt, 5 minutes of agent time, no one asked.
+func TestWorkflowSessionWhosePodNeverStartedIsNoAttempt(t *testing.T) {
+	h := podWaitHarness(t, 2, pushed("s3", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 3, none asked", final, len(h.sessions), h.escalated)
+	}
+	first := h.sessions[0]
+	for i, in := range h.sessions {
+		if in.Attempt != 1 || in.ParentSessionID != "" || in.Model != first.Model || !slices.Equal(in.Findings, first.Findings) {
+			t.Fatalf("session %d = %+v, want attempt 1 with the first's input", i+1, in)
+		}
+	}
+	if want := (TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}); len(h.usage) == 0 || h.usage[len(h.usage)-1] != want {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
+// Three sessions in a row whose pods never started ask a human, naming
+// what the last one waited on (source capacity); the answer starts the
+// fourth, still attempt 1, and the 30 minutes of waiting are no agent
+// time.
+func TestWorkflowPodsThatNeverStartAskAHumanAtTheBound(t *testing.T) {
+	h := podWaitHarness(t, 3, pushed("s4", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "a node is free", Comment: 700})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 4 {
+		t.Fatalf("final = %q after %d sessions, want done after 4", final, len(h.sessions))
+	}
+	want := "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
+		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: " + podPendingWhy("s3")
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "capacity" {
+		t.Fatalf("escalations = %q, want %q from source capacity", h.escalated, want)
+	}
+	if in := h.sessions[3]; in.Attempt != 1 || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": a node is free") {
+		t.Fatalf("fourth session = %+v, want attempt 1 with the answer", in)
+	}
+	if want := (TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}); h.usage[len(h.usage)-1] != want {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
+// A run from before versionPodWait takes such a session as no push: an
+// attempt with its 10 minutes, its finding handed on.
+func TestWorkflowPodNeverStartedBeforeTheChange(t *testing.T) {
+	h := podWaitHarness(t, 1, pushed("s2", "c1"))
+	h.env.OnGetVersion("pod-wait", workflow.DefaultVersion, versionPodWait).Return(workflow.DefaultVersion)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 || len(h.escalated) != 0 {
+		t.Fatalf("final = %q after %d sessions, escalations %q; want done after 2", final, len(h.sessions), h.escalated)
+	}
+	if in := h.sessions[1]; in.Attempt != 2 || in.ParentSessionID != "s1" || !slices.Contains(in.Findings, notStartedSession("s1").Findings[0]) {
+		t.Fatalf("second session = %+v, want attempt 2, child of s1, with its finding", in)
+	}
+	if want := (TaskUsage{AgentTime: 15 * time.Minute, Attempts: 2}); h.usage[len(h.usage)-1] != want {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
+// A report session whose pod never started fails no report task
+// (versionPodWait): it runs again at once. A run from before the change
+// fails as before.
+func TestWorkflowReportRunsAgainWhenItsPodNeverStarted(t *testing.T) {
+	waited := ReportResult{NotStarted: podPendingWhy("s1")}
+	h, began, _ := reportHarness(t, waited, ReportResult{Comment: 77})
+	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(*began) != 2 || !(*began)[1].Equal((*began)[0]) {
+		t.Fatalf("final %q, escalations %q, sessions at %v; want done after a second session at once", final, h.escalated, *began)
+	}
+
+	h, _, _ = reportHarness(t, waited)
+	h.env.OnGetVersion("pod-wait", workflow.DefaultVersion, versionPodWait).Return(workflow.DefaultVersion)
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "report session: the report session ended without a report: "+podPendingWhy("s1") {
+		t.Fatalf("finals %v, want the report task failed", h.finals)
+	}
+}
+
 // reportHarness runs a report task whose sessions answer results in order.
 func reportHarness(t *testing.T, results ...ReportResult) (h *workflowHarness, began *[]time.Time, backoffs *[]int) {
 	h, began = newWorkflowHarness(t), &[]time.Time{}

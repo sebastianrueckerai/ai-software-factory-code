@@ -1982,6 +1982,23 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 	}
 }
 
+// A planner session whose pod never left Pending ran no planner
+// (versionPodWait): no attempt and no agent time, and the planner runs
+// again at once with the same findings, no "no plan" round. One planner
+// session's time is planSession.
+func TestPlanLoopRunsAgainWhenItsPodNeverStarted(t *testing.T) {
+	why := podPendingWhy("s1")
+	waited := PlanResult{Findings: []string{"plan: the session ended without a last message: " + why}, NotStarted: why}
+	h := newPlanHarness(t, waited, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(h.plans) != 2 || !slices.Equal(h.plans[1], h.plans[0]) {
+		t.Fatalf("final %q, escalations %q, plans %q; want done after a second session with the first's findings", final, h.escalated, h.plans)
+	}
+	if u := h.usage[len(h.usage)-1]; u.Attempts != 1 || u.AgentTime != planSession {
+		t.Fatalf("usage %+v, want one attempt and one session's time", h.usage)
+	}
+}
+
 var planRefused = PlanResult{Refused: ProviderWait{Status: 429, Reason: refusedSession.Reason}}
 
 // A planner session the provider refused is no attempt (roadmap 155): the

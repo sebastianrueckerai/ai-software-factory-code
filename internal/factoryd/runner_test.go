@@ -892,7 +892,8 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
 	}
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m memory:512Mi]]" {
+	// ephemeral-storage: workspace 4, home 1, tmp 1 and the module cache 8
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:14Gi memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
@@ -1675,21 +1676,29 @@ func workerStartFailed(step, summary string) string {
 }
 
 // A worker start that failed on a fault a later start may not meet, the
-// gateway restarting under its egress probe, is no escalation: the
-// session ends aborted with the worker's summary, and the activity's
-// error is retryable, so Temporal starts the session again.
+// gateway restarting under its egress probe or Forgejo answering the clone
+// with a 5xx, is no escalation: the session ends aborted with the worker's
+// summary, and the activity's error is retryable, so Temporal starts the
+// session again.
 func TestRunSessionRetriesATransientStartFailure(t *testing.T) {
-	const restarting = "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable"
-	task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
-	objects := &fakeObjectStore{}
-	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
-	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: restarting, Step: StepEgressProbe, Transient: true}})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
-	if err == nil || !strings.Contains(err.Error(), restarting) || isTerminal(err) || res.StartFailed || res.Reason != "" {
-		t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
-	}
-	if end := timelineStep(t, objects, "t4j", "session_end"); end["outcome"] != "aborted" || end["summary"] != restarting {
-		t.Fatalf("session_end = %v, want outcome aborted with the summary", end)
+	for step, summary := range map[string]string{
+		StepEgressProbe: "start failed: egress probe: gateway: http://factory-gateway.factory.svc.cluster.local:8081/healthz answered 503 Service Unavailable",
+		"clone": "start failed: clone: git clone -q http://forgejo/sf/repo.git /workspace/repo: exit status 128: " +
+			"fatal: unable to access 'http://forgejo/sf/repo.git/': The requested URL returned error: 502",
+	} {
+		t.Run(step, func(t *testing.T) {
+			task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+			objects := &fakeObjectStore{}
+			runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
+			line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step, Transient: true}})
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
+			if err == nil || !strings.Contains(err.Error(), summary) || isTerminal(err) || res.StartFailed || res.Reason != "" {
+				t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
+			}
+			if end := timelineStep(t, objects, "t4j", "session_end"); end["outcome"] != "aborted" || end["summary"] != summary {
+				t.Fatalf("session_end = %v, want outcome aborted with the summary", end)
+			}
+		})
 	}
 }
 
@@ -1703,8 +1712,8 @@ func startRunner(kube *fakeKube, grace time.Duration) *Runner {
 // in its init or its main container, and waits on through every other:
 // a registry that answers 503, a back-off that names no error (a kubelet
 // before 1.30), a container still being created, a configuration error
-// first seen, a pod no node takes. A closed stop ends the first wait at
-// once, so errWorkerStop says the start waited.
+// first seen, a pod no node takes for cpu, memory or disk. A closed stop
+// ends the first wait at once, so errWorkerStop says the start waited.
 func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 	const unavailable = `rpc error: code = Unknown desc = failed to pull and unpack image "reg/worker@sha256:abc": failed to resolve reference "reg/worker@sha256:abc": ` +
 		`unexpected status from HEAD request to https://reg/v2/worker/manifests/sha256:abc: 503 Service Unavailable`
@@ -1737,6 +1746,9 @@ func TestAwaitPodStartEndsOnlyAtAWaitNoWaitPasses(t *testing.T) {
 			containers: []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"}, {Name: "worker", State: "waiting", Reason: "ContainerCreating"}}},
 		{name: "unschedulable",
 			conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient memory."}}},
+		// the ephemeral-storage its emptyDirs request (requestEmptyDirs)
+		{name: "unschedulable for disk",
+			conditions: []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 1 Insufficient cpu, 3 Insufficient ephemeral-storage."}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
@@ -1829,10 +1841,72 @@ func TestAwaitPodStartTimeoutSaysWhatThePodWaitsOn(t *testing.T) {
 			kube := newFakeKube()
 			kube.pods["ns/worker-s1"] = &fakePod{ns: "ns", name: "worker-s1", phase: "Pending", containers: tc.containers, conditions: tc.conditions}
 			err := startRunner(kube, time.Hour).awaitPodStart(context.Background(), "ns", "worker-s1", 30*time.Millisecond, nil)
-			if err == nil || err.Error() != tc.want {
-				t.Fatalf("awaitPodStart = %v, want %q", err, tc.want)
+			var p *podPending
+			if !errors.As(err, &p) || err.Error() != tc.want {
+				t.Fatalf("awaitPodStart = %v, want the pending pod %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A session whose pod no node takes ends not_started when its start's
+// wait runs out, here the 300 ms of agent time the pinned version leaves
+// it, naming the scheduler's refusal; so does a report session, whose
+// report task then reads NotStarted instead of failing.
+func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
+	const refusal = "Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."
+	unschedulable := func(kube *fakeKube) {
+		kube.onCreatePod = func() {
+			p := kube.podOrder[len(kube.podOrder)-1]
+			p.phase, p.conditions = "Pending", []PodCondition{{Type: "PodScheduled", Status: "False", Reason: "Unschedulable", Message: "0/3 nodes are available: 3 Insufficient ephemeral-storage."}}
+		}
+	}
+	short := func(r *Runner) {
+		v := testPolicyVersion()
+		v.Document.Limits.AgentTime = 300 * time.Millisecond
+		r.cfg.Policy = func() policy.Version { return v }
+		r.startPoll = 20 * time.Millisecond
+	}
+
+	kube := newFakeKube()
+	unschedulable(kube)
+	runner, _, _ := newTestRunner(t, Task{ID: "t6", Status: "running", Objective: "o", Repository: "sf/repo"}, kube, &fakeObjectStore{})
+	short(runner)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil)
+	if err != nil || res.Outcome != OutcomeNotStarted || !strings.HasPrefix(res.Summary, "pod worker-") || !strings.HasSuffix(res.Summary, ": "+refusal) {
+		t.Fatalf("result = (%+v, %v), want not_started naming %q", res, err, refusal)
+	}
+
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube = newFakeKube()
+	unschedulable(kube)
+	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), parentTask())
+	short(runner)
+	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+	var rep ReportResult
+	if err == nil {
+		err = val.Get(&rep)
+	}
+	if err != nil || !strings.HasSuffix(rep.NotStarted, ": "+refusal) || rep.Comment != 0 || len(hub.comments) != 0 {
+		t.Fatalf("RunReport = %+v, %v; want NotStarted naming %q, no comment", rep, err, refusal)
+	}
+}
+
+// A session whose pod never left Pending ends not_started (versionPodWait),
+// with the line and the finding a no-push session's would carry; a start
+// failure stays an escalation.
+func TestSessionResultOfAPodThatNeverStarted(t *testing.T) {
+	pending := &podPending{pod: "worker-s1", after: 10 * time.Minute, on: "Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: pending.Error(), pending: pending})
+	why := "pod worker-s1 still pending after 10m0s: Unschedulable: 0/3 nodes are available: 3 Insufficient ephemeral-storage."
+	if res.Outcome != OutcomeNotStarted || res.Summary != why || !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: " + why}) || res.StartFailed {
+		t.Fatalf("result %+v, want not_started with %q", res, why)
+	}
+	failed := &startFailure{step: stepImagePull, text: "start failed: image pull: not found"}
+	if res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: failed.Error(), start: failed}); res.Outcome != OutcomeEscalate || !res.StartFailed {
+		t.Fatalf("result %+v, want the start failure's escalation", res)
 	}
 }
 

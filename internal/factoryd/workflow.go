@@ -216,6 +216,9 @@ const (
 	// the day cap (SessionResult.Capped), which resets when the UTC day
 	// turns.
 	OutcomeDayCap SessionOutcome = "day_cap"
+	// OutcomeNotStarted: the session's pod never left Pending within its
+	// start's wait (Summary says on what): no session ran.
+	OutcomeNotStarted SessionOutcome = "not_started"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -452,6 +455,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.burstAccept = workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
 	run.queueTurns = workflow.GetVersion(ctx, "queue-turns", workflow.DefaultVersion, versionQueueTurns)
 	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
+	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
+	run.podWait = workflow.GetVersion(ctx, "pod-wait", workflow.DefaultVersion, versionPodWait)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -861,6 +866,21 @@ const (
 	// a code session's day cap as no push, a plan's or a split's as no
 	// plan, and fails a report task's.
 	versionDayCap workflow.Version = 1
+	// versionFactoryPRSource (change id "factory-pr-source"): a card of a
+	// pull request factoryd opened outside any card's workflow is known by
+	// its source before the waiting states: whatever state the heal pass
+	// restarts it in, its run takes the gates on the pull request linked
+	// to it and never a session, and one with none linked fails. A run
+	// from before the change answers a waiting state as a coding card does.
+	versionFactoryPRSource workflow.Version = 1
+	// versionPodWait (change id "pod-wait"): a code, plan, split or report
+	// session whose pod never left Pending within its start's wait ran no
+	// agent. It is no attempt and takes no agent time, and the next starts
+	// at once with the same input, the pod's own wait having been the
+	// wait; the podWaits-th in a row asks a human, naming what the pod
+	// waited on (notStarted). A run from before the change takes it as no
+	// push, a plan's or a split's as no plan, and fails a report task's.
+	versionPodWait workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -951,8 +971,11 @@ type taskRun struct {
 	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
 	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
+	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
+	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
+	pendingPods       int              // sessions in a row whose pod never started (versionPodWait)
 	pr                PullRequest
 	approvalRequested time.Time // the current approval request's time (versionGateStarted)
 	answers           []string  // the human's answers, newest first (versionAnswers)
@@ -1132,6 +1155,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v17 >= versionRoll && st.Roll:
 			t.pr = st.PR
 			return t.roll(st.Head)
+		case t.factoryPRSource >= versionFactoryPRSource && st.FactoryPR:
+			// a card for a pull request factoryd opened outside any card's
+			// workflow (roadmap 187) has no session work in any state: its
+			// work is the pull request linked to it, so one without it
+			// (FileFactoryPRTask files none) fails
+			if st.PR.Number == 0 {
+				return t.finish("failed", "factory pull request: none is linked to the card")
+			}
+			t.pr = st.PR
+			return t.factoryPR(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
 			// the screening's human, asked again; the answer runs the next
 			// session, whose rebuilt answers are screened again
@@ -1184,6 +1217,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// work is the pull request linked to it — and takes the gates
 			// from running, not straight from queued. Unlike a roll no
 			// RollCommit writes its branch, the pull request exists already.
+			// Only a run from before versionFactoryPRSource comes here.
 			t.pr = st.PR
 			return t.factoryPR(st.Head)
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
@@ -1281,6 +1315,19 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
+		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
+			// no agent ran: no attempt, no agent time, the same input after
+			if ask := t.notStarted(res.Summary); ask != "" {
+				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
+				if final != "" {
+					return t.finish(final, why)
+				}
+				findings = append(findings, answer...)
+			}
+			attempt--
+			continue
+		}
+		t.pendingPods = 0
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
 				final, why, answer := t.awaitHuman(ask, escalationQuestion(ask), nil)
@@ -1385,7 +1432,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				t.sessionReturn(res, attempt, last)
 			}
 			continue
-		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap:
+		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap, OutcomeNotStarted:
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
@@ -1446,6 +1493,28 @@ func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
 	ask = fmt.Sprintf(providerRefused+"%d sessions in a row (status %d): %s", *refusals, w.Status, w.Reason)
 	*refusals = 0
 	return ask
+}
+
+// podWaits is how many sessions in a row may find their pod never
+// started before the card asks a human.
+const podWaits = 3
+
+// podNeverStarted opens the question of a card whose pods never started.
+const podNeverStarted = "No node started the session's pod: "
+
+// notStarted takes a session whose pod never left Pending, why its
+// summary, which names what the pod waited on (versionPodWait): the next
+// session starts at once, or at the podWaits-th in a row ask is what to
+// ask a human, and the count starts again.
+func (t *taskRun) notStarted(why string) (ask string) {
+	t.pendingPods++
+	workflow.GetLogger(t.ctx).Info("a session's pod never started; the next starts at once", "task", t.taskID, "in_a_row", t.pendingPods, "why", why)
+	if t.pendingPods < podWaits {
+		return ""
+	}
+	t.pendingPods = 0
+	return fmt.Sprintf(podNeverStarted+"%d sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, "+
+		"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: %s", podWaits, why)
 }
 
 // providerAnswered ends the refusals in a row after a session that made

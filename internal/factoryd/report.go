@@ -73,6 +73,9 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			return ReportResult{}, err
 		}
 		if text = end.report; text == "" {
+			if end.pending != nil {
+				return ReportResult{NotStarted: end.why}, nil
+			}
 			if end.capped != nil {
 				return ReportResult{Capped: end.capped}, nil
 			}
@@ -121,10 +124,12 @@ func (r *Runner) commentReport(ctx context.Context, repo Repo, issue int64, t Ta
 // last message, or why a stop ended it; with none, why says why the
 // session ended without one, and capped is the gateway's refusal of its
 // model call at a cap. escalate is a stop for a human; start, a session
-// that could not start, which leaves no report.
+// that could not start, and pending, one whose pod never left Pending,
+// leave no report.
 type reportEnd struct {
 	report, why, escalate string
 	start                 *startFailure
+	pending               *podPending
 	capped                *CapRefusal
 }
 
@@ -183,7 +188,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	case out.result != nil:
 		end.why = out.result.Summary
 	default:
-		end.why = cmp.Or(out.noResult, "no last message")
+		end.why, end.pending = cmp.Or(out.noResult, "no last message"), out.pending
 	}
 	if end.report == "" && end.start == nil {
 		over, err := r.store.OverHoldCall(ctx, t.ID, startedAt)

@@ -84,7 +84,6 @@ type Registrar struct {
 	// (nil: Temporal's) and Timeline records its events.
 	Tasks interface {
 		CreateTask(ctx context.Context, t Task) error
-		SetTaskPR(ctx context.Context, id string, number int64) error
 		TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
 	}
 	// Cards is the store's task side, which the template pass files its
