@@ -1,18 +1,21 @@
-# Every image the factory uses and does not build (roadmaps 203 and 242),
-# one per line: its upstream name and tag, pinned by its linux/amd64
-# digest. scripts/upstream-copy copies each into the factory's store,
-# git.aisoftwarefactory.world/upstream/<the name>, by that digest, and CI's
-# upstream job runs it on every push to main. Every reference names the
-# copy, git.aisoftwarefactory.world/upstream/<the line>: this repository's
-# Dockerfiles and workflows, and the infra repository's manifests, its
-# HelmReleases' values and its runner's job image. A line marked bootstrap
-# is referenced at its upstream: Forgejo serves the store, so what Forgejo,
-# its database and the cluster's start run on cannot depend on it; the
-# nodes' registry mirror serves these from the store while it answers,
-# from their upstreams when it does not. Each copy is tagged twice: its tag
-# and the digest's first 12 hex digits, which never moves, and its upstream
-# tag, which names the pinned digest for a pull by tag through the mirror.
-# The weekly upstream card bumps these lines.
+# Every image and chart the factory uses and does not build (roadmaps 203
+# and 242), one per line: an image's or OCI chart's upstream name and tag,
+# pinned by its linux/amd64 digest, or a file's URL, pinned by its sha256
+# and followed by what the store makes of it. scripts/upstream-copy fills
+# the factory's store, org upstream of git.aisoftwarefactory.world, from
+# them, and CI's upstream job runs it on every push to main. Every
+# reference names the copy, git.aisoftwarefactory.world/upstream/<the
+# line>, or for a chart archive the store's Helm repository: this
+# repository's Dockerfiles and workflows, and the infra repository's
+# manifests, HelmReleases and their sources, and its runner's job image. A
+# line marked bootstrap is referenced at its upstream: Forgejo serves the
+# store, so what Forgejo, its database and the cluster's start run on
+# cannot depend on it; the nodes' registry mirror serves these from the
+# store while it answers, from their upstreams when it does not. An image's
+# copy is tagged twice: its tag and the digest's first 12 hex digits, which
+# never moves, and its upstream tag, which names the pinned digest for a
+# pull by tag through the mirror. The weekly upstream card bumps these
+# lines.
 
 # the images' builds
 docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb
@@ -44,6 +47,16 @@ docker.io/library/alpine:3.18.2@sha256:25fad2a32ad1f6f510e528448ae1ec69a28ef8191
 docker.io/altinity/clickhouse-operator:0.21.2@sha256:f972ef4aec9959313a4d4407a83803c75f0be215af4a6811b3f2b890c15ba893
 docker.io/altinity/metrics-exporter:0.21.2@sha256:084a75d8ab0ba5c31ed9d923d301745d24f0e8a3cadf54cdbfe298443eda8da9
 docker.io/otel/opentelemetry-collector-contrib:0.139.0@sha256:87b591b18a0a330b6246f6d4f53d4867d1b238d1b85a69145e0f4eb38f92154c
+
+# the platform's charts: an OCI chart is copied as the images are, an HTTP
+# chart repository's archive uploaded to the store's Helm repository
+quay.io/jetstack/charts/cert-manager:v1.21.2@sha256:634dce9c13b56677a2c05e2ab76c312d0be2664022d5dd05815da67e1fd5f610
+ghcr.io/openbao/charts/openbao:0.29.6@sha256:98c8fc901e2579ac6da9a805537fcd7a19525ef8e563ae8737dc16fc8f641e3e
+ghcr.io/berriai/litellm-helm:1.102.4@sha256:4fe3ffcf630497e72a55429ef27134516bc3a2bacfe8c51ee23a9a42c071ea5f
+code.forgejo.org/forgejo-helm/forgejo:17.1.7@sha256:f5044e73361f5991978f1bc281a570bf893fd0f468e7d76274a7853eb27428cf
+https://github.com/temporalio/helm-charts/releases/download/temporal-1.7.0/temporal-1.7.0.tgz@sha256:f7b443f637b71fcbddd12900e5be9fe4c18cf741495d7b2cb247670681bf57d4 helm
+https://github.com/SigNoz/charts/releases/download/signoz-0.143.0/signoz-0.143.0.tgz@sha256:e3ec7144de45404b10837ef80e86c6cec4960cde41e914f4782d9205c739adad helm
+https://github.com/SigNoz/charts/releases/download/k8s-infra-0.17.1/k8s-infra-0.17.1.tgz@sha256:59723bea05092dc85cdeef64154701d3a0cb072b162455abcf11e104ffadf28a helm
 
 # the nodes' own: Talos's Kubernetes, the installer of its node image, and
 # Cilium, installed by its CLI; the nodes pull them through their registry

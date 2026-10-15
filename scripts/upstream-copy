@@ -1,43 +1,83 @@
 #!/usr/bin/env bash
-# scripts/upstream-copy [list] copies every image of the list
-# (upstream-images.txt by default) into the factory's store,
-# git.aisoftwarefactory.world/upstream/<its name>, with the bytes of its
-# digest, so the copy's digest is the upstream's. Each copy is tagged with
-# its upstream tag and the digest's first 12 hex digits: Forgejo deletes a
-# version named only by its digest after a day, and one tag per digest
-# never moves off a digest a reference names. Its upstream tag names the
-# pinned digest too, for a node's pull by tag through its registry mirror.
-# A copy the store holds already is not copied again, so only a new line
+# scripts/upstream-copy [list] fills the factory's store, org upstream of
+# git.aisoftwarefactory.world, from the list (upstream-images.txt by
+# default). A line is one of:
+#   <name>:<tag>@sha256:<digest> [bootstrap]
+#     an image or an OCI chart, copied to upstream/<name> with the bytes of
+#     its digest, so the copy's digest is the upstream's. Each copy is
+#     tagged with its upstream tag and the digest's first 12 hex digits:
+#     Forgejo deletes a version named only by its digest after a day, and
+#     one tag per digest never moves off a digest a reference names. Its
+#     upstream tag names the pinned digest too, for a node's pull by tag
+#     through its registry mirror.
+#   <https URL>@sha256:<the file's sha256> helm
+#     a chart archive of an HTTP chart repository, uploaded to the store's
+#     Helm repository, /api/packages/upstream/helm, which keeps a version
+#     as it was first uploaded.
+# A copy the store holds already is not made again, so only a new line
 # touches its upstream. crane reads the store's login from its docker
-# config.
+# config; the Helm repository's take REGISTRY_USER and REGISTRY_PASSWORD.
 set -euo pipefail
 list=${1:-upstream-images.txt}
 store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}
+helm=https://${store%%/*}/api/packages/${store#*/}/helm
+work=$(mktemp -d)
+trap 'rm -r "$work"' EXIT
 status=0
-while read -r ref _; do
-  case "$ref" in '' | '#'*) continue ;; esac
-  image=${ref%@*}
-  name=${image%:*}
-  tag=${image##*:}
-  digest=${ref#*@}
-  if [ "$image" = "$ref" ] || [ "$name" = "$image" ] || [ "${digest#sha256:}" = "$digest" ]; then
-    echo "upstream-copy: $ref: want name:tag@sha256:<digest>" >&2
-    status=1
-    continue
+fail() {
+  echo "upstream-copy: $*" >&2
+  status=1
+}
+# image <name>:<tag>@sha256:<digest>
+image() {
+  local ref=$1 image=${1%@*} digest=${1#*@}
+  local name=${image%:*} tag=${image##*:} hex=${digest#sha256:}
+  if [ "$image" = "$ref" ] || [ "$name" = "$image" ] || [ "$hex" = "$digest" ]; then
+    fail "$ref: want name:tag@sha256:<digest>"
+    return
   fi
-  hex=${digest#sha256:}
   if ! crane manifest "$store/$name@$digest" >/dev/null 2>&1; then
-    if crane copy "$name@$digest" "$store/$name:$tag-${hex:0:12}"; then
-      echo "copied $ref"
-    else
-      echo "upstream-copy: $ref: the copy failed" >&2
-      status=1
-      continue
+    if ! crane copy "$name@$digest" "$store/$name:$tag-${hex:0:12}"; then
+      fail "$ref: the copy failed"
+      return
     fi
+    echo "copied $ref"
   fi
   if [ "$(crane digest "$store/$name:$tag" 2>/dev/null)" != "$digest" ] && ! crane tag "$store/$name@$digest" "$tag"; then
-    echo "upstream-copy: $ref: tagging $tag failed" >&2
-    status=1
+    fail "$ref: tagging $tag failed"
   fi
+}
+# fetch <https URL>@sha256:<hex>: the file in $work, checked
+fetch() {
+  local url=${1%@*} hex=${1#*@sha256:}
+  file=$work/${url##*/}
+  curl -fsSL --retry 5 -o "$file" "$url" && echo "$hex  $file" | sha256sum -c --quiet -
+}
+while read -r ref kind; do
+  case "$ref" in '' | '#'*) continue ;; esac
+  case "$ref" in
+    https://*@sha256:*) ;;
+    *)
+      image "$ref"
+      continue
+      ;;
+  esac
+  name=${ref%@*}
+  name=${name##*/}
+  hex=${ref#*@sha256:}
+  case "$kind" in
+    helm)
+      login=${REGISTRY_USER:?the Helm repository takes REGISTRY_USER and REGISTRY_PASSWORD}:${REGISTRY_PASSWORD:?}
+      if curl -fsS -o /dev/null -u "$login" "$helm/$name"; then
+        continue
+      fi
+      if fetch "$ref" && curl -fsS -o /dev/null -u "$login" -X POST --upload-file "$file" "$helm/api/charts"; then
+        echo "uploaded $ref"
+      else
+        fail "$ref: the upload failed"
+      fi
+      ;;
+    *) fail "$ref: a file line ends in helm" ;;
+  esac
 done < "$list"
 exit "$status"

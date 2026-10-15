@@ -2,6 +2,8 @@ package reproducible
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,14 +17,19 @@ import (
 
 const store = "git.aisoftwarefactory.world/upstream/"
 
-// upstreamLine is one image of upstream-images.txt.
+// upstreamLine is one line of upstream-images.txt: an image or OCI chart
+// (ref name:tag@sha256:<digest>, kind "" or bootstrap), or a file (ref
+// https URL@sha256:<sha256>, kind helm).
 type upstreamLine struct {
-	ref       string // name:tag@sha256:<digest>
+	ref       string
 	bootstrap bool
+	kind      string
 }
 
 // upstreamRef is a line's reference: a name Forgejo's registry takes
 // (its imageNamePattern) under a registry host, a tag, a digest.
+var fileRef = regexp.MustCompile(`^https://[^\s@]+/[^/\s@]+@sha256:[0-9a-f]{64}$`)
+
 var upstreamRef = regexp.MustCompile(`^([a-z0-9]+([._-][a-z0-9]+)*\.[a-z0-9]+([._-][a-z0-9]+)*(/[a-z0-9]+([._-][a-z0-9]+)*)+):([A-Za-z0-9_][A-Za-z0-9._-]{0,114})@sha256:[0-9a-f]{64}$`)
 
 func readUpstreamImages(t *testing.T) []upstreamLine {
@@ -40,11 +47,15 @@ func readUpstreamImages(t *testing.T) []upstreamLine {
 			continue
 		}
 		l := upstreamLine{ref: fields[0]}
+		if len(fields) > 1 {
+			l.kind = fields[1]
+		}
 		switch {
-		case len(fields) == 2 && fields[1] == "bootstrap":
+		case len(fields) == 2 && l.kind == "bootstrap":
 			l.bootstrap = true
+		case len(fields) == 2 && l.kind == "helm":
 		case len(fields) != 1:
-			t.Errorf("upstream-images.txt: %q: want a reference, then nothing or bootstrap", sc.Text())
+			t.Errorf("upstream-images.txt: %q: want a reference, then nothing, bootstrap or helm", sc.Text())
 		}
 		lines = append(lines, l)
 	}
@@ -65,8 +76,12 @@ func TestUpstreamImagesPinEachImageByDigest(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, l := range lines {
-		if !upstreamRef.MatchString(l.ref) {
-			t.Errorf("upstream-images.txt: %q is not registry/path:tag@sha256:<64 hex>", l.ref)
+		if strings.HasPrefix(l.ref, "https://") {
+			if !fileRef.MatchString(l.ref) || l.kind != "helm" {
+				t.Errorf("upstream-images.txt: %q %s is not an https URL@sha256:<64 hex> of a file and what the store makes of it", l.ref, l.kind)
+			}
+		} else if !upstreamRef.MatchString(l.ref) || (l.kind != "" && !l.bootstrap) {
+			t.Errorf("upstream-images.txt: %q %s is not registry/path:tag@sha256:<64 hex>", l.ref, l.kind)
 		}
 		image, _, _ := strings.Cut(l.ref, "@")
 		if seen[image] {
@@ -240,5 +255,59 @@ func TestUpstreamCopyCopiesWhatTheStoreLacks(t *testing.T) {
 	}
 	if out, err := exec.Command(filepath.Join("..", "..", "scripts", "upstream-copy"), list).CombinedOutput(); err == nil || !strings.Contains(string(out), "want name:tag@sha256:<digest>") {
 		t.Errorf("upstream-copy on a line without a digest: %v: %s, want a refusal", err, out)
+	}
+}
+
+// A chart archive is fetched, checked against its sha256 and uploaded to
+// the store's Helm repository, unless that holds it: a stub curl serves
+// the archive and the repository, which has the first chart only.
+func TestUpstreamCopyUploadsChartArchives(t *testing.T) {
+	dir := t.TempDir()
+	sum := fmt.Sprintf("%x", sha256.Sum256([]byte("chart bytes")))
+	body := "https://example.org/a-1.0.0.tgz@sha256:" + sum + " helm\n" +
+		"https://example.org/b-2.0.0.tgz@sha256:" + sum + " helm\n" +
+		"https://example.org/c-3.0.0.tgz@sha256:" + strings.Repeat("0", 64) + " helm\n"
+	list := filepath.Join(dir, "list")
+	if err := os.WriteFile(list, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "calls")
+	curl := "#!/bin/sh\necho \"$*\" >> " + log + "\n" +
+		"last=; out=; prev=\nfor a; do [ \"$prev\" = -o ] && out=$a; prev=$a; last=$a; done\n" +
+		"case \"$last\" in\n" +
+		"https://git.aisoftwarefactory.world/api/packages/upstream/helm/a-1.0.0.tgz) exit 0 ;;\n" +
+		"https://git.aisoftwarefactory.world/api/packages/upstream/helm/api/charts) exit 0 ;;\n" +
+		"https://example.org/*) printf 'chart bytes' > \"$out\" ;;\n" +
+		"*) exit 22 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(curl), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(filepath.Join("..", "..", "scripts", "upstream-copy"), list)
+	cmd.Env = append(os.Environ(), "PATH="+dir+":"+os.Getenv("PATH"), "REGISTRY_USER=u", "REGISTRY_PASSWORD=p")
+	out, err := cmd.CombinedOutput()
+	if err == nil || !strings.Contains(string(out), "c-3.0.0.tgz@sha256:0000") {
+		t.Fatalf("upstream-copy with a wrong sum: %v: %s, want c's failure", err, out)
+	}
+	calls, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const helm = "https://git.aisoftwarefactory.world/api/packages/upstream/helm"
+	var got []string
+	for _, l := range strings.Split(strings.TrimSpace(string(calls)), "\n") {
+		f := strings.Fields(l)
+		got = append(got, f[len(f)-1])
+	}
+	want := []string{
+		helm + "/a-1.0.0.tgz",
+		helm + "/b-2.0.0.tgz", "https://example.org/b-2.0.0.tgz", helm + "/api/charts",
+		helm + "/c-3.0.0.tgz", "https://example.org/c-3.0.0.tgz",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("curl calls end in\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+	if !strings.Contains(string(calls), "-u u:p -X POST --upload-file ") {
+		t.Errorf("the upload is not a POST of the file with the login: %s", calls)
 	}
 }
