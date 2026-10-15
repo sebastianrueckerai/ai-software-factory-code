@@ -458,16 +458,20 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		}
 		call, then = "a session's opening on "+model, "a session started now could not make its opening calls"
 		measure = "no session's opening is recorded: " + measure
-		if eur, calls := o.Hold(req); calls != nil {
+		eur, calls, err := o.Hold(req, func(ref string) (policy.Price, error) { return r.price(ctx, ref) })
+		if err != nil {
+			return fmt.Sprintf("the attempt's floor on %s cannot be read: %v", alias, err), nil
+		}
+		if calls != nil {
 			on := "it"
 			if o.AnyRef {
 				on = "any model, none on it being recorded"
 			}
 			asked := make([]string, len(calls))
 			for i, c := range calls {
-				asked[i] = fmt.Sprintf("%d bytes asking %d output tokens", c.Bytes, c.WantOut)
+				asked[i] = fmt.Sprintf("%d bytes on %s asking %d output tokens", c.Bytes, c.Ref, c.WantOut)
 				if c.WantOut == 0 {
-					asked[i] = fmt.Sprintf("%d bytes asking no output limit", c.Bytes)
+					asked[i] = fmt.Sprintf("%d bytes on %s asking no output limit", c.Bytes, c.Ref)
 				}
 			}
 			what := asked[0]

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -285,31 +286,44 @@ func TestFitResource(t *testing.T) {
 var inf = math.Inf(1)
 
 // An opening's hold sums its calls' holds as Fit prices them with the
-// headroom unbounded, at 3e-6 in and 1.5e-5 out: s1's 44,342 × 3e-6 +
-// 24,576 × 1.5e-5 = 0.501666 and 7,031 × 3e-6 + 0.36864 = 0.389733 make
-// 0.891399, more than s2's 43,683 × 3e-6 + 0.36864 = 0.499689, all under
-// the alias's limit of 32,768. A call asking no limit takes the limit:
-// 1,000 × 3e-6 + 32,768 × 1.5e-5 = 0.49452; under a limit of 8,192, it and
-// a call asking 50,000 take 8,192: 0.003 + 0.12288 = 0.12588.
+// headroom unbounded, each at its own alias's rate: coding-frontier 3e-6
+// in, 1.5e-5 out, coding-cheap 1e-6 in, 4e-6 out, both limited to 32,768
+// output tokens. s1's 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 and
+// 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 make 0.607001, less than s2's
+// 80,000 × 3e-6 + 0.36864 = 0.60864 (at coding-frontier's rate alone s1
+// would take 0.891399). A call asking no limit takes the limit: 1,000 ×
+// 3e-6 + 32,768 × 1.5e-5 = 0.49452; under a limit of 8,192, it and a call
+// asking 50,000 take 8,192: 0.003 + 0.12288 = 0.12588.
 func TestOpeningHoldSumsWhatTheHoldsTake(t *testing.T) {
-	s1, s2 := []OpeningCall{{Bytes: 44342, WantOut: 24576}, {Bytes: 7031, WantOut: 24576}}, []OpeningCall{{Bytes: 43683, WantOut: 24576}}
-	r := HoldRequest{Kind: KindModel, Price: Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}
-	if eur, calls := (Opening{Sessions: [][]OpeningCall{s2, s1}}).Hold(r); !near(eur, 0.891399) || !reflect.DeepEqual(calls, s1) {
-		t.Fatalf("hold = (%v, %v), want s1's 0.891399", eur, calls)
+	prices := map[string]Price{"coding-frontier": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "coding-cheap": {In: 1e-6, Out: 4e-6, MaxOutput: 32768}}
+	price := func(ref string) (Price, error) {
+		if p, ok := prices[ref]; ok {
+			return p, nil
+		}
+		return Price{}, fmt.Errorf("LiteLLM has no model %q", ref)
 	}
-	unasked := Opening{Sessions: [][]OpeningCall{{{Bytes: 1000}}}}
-	if eur, _ := unasked.Hold(r); !near(eur, 0.49452) {
-		t.Fatalf("hold of a call asking no limit = %v, want the limit's 0.49452", eur)
+	r := HoldRequest{Kind: KindModel}
+	s1 := []OpeningCall{{Ref: "coding-frontier", Bytes: 44342, WantOut: 24576}, {Ref: "coding-cheap", Bytes: 7031, WantOut: 24576}}
+	s2 := []OpeningCall{{Ref: "coding-frontier", Bytes: 80000, WantOut: 24576}}
+	if eur, calls, err := (Opening{Sessions: [][]OpeningCall{s1, s2}}).Hold(r, price); err != nil || !near(eur, 0.60864) || !reflect.DeepEqual(calls, s2) {
+		t.Fatalf("hold = (%v, %v, %v), want s2's 0.60864", eur, calls, err)
 	}
-	r.Price.MaxOutput = 8192
-	if eur, _ := unasked.Hold(r); !near(eur, 0.12588) {
-		t.Fatalf("hold of a call asking no limit = %v, want 0.12588 under 8192", eur)
+	unasked := Opening{Sessions: [][]OpeningCall{{{Ref: "coding-frontier", Bytes: 1000}}}}
+	if eur, _, err := unasked.Hold(r, price); err != nil || !near(eur, 0.49452) {
+		t.Fatalf("hold of a call asking no limit = (%v, %v), want the limit's 0.49452", eur, err)
 	}
-	if eur, _ := (Opening{Sessions: [][]OpeningCall{{{Bytes: 1000, WantOut: 50000}}}}).Hold(r); !near(eur, 0.12588) {
-		t.Fatalf("hold of a call asking past the limit = %v, want 0.12588 under 8192", eur)
+	prices["coding-frontier"] = Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 8192}
+	if eur, _, err := unasked.Hold(r, price); err != nil || !near(eur, 0.12588) {
+		t.Fatalf("hold of a call asking no limit = (%v, %v), want 0.12588 under 8192", eur, err)
 	}
-	if eur, calls := (Opening{}).Hold(r); eur != 0 || calls != nil {
-		t.Fatalf("hold without a session = (%v, %v), want none", eur, calls)
+	if eur, _, err := (Opening{Sessions: [][]OpeningCall{{{Ref: "coding-frontier", Bytes: 1000, WantOut: 50000}}}}).Hold(r, price); err != nil || !near(eur, 0.12588) {
+		t.Fatalf("hold of a call asking past the limit = (%v, %v), want 0.12588 under 8192", eur, err)
+	}
+	if _, _, err := (Opening{Sessions: [][]OpeningCall{s1, {{Ref: "unpriced", Bytes: 1000}}}}).Hold(r, price); err == nil || err.Error() != `LiteLLM has no model "unpriced"` {
+		t.Fatalf("hold with an unpriced call = %v, want its price's error", err)
+	}
+	if eur, calls, err := (Opening{}).Hold(r, price); eur != 0 || calls != nil || err != nil {
+		t.Fatalf("hold without a session = (%v, %v, %v), want none", eur, calls, err)
 	}
 }
 

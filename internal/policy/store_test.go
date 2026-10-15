@@ -421,16 +421,18 @@ func TestModelHoldCalibrates(t *testing.T) {
 }
 
 // A session's opening is every model call that started before its first
-// one ended (roadmap 243): s-a's two calls, not a3, started after a1
-// ended; s-b's one. s-c's first call was on coding-cheap, so its call after
+// one ended (roadmap 243): s-a's three calls, its side call on
+// coding-cheap on its own alias, not a4, started after a1 ended; s-b's
+// one. s-c's first call was on coding-cheap, so its call after
 // the climb opens nothing on coding-frontier; s-d's first call, a swept
 // hold, has no measure, so s-d counts none; factoryd's calls, rows from
 // before the session and a late release without a hold count none either.
 // Newest first, by the first call. Without an opening on the ref every
-// ref's count; on a ledger without one there is none. Of the newest
+// ref's count, a call on its session's first call's alias read as on the
+// ref; on a ledger without one there is none. Of the newest
 // openingSessions sessions alone: s-old counts until a twentieth newer
 // session opens. A released call's row keeps its hold's session, start and
-// asked output.
+// asked output, and each call carries its alias's calibration for the task.
 func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -448,6 +450,7 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, body_bytes) VALUES
 		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
 		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
+		('x', 'model', 'coding-cheap', 's-a', '2026-10-15T10:00:02Z', '2026-10-15T10:00:04Z', 4096, 0.001, 300, 1200),
 		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
 		('x', 'model', 'coding-frontier', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
 		('x', 'model', 'coding-cheap', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
@@ -459,9 +462,12 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 		('x', 'model', 'coding-frontier', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	a, b := []OpeningCall{{Bytes: 7031, WantOut: 24576}, {Bytes: 44342, WantOut: 24576}}, []OpeningCall{{Bytes: 43683, WantOut: 24576}}
+	side := OpeningCall{Ref: "coding-cheap", Bytes: 1200, WantOut: 4096}
+	a := []OpeningCall{{Ref: "coding-frontier", Bytes: 7031, WantOut: 24576}, {Ref: "coding-frontier", Bytes: 44342, WantOut: 24576}, side}
+	b := []OpeningCall{{Ref: "coding-frontier", Bytes: 43683, WantOut: 24576}}
 	opening("coding-frontier", Opening{Sessions: [][]OpeningCall{b, a}})
-	opening("coding-strong", Opening{Sessions: [][]OpeningCall{{{Bytes: 50000, WantOut: 24576}}, b, a}, AnyRef: true})
+	opening("coding-strong", Opening{Sessions: [][]OpeningCall{{{Ref: "coding-strong", Bytes: 50000, WantOut: 24576}}, {{Ref: "coding-strong", Bytes: 43683, WantOut: 24576}},
+		{{Ref: "coding-strong", Bytes: 7031, WantOut: 24576}, {Ref: "coding-strong", Bytes: 44342, WantOut: 24576}, side}}, AnyRef: true})
 
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes) VALUES
 		('x', 'model', 'coding-window', 's-old', '2026-10-15T11:00:00Z', '2026-10-15T11:00:05Z', 0.01, 20000, 90000);
@@ -471,14 +477,14 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	o, err := ReadOpening(ctx, db, "o", "coding-window")
-	if err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Bytes: 90000}}) {
+	if err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 90000}}) {
 		t.Fatalf("window = (%+v, %v), want 20 openings, s-old's the oldest", o, err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, eur, prompt_tokens, body_bytes)
 		VALUES ('x', 'model', 'coding-window', 's-w20', '2026-10-15T13:00:00Z', '2026-10-15T13:00:30Z', 0.01, 300, 1000)`); err != nil {
 		t.Fatal(err)
 	}
-	if o, err := ReadOpening(ctx, db, "o", "coding-window"); err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Bytes: 1000}}) {
+	if o, err := ReadOpening(ctx, db, "o", "coding-window"); err != nil || len(o.Sessions) != 20 || !reflect.DeepEqual(o.Sessions[19], []OpeningCall{{Ref: "coding-window", Bytes: 1000}}) {
 		t.Fatalf("window = (%+v, %v), want 20 openings without s-old's", o, err)
 	}
 
@@ -496,7 +502,7 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 		booked != "s-h true 24576" {
 		t.Fatalf("the booked row = (%q, %v), want s-h's, held before it ended, asking 24576", booked, err)
 	}
-	opening("coding-held", Opening{Sessions: [][]OpeningCall{{{Bytes: 44342, WantOut: 24576}}}, Earlier: Usage{PromptTokens: 10144, BodyBytes: 44342}})
+	opening("coding-held", Opening{Sessions: [][]OpeningCall{{{Ref: "coding-held", Bytes: 44342, WantOut: 24576, Earlier: Usage{PromptTokens: 10144, BodyBytes: 44342}}}}})
 }
 
 // Tool holds count the tool's requests and euros per task, holds and

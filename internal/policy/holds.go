@@ -293,9 +293,16 @@ func cacheFloor(ctx context.Context, q rowQuerier, ref string) (float64, error) 
 // opening calls.
 const openingSessions = 20
 
-// OpeningCall is a call of a session's opening: its request's bytes and
-// the output limit it asked for, 0 for none.
-type OpeningCall struct{ Bytes, WantOut int }
+// OpeningCall is a call of a session's opening: its ref, its request's
+// bytes, the output limit it asked for (0 for none), and what TakeHold
+// prices the task's call on the ref from (HoldRequest's Earlier and
+// CacheFloor).
+type OpeningCall struct {
+	Ref            string
+	Bytes, WantOut int
+	Earlier        Usage
+	CacheFloor     float64
+}
 
 // Opening is how a session opens on a ref, read for a task. A session's
 // opening is every model call that started before its first one ended,
@@ -306,28 +313,29 @@ type OpeningCall struct{ Bytes, WantOut int }
 // each in the order its holds were taken; a session whose first call has
 // no measure (a swept hold) counts none. With none on the ref, AnyRef:
 // every ref's count, since a session opens with the harness's same calls
-// whatever its model. Earlier and CacheFloor are what TakeHold prices the
-// task's call on the ref from.
+// whatever its model, a call on the first call's ref read as on the ref.
 type Opening struct {
-	Sessions   [][]OpeningCall
-	AnyRef     bool
-	Earlier    Usage
-	CacheFloor float64
+	Sessions [][]OpeningCall
+	AnyRef   bool
 }
 
 // Hold is what the holds of the largest opening take for a session of r's
-// task on r's ref at r's price, and that opening: each call's hold as Fit
-// prices it with the headroom unbounded, its prompt and the output it
-// asked for up to the price's limit, summed. 0 and nil without a session.
-func (o Opening) Hold(r HoldRequest) (float64, []OpeningCall) {
+// task, and that opening: each call's hold as Fit prices it with the
+// headroom unbounded, on its ref at price(ref), its prompt and the output
+// it asked for up to that price's limit, summed. 0 and nil without a
+// session; a call whose ref cannot be priced fails it.
+func (o Opening) Hold(r HoldRequest, price func(ref string) (Price, error)) (float64, []OpeningCall, error) {
 	inf := math.Inf(1)
-	r.Earlier, r.CacheFloor = o.Earlier, o.CacheFloor
 	var most float64
 	var largest []OpeningCall
 	for _, calls := range o.Sessions {
 		var eur float64
 		for _, c := range calls {
-			r.Bytes, r.WantOut = c.Bytes, c.WantOut
+			p, err := price(c.Ref)
+			if err != nil {
+				return 0, nil, err
+			}
+			r.Ref, r.Price, r.Bytes, r.WantOut, r.Earlier, r.CacheFloor = c.Ref, p, c.Bytes, c.WantOut, c.Earlier, c.CacheFloor
 			h, _ := Fit(Free{Task: inf, Day: inf, Month: inf, Project: inf}, r)
 			eur += h.EUR
 		}
@@ -335,7 +343,7 @@ func (o Opening) Hold(r HoldRequest) (float64, []OpeningCall) {
 			most, largest = eur, calls
 		}
 	}
-	return most, largest
+	return most, largest, nil
 }
 
 // ReadOpening reads the opening of a session of taskID on ref.
@@ -345,12 +353,12 @@ func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, e
 		// newest first, a call is its session's first when no call of the
 		// session started earlier: the scan ends at the window
 		rows, err := q.QueryContext(ctx,
-			`WITH first AS (SELECT l.id, l.session, l.created_at AS ended FROM ledger l
+			`WITH first AS (SELECT l.id, l.session, l.ref, l.created_at AS ended FROM ledger l
 			      WHERE l.kind = 'model' AND l.session <> '' AND l.held_at IS NOT NULL AND l.body_bytes > 0 AND (l.ref = $1 OR $1 = '')
 			        AND NOT EXISTS (SELECT 1 FROM ledger e WHERE e.kind = 'model' AND e.session = l.session
 			                        AND (e.held_at < l.held_at OR e.held_at = l.held_at AND e.id < l.id))
 			      ORDER BY l.id DESC LIMIT $2)
-			 SELECT f.id, o.body_bytes, o.want_out FROM first f
+			 SELECT f.id, f.ref, o.ref, o.body_bytes, o.want_out FROM first f
 			 JOIN ledger o ON o.kind = 'model' AND o.session = f.session AND o.held_at < f.ended
 			 ORDER BY f.id DESC, o.held_at, o.id`, on, openingSessions)
 		if err != nil {
@@ -359,9 +367,13 @@ func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, e
 		var session int64
 		for rows.Next() {
 			var id int64
+			var first string
 			var c OpeningCall
-			if err := rows.Scan(&id, &c.Bytes, &c.WantOut); err != nil {
+			if err := rows.Scan(&id, &first, &c.Ref, &c.Bytes, &c.WantOut); err != nil {
 				return Opening{}, errors.Join(err, rows.Close())
+			}
+			if c.Ref == first {
+				c.Ref = ref
 			}
 			if id != session {
 				o.Sessions, session = append(o.Sessions, nil), id
@@ -376,11 +388,20 @@ func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, e
 			break
 		}
 	}
-	r := HoldRequest{TaskID: taskID, Ref: ref}
-	if err := calibrate(ctx, q, &r); err != nil {
-		return Opening{}, err
+	calibrated := map[string]HoldRequest{}
+	for _, calls := range o.Sessions {
+		for i, c := range calls {
+			r, ok := calibrated[c.Ref]
+			if !ok {
+				r = HoldRequest{TaskID: taskID, Ref: c.Ref}
+				if err := calibrate(ctx, q, &r); err != nil {
+					return Opening{}, err
+				}
+				calibrated[c.Ref] = r
+			}
+			calls[i].Earlier, calls[i].CacheFloor = r.Earlier, r.CacheFloor
+		}
 	}
-	o.Earlier, o.CacheFloor = r.Earlier, r.CacheFloor
 	return o, nil
 }
 

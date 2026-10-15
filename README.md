@@ -960,9 +960,11 @@ month and project headroom (ruling 322, roadmap 243). The answer path's
 answer) needs a call of no prompt and 1024 output tokens. The fund's
 (`SessionFunded`: the console's Fund action) needs a session's opening:
 every call that started before its first one ended, each priced as the
-hold prices it for the task with its asked output, summed, the largest
-of the newest 20 sessions' openings on the alias (on any alias when none
-is recorded on it, the answer path's call on a ledger without one). A
+hold prices it for the task on its own alias with its asked output,
+summed, the largest of the newest 20 sessions' openings on the alias (on
+any alias when none is recorded on it, a call on its session's first
+call's alias read as on this one; the answer path's call on a ledger
+without one). A
 refusal names the budget or the cap that bounds it; only the budget's
 offers Fund. The day cap's refusal waits for no human, since the cap
 resets on its own: the console takes the answer, and the workflow's
