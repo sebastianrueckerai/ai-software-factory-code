@@ -369,7 +369,7 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 // refusal of the cap that bounds it: no raise of the task's budget
 // answers them.
 var capRefusals = map[string]string{
-	"refused_day_cap":        "the day cap cannot fund a call",
+	policy.RefusedDayCap:     "the day cap cannot fund a call",
 	policy.RefusedMonthCap:   "the month cap cannot fund a call",
 	policy.RefusedProjectCap: "the project's month cap cannot fund a call",
 }
@@ -389,7 +389,9 @@ func floorRefused(reason string) bool {
 // when the free headroom can fund the cheapest call of model, a call of
 // no prompt and policy.MinCallTokens output tokens, else the refusal the
 // waiting-human card carries. It guards every attempt the workflow
-// grants, and the console's answer.
+// grants, and the console's answer. A spent day cap stops neither: it
+// resets on its own, and a session the gateway refuses at it waits for
+// the day (OutcomeDayCap) with no human.
 func (r *Runner) AttemptFunded(ctx context.Context, taskID, model string) (string, error) {
 	return r.funded(ctx, taskID, model, false)
 }
@@ -467,6 +469,10 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if err != nil {
 		return "", err
 	}
+	if !opening {
+		// the day cap's path: the day-cap wait, not a human
+		free.Day = math.Inf(1)
+	}
 	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Project: project, EUR: need})
 	if err == nil {
 		return "", nil
@@ -479,9 +485,9 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", own.Headroom, t.BudgetEUR)
 	act := "Raise the budget (Fund on the board) and answer, or close the card."
 	switch refused.Decision {
-	case "refused_day_cap":
+	case policy.RefusedDayCap:
 		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
-		act = "Wait for the next UTC day and answer, or raise budget.day_eur in policy.yaml by a commit and answer."
+		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
 	case policy.RefusedMonthCap:
 		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
 		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."

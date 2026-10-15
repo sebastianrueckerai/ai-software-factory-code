@@ -2427,12 +2427,14 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	}
 }
 
-// Both floors check the day's, the month's and the project's month
+// The floors check the day's, the month's and the project's month
 // headroom too, against the same call (roadmap 243): 3 EUR of the task's
 // budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's
-// 0.01536. The refusal names the cap and the commit that raises it; no
-// raise of the task's budget answers it, so the board offers no Fund,
-// while the card's escalation counts as one for money.
+// 0.01536, which the fund's floor prices too with no opening recorded. The
+// refusal names the cap and the commit that raises it; no raise of the
+// task's budget answers it, so the board offers no Fund, while the card's
+// escalation counts as one for money. The answer path's floor leaves out
+// the day cap, which resets on its own.
 func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5}
 	store := newFakeStore()
@@ -2443,37 +2445,42 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
-	const tail = ", and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
-		"an answer would start an attempt whose first call cannot run."
+	const (
+		answerTail = ", and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
+			"an answer would start an attempt whose first call cannot run."
+		fundTail = ", and a session's opening on factory/coding-frontier needs 0.015360 EUR (no session's opening is recorded: " +
+			"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
+	)
 	for _, tc := range []struct {
-		decision string
-		free     policy.Free
-		want     string
+		decision, opening string
+		free              policy.Free
+		answered          bool
 	}{
-		{"refused_day_cap", policy.Free{Day: 0.01, Month: inf, Project: inf},
-			"the day cap cannot fund a call: Wait for the next UTC day and answer, or raise budget.day_eur in policy.yaml by a commit and answer.\n" +
-				"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free" + tail},
-		{policy.RefusedMonthCap, policy.Free{Day: inf, Month: 0.01, Project: inf},
-			"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-				"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free" + tail},
-		{policy.RefusedProjectCap, policy.Free{Day: inf, Month: inf, Project: 0.01},
-			"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
-				"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free" + tail},
+		{policy.RefusedDayCap, "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
+			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", policy.Free{Day: 0.01, Month: inf, Project: inf}, true},
+		{policy.RefusedMonthCap, "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free", policy.Free{Day: inf, Month: 0.01, Project: inf}, false},
+		{policy.RefusedProjectCap, "the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free", policy.Free{Day: inf, Month: inf, Project: 0.01}, false},
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			store.capsFree = &tc.free
-			why, err := r.AttemptFunded(context.Background(), "t-1", "factory/coding-frontier")
-			if err != nil || why != tc.want {
-				t.Fatalf("floor = (%q, %v), want %q", why, err, tc.want)
+			why, err := r.SessionFunded(context.Background(), "t-1", "factory/coding-frontier")
+			if err != nil || why != tc.opening+fundTail {
+				t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, tc.opening+fundTail)
 			}
 			if BudgetRefusal(why) || escalationSource(why) != "budget" {
 				t.Fatalf("a cap's refusal: fundable %v, source %q; want no Fund and the money source", BudgetRefusal(why), escalationSource(why))
 			}
-			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, "and answer.") {
+			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
-			if why, err := r.SessionFunded(context.Background(), "t-1", "factory/coding-frontier"); err != nil || !strings.HasPrefix(why, capRefusals[tc.decision]) {
-				t.Fatalf("the fund's floor = (%q, %v), want the cap's refusal", why, err)
+			want := tc.opening + answerTail
+			if tc.answered {
+				want = ""
+			}
+			if why, err := r.AttemptFunded(context.Background(), "t-1", "factory/coding-frontier"); err != nil || why != want {
+				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
 			}
 		})
 	}
@@ -2552,7 +2559,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, eur) VALUES ('t-y', 'model', 19.45)`); err != nil {
 		t.Fatal(err)
 	}
-	agree("the day spent", 5.84, "refused_day_cap", "the day cap cannot fund a call: Wait for the next UTC day")
+	agree("the day spent", 5.84, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
 }
 
 // The attempt grant's floor is the hold machinery's own minimum (ruling

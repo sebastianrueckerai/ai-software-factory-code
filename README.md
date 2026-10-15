@@ -961,7 +961,9 @@ hold prices it for the task with its asked output, summed, the largest
 of the newest 20 sessions' openings on the alias (on any alias when none
 is recorded on it, the answer path's call on a ledger without one). A
 refusal names the budget or the cap that bounds it; only the budget's
-offers Fund.
+offers Fund. The answer path's floor leaves out the day cap, which
+resets on its own: an attempt it would stop starts, and its session,
+refused at the day cap, waits for the day with no human.
 Settlement leaves a task alone while it has an open hold. Output limits bound
 reasoning: verified on the earlier reasoning models (reasoning counts inside
 `max_tokens`); Qwen's thinking
