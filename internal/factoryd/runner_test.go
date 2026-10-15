@@ -2011,25 +2011,34 @@ func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
 // A stopped worker that exits without a result says how, through the
 // same reading of the pod as a worker that dies unstopped: the wall-clock
 // cap stops the session, and the worker, killed for its memory, reports
-// nothing.
+// nothing. One that pushed its work in progress first states the stop
+// alone: the branch holds the commit.
 func TestStoppedWorkerNamesHowItEndedWithoutAResult(t *testing.T) {
-	task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo"}
-	kube := newFakeKube()
-	kube.keepDeleted = true
-	kube.onCreatePod = func() {
-		kube.podOrder[len(kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
-			{Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
-	}
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	// the log's follower reads a pod that exited once more, a second on
-	runner.stopWait = 5 * time.Second
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
-	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5o", Attempt: 1, Model: "m"}, nil,
-		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs)
-	want := "work in progress not pushed: the stopped worker exited without a result: container worker terminated with OOMKilled (exit code 137)"
-	if err != nil || res.Outcome != OutcomeWallClock || !slices.Contains(res.Findings, want) {
-		t.Fatalf("result = (%+v, %v), want wall_clock with %q", res, err, want)
+	const ended = "the stopped worker exited without a result: container worker terminated with OOMKilled (exit code 137)"
+	for name, tc := range map[string]struct {
+		after, commit string
+		findings      []string
+	}{
+		"nothing pushed":         {"", "", []string{"work in progress not pushed: " + ended}},
+		"pushed, then no report": {pushedLine("c-wip") + "\n", "c-wip", []string{ended}},
+	} {
+		task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo"}
+		kube := newFakeKube()
+		kube.keepDeleted = true
+		kube.onCreatePod = func() {
+			kube.podOrder[len(kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+				{Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
+		}
+		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		// the log's follower reads a pod that exited once more, a second on
+		runner.stopWait = 5 * time.Second
+		runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+		setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5o", Attempt: 1, Model: "m"}, nil,
+			envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+tc.after)
+		if err != nil || res.Outcome != OutcomeWallClock || res.Commit != tc.commit || !slices.Equal(res.Findings, tc.findings) {
+			t.Fatalf("%s: result = (%+v, %v), want wall_clock at %q with %q", name, res, err, tc.commit, tc.findings)
+		}
 	}
 }
 

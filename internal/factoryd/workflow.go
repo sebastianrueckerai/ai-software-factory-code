@@ -936,11 +936,15 @@ const (
 	// after every session whatever ended it, so a starved or refused session
 	// takes no number and no branch of the loop corrects the count, and an
 	// answer after a session that took none buys agent time but no attempt;
-	// the check before a session is SessionFunded (the opening calls and the
-	// floor of the rung); every wait for a human adds the change requests
-	// that answered it to the next session's findings. A run from before
-	// counts every session that ran and every attempt the budget refused,
-	// funds on AttemptFunded and drops the budget wait's change requests.
+	// an answer at a cap (a change request, the cap card, the cap question
+	// after a restart) buys an attempt only at the session cap, whatever the
+	// last session counted, else the agent time alone; the check before a
+	// session is SessionFunded (the opening calls and the floor of the
+	// rung); every wait for a human adds the change requests that answered
+	// it to the next session's findings. A run from before counts every
+	// session that ran and every attempt the budget refused, buys an attempt
+	// with every answer at a cap, funds on AttemptFunded and drops the
+	// budget wait's change requests.
 	versionSessionLadder workflow.Version = 1
 	// versionReviewRemark (change id "review-remark"): a review that
 	// answers concerns and names no finding is a remark on the card, not a
@@ -1299,7 +1303,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = answer
 			switch {
 			case t.v5 < versionPersistUsage:
-			case strings.HasPrefix(st.Question, capReached):
+			case AtSessionCap(st.Question):
 				capAnswer()
 			default:
 				t.grant(&u)
@@ -1515,8 +1519,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
-		// started has no lines of its own; a pushed one's go to
-		// verification, whose apply replaces them.
+		// started has no lines of its own; a pushed one's commit goes to
+		// verification, whose apply drops them.
 		if !res.StartFailed {
 			own = slices.Concat(res.Findings, t.handoverLines(res))
 		}

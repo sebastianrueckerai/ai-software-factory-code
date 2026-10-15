@@ -616,10 +616,10 @@ func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 }
 
 // objectiveText is the brief the agent reads. The issue author's text
-// (the issue and every answer to an information request) stands between
-// markers with a random tag the author cannot know, after the lines
-// factoryd writes, so none of it can pass for the standing line or for
-// the brief's own sections (ruling 152).
+// (the issue and every answer to an information request) and the earlier
+// session's last message stand between markers with a random tag neither
+// can know, after the lines factoryd writes, so none of it can pass for
+// the standing line or for the brief's own sections (ruling 152).
 func objectiveText(brief harness.TaskBrief) string {
 	brief = InboundBrief(brief)
 	texts := slices.Concat([]string{brief.Objective, brief.Spec}, brief.PosterInfo, brief.Findings)
@@ -639,7 +639,8 @@ func randomTag() string {
 	return hex.EncodeToString(b)
 }
 
-// briefText is the brief with the author's text between markers tagged tag.
+// briefText is the brief with the author's text and the earlier session's
+// last message between markers tagged tag.
 func briefText(brief harness.TaskBrief, tag string) string {
 	var b strings.Builder
 	if len(brief.LeftOut) > 0 {

@@ -452,11 +452,13 @@ type sessionOutcome struct {
 // stopReport is what a stopped worker left for the next session beside
 // the branch and the agent's last message (handoverLines): its report when
 // nothing reached the branch, a refused push's reason among them, or why no
-// report came.
+// report came, which says the work is not pushed only when no push was.
 func (out sessionOutcome) stopReport() []string {
 	switch {
 	case out.result != nil && out.commit == "":
 		return []string{"the stopped worker reported: " + out.result.Summary}
+	case out.result == nil && out.noResult != "" && out.commit != "":
+		return []string{out.noResult}
 	case out.result == nil && out.noResult != "":
 		return []string{"work in progress not pushed: " + out.noResult}
 	}
