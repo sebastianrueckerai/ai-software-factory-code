@@ -334,6 +334,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
 		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
 		{"GET /projects/{name}/pulse", c.pulseGet, "", "the pulse sentence: every turn's starting context carries it"},
+		{"GET /projects/{name}/docs/{path...}", c.docRead, "", "the drawer's document read: read_doc opens the same document to the agent"},
 	}, nil
 }
 

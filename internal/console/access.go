@@ -93,6 +93,7 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/chat":               rProject,
 	"GET /projects/{name}/chat/conversations": rProject,
 	"GET /projects/{name}/pulse":              rMember,
+	"GET /projects/{name}/docs/{path...}":     rMember, // docRead judges the project's sight, as the stream does
 
 	// POST routes
 	"POST /logout":                              rMember,

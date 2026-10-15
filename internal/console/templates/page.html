@@ -7,6 +7,22 @@
 {{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
 {{template "chat" .}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
+{{if .Docs}}<aside id="doc-view" class="doc-view" aria-label="The project's documents" tabindex="-1" hidden>
+<div class="doc-head"><div class="doc-row doc-row-nav">
+<button type="button" id="doc-back" class="xs" aria-label="Nothing back" title="Nothing back" disabled>&#8249;</button>
+<button type="button" id="doc-fwd" class="xs" aria-label="Nothing forward" title="Nothing forward" disabled>&#8250;</button>
+<details id="doc-recent" class="doc-recent"><summary aria-haspopup="menu">Recent &#9662;</summary><div class="doc-recent-menu" id="doc-recent-menu" role="menu"></div></details>
+<span class="seg doc-mode"><button type="button" id="doc-mode-read" aria-pressed="true">Read</button><button type="button" id="doc-mode-edit" disabled title="Editing the documents arrives with the next card">Edit</button></span>
+<span class="doc-gap" aria-hidden="true"></span>
+<a id="doc-forgejo" class="doc-forgejo" target="_blank" rel="noopener" hidden>Open in Forgejo &#8599;</a>
+<button type="button" id="doc-wide" class="xs" aria-pressed="false" title="Wide: across the board and the chat">Wide</button>
+<button type="button" id="doc-close" class="xs doc-x" aria-label="Close the document" title="Close the document">&#215;</button>
+</div>
+<p class="doc-pathline" id="doc-pathline"><span class="doc-file"><span class="doc-path" id="doc-path"></span></span><span class="doc-facts" id="doc-facts"></span></p>
+</div>
+<nav class="doc-pins" id="doc-pins" aria-label="Pinned documents"></nav>
+<article id="doc-article"></article>
+</aside>{{end}}
 </div>
 <footer id="live" role="status"></footer>
 <div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>
@@ -14,7 +30,7 @@
 <h2 id="keys-title">Keys</h2>
 <dl>
 <dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>
-<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the status in detail, or this list</dd>
+<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, the status in detail, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
 <dt><kbd>f</kbd></dt><dd>find on the board: a word or a ref, or <code>plan:558</code>, <code>stage:verifying</code>, <code>is:failed</code> (blocked, stale, provider, near), <code>by:sebastian</code>, <code>model:coding-cheap</code>; <kbd>Escape</kbd> in the box clears it</dd>
 {{template "chat-keys" .}}</dl>

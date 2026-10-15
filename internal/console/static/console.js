@@ -480,3 +480,334 @@ document.addEventListener("keydown", function (e) {
   d.querySelector("summary").focus();
   e.stopPropagation();
 }, true);
+
+// The project's documents (roadmap 277, the 2026-10-15 plan): the
+// Documents button and a document's own links open one in the view docked
+// over the board — never over the chat — rendered from
+// GET /projects/{name}/docs/{path}. ?doc=<path> in the URL holds it, so a
+// reload and the back button stand where you were, and a card's #card=
+// hash takes the slot: the document hides while the card's drawer shows
+// and comes back when it closes. Under the head the path line carries the
+// document's path, its short commit and its time of day; the pins row
+// holds a tab per pinned document — the backlog file pinned by default —
+// in localStorage per project. Recent documents and each one's scroll
+// are remembered per project; a hover of a link peeks its first
+// paragraph after 400ms, never on a coarse pointer or a narrow screen.
+(function () {
+  var nav = { stack: [], index: -1 }, peeks = {}, hoverTimer = null, peekEl = null, peekFor = null;
+
+  function view() { return document.getElementById("doc-view"); }
+  function board() { return document.getElementById("board"); }
+  function project() { return board() && board().dataset.project || ""; }
+  function visible() { var v = view(); return !!v && !v.hidden; }
+  function label(path) { return path.split("/").pop().replace(/\.md$/, ""); }
+
+  function load(key, fallback) {
+    try {
+      var v = sessionStorage.getItem("doc:" + project() + ":" + key);
+      return v ? JSON.parse(v) : fallback;
+    } catch (err) { return fallback; }
+  }
+  function store(key, value) {
+    try { sessionStorage.setItem("doc:" + project() + ":" + key, JSON.stringify(value)); } catch (err) {}
+  }
+  // the pins outlive the tab: localStorage, with the backlog file pinned
+  // until the member pins another
+  function pins() {
+    try {
+      var v = localStorage.getItem("doc:" + project() + ":pins");
+      var p = v ? JSON.parse(v) : null;
+      if (Array.isArray(p) && p.length) return p;
+    } catch (err) {}
+    return ["docs/roadmap.md"];
+  }
+  function storePins(list) {
+    try { localStorage.setItem("doc:" + project() + ":pins", JSON.stringify(list)); } catch (err) {}
+  }
+  function syncPins() {
+    var navEl = document.getElementById("doc-pins");
+    if (!navEl) return;
+    var current = nav.stack[nav.index] || "";
+    navEl.textContent = "";
+    var l = navEl.appendChild(document.createElement("span"));
+    l.className = "doc-pins-l";
+    l.setAttribute("aria-hidden", "true");
+    l.textContent = "pins";
+    var list = pins();
+    list.forEach(function (p) {
+      var b = navEl.appendChild(document.createElement("button"));
+      b.type = "button";
+      b.className = "doc-pin";
+      b.dataset.doc = p;
+      b.title = p;
+      if (p === current) b.setAttribute("aria-current", "page");
+      b.textContent = label(p);
+    });
+    if (current && list.indexOf(current) < 0) {
+      var add = navEl.appendChild(document.createElement("button"));
+      add.type = "button";
+      add.className = "doc-pin-add";
+      add.title = "Pin " + current;
+      add.textContent = "+ pin";
+    }
+  }
+  function pinOpen() {
+    var path = nav.stack[nav.index];
+    if (!path) return;
+    var list = pins();
+    if (list.indexOf(path) < 0) {
+      list.push(path);
+      storePins(list);
+    }
+    syncPins();
+  }
+  function docURL(path) {
+    return "/projects/" + encodeURIComponent(project()) + "/docs/" + path.split("/").map(encodeURIComponent).join("/");
+  }
+  function urlPath(path) {
+    var u = new URL(location.href);
+    if (path) u.searchParams.set("doc", path); else u.searchParams.delete("doc");
+    return u.pathname + u.search;
+  }
+  function docParam() {
+    var m = /[?&]doc=([^&#]*)/.exec(location.search || "");
+    if (!m) return "";
+    try { return decodeURIComponent(m[1]); } catch (err) { return m[1]; }
+  }
+  function syncButton(open) {
+    var b = document.getElementById("documents");
+    if (b) b.setAttribute("aria-expanded", String(open));
+  }
+  function syncNav() {
+    var back = document.getElementById("doc-back"), fwd = document.getElementById("doc-fwd");
+    if (!back || !fwd) return;
+    var prev = nav.index > 0 ? nav.stack[nav.index - 1] : "", next = nav.index < nav.stack.length - 1 ? nav.stack[nav.index + 1] : "";
+    back.disabled = !prev;
+    fwd.disabled = !next;
+    back.setAttribute("aria-label", prev ? "Back to " + label(prev) : "Nothing back");
+    back.title = prev ? "Back: " + label(prev) : "Nothing back";
+    fwd.setAttribute("aria-label", next ? "Forward to " + label(next) : "Nothing forward");
+    fwd.title = next ? "Forward: " + label(next) : "Nothing forward";
+  }
+  function syncRecent(current) {
+    var menu = document.getElementById("doc-recent-menu");
+    if (!menu) return;
+    menu.textContent = "";
+    var list = load("recent", []);
+    if (!list.length) {
+      menu.appendChild(document.createElement("span")).className = "doc-recent-none";
+      menu.firstChild.textContent = "Nothing yet";
+      return;
+    }
+    list.forEach(function (p) {
+      var row = menu.appendChild(document.createElement("button"));
+      row.type = "button";
+      row.className = "doc-recent-row";
+      row.dataset.doc = p;
+      row.setAttribute("role", "menuitem");
+      row.appendChild(document.createElement("span")).className = "doc-recent-label";
+      row.firstChild.textContent = (p === current ? "● " : "") + label(p);
+    });
+  }
+  function remember(path) {
+    var list = load("recent", []).filter(function (p) { return p !== path; });
+    list.unshift(path);
+    store("recent", list.slice(0, 6));
+    syncRecent(path);
+  }
+  function keepScroll() {
+    var v = view(), path = nav.stack[nav.index];
+    if (v && path) store("scroll:" + path, v.querySelector("#doc-article").scrollTop);
+  }
+
+  function show(d, frag) {
+    var v = view(), art = document.getElementById("doc-article");
+    if (!v || !art) return;
+    art.textContent = "";
+    art.innerHTML = d.html;
+    var facts = document.getElementById("doc-facts"), at = d.at ? new Date(d.at) : null;
+    var pathEl = document.getElementById("doc-path");
+    pathEl.textContent = d.path;
+    pathEl.title = d.path;
+    // the path line's state: the short commit and its time of day, the day
+    // itself on the hover
+    var day = at ? ("0" + at.getHours()).slice(-2) + ":" + ("0" + at.getMinutes()).slice(-2) : "";
+    facts.textContent = (d.commit ? d.commit.slice(0, 7) : "") + (d.commit && at ? " · " : "") + day;
+    facts.title = "content " + d.sha256 + (d.commit ? "\ncommit " + d.commit + (at ? " · " + at.toLocaleString() : "") : "");
+    var link = document.getElementById("doc-forgejo");
+    if (d.forgejo) { link.hidden = false; link.href = d.forgejo; } else link.hidden = true;
+    v.classList.toggle("wide", !!load("wide", false));
+    document.getElementById("doc-wide").setAttribute("aria-pressed", String(v.classList.contains("wide")));
+    syncNav();
+    art.scrollTop = 0;
+    var at = frag && art.querySelector('[id="' + CSS.escape(frag) + '"]');
+    if (at) at.scrollIntoView();
+    else art.scrollTop = load("scroll:" + d.path, 0) || 0;
+    v.focus({ preventScroll: true });
+  }
+  function failDoc(text, status) {
+    var art = document.getElementById("doc-article");
+    if (!art) return;
+    art.textContent = "";
+    art.appendChild(document.createElement("p")).className = "doc-none";
+    art.firstChild.textContent = text.trim() || "The document cannot be read (" + status + ").";
+  }
+  function openDoc(path, opts) {
+    opts = opts || {};
+    var v = view();
+    if (!v || !project() || !path) return;
+    if (location.hash.indexOf("#card=") === 0) closeDrawer();
+    hidePeek();
+    if (nav.stack[nav.index] !== path) {
+      nav.stack = nav.stack.slice(0, nav.index + 1);
+      nav.stack.push(path);
+      nav.index = nav.stack.length - 1;
+    }
+    v.hidden = false;
+    v.scrollTop = 0;
+    syncButton(true);
+    var art = document.getElementById("doc-article");
+    art.textContent = "";
+    art.appendChild(document.createElement("p")).className = "doc-none";
+    art.firstChild.textContent = "Reading " + label(path) + "…";
+    var pathEl = document.getElementById("doc-path");
+    pathEl.textContent = path;
+    pathEl.title = path;
+    document.getElementById("doc-facts").textContent = "";
+    syncPins();
+    fetch(docURL(path), { headers: { Accept: "application/json" } }).then(function (r) {
+      if (!r.ok) return r.text().then(function (t) { throw { status: r.status, text: t }; });
+      return r.json();
+    }).then(function (d) { show(d, opts.frag); }).catch(function (e) {
+      failDoc(e && e.text || "", e && e.status);
+    });
+    if (opts.push !== false) history.pushState({ doc: path }, "", urlPath(path));
+    remember(path);
+  }
+  function closeDoc(push) {
+    var v = view();
+    if (!visible()) return;
+    keepScroll();
+    hidePeek();
+    closeRecent();
+    v.hidden = true;
+    syncButton(false);
+    if (push !== false) history.pushState({ doc: null }, "", urlPath(null));
+    var b = document.getElementById("documents");
+    if (b) b.focus();
+  }
+  function openFromURL() {
+    if (location.hash.indexOf("#card=") === 0 || visible()) return;
+    var path = docParam();
+    if (path) openDoc(path, { push: false });
+  }
+
+  // the Documents button: where you left it, else the roadmap
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest || !e.target.closest("#documents")) return;
+    openDoc(nav.stack[nav.index] || load("recent", [])[0] || "docs/roadmap.md");
+  });
+  // a document's own links: a data-doc link opens in the view, a quiet
+  // one goes nowhere
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest && e.target.closest("#doc-view a");
+    if (!a) return;
+    if (a.dataset.doc) {
+      e.preventDefault();
+      var frag = "", i = a.getAttribute("href").indexOf("#");
+      if (i >= 0) frag = a.getAttribute("href").slice(i + 1);
+      openDoc(a.dataset.doc, { frag: frag });
+    } else if (a.classList.contains("doc-missing")) e.preventDefault();
+  });
+  // the head's buttons
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest) return;
+    if (e.target.closest("#doc-close")) closeDoc();
+    else if (e.target.closest("#doc-back") && nav.index > 0) openDoc(nav.stack[nav.index - 1]);
+    else if (e.target.closest("#doc-fwd") && nav.index < nav.stack.length - 1) openDoc(nav.stack[nav.index + 1]);
+    else if (e.target.closest("#doc-wide")) {
+      var v = view(), wide = !v.classList.contains("wide");
+      v.classList.toggle("wide", wide);
+      e.target.closest("#doc-wide").setAttribute("aria-pressed", String(wide));
+      store("wide", wide);
+    } else if (e.target.closest(".doc-recent-row")) openDoc(e.target.closest(".doc-recent-row").dataset.doc);
+    else if (e.target.closest(".doc-pin")) openDoc(e.target.closest(".doc-pin").dataset.doc);
+    else if (e.target.closest(".doc-pin-add")) pinOpen();
+  });
+  function closeRecent() {
+    var d = document.getElementById("doc-recent");
+    if (d) d.open = false;
+  }
+  document.addEventListener("click", function (e) {
+    if (!e.target.closest("#doc-recent")) closeRecent();
+  });
+  // a card takes the slot: the document hides while the drawer shows and
+  // comes back when it closes
+  window.addEventListener("hashchange", function () {
+    if (location.hash.indexOf("#card=") !== 0 || !visible()) return;
+    keepScroll();
+    hidePeek();
+    view().hidden = true;
+    syncButton(false);
+  });
+  document.addEventListener("drawerclosed", openFromURL);
+  window.addEventListener("popstate", function () {
+    var path = docParam();
+    if (path) openDoc(path, { push: false });
+    else if (visible()) closeDoc(false);
+  });
+  // Escape: the Recent menu, the peek, the document — the keys list and
+  // the status band close first
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    var keys = document.getElementById("keys"), panel = document.getElementById("status-panel");
+    if (keys && !keys.hidden || panel && !panel.hidden) return;
+    var d = e.target.closest && e.target.closest("#doc-recent");
+    if (d && d.open) { d.open = false; e.stopPropagation(); return; }
+    if (peekEl) { hidePeek(); e.stopPropagation(); return; }
+    if (visible() && location.hash.indexOf("#card=") !== 0) { closeDoc(); e.stopPropagation(); }
+  }, true);
+
+  // the peek: 400ms of hover over a document's link shows its first
+  // paragraph, never on a coarse pointer or a narrow screen
+  function finePointer() {
+    return window.matchMedia("(hover: hover) and (pointer: fine)").matches && window.innerWidth >= 900;
+  }
+  function hidePeek() {
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+    if (peekEl) { peekEl.remove(); peekEl = null; }
+    peekFor = null;
+  }
+  document.addEventListener("mouseover", function (e) {
+    var a = e.target.closest && e.target.closest("#doc-view a[data-doc]");
+    if (!a || !finePointer() || peekFor === a) return;
+    hidePeek();
+    peekFor = a;
+    hoverTimer = setTimeout(function () { showPeek(a); }, 400);
+  });
+  document.addEventListener("mouseout", function (e) {
+    if (e.target.closest && e.target.closest("#doc-view a[data-doc]")) hidePeek();
+  });
+  window.addEventListener("scroll", hidePeek, true);
+  function showPeek(a) {
+    var path = a.dataset.doc;
+    var go = function (text) {
+      if (peekFor !== a || !a.isConnected || peekEl) return;
+      peekEl = document.createElement("div");
+      peekEl.className = "doc-peek";
+      peekEl.textContent = text || "";
+      document.body.appendChild(peekEl);
+      var r = a.getBoundingClientRect();
+      peekEl.style.top = Math.max(8, Math.min(r.bottom + 8, window.innerHeight - peekEl.offsetHeight - 8)) + "px";
+      peekEl.style.left = Math.max(8, Math.min(r.left, window.innerWidth - peekEl.offsetWidth - 8)) + "px";
+    };
+    if (peeks[path] !== undefined) return go(peeks[path]);
+    fetch(docURL(path) + "?peek=1").then(function (r) { return r.ok ? r.text() : ""; }).then(function (t) {
+      peeks[path] = t;
+      go(t);
+    });
+  }
+
+  // the board's swaps bring a fresh Documents button: say what it opens
+  document.addEventListener("htmx:afterSettle", function () { syncButton(visible()); });
+})();
