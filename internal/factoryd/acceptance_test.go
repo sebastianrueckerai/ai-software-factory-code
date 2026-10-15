@@ -38,6 +38,9 @@ func TestRunsAcceptance(t *testing.T) {
 		{"cd /workspace/repo &&bash check&& echo done", "bash check", true},
 		{"cd /workspace/repo && bash check || true", "bash check", false},
 		{"cd /workspace/repo && bash check | tee log", "bash check", false},
+		// a pipe anywhere hides the command's exit behind the last stage's
+		{"bash check | tee log", "bash check", false},
+		{"bash check -- ./... 2>&1 | tail -20", "bash check", false},
 		{"cd /workspace/repo; bash check", "bash check", false},
 		{"cd /workspace/repo && bash check & wait", "bash check", false},
 		{"cd /workspace/repo && bash check\necho $?", "bash check", false},
@@ -174,6 +177,33 @@ func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
 	}
 	if res.Acceptance == nil || res.Acceptance.Command != chain || res.Acceptance.Exit != 0 {
 		t.Fatalf("acceptance = %+v, want the whole chain's green run", res.Acceptance)
+	}
+}
+
+// A red acceptance run piped to tee exits with tee's status, 0: it is no
+// green, and the session carries no acceptance home, so the card does not
+// close on it.
+func TestRunSessionCarriesNoAcceptanceFromAPipe(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
+		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
+		Acceptance: []string{"go test ./acceptance/"}}}})
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{
+		"command": "go test ./acceptance/ | tee test.log", "exit": 0, "output": "--- FAIL: TestA1\nFAIL"}}) + "\n" + resultLine(false, "out of time")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Acceptance != nil {
+		t.Fatalf("acceptance = %+v, want none from a run whose exit is tee's", res.Acceptance)
 	}
 }
 

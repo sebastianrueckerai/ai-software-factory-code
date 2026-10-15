@@ -173,15 +173,15 @@ func commandExit(detail map[string]any) (int, bool) {
 
 // runsAcceptance is whether run ran an acceptance command: equal after
 // whitespace, or the command with arguments added — "bash check -- ./..."
-// runs what "bash check" names, the arguments the same command's — as the
-// whole run or as a step of an && chain (andSteps). The words are
+// runs what "bash check" names, the arguments the same command's — as one
+// of run's exitSteps, whose exit status is the run's. The words are
 // compared as said: a shell command's case is its meaning.
 func runsAcceptance(run, item string) bool {
 	item = strings.Join(strings.Fields(item), " ")
 	if item == "" {
 		return false
 	}
-	for _, step := range append([]string{run}, andSteps(run)...) {
+	for _, step := range exitSteps(run) {
 		step = strings.Join(strings.Fields(step), " ")
 		if step == item || strings.HasPrefix(step, item+" ") {
 			return true
@@ -190,14 +190,17 @@ func runsAcceptance(run, item string) bool {
 	return false
 }
 
-// andSteps are the steps of run when it is an && chain whose exit 0 says
-// every step passed; none when another control operator could hide a
-// step's exit (;, |, ||, a lone &, a second line, $?). A redirection's &
-// (2>&1, &>) is none.
-func andSteps(run string) []string {
-	ops := strings.NewReplacer("&&", " ", ">&", " ", "<&", " ", "&>", " ").Replace(run)
-	if !strings.Contains(run, "&&") || strings.ContainsAny(ops, ";|&\n") || strings.Contains(ops, "$?") {
+// exitSteps are the commands whose exit status run's exit 0 vouches for:
+// run itself, and each step of an && chain, whose exit 0 says every step
+// passed. None when another control operator could hide a step's exit
+// (masksExitStatus: ;, a pipe, ||, a lone &, a second line, $?); a
+// redirection's & (2>&1, &>) is none.
+func exitSteps(run string) []string {
+	if masksExitStatus(strings.NewReplacer("&&", " ", ">&", " ", "<&", " ", "&>", " ").Replace(run)) {
 		return nil
 	}
-	return strings.Split(run, "&&")
+	if !strings.Contains(run, "&&") {
+		return []string{run}
+	}
+	return append([]string{run}, strings.Split(run, "&&")...)
 }
