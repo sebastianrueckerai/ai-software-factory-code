@@ -1879,7 +1879,13 @@ Dockerfiles take their bases from the store through `ARG UPSTREAM`; a
 pull request's build VM holds no login to the store, so `pr.yml` sets
 it empty and the VM pulls the same digests from their upstreams. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
-PostgreSQL's from apt-archive.postgresql.org at exact versions. Each build imports and exports (`mode=max`)
+PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
+moves on its own: the roller files a human card on this repository a
+week after the last, "Weekly bump of the pinned outside inputs", never
+while one is open (`internal/factoryd/upstream.go`), naming the list,
+the snapshot, the PostgreSQL versions, the Go patch and the downloaded
+tools; a human's, since no agent sandbox reaches a registry or a
+release page. Each build imports and exports (`mode=max`)
 its image's layer cache in the in-cluster build cache,
 `build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra
 `k8s/platform/build-cache`, ruling 111), which the pull-request builds

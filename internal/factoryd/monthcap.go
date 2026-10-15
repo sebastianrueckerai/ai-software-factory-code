@@ -238,31 +238,37 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
 		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	// an issue filed by a check whose task row then failed is taken on,
-	// not filed again
-	open, err := a.Forgejo.OpenIssues(ctx, a.Repo.Owner, a.Repo.Name)
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, t)
 	if err != nil {
 		return err
 	}
+	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
+}
+
+// fileHumanTask files human task t on repo through FileTask, labelled
+// human, unless the bot's open issue of the same title is there: an issue
+// filed by a check whose task row then failed is taken on, not filed
+// again. number is the issue's.
+func fileHumanTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, repo Repo, title, body string, t Task) (Task, int64, error) {
+	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
+	if err != nil {
+		return Task{}, 0, err
+	}
 	var number int64
 	for _, is := range open {
-		if is.Title == title && is.Poster.UserName == a.Forgejo.BotUser {
+		if is.Title == title && is.Poster.UserName == forgejo.BotUser {
 			number = is.Index
 		}
 	}
 	if number == 0 {
-		t, ref, err := FileTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, []string{"human"}, t)
-		if err != nil {
-			return err
-		}
-		return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": ref.Number})
+		t, ref, err := FileTask(ctx, store, forgejo, repo, title, body, []string{"human"}, t)
+		return t, ref.Number, err
 	}
-	t.Status, t.Repository, t.IssueNumber = "waiting-human", a.Repo.String(), number
-	if err := a.Forgejo.ReplaceIssueLabels(ctx, a.Repo.Owner, a.Repo.Name, number, []string{"human", "state/waiting-human"}); err != nil {
-		return err
+	t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), number
+	if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, []string{"human", "state/waiting-human"}); err != nil {
+		return Task{}, 0, err
 	}
-	if err := a.Store.CreateTask(ctx, t); err != nil {
-		return err
-	}
-	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
+	return t, number, store.CreateTask(ctx, t)
 }

@@ -174,6 +174,16 @@ func (s *fakeStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 	return t, s.CreateTask(ctx, t)
 }
 
+func (s *fakeStore) NewestTaskOf(ctx context.Context, repository, source string) (Task, bool, error) {
+	var newest Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Source == source && (newest.ID == "" || t.CreatedAt.After(newest.CreatedAt)) {
+			newest = t
+		}
+	}
+	return newest, newest.ID != "", nil
+}
+
 func (s *fakeStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.Parent == parent && t.Source == source {

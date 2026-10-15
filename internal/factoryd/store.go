@@ -598,6 +598,11 @@ func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bo
 	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
 }
 
+// NewestTaskOf is repository's newest task of source, if any.
+func (s *PGStore) NewestTaskOf(ctx context.Context, repository, source string) (Task, bool, error) {
+	return s.oneTask(ctx, `repository = $1 AND source = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, repository, source)
+}
+
 func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
