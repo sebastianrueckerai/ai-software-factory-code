@@ -15,9 +15,10 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 
 // contrastEl are the C14 parts' text, measured on the rendered page in
 // both themes (design/rounds/02-multi-chat/check.js)
-const contrastEl = ".trow .ttitle, .trow .tat, .tarch-l, .trow.arch .ttitle, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
+const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
   ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
-  ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link";
+  ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
+  ".doc-path, .doc-facts, .doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a";
 
 // mustHave are the inventory's controls and data points as the lab's
 // scenarios word them; a missing word is a missing control.
@@ -145,6 +146,39 @@ async function text(page) {
         const t2 = await p.page.locator("#chat").innerText();
         if (!/applied/i.test(t2) || !/undo/i.test(t2)) fails.push("chat: Do it does not become an applied line with Undo");
       }
+      // the documents (roadmap 277): the Documents button opens the roadmap
+      // in the view docked over the board, never over the chat; a link opens
+      // the plan it names, Back returns, ?doc= restores, Escape closes
+      const doc = p.page.locator("#doc-view");
+      if (!(await p.page.locator("#documents").count())) fails.push("docs: no Documents button");
+      else {
+        await p.page.locator("#documents").click();
+        await p.page.waitForTimeout(600);
+        if (!(await doc.isVisible())) fails.push("docs: the Documents button opens no view");
+        else {
+          if ((await p.page.locator("#documents").getAttribute("aria-expanded")) !== "true") fails.push("docs: the button does not say it opens");
+          const dt = await doc.innerText();
+          for (const w of ["The roadmap", "The rounds", "build plan", "documents plan"]) if (!dt.includes(w)) fails.push('docs: missing "' + w + '"');
+          const box = await doc.boundingBox(), chat = await p.page.locator("#chat").boundingBox();
+          if (box && box.x + box.width < 1430) fails.push("docs: not docked at the right edge (ends at " + Math.round(box.x + box.width) + ")");
+          if (box && chat && box.x < chat.x + chat.width - 1) fails.push("docs: over the chat (from " + Math.round(box.x) + ", the chat ends at " + Math.round(chat.x + chat.width) + ")");
+          await doc.locator('a[data-doc="docs/plans/2026-09-24-build-plan.md"]').click();
+          await p.page.waitForTimeout(600);
+          if (!(await doc.innerText()).includes("Four cards")) fails.push("docs: a link opens no plan");
+          if (decodeURIComponent(p.page.url()).indexOf("doc=docs/plans/") < 0) fails.push("docs: the URL carries no doc param (" + p.page.url() + ")");
+          await p.page.locator("#doc-back").click();
+          await p.page.waitForTimeout(600);
+          if (!(await doc.innerText()).includes("The roadmap")) fails.push("docs: Back does not return to the roadmap");
+          await p.page.keyboard.press("Escape");
+          await p.page.waitForTimeout(300);
+          if (await doc.isVisible()) fails.push("docs: Escape does not close it");
+        }
+      }
+      // ?doc= opens the document on load
+      await p.page.goto(base + "/?doc=docs/plans/2026-10-15-documents-in-the-screen.md", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      if (!(await doc.isVisible()) || !(await doc.innerText()).includes("The documents in the screen"))
+        fails.push("docs: ?doc= does not open the document on load");
     }
     if (sc === "busy") {
       // the find (C13): ?q= narrows every column, the counts read "n of m", the × clears
@@ -284,9 +318,31 @@ async function text(page) {
     if (psw > 390) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + ")");
     await pp.ctx.close();
   }
+  // the documents on the phone: the view covers the screen, its controls
+  // reach 44 px, Escape closes, no horizontal scroll
+  await seed("busy");
+  {
+    const pp = await open(browser, { width: 390, height: 844 });
+    await pp.page.goto(base + "/", { waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    await pp.page.locator("#documents").click();
+    await pp.page.waitForTimeout(600);
+    if (!(await pp.page.locator("#doc-view").isVisible())) fails.push("phone: the documents do not open");
+    else {
+      const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".doc-row .xs, .doc-recent > summary, .doc-mode button"))
+        .filter((b) => b.offsetParent).map((b) => [b.id || b.className, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
+      if (small.length) fails.push("phone: doc targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+      const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
+      if (psw > 390) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + ")");
+      await pp.page.keyboard.press("Escape");
+      await pp.page.waitForTimeout(300);
+      if (await pp.page.locator("#doc-view").isVisible()) fails.push("phone: Escape does not close the documents");
+    }
+    await pp.ctx.close();
+  }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
-    for (const [sc, act] of [["threads", "delete"], ["escalation", "palette"], ["assisted", "level"], ["poke", ""]]) {
+    for (const [sc, act] of [["threads", "delete"], ["escalation", "palette"], ["assisted", "level"], ["poke", ""], ["busy", "docs"]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
@@ -297,6 +353,7 @@ async function text(page) {
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();
       if (act === "palette") { await cp.page.locator("#chat-input").click(); await cp.page.keyboard.type("/"); }
       if (act === "level") await cp.page.locator("#level-btn").click();
+      if (act === "docs") { await cp.page.locator("#documents").click(); await cp.page.waitForTimeout(600); }
       await cp.page.waitForTimeout(200);
       const low = await cp.page.evaluate((sel) => {
         const cv = document.createElement("canvas").getContext("2d", { willReadFrequently: true });

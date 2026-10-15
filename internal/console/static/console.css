@@ -497,6 +497,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .board-head { display: flex; align-items: center; gap: 8px; height: 26px; flex: none; margin-bottom: 8px; }
 .board-head h2 { margin: 0; color: var(--text-muted); font-size: 14px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .view-toggle, .keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
+.documents { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
+.documents[aria-expanded=true] { color: var(--text); border-color: var(--accent); }
 .keys-toggle { width: 24px; padding: 0; font-family: var(--font-mono); }
 /* the find (C13): one mono box right of Board, cyan while it holds a
    find; the × is a link to the board without it; a narrowed column's
@@ -708,6 +710,50 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 /* the drawer docks at the right edge of the main area, over the board
    and never over the chat */
 .drawer { position: absolute; top: 12px; right: 0; bottom: 12px; width: min(46%, 720px); z-index: 20; overflow-y: auto; padding: 14px 18px 28px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-left: 1px solid var(--accent); border-right: 0; box-shadow: var(--drawer-shadow); animation: drin .16s ease-out; }
+
+/* the project's documents (roadmap 277): the view docks as the drawer
+   does, over the board and never over the chat; wide spans both, unless
+   the chat is hidden anyway */
+.doc-view { position: absolute; top: 12px; right: 0; bottom: 12px; z-index: 20; display: flex; flex-direction: column; width: min(46%, 720px); background: var(--bg-raised); border: 1px solid var(--line-strong); border-left: 1px solid var(--accent); border-right: 0; box-shadow: var(--drawer-shadow); animation: drin .16s ease-out; }
+.doc-view:focus { outline: none; }
+.doc-view.wide { left: calc(12px + (100% - 34px) * .4 + 10px); width: auto; }
+#screen.wide .doc-view.wide, #screen:not(.with-chat) .doc-view.wide { left: 12px; }
+.doc-head { flex: none; border-bottom: 1px solid var(--line); }
+.doc-row { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 12px 6px 8px; }
+.doc-row .xs { min-width: 28px; }
+.doc-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; font-size: 13.5px; }
+.doc-facts { margin-left: auto; flex: none; color: var(--text-muted); font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+.doc-mode { display: inline-flex; flex: none; padding: 1px; border: 1px solid var(--line-strong); border-radius: 3px; }
+.doc-mode button { height: 20px; padding: 0 8px; border: 0; background: none; color: var(--text-muted); font-size: 12px; }
+.doc-mode button[aria-pressed=true] { background: var(--bg-hover); color: var(--text); }
+.doc-mode button:disabled { opacity: .6; cursor: help; }
+#doc-article { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px 40px; font-size: 13.5px; line-height: 1.6; }
+#doc-article > :first-child { margin-top: 0; }
+#doc-article h1 { font-size: 19px; letter-spacing: -.008em; margin: 4px 0 12px; }
+#doc-article h2 { font-size: 16px; margin: 22px 0 8px; }
+#doc-article h3, #doc-article h4 { font-size: 14px; margin: 16px 0 6px; }
+#doc-article pre { overflow-x: auto; padding: 10px 12px; background: var(--bg-panel); border: 1px solid var(--line); font: 12.5px var(--font-mono); }
+#doc-article code { font-family: var(--font-mono); font-size: .92em; }
+#doc-article pre code { font-size: 12.5px; }
+#doc-article :is(ul, ol) { padding-left: 22px; }
+#doc-article table { border-collapse: collapse; margin: 8px 0; }
+#doc-article :is(th, td) { border: 1px solid var(--line); padding: 4px 8px; }
+#doc-article a.doc-link, #doc-article a.doc-ext { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+#doc-article a.doc-missing { color: var(--text-muted); text-decoration: underline dotted; text-underline-offset: 2px; }
+.doc-none { color: var(--text-muted); font-style: italic; }
+.doc-recent { position: relative; flex: none; }
+.doc-recent > summary { display: inline-flex; align-items: center; height: 22px; padding: 0 8px; cursor: pointer; color: var(--text-muted); font-size: 12px; list-style: none; }
+.doc-recent > summary::-webkit-details-marker { display: none; }
+.doc-recent[open] > summary { color: var(--text); }
+.doc-recent-menu { position: absolute; left: 0; top: 26px; z-index: 40; min-width: 200px; max-height: 300px; overflow-y: auto; padding: 4px 8px 8px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }
+.doc-recent-row { display: block; width: 100%; padding: 5px 6px; border: 0; background: none; color: var(--text); text-align: left; font-size: 12.5px; }
+.doc-recent-row:hover { background: var(--bg-hover); }
+.doc-recent-label { font-family: var(--font-mono); }
+.doc-recent-none { display: block; padding: 5px 6px; color: var(--text-faint); font-size: 12.5px; }
+/* the peek: the first paragraph of a hovered link's document, a quiet
+   bubble by the link */
+.doc-peek { position: fixed; z-index: 60; max-width: 320px; max-height: 140px; overflow: hidden; padding: 8px 10px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; line-height: 1.5; color: var(--text); pointer-events: none; }
+.doc-peek:empty { display: none; }
 @keyframes tick { to { transform: translateX(-50%); } }
 @media (min-width: 1700px) {
   #screen { gap: 14px; padding: 14px 18px; }
@@ -763,6 +809,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat-form { padding: 10px 12px 12px; }
   .chat-form button, .proposal .doit, button.skip { height: 44px; min-width: 96px; }
   .board-head .view-toggle { display: none; }
+  .board-head .documents { height: 44px; padding: 0 12px; font-size: 13px; }
   .board-head { flex-wrap: wrap; height: auto; }
   .find { flex: 1 1 100%; order: 5; margin: 0; }
   .find input { width: 100%; height: 44px; padding-right: 44px; font-size: 14px; }
@@ -781,6 +828,13 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .choices { flex-direction: column; align-items: stretch; gap: 8px; }
   .choices button, .escalation form:not(.inline) button[type=submit], .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .approval form[action$="/split"] button, .transitions button { width: 100%; height: 44px; font-size: 14px; }
   .drawer { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
+  .doc-view { position: fixed; inset: 0; width: auto; z-index: 50; border: 0; border-top: 2px solid var(--accent); }
+  .doc-view.wide { left: 0; }
+  .doc-row { gap: 4px; padding: 6px 10px 6px 6px; }
+  .doc-row .xs, .doc-recent > summary { min-width: 44px; min-height: 44px; justify-content: center; font-size: 14px; }
+  #doc-wide { display: none; }
+  .doc-mode button { height: 44px; padding: 0 12px; }
+  #doc-article { padding: 12px 14px 40px; }
   .tabs { overflow-x: auto; }
 }
 

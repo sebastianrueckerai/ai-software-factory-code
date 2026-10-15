@@ -489,7 +489,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
 		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
-		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the status in detail, or this list</dd>`,
+		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, the status in detail, or this list</dd>`,
 		`<dt><kbd>?</kbd></dt><dd>this list</dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)

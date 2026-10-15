@@ -1109,6 +1109,10 @@ type boardData struct {
 	// Levels the four states with their words; empty: no policy in force.
 	Autonomy string
 	Levels   []level
+	// Docs is the shown project's document repository (chat.doc_repo),
+	// the drawer's Documents button and its reads; empty: the project
+	// has no documents (roadmap 277).
+	Docs string
 	// Commands are the chat's commands, its own and the config tree's
 	// (roadmap 239).
 	Commands []policy.Command
@@ -1967,6 +1971,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			for _, s := range policy.AutonomyStates {
 				d.Levels = append(d.Levels, level{Name: s, Words: policy.AutonomyMeaning[s]})
 			}
+		}
+		if shown.Name != "" {
+			d.Docs = v.Document.ChatOf(v.Projects[shown.Name]).DocRepo
 		}
 	}
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()

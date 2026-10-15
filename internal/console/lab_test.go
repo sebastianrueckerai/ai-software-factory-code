@@ -52,7 +52,11 @@ func TestLab(t *testing.T) {
 		io.WriteString(w, files)
 	}))
 	t.Cleanup(forgejo.Close)
-	r.c.cfg.ForgejoURL = forgejo.URL
+	// the project's documents (roadmap 277): sf/docs over the lab's Forgejo,
+	// the roadmap and the two plans it names
+	_, docs := docsOver(t, forgejo.URL, labDocs)
+	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, "docs-token"
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
 	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
@@ -301,6 +305,27 @@ func assistedScene(now time.Time) labScene {
 	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting}, inbox: 2, open: 1,
 		chat: msgs, events: events, spend: 1.2, chatSpend: 0.18, drawer: "t-a1",
 		pulse: factoryd.Pulse{Repository: "sf/code", At: now, Sentence: "One card works, one queues for a slot, one waits in the backlog."}}
+}
+
+// labDocs are the code project's documents in the lab's sf/docs: the
+// roadmap with its rounds and the plans they name, linked the way the
+// repository links them (roadmap 277).
+var labDocs = map[string]string{
+	"docs/roadmap.md": "# The roadmap\n\n" +
+		"The factory builds itself in rounds; a round ends with its cards merged and its live check run.\n\n" +
+		"## The rounds\n\n" +
+		"- **5. The documents in the screen.** Sources: docs/plans/2026-10-15-documents-in-the-screen.md. Where it stands: in progress.\n" +
+		"- **4. The chat beside the board.** Sources: docs/plans/2026-09-24-build-plan.md. Where it stands: done.\n\n" +
+		"The [build plan](plans/2026-09-24-build-plan.md) and the [documents plan](plans/2026-10-15-documents-in-the-screen.md) hold each round's cards; the architecture lives on the [wiki](https://example.com/wiki).\n",
+	"docs/plans/2026-09-24-build-plan.md": "# The build plan\n\n" +
+		"Four cards: the event stream, the board, the drawer, the chat.\n\n" +
+		"The board polls nothing; the stream pushes every change. Back to the [roadmap](../roadmap.md).\n",
+	"docs/plans/2026-10-15-documents-in-the-screen.md": "# The documents in the screen\n\n" +
+		"The documents read in the drawer over the board, never over the chat.\n\n" +
+		"1. The read: rendering, the endpoint, the drawer's mode\n" +
+		"2. The write: the editor, the indicator\n" +
+		"3. The backlog: the pull\n\n" +
+		"Back to the [roadmap](../roadmap.md).\n",
 }
 
 // labPRFiles are the lab's pull requests' changed files by Forgejo path.

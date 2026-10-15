@@ -1,6 +1,7 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
 <div class="board-head"><h2 id="board-title">Board</h2>
 <form class="find{{if .Q}} on{{end}}" id="find" role="search" method="get" action="/">{{range .Hidden "q"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<label class="visually-hidden" for="q">Find on the board</label><input id="q" name="q" type="text" value="{{.Q}}" placeholder="Find: a word, #612, plan:558" autocomplete="off" spellcheck="false" aria-keyshortcuts="f">{{if .Q}}<a class="find-x" href="/{{.ClearQuery}}" aria-label="Clear the find" title="Clear the find">×</a>{{end}}</form>
+{{if .Docs}}<button type="button" id="documents" class="documents" aria-controls="doc-view" aria-expanded="false" title="The project's documents; the last one opens where you left it">Documents</button>{{end}}
 <a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
 
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>

@@ -151,6 +151,36 @@ async function main() {
           }, false);
         }
         if (s !== "busy") continue;
+        // the documents (roadmap 277): the roadmap read, a link into a
+        // plan, Back, the hover peek, wide, and the phone
+        const openDocs = async (p) => {
+          await p.page.locator("#documents").click();
+          await p.idle();
+        };
+        await shot("docs-roadmap-1440.png", desk, "/", openDocs, false);
+        await shot("docs-link-1440.png", desk, "/", async (p) => {
+          await openDocs(p);
+          await p.page.locator('#doc-view a[data-doc="docs/plans/2026-10-15-documents-in-the-screen.md"]').click();
+          await p.idle();
+        }, false);
+        await shot("docs-back-1440.png", desk, "/", async (p) => {
+          await openDocs(p);
+          await p.page.locator('#doc-view a[data-doc="docs/plans/2026-09-24-build-plan.md"]').click();
+          await p.idle();
+          await p.page.locator("#doc-back").click();
+          await p.idle();
+        }, false);
+        await shot("docs-peek-1440.png", desk, "/", async (p) => {
+          await openDocs(p);
+          await p.page.locator('#doc-view a[data-doc="docs/plans/2026-09-24-build-plan.md"]').hover();
+          await p.page.waitForTimeout(700);
+        }, false);
+        await shot("docs-wide-1440.png", desk, "/", async (p) => {
+          await openDocs(p);
+          await p.page.locator("#doc-wide").click();
+          await p.idle();
+        }, false);
+        await shot("docs-390.png", phone, "/", openDocs, false);
         for (const pg of pages) await shot(pg + "-1440.png", desk, "/" + pg);
         await shot("timeline-1440.png", desk, "/tasks/" + drawer + "/timeline");
         await shot("new-task-1440.png", desk, "/tasks/new");
