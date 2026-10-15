@@ -520,9 +520,11 @@ func TestLineWriterCapsALine(t *testing.T) {
 }
 
 // A dropped too-long line leaves one note naming its size and, where its
-// first bytes show them, its event type and part id.
+// first bytes show them, its event type and part id. Only the head's first
+// bytes matter, so the filler stays short; the size is the reader's count,
+// not the head's.
 func TestSkippedLineNote(t *testing.T) {
-	ev := skippedLineNote([]byte("data: "+`{"id":"evt_1","type":"message.part.updated","properties":{"part":{"id":"prt_1"`+strings.Repeat("x", 2<<20)), 2<<20+80)
+	ev := skippedLineNote([]byte("data: "+`{"id":"evt_1","type":"message.part.updated","properties":{"part":{"id":"prt_1"`+strings.Repeat("x", 64)), 2<<20+80)
 	if ev.Kind != harness.EventNote || ev.Detail["bytes"] != 2<<20+80 || ev.Detail["event"] != "message.part.updated" || ev.Detail["part"] != "prt_1" {
 		t.Fatalf("note = %+v, want the 2 MiB 80 byte message.part.updated line prt_1", ev)
 	}
@@ -549,7 +551,7 @@ func TestOpencodeRunSurvivesAnOversizeLine(t *testing.T) {
 		t.Fatalf("events start with %v, want the event before the drop, then the note", kinds(events))
 	}
 	note := events[1].Detail
-	if note["bytes"] != len(oversizeLine()) || note["event"] != "message.part.updated" || note["part"] != "prt_2mib" {
+	if note["bytes"] != oversizeLen || note["event"] != "message.part.updated" || note["part"] != "prt_2mib" {
 		t.Fatalf("note = %v, want the dropped line's size, event type and part id", note)
 	}
 	// the fixture's own three steps still arrive after the dropped line

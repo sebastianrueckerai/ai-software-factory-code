@@ -510,7 +510,10 @@ func (w *lineWriter) Write(b []byte) (int, error) {
 			part = b[:i]
 		}
 		if !w.skipping && len(w.buf)+len(part) > maxOutputLine {
-			w.skipping, w.head, w.size = true, w.buf, len(w.buf)
+			// the head is copied: buf's backing array must not carry both
+			// the dropped line's head and a later line's bytes
+			w.skipping, w.size = true, len(w.buf)
+			w.head = append([]byte(nil), w.buf...)
 			w.buf = nil
 		}
 		if w.skipping {
