@@ -1580,8 +1580,8 @@ func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, numbe
 // refused. Forgejo refuses the merge (ErrRefused, 405) without the
 // approval of a human on main's approvals whitelist, where main requires
 // one (every repository on the merge rule human).
-func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo string, number int64, head, message string) error {
-	payload, err := json.Marshal(map[string]any{"Do": "merge", "head_commit_id": head, "MergeMessageField": message})
+func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo string, number int64, head string, a Attribution, subject string) error {
+	payload, err := json.Marshal(map[string]any{"Do": "merge", "head_commit_id": head, "MergeMessageField": a.Message(subject)})
 	if err != nil {
 		return err
 	}
@@ -1667,10 +1667,30 @@ type FileChange struct {
 	Delete  bool
 }
 
+// Attribution names who a commit the factory writes is for (roadmap 41):
+// the factory role that wrote it, the task and the session it was made
+// in, the human behind it (the task's issue author, or the member whose
+// action wrote it) and a merge's approver.
+type Attribution struct {
+	Role, Task, Session, Human, Approver string
+}
+
+// Message is subject with a's git trailers, one for each name given: the
+// message of every commit the factory writes.
+func (a Attribution) Message(subject string) string {
+	msg, sep := subject+"\n", "\n"
+	for _, t := range [][2]string{{"Factory-Role", a.Role}, {"Factory-Task", a.Task}, {"Factory-Session", a.Session}, {"Requested-by", a.Human}, {"Approved-by", a.Approver}} {
+		if t[1] != "" {
+			msg, sep = msg+sep+t[0]+": "+t[1]+"\n", ""
+		}
+	}
+	return msg
+}
+
 // CommitFiles writes changes as one commit on branch, or on newBranch
 // created from branch when newBranch is set, as the bot, and returns the
 // commit's sha.
-func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranch, message string, changes []FileChange) (string, error) {
+func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranch string, a Attribution, subject string, changes []FileChange) (string, error) {
 	files := make([]map[string]string, 0, len(changes))
 	for _, c := range changes {
 		op := "update"
@@ -1683,7 +1703,7 @@ func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranc
 		files = append(files, map[string]string{"operation": op, "path": c.Path, "sha": c.Blob,
 			"content": base64.StdEncoding.EncodeToString(c.Content)})
 	}
-	req := map[string]any{"branch": branch, "message": message, "files": files}
+	req := map[string]any{"branch": branch, "message": a.Message(subject), "files": files}
 	if newBranch != "" {
 		req["new_branch"] = newBranch
 	}
@@ -1693,12 +1713,12 @@ func (f *Forgejo) CommitFiles(ctx context.Context, owner, repo, branch, newBranc
 // CreateFiles commits files, keyed by path, as one commit on branch with
 // token, every file created: into an empty repository too, whose branch
 // it starts. It returns the commit's sha.
-func (f *Forgejo) CreateFiles(ctx context.Context, token string, repo Repo, branch, message string, files map[string][]byte) (string, error) {
+func (f *Forgejo) CreateFiles(ctx context.Context, token string, repo Repo, branch string, a Attribution, subject string, files map[string][]byte) (string, error) {
 	ops := make([]map[string]string, 0, len(files))
 	for _, path := range slices.Sorted(maps.Keys(files)) {
 		ops = append(ops, map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString(files[path])})
 	}
-	return postContents(ctx, f.tokenCall(token), repo, map[string]any{"branch": branch, "message": message, "files": ops})
+	return postContents(ctx, f.tokenCall(token), repo, map[string]any{"branch": branch, "message": a.Message(subject), "files": ops})
 }
 
 // postContents is repoChangeFiles: one commit of req's files.

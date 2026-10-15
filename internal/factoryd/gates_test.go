@@ -691,7 +691,8 @@ func TestRequestApprovalOpensTheCard(t *testing.T) {
 }
 
 // The merge commit's message names the approver, and its trailers the
-// task, the issue author and the approver (roadmap 41).
+// merge, the task, the issue author behind it and the approver (roadmap
+// 41).
 func TestMergeAsFactoryMerge(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 	task := gateTask
@@ -704,7 +705,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 	if fj.merges[0]["head_commit_id"] != "c1" || fj.merges[0]["MergeMessageField"] != "factoryd task t1 (issue #4): approved by sebastian, merged by factory-merge\n\n"+
-		"Factory-Task: t1\nIssue-Author: alice\nApproved-by: sebastian\n" {
+		"Factory-Role: merge\nFactory-Task: t1\nRequested-by: alice\nApproved-by: sebastian\n" {
 		t.Fatalf("merge = %v", fj.merges[0])
 	}
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" {

@@ -950,7 +950,8 @@ func commitMessage(e workerEnv) string {
 	if len(subject) > 72 {
 		subject = subject[:72]
 	}
-	return fmt.Sprintf("factory task %s: %s\n\n%s", e.taskID, sanitize.Outbound(subject, nil), factoryd.Attribution(e.taskID, e.sessionID, e.author, ""))
+	return factoryd.Attribution{Role: "agent", Task: e.taskID, Session: e.sessionID, Human: e.author}.Message(
+		fmt.Sprintf("factory task %s: %s", e.taskID, sanitize.Outbound(subject, nil)))
 }
 
 type diffStat struct{ Files, Insertions, Deletions int }

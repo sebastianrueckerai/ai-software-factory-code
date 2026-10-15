@@ -139,7 +139,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	change := body["files"].([]any)[0].(map[string]any)
 	content, _ := base64.StdEncoding.DecodeString(change["content"].(string))
 	branch, _ := body["new_branch"].(string)
-	if body["branch"] != "main" || !strings.HasPrefix(branch, "autonomy-demo-app-") || body["message"] != "Project demo-app: autonomy full auto (console, sebastian)" ||
+	if body["branch"] != "main" || !strings.HasPrefix(branch, "autonomy-demo-app-") || body["message"] != "Project demo-app: autonomy full auto\n\nFactory-Role: console\nRequested-by: sebastian\n" ||
 		change["operation"] != "update" || change["path"] != "factory/projects/demo-app.yaml" || change["sha"] != "blob1" || string(content) != file {
 		t.Fatalf("the commit = %+v (%q)", body, content)
 	}

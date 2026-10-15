@@ -731,7 +731,8 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		for _, req := range pending {
 			messages = append(messages, req.Summary)
 		}
-		if commit, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, from, newBranch, strings.Join(messages, "\n\n"), changes); err != nil {
+		if commit, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, from, newBranch,
+			Attribution{Role: "roll", Task: t.ID, Human: t.Author}, strings.Join(messages, "\n\n"), changes); err != nil {
 			return "", err
 		}
 	case !exists:

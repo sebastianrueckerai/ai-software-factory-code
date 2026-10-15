@@ -107,7 +107,7 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 	branch := fmt.Sprintf("autonomy-%s-%d", name, time.Now().Unix())
 	title := fmt.Sprintf("Project %s: autonomy %s", name, state)
 	if err := c.as(ctx, a.s, http.MethodPost, infra+"/contents", map[string]any{
-		"branch": "main", "new_branch": branch, "message": fmt.Sprintf("%s (console, %s)", title, a.s.user),
+		"branch": "main", "new_branch": branch, "message": a.attribution().Message(title),
 		"files": []map[string]string{{"operation": "update", "path": path, "content": base64.StdEncoding.EncodeToString(out), "sha": file.SHA}}},
 		http.StatusCreated, nil); err != nil {
 		return &forgejoRefusal{"commit the project file", err}
@@ -427,7 +427,6 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path string,
 			return "", refuse(http.StatusUnprocessableEntity, "The roadmap edit breaks the file's structure: "+strings.Join(f, "; ")+".")
 		}
 	}
-	message := fmt.Sprintf("docs: %s (chat, %s)", path, a.s.user)
 	change := map[string]string{"operation": "create", "path": path, "content": base64.StdEncoding.EncodeToString([]byte(next))}
 	if present {
 		change["operation"], change["sha"] = "update", blob
@@ -438,7 +437,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, path string,
 		} `json:"commit"`
 	}
 	if err := c.api(ctx, c.cfg.DocsToken, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
-		"branch": "master", "message": message, "files": []map[string]string{change}},
+		"branch": "master", "message": a.attribution().Message("docs: " + path), "files": []map[string]string{change}},
 		http.StatusCreated, &committed); err != nil {
 		return "", &forgejoRefusal{"commit the document", err}
 	}

@@ -46,7 +46,7 @@ func TestSeedRendersTemplate(t *testing.T) {
 	if !reflect.DeepEqual(c.files, want) {
 		t.Errorf("seeded files = %q\nwant %q", c.files, want)
 	}
-	if c.branch != "main" || c.message != "Seed from template ts-go (registration)" || c.by != "token projects-tok" {
+	if c.branch != "main" || c.message != "Seed from template ts-go (registration)\n\nFactory-Role: registration\n" || c.by != "token projects-tok" {
 		t.Errorf("seed commit on %q, %q, by %q", c.branch, c.message, c.by)
 	}
 	if ops := slices.Compact(slices.Sorted(maps.Values(c.ops))); !slices.Equal(ops, []string{"create"}) {

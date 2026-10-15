@@ -268,7 +268,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	branch := "project-" + p.Name
 	if err := c.asUser(r, http.MethodPost, infra+"/contents", map[string]any{
 		"branch": "main", "new_branch": branch,
-		"message": fmt.Sprintf("Project %s: add its file (console, %s)", p.Name, user),
+		"message": button(r).attribution().Message("Project " + p.Name + ": add its file"),
 		"files": []map[string]string{{"operation": "create", "path": c.cfg.ConfigDir + "/" + policy.ProjectFile(p.Name),
 			"content": base64.StdEncoding.EncodeToString(file)}},
 	}, http.StatusCreated, nil); err != nil {

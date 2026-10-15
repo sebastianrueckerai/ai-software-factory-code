@@ -636,7 +636,7 @@ func TestRollCommitWritesTheBranch(t *testing.T) {
 		t.Fatalf("first commit %q %v", head, err)
 	}
 	after := k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx))
-	wantFirst := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one",
+	wantFirst := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
 			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/factoryd.yaml"]))},
 			map[string]any{"operation": "update", "path": "k8s/deployment.yaml", "sha": "blob-d", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/deployment.yaml"]))},
@@ -662,7 +662,7 @@ func TestRollCommitWritesTheBranch(t *testing.T) {
 		t.Fatalf("fold commit %q %v", head, err)
 	}
 	folded := k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx))
-	wantFold := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: worker\n\nbody two",
+	wantFold := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f2",
 			"content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))}}}
 	if len(f.commits) != 2 || fmt.Sprint(f.commits[1]) != fmt.Sprint(wantFold) || f.synced != 1 {
@@ -1007,7 +1007,7 @@ func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
 	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
 		t.Fatalf("head %q err %v", head, err)
 	}
-	want := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: worker\n\nroll c3c3c3c: runner",
+	want := map[string]any{"branch": "factory/t-roll", "message": "roll c2c2c2c: worker\n\nroll c3c3c3c: runner\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f1",
 			"content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))}}}
 	if len(f.commits) != 1 || fmt.Sprint(f.commits[0]) != fmt.Sprint(want) {

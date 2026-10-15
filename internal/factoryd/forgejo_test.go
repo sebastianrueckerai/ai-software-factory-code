@@ -998,20 +998,20 @@ func TestForgejoMergePullRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "pw"}
-	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); err != nil {
+	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", Attribution{Role: "merge", Task: "t1"}, "msg"); err != nil {
 		t.Fatal(err)
 	}
-	if body["Do"] != "merge" || body["head_commit_id"] != "c1" || body["MergeMessageField"] != "msg" {
+	if body["Do"] != "merge" || body["head_commit_id"] != "c1" || body["MergeMessageField"] != "msg\n\nFactory-Role: merge\nFactory-Task: t1\n" {
 		t.Fatalf("merge body = %v", body)
 	}
 	for _, s := range []int{http.StatusMethodNotAllowed, http.StatusConflict} {
 		status = s
-		if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); !errors.Is(err, ErrRefused) {
+		if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", Attribution{Role: "merge", Task: "t1"}, "msg"); !errors.Is(err, ErrRefused) {
 			t.Fatalf("merge answered %d = %v, want a refusal", s, err)
 		}
 	}
 	status = http.StatusBadGateway
-	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", "msg"); err == nil || errors.Is(err, ErrRefused) {
+	if err := f.MergePullRequest(context.Background(), "merge-tok", "sf", "repo", 7, "c1", Attribution{Role: "merge", Task: "t1"}, "msg"); err == nil || errors.Is(err, ErrRefused) {
 		t.Fatalf("merge answered 502 = %v, want a transient error", err)
 	}
 }

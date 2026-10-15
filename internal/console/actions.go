@@ -40,6 +40,16 @@ type actor struct {
 	thread int64
 }
 
+// attribution is who a's commit is for: the chat or the console, the
+// chat task behind it and the member.
+func (a actor) attribution() factoryd.Attribution {
+	role := "console"
+	if a.via == factoryd.ViaChat {
+		role = "chat"
+	}
+	return factoryd.Attribution{Role: role, Task: a.chatTask, Human: a.s.user}
+}
+
 // button is the actor of the request's button.
 func button(r *http.Request) actor { return actor{s: current(r), via: factoryd.ViaButton} }
 

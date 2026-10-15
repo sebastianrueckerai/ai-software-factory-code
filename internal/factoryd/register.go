@@ -583,7 +583,7 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 		return "", err
 	}
 	if !has {
-		sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", "Seed from template "+p.Template+" (registration)", files)
+		sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", Attribution{Role: "registration"}, "Seed from template "+p.Template+" (registration)", files)
 		if err != nil {
 			return "", err
 		}
@@ -616,7 +616,7 @@ func (run *reconcileRun) seedFromTemplate(ctx context.Context) (Change, error) {
 	if len(files) == 0 {
 		return Unchanged, nil
 	}
-	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", message, files)
+	sha, err := f.CreateFiles(ctx, f.ProjectsToken, p.Repo(), "main", Attribution{Role: "registration"}, message, files)
 	if err != nil {
 		return "", err
 	}

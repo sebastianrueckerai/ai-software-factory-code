@@ -98,7 +98,7 @@ func TestContentsAPIOnEmptyRepository(t *testing.T) {
 		t.Fatalf("main before the seed: %v, %v", ok, err)
 	}
 	files := map[string][]byte{".forgejo/workflows/pr.yml": []byte("name: pr\n"), "deploy/base/kustomization.yaml": []byte("resources: []\n")}
-	sha, err := f.CreateFiles(ctx, token, repo, "main", "Seed from template ts-go (registration)", files)
+	sha, err := f.CreateFiles(ctx, token, repo, "main", Attribution{Role: "registration"}, "Seed from template ts-go (registration)", files)
 	if err != nil {
 		t.Fatalf("CreateFiles on an empty repository: %v", err)
 	}

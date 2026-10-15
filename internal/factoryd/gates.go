@@ -258,19 +258,6 @@ const MergeUser = "factory-merge"
 // auto decided (ruling 149): no human approved it.
 const AutoApprover = "merge rule auto"
 
-// Attribution is the git trailer block of a commit made for a task
-// (roadmap 41): the task and the session it was made in, the issue author
-// behind the task and a merge's approver, a trailer for each one given.
-func Attribution(task, session, author, approver string) string {
-	var b strings.Builder
-	for _, t := range [][2]string{{"Factory-Task", task}, {"Factory-Session", session}, {"Issue-Author", author}, {"Approved-by", approver}} {
-		if t[1] != "" {
-			b.WriteString(t[0] + ": " + t[1] + "\n")
-		}
-	}
-	return b.String()
-}
-
 // maxListed bounds the paths one gate comment lists.
 const maxListed = 50
 
@@ -1197,8 +1184,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if approver == AutoApprover {
 		msg = fmt.Sprintf("factoryd task %s (issue #%d): merged by %s on the project's merge rule auto", t.ID, t.IssueNumber, MergeUser)
 	}
-	msg += "\n\n" + Attribution(t.ID, "", t.Author, approver)
-	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, msg)
+	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
 	if errors.Is(err, ErrRefused) {
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 		if serr == nil && st.Merged {

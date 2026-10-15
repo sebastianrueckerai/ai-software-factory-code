@@ -461,7 +461,7 @@ func TestNewProjectOpensPullRequestAsHuman(t *testing.T) {
 	contents, pulls := infra.contents, infra.pulls
 	infra.mu.Unlock()
 	wantContents := map[string]any{"branch": "main", "new_branch": "project-linkshort",
-		"message": "Project linkshort: add its file (console, sebastian)",
+		"message": "Project linkshort: add its file\n\nFactory-Role: console\nRequested-by: sebastian\n",
 		"files": []any{map[string]any{"operation": "create", "path": "factory/projects/linkshort.yaml",
 			"content": base64.StdEncoding.EncodeToString([]byte(linkshortFile(today)))}}}
 	if len(contents) != 1 || contents[0].auth != "Bearer access-1" || !reflect.DeepEqual(contents[0].body, wantContents) {

@@ -313,6 +313,9 @@ func importedProject() Project {
 
 const importToken = "ghp_imp0rtT0ken"
 
+// registered is the trailer block of a registration's commits.
+const registered = "\n\nFactory-Role: registration\n"
+
 // fakeGitHub answers GitHub's commits of a repository with status and
 // body, recording each call as its path and query, and its Authorization.
 type fakeGitHub struct {
@@ -381,7 +384,7 @@ func TestRegisterImportsFromGitHub(t *testing.T) {
 		t.Fatalf("contents calls %+v, want one", rig.fj.seeds)
 	}
 	c := rig.fj.seeds[0]
-	if !reflect.DeepEqual(c.files, factoryWorkflows) || c.branch != "main" || c.message != "Factory workflows" || c.by != "token projects-tok" {
+	if !reflect.DeepEqual(c.files, factoryWorkflows) || c.branch != "main" || c.message != "Factory workflows"+registered || c.by != "token projects-tok" {
 		t.Fatalf("commit %q on %q by %q with %q\nwant %q", c.message, c.branch, c.by, c.files, factoryWorkflows)
 	}
 	seed := slices.Index(rig.fj.writes, "POST /api/v1/repos/demo-app/demo-app/contents by token projects-tok")
@@ -507,8 +510,8 @@ func TestImportedMain(t *testing.T) {
 		source                      []string
 		want                        map[string]string
 	}{
-		{"master", "master", "Factory workflows", "1mp0rt", []string{"go.mod", ".forgejo/CODEOWNERS", "deploy/base/kustomization.yaml"}, factoryWorkflows},
-		{"empty", "main", "Seed from template ts-go (registration)", "5eed", nil, all},
+		{"master", "master", "Factory workflows" + registered, "1mp0rt", []string{"go.mod", ".forgejo/CODEOWNERS", "deploy/base/kustomization.yaml"}, factoryWorkflows},
+		{"empty", "main", "Seed from template ts-go (registration)" + registered, "5eed", nil, all},
 	} {
 		rig, _ := importRig(t)
 		rig.fj.source, rig.fj.sourceBranch = c.source, c.branch
@@ -548,7 +551,7 @@ func TestRegisterImportExists(t *testing.T) {
 	if row := mirrors.rows["demo-app import"]; row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
 		t.Fatalf("import row: token %q, state %q", row.Token, row.State)
 	}
-	if len(rig.fj.seeds) != 1 || !reflect.DeepEqual(rig.fj.seeds[0].files, factoryWorkflows) || rig.fj.seeds[0].message != "Factory workflows" || rig.fj.seeds[0].branch != "main" {
+	if len(rig.fj.seeds) != 1 || !reflect.DeepEqual(rig.fj.seeds[0].files, factoryWorkflows) || rig.fj.seeds[0].message != "Factory workflows"+registered || rig.fj.seeds[0].branch != "main" {
 		t.Fatalf("commits %+v, want one \"Factory workflows\" with %q", rig.fj.seeds, factoryWorkflows)
 	}
 
@@ -583,7 +586,7 @@ func TestRegisterMirrorsWithoutImport(t *testing.T) {
 	}
 	want := map[string]string{"README.md": "# template\n", "deploy/staging/kustomization.yaml": "namespace: demo-staging\n", ".forgejo/CODEOWNERS": "* @demo-app\n"}
 	maps.Copy(want, factoryWorkflows)
-	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)" || rig.fj.seeds[0].branch != "main" || !reflect.DeepEqual(rig.fj.seeds[0].files, want) {
+	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Seed from template ts-go (registration)"+registered || rig.fj.seeds[0].branch != "main" || !reflect.DeepEqual(rig.fj.seeds[0].files, want) {
 		t.Fatalf("commits %+v, want one seed with %q", rig.fj.seeds, want)
 	}
 }
@@ -645,13 +648,13 @@ func TestRegisterImportAfterRestart(t *testing.T) {
 		calls    int
 		deletion bool
 	}{
-		{21 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows", factoryWorkflows, 0, false},
-		{19 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows", factoryWorkflows, 0, false},
-		{2 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows", factoryWorkflows, 0, false},
-		{21 * time.Minute, true, "copying since T", http.StatusConflict, "Seed from template ts-go (registration)", all, 1, false},
-		{21 * time.Minute, true, "pending", http.StatusOK, "Factory workflows", factoryWorkflows, 1, true},
-		{21 * time.Minute, true, "copying since T", http.StatusOK, "Factory workflows", factoryWorkflows, 1, true},
-		{21 * time.Minute, true, "failed: cut", http.StatusConflict, "Factory workflows", factoryWorkflows, 0, true},
+		{21 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows" + registered, factoryWorkflows, 0, false},
+		{19 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows" + registered, factoryWorkflows, 0, false},
+		{2 * time.Minute, false, "copying since T", http.StatusOK, "Factory workflows" + registered, factoryWorkflows, 0, false},
+		{21 * time.Minute, true, "copying since T", http.StatusConflict, "Seed from template ts-go (registration)" + registered, all, 1, false},
+		{21 * time.Minute, true, "pending", http.StatusOK, "Factory workflows" + registered, factoryWorkflows, 1, true},
+		{21 * time.Minute, true, "copying since T", http.StatusOK, "Factory workflows" + registered, factoryWorkflows, 1, true},
+		{21 * time.Minute, true, "failed: cut", http.StatusConflict, "Factory workflows" + registered, factoryWorkflows, 0, true},
 	} {
 		rig, mirrors, _ := started(c.ago, c.empty, c.state, c.github)
 		if _, err := rig.reg.Register(context.Background(), "demo-app", false); err != nil {
@@ -734,7 +737,7 @@ func TestImportCopiesAside(t *testing.T) {
 	if row := mirrors.rows["demo-app import"]; len(rig.fj.migrated) != 1 || row.Token != "" || !strings.HasPrefix(row.State, "imported ") {
 		t.Fatalf("after the copy: migrates %d, import row token %q, state %q", len(rig.fj.migrated), row.Token, row.State)
 	}
-	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Factory workflows" || rig.reg.ReconcileError("demo-app") != "" {
+	if len(rig.fj.seeds) != 1 || rig.fj.seeds[0].message != "Factory workflows"+registered || rig.reg.ReconcileError("demo-app") != "" {
 		t.Fatalf("after the copy: commits %+v, reconcile error %q\n%s", rig.fj.seeds, rig.reg.ReconcileError("demo-app"), rig.logs)
 	}
 	for _, line := range []string{"project other: repository other/other: " + string(Waiting),
@@ -782,8 +785,8 @@ func TestImportedManifests(t *testing.T) {
 		message string
 		want    map[string]string
 	}{
-		{[]string{"go.mod", ".forgejo/CODEOWNERS"}, "Factory workflows and manifests", withManifests},
-		{[]string{"go.mod", ".forgejo/CODEOWNERS", "deploy/k8s.yaml"}, "Factory workflows", factoryWorkflows},
+		{[]string{"go.mod", ".forgejo/CODEOWNERS"}, "Factory workflows and manifests" + registered, withManifests},
+		{[]string{"go.mod", ".forgejo/CODEOWNERS", "deploy/k8s.yaml"}, "Factory workflows" + registered, factoryWorkflows},
 	} {
 		rig, _ := importRig(t)
 		files := rig.store.m["demo-app"].TemplateFiles

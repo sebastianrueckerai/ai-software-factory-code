@@ -125,7 +125,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 	if err != nil {
 		return "", err
 	}
-	if _, err := f.CommitFiles(ctx, fork.Owner, fork.Name, "main", TemplateUpdateBranch, "Template update from "+p.Template+" (registration)", changes); err != nil {
+	if _, err := f.CommitFiles(ctx, fork.Owner, fork.Name, "main", TemplateUpdateBranch, Attribution{Role: "registration"}, "Template update from "+p.Template+" (registration)", changes); err != nil {
 		return "", err
 	}
 	ref, err := f.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+TemplateUpdateBranch, "main", TemplateUpdateTitle, body)
@@ -274,7 +274,7 @@ func (r *Registrar) keepTemplateUpdate(ctx context.Context, f *Forgejo, p Projec
 			changes, err = branchChanges(ctx, f, repo, pr.Number, want)
 		}
 		if err == nil && len(changes) > 0 {
-			_, err = f.CommitFiles(ctx, fork.Owner, fork.Name, TemplateUpdateBranch, "", "Template update from "+p.Template+" (registration)", changes)
+			_, err = f.CommitFiles(ctx, fork.Owner, fork.Name, TemplateUpdateBranch, "", Attribution{Role: "registration"}, "Template update from "+p.Template+" (registration)", changes)
 		}
 		if err != nil {
 			return "", err

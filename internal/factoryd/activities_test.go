@@ -1649,7 +1649,7 @@ func TestRerunChecksPushesOneEmptyCommit(t *testing.T) {
 		}
 	}
 	if len(fj.contents) != 1 || fj.contents[0]["branch"] != "factory/t1" || fmt.Sprint(fj.contents[0]["files"]) != "[]" ||
-		fj.contents[0]["message"] != "factoryd: run the checks of c1 again" {
+		fj.contents[0]["message"] != "factoryd: run the checks of c1 again\n\nFactory-Role: checks\nFactory-Task: t1\n" {
 		t.Fatalf("commits = %v, want one empty commit on factory/t1", fj.contents)
 	}
 }

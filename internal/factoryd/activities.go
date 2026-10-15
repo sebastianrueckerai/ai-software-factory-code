@@ -1711,7 +1711,8 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 		return "", fmt.Errorf("branch head: %w", err)
 	}
 	if head == sha {
-		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, taskBranch(t), "", "factoryd: run the checks of "+sha+" again", nil); err != nil {
+		if head, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, taskBranch(t), "",
+			Attribution{Role: "checks", Task: t.ID, Human: t.Author}, "factoryd: run the checks of "+sha+" again", nil); err != nil {
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}

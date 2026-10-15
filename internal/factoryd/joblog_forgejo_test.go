@@ -27,7 +27,7 @@ func runActionsJob(t *testing.T, bot *Forgejo, token string, repo Repo, marker s
 	t.Helper()
 	ctx := context.Background()
 	workflow := fmt.Sprintf("on: [push]\njobs:\n  log:\n    runs-on: ubuntu-latest\n    steps:\n      - run: seq 1 100000 && echo %q\n", marker)
-	sha, err := bot.CreateFiles(ctx, token, repo, "main", "Add workflow", map[string][]byte{".forgejo/workflows/log.yml": []byte(workflow)})
+	sha, err := bot.CreateFiles(ctx, token, repo, "main", Attribution{Role: "registration"}, "Add workflow", map[string][]byte{".forgejo/workflows/log.yml": []byte(workflow)})
 	if err != nil {
 		t.Fatalf("push the workflow: %v", err)
 	}

@@ -302,6 +302,6 @@ func (c *SchemaCopier) cut(ctx context.Context, fork Repo, branch, title string,
 	if err != nil {
 		return err
 	}
-	_, err = c.Forgejo.CommitFiles(ctx, fork.Owner, fork.Name, "main", branch, title, changes)
+	_, err = c.Forgejo.CommitFiles(ctx, fork.Owner, fork.Name, "main", branch, Attribution{Role: "schema-copy"}, title, changes)
 	return err
 }

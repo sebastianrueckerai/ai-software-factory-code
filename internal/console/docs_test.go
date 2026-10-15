@@ -81,7 +81,7 @@ const docsPlan = "# The cache plan\n\nThe store: Postgres.\nThe window: one week
 func TestDocsReadAndEdit(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
-	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat}
+	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat, chatTask: "t-chat"}
 	hash := factoryd.ContentHash(docsPlan)
 	got, err := r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "")
 	equal(t, "the read", []any{got, err}, []any{"docs/plans/cache.md on sf/docs@master: 61 bytes, base_sha256 " + hash + ".\n\n" + docsPlan, error(nil)})
@@ -92,7 +92,7 @@ func TestDocsReadAndEdit(t *testing.T) {
 	got, err = r.c.doWriteDoc(ctx, a, "sf/docs", "docs/plans/cache.md", docEdit{Old: "one week", New: "two weeks", Base: hash})
 	equal(t, "the edit", []any{got, err}, []any{"Committed c0ffee0 to sf/docs@master: docs/plans/cache.md, now base_sha256 " + factoryd.ContentHash(edited) + ".", error(nil)})
 	equal(t, "the file", f.files["docs/plans/cache.md"], edited)
-	equal(t, "the commit", []any{f.commits[0]["branch"], f.commits[0]["message"]}, []any{"master", "docs: docs/plans/cache.md (chat, sebastian)"})
+	equal(t, "the commit", []any{f.commits[0]["branch"], f.commits[0]["message"]}, []any{"master", "docs: docs/plans/cache.md\n\nFactory-Role: chat\nFactory-Task: t-chat\nRequested-by: sebastian\n"})
 
 	got, err = r.c.doWriteDoc(ctx, a, "sf/docs", "docs/plans/new.md", docEdit{Content: "# New\n"})
 	equal(t, "the new file", []any{got, err, f.files["docs/plans/new.md"]},

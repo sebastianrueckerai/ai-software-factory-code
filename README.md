@@ -89,10 +89,11 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   the fixture `TestRecordOpencodeFixture` records from the pinned binary
   with `OPENCODE_RECORD_BIN` set, on every version bump), kills
   and reaps every other process when the agent is done, then fetches
-  the agent's commits into a clean repository, commits there (one commit
-  whose trailers `Factory-Task`, `Factory-Session` and `Issue-Author`
-  the worker writes; a merge commit's carry the task, the issue author
-  and `Approved-by`, roadmap 41), and asks
+  the agent's commits into a clean repository, commits there (one commit,
+  its trailers written by the worker: every commit the factory or the
+  console writes carries `Factory-Role` and, as they apply,
+  `Factory-Task`, `Factory-Session`, `Requested-by`, the human behind it,
+  and a merge's `Approved-by`; `factoryd.Attribution`, roadmap 41), and asks
   for the push token on stdout (`{"type":"push"}`). factoryd mints the
   write token on the fork then and posts it to the worker's
   `POST /push {token}` on port 8091 (same bearer; 409 until the worker
