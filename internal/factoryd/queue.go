@@ -341,19 +341,18 @@ func (t *taskRun) queueTurn(head *string, g *GateResults, review *Review) (findi
 	return t.runStage(policy.StageChecks, head, g, review)
 }
 
-// maxRestages bounds the turns a queue head red at its merge takes per
-// queue entry, each with at most one re-run of its checks
-// (versionRedHeadRestage).
+// maxRestages bounds the re-runs of its red checks a queue head red at
+// its merge takes per queue entry, whatever main did (versionQueueTurns);
+// before, the turns, each with at most one re-run (versionRedHeadRestage).
 const maxRestages = 3
 
 // maxTurns bounds every turn a queue head red at its merge takes per queue
-// entry, whether or not its sync moved the head (versionQueueTurns). Past
-// maxRestages a red turn goes on only when its sync moved the head, so the
-// three turns beyond them are room for main moving three times. Main moves
-// under a held turn only by what takes no turn, a roll or a push past the
-// queue, about once an hour on a busy night, while a turn lasts one checks
-// run of 3 to 12 minutes: three moves in a row past the re-runs is main
-// moving on, not chance, and the head has spent six checks runs.
+// entry, whether or not its sync moved the head (versionQueueTurns): its
+// maxRestages re-runs leave three turns of room for main moving. Main
+// moves under a held turn only by what takes no turn, a roll or a push
+// past the queue, about once an hour on a busy night, while a turn lasts
+// one checks run of 3 to 12 minutes: three moves beside the re-runs is
+// main moving on, not chance, and the head has spent six checks runs.
 const maxTurns = maxRestages + 3
 
 // leftQueue opens the escalation of a queue head still red after its
@@ -378,14 +377,16 @@ func (t *taskRun) restageable() bool {
 // are waited on and the red ones run again on an empty commit
 // (RerunChecks); red checks that pass there, on the same tree, are flaky
 // (checks_flaky), never findings. A green head goes to the approval again.
-// After maxRestages turns a head still red, or green there though its
-// merge read red again, leaves the queue, so the cards behind it merge,
-// and waits outside it for a human, the escalation naming its red checks
-// or the merge's refusal: an answer puts it back at the queue's end, a
-// new entry with its turns afresh, and a change request sends it to the
-// agent, whose fix enters the queue anew. A head whose sync kept moving it
-// leaves the same way after maxTurns turns (versionQueueTurns). The
-// re-staged head's own checks decide its merge (no checkedHead).
+// A head still red after its maxRestages re-runs, or after maxTurns turns
+// whatever they did (versionQueueTurns), leaves the queue, so the cards
+// behind it merge, and waits outside it for a human, the escalation naming
+// its red checks or the merge's refusal: an answer puts it back at the
+// queue's end, a new entry with its turns afresh, and a change request
+// sends it to the agent, whose fix enters the queue anew. A run from before
+// versionQueueTurns leaves after maxRestages turns instead, also a head
+// green there though its merge read red again, and only a turn whose sync
+// moved nothing does. The re-staged head's own checks decide its merge
+// (no checkedHead).
 func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	refusal := ""     // the red merge that began this turn, "" after red checks
 	var last []string // what ended the last turn red: its checks, or its merge's refusal
@@ -419,7 +420,11 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 				return v
 			}
 		}
-		if !moved && n > maxRestages && (len(red) > 0 || refusal != "") {
+		spent := reruns >= maxRestages
+		if t.queueTurns < versionQueueTurns {
+			spent = n > maxRestages
+		}
+		if !moved && spent && (len(red) > 0 || refusal != "") {
 			if len(red) == 0 {
 				red = []string{refusal}
 			}
