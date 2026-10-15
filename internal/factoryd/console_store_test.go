@@ -51,7 +51,7 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "low", Kind: "comment", Author: "sebastian", Body: "not an escalation"}); err != nil {
 		t.Fatal(err)
 	}
-	tasks, err := s.BoardTasks(ctx)
+	tasks, err := s.BoardTasks(ctx, "sf/r")
 	if err != nil {
 		t.Fatalf("BoardTasks: %v", err)
 	}
@@ -98,6 +98,48 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 }
 
+// BoardTasks reads only the repository it is asked for: none of another
+// repository's open cards, however urgent, all of its own. Requires a
+// disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestPGStoreBoardTasksOfRepository(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, tk := range []Task{
+		{ID: "mine-low", Priority: 0, Status: "queued"},
+		{ID: "mine-high", Priority: 3, Status: "running"},
+		{ID: "mine-done", Priority: 5, Status: "done"},
+		{ID: "mine-chat", Priority: 5, Status: "running", Kind: KindChat},
+		{ID: "theirs", Priority: 5, Status: "queued", Repository: "sf/other"},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, cmp.Or(tk.Repository, "sf/r"), cmp.Or(tk.Kind, "agent")
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	ids := func(tasks []BoardTask) []string {
+		var out []string
+		for _, tk := range tasks {
+			out = append(out, tk.ID)
+		}
+		return out
+	}
+	// the other repository's open card never shows, this one's own open
+	// cards all do, most urgent first; its finished and chat tasks do not
+	if got, err := s.BoardTasks(ctx, "sf/r"); err != nil || !slices.Equal(ids(got), []string{"mine-high", "mine-low"}) {
+		t.Fatalf("BoardTasks(sf/r) = %v, %v; want mine-high, mine-low", ids(got), err)
+	}
+	if got, err := s.BoardTasks(ctx, "sf/other"); err != nil || !slices.Equal(ids(got), []string{"theirs"}) {
+		t.Fatalf("BoardTasks(sf/other) = %v, %v; want theirs", ids(got), err)
+	}
+}
+
 // The Done column orders finished cards by date, not by rank (roadmap
 // 234): the newest first however low its priority, an unstampable card
 // at its filing; the open cards stay most urgent first.
@@ -131,7 +173,7 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 		INSERT INTO task_deps (task_id, depends_on) VALUES ('waiter', 'unstamped')`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
-	open, err := s.BoardTasks(ctx)
+	open, err := s.BoardTasks(ctx, "sf/r")
 	if err != nil {
 		t.Fatalf("BoardTasks: %v", err)
 	}
@@ -269,7 +311,7 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("Task = %v, %v", ok, err)
 		}
-		board, err := s.BoardTasks(ctx)
+		board, err := s.BoardTasks(ctx, "sf/r")
 		if err != nil || len(board) != 1 {
 			t.Fatalf("BoardTasks = %+v, %v", board, err)
 		}
@@ -392,7 +434,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'waiting-human' WHERE id = 'api'`); err != nil {
 		t.Fatal(err)
 	}
-	board, err := s.BoardTasks(ctx)
+	board, err := s.BoardTasks(ctx, "sf/r")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +474,7 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	if a := alerts[0]; len(alerts) != 1 || a.Verdict != VerdictReal || a.ResolvedBy != "sebastian" || a.ResolvedAt == nil {
 		t.Fatalf("escalation after the verdict = %+v", alerts)
 	}
-	board, _ = s.BoardTasks(ctx)
+	board, _ = s.BoardTasks(ctx, "sf/r")
 	for _, b := range board {
 		if b.ID == "api" && b.EscalationAlert != 0 {
 			t.Fatalf("board still offers the judged alert %d", b.EscalationAlert)

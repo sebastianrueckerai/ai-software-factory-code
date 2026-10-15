@@ -242,12 +242,14 @@ func (s *acceptTasks) TaskByIssue(_ context.Context, repository string, issue in
 	return factoryd.Task{}, false, nil
 }
 
-// BoardTasks lists the open cards, as the store does, in its order: a
-// chat task is none.
-func (s *acceptTasks) BoardTasks(context.Context) ([]factoryd.BoardTask, error) {
+// BoardTasks lists repository's open cards, as the store does, in its
+// order: a chat task is none.
+func (s *acceptTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool { return t.Kind == factoryd.KindChat || factoryd.Final(t.Status) })
+	out := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+	})
 	factoryd.SortBoardTasks(out)
 	return out, nil
 }

@@ -186,13 +186,15 @@ func TestQueueOneAtATime(t *testing.T) {
 		if err := s.SetGate(ctx, "a2", GateMergeQueue, time.Now()); err != nil {
 			t.Fatal(err)
 		}
-		board, err := s.BoardTasks(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
 		ahead := map[string]int{}
-		for _, b := range board {
-			ahead[b.ID] = b.QueueAhead
+		for _, repo := range []string{"linkshort/linkshort", "sf/other"} {
+			board, err := s.BoardTasks(ctx, repo)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, b := range board {
+				ahead[b.ID] = b.QueueAhead
+			}
 		}
 		if want := map[string]int{"a1": 0, "a2": 1, "b1": 0}; fmt.Sprint(ahead) != fmt.Sprint(want) {
 			t.Fatalf("board's queue ahead = %v, want %v", ahead, want)
