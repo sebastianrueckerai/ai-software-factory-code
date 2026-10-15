@@ -1815,7 +1815,10 @@ the password of secret `signoz-webhook`, env `SIGNOZ_WEBHOOK_PASSWORD`;
 job sets on every project rule), else its `k8s.namespace.name` or
 `k8s_namespace_name` label (a rule's query grouped by it), names the
 project through the namespace's `factory/project` label (read once per
-namespace); an active project that
+namespace). An app cannot forge these: SigNoz's collector drops the
+namespace an app's own OTLP names and sets the one of the pod it comes
+from (the infra repository's `k8s/platform/signoz/helmrelease.yaml`). An
+active project that
 lists the namespace, or the alert is logged and dropped. On a project on
 `agents: none` the issue is the human lane's (labels `bug`, `human`), and no
 task runs. The factory's own namespaces route the same way (ruling 180):
@@ -1841,8 +1844,10 @@ SigNoz's list of firing alerts (`GET /api/v1/alerts` on SigNoz v0.143.0,
 logged in as a viewer-role user, secret `factory/signoz-factoryd`) and
 resolves the same way each row that still fires while SigNoz no longer
 lists its fingerprint as active, so a lost resolve delivery heals within
-a minute (SigNoz's rules evaluate every minute); a list whose active
-alerts carry no fingerprint resolves nothing. An alert card's pre-check
+a minute (SigNoz's rules evaluate every minute); only the issue of a task
+still running hears of such a resolve, so stale rows of finished cards
+resolve quietly; a list whose active alerts carry no fingerprint
+resolves nothing. An alert card's pre-check
 before its first model call reads the card's alerts row: a resolve after
 its start closes the card. Each issue is an alerts row of kind `alert` with the
 fingerprint, judged

@@ -511,6 +511,38 @@ func TestSweepSigNozResolvesWhatSigNozNoLongerLists(t *testing.T) {
 	}
 }
 
+// The first sweep after a rollout finds the stale rows of cards long
+// finished: it resolves every one, and only the issue of a card still
+// running hears of it, so the rollout posts no burst of comments on done,
+// failed or closed issues.
+func TestSweepSigNozResolvesFinishedCardsQuietly(t *testing.T) {
+	r := newAlertRig(t)
+	ctx := context.Background()
+	finished := map[string]string{"fp-done": "done", "fp-failed": "failed", "fp-closed": "closed"}
+	for _, fp := range []string{"fp-done", "fp-failed", "fp-closed", "fp-running"} {
+		r.post(t, "signoz", "hook-pw", sigAlert("firing", fp, "demo-staging", firedAt, neverEnds))
+	}
+	for _, row := range r.store.alertRows() {
+		if status, ok := finished[row.Fingerprint]; ok {
+			task := r.store.tasks[row.TaskID]
+			task.Status = status
+			r.store.tasks[row.TaskID] = task
+		}
+	}
+	r.in.SigNoz = &fakeAlerts{}
+	if err := r.in.SweepSigNoz(ctx, at("2026-09-28T21:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"#4 factoryd: resolved at 2026-09-28T21:00:00Z"}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("comments %q, want only the running card's %q", r.fj.comments, want)
+	}
+	for _, row := range r.store.alertRows() {
+		if _, firing := firingSince(row); firing {
+			t.Errorf("row %s still fires", row.Fingerprint)
+		}
+	}
+}
+
 // Label and annotation values are the project's and its telemetry's text:
 // one line each, inside a fence longer than any backtick run they carry.
 func TestAlertIssueBodyFencesTheValues(t *testing.T) {

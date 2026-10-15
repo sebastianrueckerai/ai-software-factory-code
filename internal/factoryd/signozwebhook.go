@@ -62,6 +62,9 @@ type SigNozAlert struct {
 	EndsAt       time.Time         `json:"endsAt"`
 	GeneratorURL string            `json:"generatorURL"`
 	Fingerprint  string            `json:"fingerprint"`
+	// swept is SweepSigNoz's resolve, found rather than delivered: only
+	// the issue of a task still running hears of it
+	swept bool
 }
 
 // NamespaceLabeler reads a label of a namespace.
@@ -211,12 +214,13 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert) error {
 	repo := p.Repo()
 	if a.Status == "resolved" {
 		// the row is resolved even when its filing failed, so it no longer
-		// fires; its issue, if its project still owns one, hears of it
+		// fires; its issue, if its project still owns one, hears of it,
+		// unless a sweep found the resolve after the task ended
 		at := stamp(a.EndsAt)
 		if !seen || row.Detail["resolved_at"] == at {
 			return nil
 		}
-		if filed && ok {
+		if filed && ok && !(a.swept && Final(t.Status)) {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
 			}
@@ -333,7 +337,9 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 // SweepSigNoz resolves, through take as its lost resolve delivery would
 // have, each SigNoz alerts row that still fires while SigNoz no longer
 // lists its fingerprint as active, so a row stays true to SigNoz (Flux
-// alerts' rows are FluxPass's). A list whose active alerts carry no
+// alerts' rows are FluxPass's). The issue of a finished task hears
+// nothing, so the stale rows a first sweep finds resolve quietly and only
+// a running card's issue gets the comment. A list whose active alerts carry no
 // fingerprint cannot be matched and resolves nothing. The rows are read
 // before the list, so a row filed meanwhile waits for the next sweep.
 func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
@@ -365,7 +371,7 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		}
 		ns, _ := row.Detail["namespace"].(string)
 		a := SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
-			Labels: map[string]string{"alertname": row.Source, "namespace": ns}}
+			Labels: map[string]string{"alertname": row.Source, "namespace": ns}, swept: true}
 		if err := in.take(ctx, a); err != nil {
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
 		}
@@ -672,7 +678,9 @@ func alertVerdict(final, reason string) string {
 // namespaceLabels are the labels an alert's namespace arrives under, the
 // first set winning: the label the signoz-objects job sets on a project's
 // rule, then the OTel resource attribute and its Prometheus form a rule's
-// query groups by.
+// query groups by. No app forges these: SigNoz's collector drops what an
+// app's own telemetry names and sets the sending pod's namespace (the
+// infra repository's signoz HelmRelease).
 var namespaceLabels = []string{"namespace", "k8s.namespace.name", "k8s_namespace_name"}
 
 // namespaceOf is the namespace an alert's labels name (namespaceLabels).
