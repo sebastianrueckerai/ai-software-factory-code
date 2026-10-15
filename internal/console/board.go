@@ -787,6 +787,9 @@ type planCards struct {
 type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
+	// Finished: the wide view's column of a final state, its cards ended
+	// within finishedSince.
+	Finished bool
 	// Total is the column's count before the find narrowed it (C13); the
 	// head reads "n of m" when they differ.
 	Total int
@@ -1800,7 +1803,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		}
 		for _, col := range stateColumns {
 			byStatus[col.Status] = len(d.Columns)
-			d.Columns = append(d.Columns, column{Title: col.Title})
+			d.Columns = append(d.Columns, column{Title: col.Title, Finished: factoryd.Final(col.Status)})
 		}
 		byStatus["closing"] = byStatus["running"]
 	} else {

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
@@ -544,7 +545,8 @@ func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardD
 }
 
 // boardWords is board d's text for the agent, each list bounded at
-// boardListed.
+// boardListed: the open cards apart from the finished ones, so no count
+// of open cards takes in a card that ended.
 func boardWords(d boardData) string {
 	var b strings.Builder
 	listed := func(prefix string, lines []string) {
@@ -571,8 +573,11 @@ func boardWords(d boardData) string {
 		listed("\n  ", lines)
 		b.WriteString("\n")
 	}
+	b.WriteString("Open cards:\n")
 	for _, col := range d.Columns {
-		list(col.Title, col.Cards)
+		if !col.Finished {
+			list(col.Title, col.Cards)
+		}
 	}
 	list("Human lane", d.HumanTasks)
 	escalated := make([]card, 0, len(d.Escalations))
@@ -580,6 +585,14 @@ func boardWords(d boardData) string {
 		escalated = append(escalated, n.Card)
 	}
 	list("Escalated, waiting on an answer", escalated)
+	if i := slices.IndexFunc(d.Columns, func(col column) bool { return col.Finished }); i >= 0 {
+		fmt.Fprintf(&b, "Finished cards, ended in the last %d days and open no more:\n", finishedSince/(24*time.Hour))
+		for _, col := range d.Columns[i:] {
+			if col.Finished {
+				list(col.Title, col.Cards)
+			}
+		}
+	}
 	fmt.Fprintf(&b, "Approval requests waiting (%d):", len(d.Approvals))
 	requests := make([]string, len(d.Approvals))
 	for i, a := range d.Approvals {

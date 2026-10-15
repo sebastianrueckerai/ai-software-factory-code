@@ -662,7 +662,8 @@ func equal(t *testing.T, what string, got, want any) {
 	}
 }
 
-const boardText = `Backlog (1):
+const boardText = `Open cards:
+Backlog (1):
   #5 t-m "Fix the cache. It drops entries." backlog (waits in the backlog until a member moves it into a lane), €0.40 of €3.00
 Ready (0):
 Running (1):
@@ -671,12 +672,13 @@ Waiting on a human (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Waiting on the author (0):
 In review (0):
-Done (0):
-Failed (0):
-Closed (0):
 Human lane (0):
 Escalated, waiting on an answer (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
+Finished cards, ended in the last 7 days and open no more:
+Done (0):
+Failed (0):
+Closed (0):
 Approval requests waiting (2):
   resource request 3 of t-res
   merge request 4 of t-m (#5), pull request #9`
@@ -909,6 +911,39 @@ func TestChatOpeningContextRestatesNoRead(t *testing.T) {
 			}
 		}
 	}
+}
+
+// The board's text keeps the finished cards apart from the open ones: the
+// open columns, the human lane and the escalations under Open cards, the
+// final states' columns under their own head after them, so a count of
+// open cards takes in no card that ended.
+func TestBoardWordsKeepsTheFinishedApart(t *testing.T) {
+	task := func(n int64, status, title string) card {
+		return card{Task: factoryd.Task{ID: fmt.Sprintf("t-%d", n), IssueNumber: n, Status: status, Objective: title}}
+	}
+	d := boardData{Columns: []column{
+		{Title: "Ready", Cards: []card{task(1, "queued", "Fix the cache.")}},
+		{Title: "Running", Cards: []card{task(2, "running", "Speed up the board.")}},
+		{Title: "Done", Finished: true, Cards: []card{task(3, "done", "Add the feed.")}},
+		{Title: "Failed", Finished: true, Cards: []card{task(4, "failed", "Port the store."), task(5, "failed", "Drop the cache."), task(6, "failed", "Rename the page.")}},
+		{Title: "Closed", Finished: true},
+	}}
+	equal(t, "the board's text", boardWords(d), `Open cards:
+Ready (1):
+  #1 t-1 "Fix the cache." queued (waits for its session to start)
+Running (1):
+  #2 t-2 "Speed up the board." running (runs an agent session)
+Human lane (0):
+Escalated, waiting on an answer (0):
+Finished cards, ended in the last 7 days and open no more:
+Done (1):
+  #3 t-3 "Add the feed." done (is done)
+Failed (3):
+  #4 t-4 "Port the store." failed (has failed)
+  #5 t-5 "Drop the cache." failed (has failed)
+  #6 t-6 "Rename the page." failed (has failed)
+Closed (0):
+Approval requests waiting (0):`)
 }
 
 // Every list of the board's text is bounded as a column's cards are: 25
@@ -1213,7 +1248,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"Backlog (1):`) {
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"Open cards:\nBacklog (1):`) {
 		t.Errorf("board tool line prefix mismatch: %s", events[1])
 	}
 	equal(t, "stream after board", events[2:], []string{
