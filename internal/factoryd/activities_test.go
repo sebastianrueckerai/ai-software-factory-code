@@ -2499,6 +2499,10 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
 		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
+	if why, err := r.SessionFunded(ctx, "t-1", "coding-frontier"); err != nil || !BudgetRefusal(why) ||
+		!strings.Contains(why, "a session on coding-frontier needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	}
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
 		t.Fatalf("cheap at 0.50 free = (%q, %v), want funded", why, err)
 	}

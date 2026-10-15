@@ -506,7 +506,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 			}
 			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
 		}
-		frontier := r.cfg.Models.Stronger != "" && model == r.cfg.Models.Stronger
+		frontier := r.cfg.Models.Stronger != "" && aliasOf(model) == aliasOf(r.cfg.Models.Stronger)
 		if floor := v.Document.Budget.SessionFloor(frontier); floor > need {
 			key := "budget.session_floor_cheap_eur"
 			if frontier {
