@@ -44,10 +44,13 @@ func TestConfirmFor(t *testing.T) {
 }
 
 func TestConfirmForCustomBase(t *testing.T) {
-	// manual is the list as its files set it; assisted takes the starts
-	// and filings off a custom list and keeps the always-confirm set
-	if got := ConfirmFor(AutonomyManual, MergeHuman, []string{"close"}); !slices.Equal(got, []string{"close"}) {
-		t.Errorf("ConfirmFor(manual, [close]) = %v, want [close]", got)
+	// manual is the list as its files set it with the always-confirm set,
+	// so a custom list confirms a routine's write too; assisted takes the
+	// starts and filings off a custom list and keeps the always-confirm set
+	manual := []string{"close", "approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync",
+		"write_doc", "set_autonomy", "routine_write", "routine_delete"}
+	if got := ConfirmFor(AutonomyManual, MergeHuman, []string{"close"}); !slices.Equal(got, manual) {
+		t.Errorf("ConfirmFor(manual, [close]) = %v, want %v", got, manual)
 	}
 	got := ConfirmFor(AutonomyAssisted, MergeHuman, []string{"deny_merge", "new_card"})
 	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
@@ -76,8 +79,8 @@ func TestChatOfAutonomy(t *testing.T) {
 func TestChatOfManualKeepsConfirm(t *testing.T) {
 	d := Document{}
 	p := ProjectConfig{Chat: &ChatConfig{Confirm: []string{"close"}}}
-	if got := d.ChatOf(p).Confirm; !slices.Equal(got, []string{"close"}) {
-		t.Errorf("ChatOf(manual, confirm [close]) = %v, want [close]", got)
+	if got := d.ChatOf(p).Confirm; got[0] != "close" || !slices.Contains(got, "routine_write") || len(got) != 1+len(AlwaysConfirm) {
+		t.Errorf("ChatOf(manual, confirm [close]) = %v, want close and the always-confirm set", got)
 	}
 }
 

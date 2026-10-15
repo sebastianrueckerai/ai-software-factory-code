@@ -64,7 +64,8 @@ const runDue = "Mon 2 Jan 15:04"
 // head's line and Rows the top block; Acts carries the ghost's forms.
 // Runs are the newest runs, three on the Overview, and Older those past
 // the Runs tab's list; Config is the routine as its project file holds
-// it. Note is what the member's act did, Problems what could not be read.
+// it, Factory says the file is policy.yaml. Note is what the member's act
+// did, Problems what could not be read.
 type routineDrawerData struct {
 	View     factoryd.RoutineView
 	Tab      string
@@ -76,13 +77,15 @@ type routineDrawerData struct {
 	Runs     []routineRun
 	Older    int
 	Config   string
+	Factory  bool
 	Note     string
 	Problems []string
 }
 
 // topRow is a row of a drawer's top block: its term, its value with the
-// value's class, and the quieter words after it.
-type topRow struct{ Term, Value, Class, Why string }
+// value's class, the card the value links (its task id, "" for none), and
+// the quieter words after it.
+type topRow struct{ Term, Value, Class, Card, Why string }
 
 // routineRun is a run as the routine's drawer lists it, in the Time
 // section's shape (C10): when it was due, its card, its outcome in its
@@ -155,8 +158,8 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab,
 		f = formFilter(r)
 	}
 	f.Project = cmp.Or(f.Project, project)
-	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Note: note,
-		Acts: ghost{Project: project, Name: name, Title: rt.Title, Filter: f, CSRF: current(r).csrf, Drawer: true}}
+	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Note: note, Factory: rv.State.Project == "",
+		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
 	v, ok := c.inForce(ctx)
 	if !ok {
 		d.Problems = append(d.Problems, "The configuration in force could not be read. See the factoryd log.")
@@ -177,16 +180,22 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab,
 	default: // an event's: the schedule's words name it
 		next.Value, next.Class = "—", "muted"
 	}
+	if rv.State.SkipNext {
+		next.Value, next.Class = "skipped once · next "+next.Value, ""
+		if when == "" {
+			next.Value = "skipped once"
+		}
+	}
 	schedule := topRow{Term: "Schedule", Value: rt.Words()}
 	if slices.ContainsFunc(rt.Schedule, func(t policy.Trigger) bool { return t.Cron != "" }) {
 		schedule.Why = loc.String()
 	}
-	last := topRow{Term: "Last", Value: runWords(rv.Last)}
+	last := topRow{Term: "Last", Value: runWords(rv.Last), Card: rv.Last.TaskID}
 	switch {
 	case rv.Last.Run == 0:
 		last.Value, last.Class = "no run yet", "muted"
 	case rv.Held:
-		last.Value, last.Class = rv.Last.Note, "warn"
+		last.Value, last.Class, last.Card = rv.Last.Note, "warn", rv.Open.ID
 	}
 	if rv.Last.Run > 0 {
 		last.Why = rv.Last.Due.In(loc).Format(runDue)

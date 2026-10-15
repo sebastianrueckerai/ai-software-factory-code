@@ -74,14 +74,15 @@ type jobsView struct {
 	Failed bool
 }
 
-// jobSchedule is a job's cron in words, as a routine's card says it; a
+// jobSchedule is a job's cron in words, as a routine's card says it, in
+// its zone: a CronJob's and a ScheduledBackup's run in UTC. A
 // ScheduledBackup's six-field cron loses its seconds first when they are
 // 0.
 func jobSchedule(cron string) string {
 	if f := strings.Fields(cron); len(f) == 6 && f[0] == "0" {
 		cron = strings.Join(f[1:], " ")
 	}
-	return policy.Trigger{Cron: cron}.Words()
+	return policy.Trigger{Cron: cron}.Words() + " UTC"
 }
 
 // jobAge is how long ago t was, coarse; never when t is zero.

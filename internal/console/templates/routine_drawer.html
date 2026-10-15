@@ -9,18 +9,20 @@
 {{with .Note}}<p class="note" role="status">{{.}}</p>
 {{end}}{{range .Problems}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{if eq .Tab "overview"}}<dl class="top-block">
-{{range .Rows}}<dt>{{.Term}}</dt><dd{{with .Class}} class="{{.}}"{{end}}>{{.Value}}{{with .Why}} <span class="why">· {{.}}</span>{{end}}</dd>
+{{range .Rows}}<dt>{{.Term}}</dt><dd{{with .Class}} class="{{.}}"{{end}}>{{if .Card}}<a href="#card={{.Card}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}{{with .Why}} <span class="why">· {{.}}</span>{{end}}</dd>
 {{end}}</dl>
 {{template "routine-acts" .Acts}}
 {{if .Brief}}<details class="sec" data-sec="brief"><summary>The brief<span class="hint">{{.View.Routine.Brief}}</span></summary><div class="sec-body"><p class="objective-body">{{.Brief}}</p></div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The brief<span class="hint">no brief</span></p></div>
 {{end}}{{if .View.State.Runs}}<details class="sec" data-sec="runs"><summary>Runs ({{.View.State.Runs}})</summary><div class="sec-body">{{template "routine-runs" .Runs}}</div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">Runs<span class="hint">no run yet</span></p></div>
-{{end}}<details class="sec" data-sec="config"><summary>Config</summary><div class="sec-body">{{template "routine-config" .Config}}</div></details>
-{{else if eq .Tab "runs"}}{{if .Runs}}{{template "routine-runs" .Runs}}{{with .Older}}
+{{end}}<details class="sec" data-sec="config"><summary>Config</summary><div class="sec-body">{{template "routine-config" .}}</div></details>
+{{else if eq .Tab "runs"}}{{template "routine-acts" .Acts}}
+{{if .Runs}}{{template "routine-runs" .Runs}}{{with .Older}}
 <p class="quiet">and {{.}} older run{{if ne . 1}}s{{end}}</p>{{end}}{{else}}<p class="quiet">No run yet.</p>{{end}}
-{{else}}{{template "routine-config" .Config}}
+{{else}}{{template "routine-acts" .Acts}}
+{{template "routine-config" .}}
 {{end}}</div>
 </div>
 {{define "routine-runs"}}<div class="life runs">{{range .}}<span class="mono">{{.Due}}</span><span class="mono">{{if .Issue}}<a href="#card={{.TaskID}}">#{{.Issue}}</a>{{end}}</span><span class="k {{.Class}}">{{.Outcome}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div>{{end}}
-{{define "routine-config"}}<pre>{{.}}</pre><p class="quiet">A change of schedule is a configuration change. Ask the project agent to change this.</p>{{end}}
+{{define "routine-config"}}<pre>{{.Config}}</pre><p class="quiet">A change of schedule is a configuration change. {{if .Factory}}This routine is the factory's, in policy.yaml. Skip once and Run now act for every project with a template.{{else}}Ask the project agent to change this.{{end}}</p>{{end}}

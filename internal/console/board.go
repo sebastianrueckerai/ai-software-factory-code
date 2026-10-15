@@ -824,17 +824,20 @@ type column struct {
 // in words, its next run ("Mon 06:00 · in 20 min · human card"), its last
 // ("last #781 done in 2 d"), a held run's words, the open card (Open) it
 // runs, and its acts, offered to a writer (CSRF set) with the board's
-// filter.
+// filter. Skipped says a Skip once is pending, which its act undoes.
 type ghost struct {
 	Project, Name, Title        string
 	Words, NextWords, LastWords string
 	Soon, Held, Running         bool
+	Skipped                     bool
 	HeldWords                   string
 	Open                        int64
 	Filter                      boardFilter
 	CSRF                        string
-	// Drawer says the acts sit in the routine's drawer, which answers them.
+	// Drawer says the acts sit in the routine's drawer, which answers them
+	// on its tab Tab.
 	Drawer bool
+	Tab    string
 }
 
 // Count is the number the column's head shows: its needs, else its
@@ -2371,10 +2374,13 @@ var filesWords = map[string]string{policy.FilesHuman: "human card", policy.Files
 // ghostOf is routine rv's ghost at now. Its next line names the run's
 // time, how soon it comes and what it files. A merge-counted routine's
 // names the merges it lacks, an event's only what it files, as the
-// schedule line names the event. Its last line names the newest run.
+// schedule line names the event. A pending Skip once leads the line, the
+// run it names being the one after the skipped. Its last line names the
+// newest run.
 func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
 	rt := rv.Routine
-	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Filter: f, CSRF: csrf}
+	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Skipped: rv.State.SkipNext,
+		Filter: f, CSRF: csrf}
 	when, in, kind := nextWords(rv, now)
 	switch {
 	case in != "":
@@ -2383,6 +2389,9 @@ func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string)
 		g.NextWords = when
 	default:
 		g.NextWords = kind
+	}
+	if g.Skipped {
+		g.NextWords = "skipped once · next " + g.NextWords
 	}
 	if l := runWords(rv.Last); l != "" {
 		g.LastWords = "last " + l
@@ -2428,7 +2437,7 @@ func runWords(l factoryd.RoutineRun) string {
 	return strings.Join(slices.DeleteFunc(w, func(s string) bool { return s == "" }), " ")
 }
 
-// cellWord is routine name's word in the strip's cell: the name's last
+// cellWord is the routine name's word in the strip's cell: the name's last
 // segment, "bump" for weekly-bump. A name is a slug ending in a letter or
 // a digit, so the segment is a plain word.
 func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:] }

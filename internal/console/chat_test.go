@@ -809,11 +809,13 @@ func TestChatToolSentences(t *testing.T) {
 		defaults["set_autonomy backlog_cap"], defaults["history n"], defaults["session_step from"]},
 		[]any{"backlog", "request_changes", "mirror", nil, float64(20), float64(1)})
 
+	// an empty confirm list marks only the always-confirm set
 	r, _, g = newChatRig(t)
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	for _, f := range offered(r, g) {
-		if about := f["description"].(string); strings.Contains(about, "(needs OK)") {
-			t.Errorf("%s: %q is marked with an empty confirm list", f["name"], about)
+		about := f["description"].(string)
+		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)); always != strings.Contains(about, "(needs OK)") {
+			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and nothing else", f["name"], about)
 		}
 	}
 }

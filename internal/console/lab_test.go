@@ -436,14 +436,22 @@ func (r *rig) labSeed(name string) (string, error) {
 			LastSuccessful: nightly(30).AddDate(0, 0, -1)},
 	}}
 	r.routines.mu.Lock()
-	r.routines.views, r.routines.runs, r.routines.skips, r.routines.ran = s.routines, map[string][]factoryd.RoutineRun{}, nil, nil
+	r.routines.views, r.routines.runs, r.routines.skips, r.routines.ran = slices.Clone(s.routines), map[string][]factoryd.RoutineRun{}, nil, nil
 	for name, runs := range s.runs {
 		r.routines.runs[labProject+"/"+name] = runs
 	}
-	// a Skip once moves the routine's next run on, as factoryd's views do
-	r.routines.onSkip = func(_, name string) {
+	// a Skip once moves the routine's next run on, as factoryd's views do,
+	// and its undo puts the scene's view back
+	r.routines.onSkip = func(_, name string, skip bool) {
 		i := slices.IndexFunc(r.routines.views, func(v factoryd.RoutineView) bool { return v.Routine.Name == name })
+		if i < 0 {
+			return
+		}
 		v := &r.routines.views[i]
+		if !skip {
+			*v = s.routines[i]
+			return
+		}
 		v.State.SkipNext, v.State.SkipBy = true, "sebastian"
 		if every := v.Routine.MergesEvery(); every > 0 {
 			v.MergesLeft += every
@@ -826,7 +834,10 @@ func labNext(v *factoryd.RoutineView, now, at, from time.Time) {
 	if !ok {
 		return
 	}
-	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour, next.Format("Mon 15:04")
+	// soon as factoryd's views have it: under an hour away, the run after
+	// a day or more later
+	after, more := v.Routine.NextCron(next, time.UTC)
+	v.Next, v.Soon, v.NextWords = now.Add(next.Sub(at)+30*time.Second), next.Sub(at) < time.Hour && (!more || after.Sub(next) >= 24*time.Hour), next.Format("Mon 15:04")
 	if next.Sub(at) >= 7*24*time.Hour {
 		v.NextWords = next.Format("Mon 2 Jan 15:04")
 	}

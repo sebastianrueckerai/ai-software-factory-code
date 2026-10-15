@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -68,31 +67,6 @@ func routineLine(v factoryd.RoutineView) string {
 	return strings.Join(parts, " · ")
 }
 
-// scheduleOf reads routine_write's schedule: its parts split on ";" and
-// trimmed, merges:<n> a count of merged cards, on:<event> an event, any
-// other part a cron with its spaces made single, which Routine.Validate
-// judges.
-func scheduleOf(s string) ([]policy.Trigger, error) {
-	var out []policy.Trigger
-	for _, part := range strings.Split(s, ";") {
-		part = strings.TrimSpace(part)
-		switch {
-		case part == "":
-		case strings.HasPrefix(part, "merges:"):
-			n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(part, "merges:")))
-			if err != nil || n < 1 {
-				return nil, fmt.Errorf("schedule part %q: merges takes a count of merged cards, such as merges:20", part)
-			}
-			out = append(out, policy.Trigger{Merges: n})
-		case strings.HasPrefix(part, "on:"):
-			out = append(out, policy.Trigger{On: strings.TrimSpace(strings.TrimPrefix(part, "on:"))})
-		default:
-			out = append(out, policy.Trigger{Cron: strings.Join(strings.Fields(part), " ")})
-		}
-	}
-	return out, nil
-}
-
 // routineChange is what routine_write or routine_delete does to the chat
 // project's file: rt is the routine as it will stand, zero for a deletion,
 // old the routine the file holds, when exists, and extra the files beside
@@ -120,9 +94,10 @@ func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 	case tool == "routine_delete" && !ch.exists:
 		return ch, refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no routine %s. The routines read lists its routines.", t.p.Name, in.Name))
 	case tool == "routine_write":
-		schedule, err := scheduleOf(in.Schedule)
-		if err != nil {
-			return ch, refuse(http.StatusBadRequest, err.Error())
+		// a cron's spaces made single, as the file and the schedules hold it
+		schedule := slices.Clone(in.Schedule)
+		for i := range schedule {
+			schedule[i].Cron = strings.Join(strings.Fields(schedule[i].Cron), " ")
 		}
 		ch.rt = policy.Routine{Name: in.Name, Title: in.Title, Schedule: schedule, Files: in.Files, Brief: ch.old.Brief, Skill: in.Skill,
 			WhileOpen: cmp.Or(in.WhileOpen, ch.old.WhileOpen), Missed: cmp.Or(in.Missed, ch.old.Missed), Tell: cmp.Or(in.Tell, ch.old.Tell)}
@@ -130,7 +105,8 @@ func (t *turn) routineChange(tool string, in toolInput) (routineChange, error) {
 			ch.rt.Skill = cmp.Or(in.Skill, ch.old.Skill)
 		}
 		if in.BriefText != "" {
-			ch.rt.Brief = policy.DirRoutines + "/" + t.p.Name + "-" + in.Name + ".md"
+			// a dot joins them, which no project's or routine's name holds
+			ch.rt.Brief = policy.DirRoutines + "/" + t.p.Name + "." + in.Name + ".md"
 			if text := strings.TrimRight(in.BriefText, "\n") + "\n"; text != t.tree.Briefs[ch.rt.Brief] {
 				ch.extra[ch.rt.Brief] = text
 			}
@@ -198,7 +174,7 @@ func routineYAML(rt policy.Routine) (string, error) {
 	var b bytes.Buffer
 	e := yaml.NewEncoder(&b)
 	e.SetIndent(2)
-	if err := e.Encode([]policy.Routine{rt}); err != nil {
+	if err := e.Encode([]policy.Routine{rt}); err != nil { // #nosec G117 -- pass names the template pass a pull-request routine runs, not a secret
 		return "", err
 	}
 	return strings.TrimRight(b.String(), "\n"), nil

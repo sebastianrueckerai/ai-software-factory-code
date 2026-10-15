@@ -76,6 +76,11 @@ func TestRoutineValidate(t *testing.T) {
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: -3}}}, "merges -3: a count of merged cards"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 20}, {Cron: "0 6 * * 1"}, {Merges: 5}}}, "merges is given twice: a schedule counts merges once"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 6 * * 1"}, {Cron: "0 0 30 2 *"}}}, `cron "0 0 30 2 *": never fires`},
+		// Temporal matches both day fields: no 30 February is a Monday
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 0 30 2 1"}}}, `cron "0 0 30 2 1": never fires`},
+		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, WhileOpen: WhileOpenFold}, "while_open fold is a pull-request routine's"},
+		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, WhileOpen: WhileOpenFold}, "this one files agent, so hold or file"},
+		{Routine{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellQuiet}, "a report routine with tell quiet tells nobody"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Skill: "audit"}, "skill is an agent routine's, this one files human"},
 		{Routine{Name: "a", Title: "t", Files: FilesAgent, Skill: "audit", Schedule: merges, Pass: PassTemplate}, "pass is a pull-request routine's, this one files agent"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: merges, Brief: "docs/a.md"}, `brief "docs/a.md": a file routines/<name>.md`},
@@ -83,6 +88,15 @@ func TestRoutineValidate(t *testing.T) {
 	} {
 		if err := c.r.Validate("p"); err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%+v: got %v, want %q", c.r, err, c.want)
+		}
+	}
+	for _, r := range []Routine{
+		{Name: "a", Title: "t", Files: FilesPullRequest, Pass: PassTemplate, Schedule: merges, WhileOpen: WhileOpenFold, Tell: TellQuiet},
+		{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellInbox},
+		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 3 1-7 * 0"}}},
+	} {
+		if err := r.Validate("p"); err != nil {
+			t.Errorf("%+v: %v", r, err)
 		}
 	}
 }
@@ -112,6 +126,18 @@ func TestRoutineNextCron(t *testing.T) {
 	}
 	if _, ok := (Routine{Schedule: []Trigger{{Cron: "0 0 30 2 *"}}}).NextCron(now, berlin); ok {
 		t.Fatal("a pattern that never fires has a next time")
+	}
+	// both day fields restricted: the first Sunday of the month, as
+	// Temporal fires it, not every Sunday and every day up to the 7th
+	r = Routine{Schedule: []Trigger{{Cron: "0 3 1-7 * 0"}}}
+	if next, ok = r.NextCron(now, berlin); !ok || !next.Equal(time.Date(2026, 11, 1, 3, 0, 0, 0, berlin)) {
+		t.Fatalf("the first Sunday after Monday 12 October: got %v %v, want Sunday 1 November 03:00", next, ok)
+	}
+	if next, ok = r.NextCron(next, berlin); !ok || !next.Equal(time.Date(2026, 12, 6, 3, 0, 0, 0, berlin)) {
+		t.Fatalf("the first Sunday after 1 November: got %v %v, want Sunday 6 December 03:00", next, ok)
+	}
+	if _, ok := (Routine{Schedule: []Trigger{{Cron: "0 0 30 2 1"}}}).NextCron(now, berlin); ok {
+		t.Fatal("a Monday 30 February has a next time")
 	}
 	if _, ok := (Routine{Schedule: []Trigger{{Merges: 3}}}).NextCron(now, berlin); ok {
 		t.Fatal("a merges-only routine has no next time")
@@ -223,7 +249,7 @@ func TestTreeRefusesRoutines(t *testing.T) {
 			`policy.yaml: policy: time_zone "Mars/Olympus"`},
 		"the host's time zone": {policyFile, "time_zone: Europe/Berlin", "time_zone: Local",
 			`policy.yaml: policy: time_zone "Local": Local is the host's zone`},
-		"a factory routine that is no pass": {policyFile, "files: pull-request\n    pass: template", "files: human",
+		"a factory routine that is no pass": {policyFile, "files: pull-request\n    pass: template\n    while_open: fold", "files: human",
 			`policy.yaml: policy: routine "template-pass": a routine of policy.yaml is a pass over the projects, files pull-request`},
 		"two factory routines of one name": {policyFile, "routines:\n", "routines:\n  - {name: template-pass, title: t, schedule: [{cron: \"0 * * * *\"}], files: pull-request, pass: template}\n",
 			`policy.yaml: policy: routine "template-pass": given twice`},

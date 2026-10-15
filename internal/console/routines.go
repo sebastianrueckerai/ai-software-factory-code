@@ -45,11 +45,15 @@ func (c *Console) routineRun(w http.ResponseWriter, r *http.Request) {
 	c.routineActed(w, r, note)
 }
 
-// routineActed answers an act with note: the routine's drawer when its
-// form sat there (from=drawer), else the board.
+// routineActed answers an act with note: the routine's drawer on the tab
+// its form sat on (from=drawer, tab), else the board.
 func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note string) {
 	if r.PostFormValue("from") == "drawer" {
-		c.showRoutineDrawer(w, r, "overview", note)
+		tab := r.PostFormValue("tab")
+		if !slices.ContainsFunc(routineTabs, func(t drawerTab) bool { return t.Name == tab }) {
+			tab = "overview"
+		}
+		c.showRoutineDrawer(w, r, tab, note)
 		return
 	}
 	c.showBoard(w, r, http.StatusOK, note, nil)

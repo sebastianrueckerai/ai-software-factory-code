@@ -164,7 +164,7 @@ async function main() {
           await shot("routine-drawer-1440.png", desk, "/#routine=ai-software-factory-code/weekly-bump:overview", null, false);
           await shot("routines-hidden-1440.png", desk, "/?routines=none", feet, false);
           await shot("phone-ghosts-390.png", phone, "/", async (p) => {
-            await p.page.locator("#board .column").nth(1).locator(".card.ghost").first().scrollIntoViewIfNeeded();
+            await p.page.locator("#board .column").filter({ has: p.page.locator("h3", { hasText: "Queued" }) }).locator(".card.ghost").first().scrollIntoViewIfNeeded();
             await p.page.waitForTimeout(200);
           }, false);
         }

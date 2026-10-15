@@ -478,16 +478,19 @@ async function text(page) {
           return out;
         };
         const out = [];
+        let measured = 0;
         for (const el of document.querySelectorAll(sel)) {
           if (!el.offsetParent || !el.textContent.trim()) continue;
+          measured++;
           const cs = getComputedStyle(el), bg = bgOf(el), fg = over(rgb(cs.color), bg);
           const l1 = lum(fg), l2 = lum(bg), r = (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
           const big = parseFloat(cs.fontSize) >= 24 || (parseFloat(cs.fontSize) >= 18.66 && +cs.fontWeight >= 700);
           if (r < (big ? 3 : 4.5)) out.push((el.className || el.tagName) + ' "' + el.textContent.trim().slice(0, 18) + '" ' + r.toFixed(2));
         }
-        return out;
+        return { out, measured };
       }, sel);
-      if (low.length) fails.push(theme + " " + sc + ": under 4.5:1: " + low.join("; "));
+      if (!low.measured) fails.push(theme + " " + sc + ": the contrast check matched no shown text");
+      if (low.out.length) fails.push(theme + " " + sc + ": under 4.5:1: " + low.out.join("; "));
       await cp.ctx.close();
     }
   }
@@ -499,7 +502,12 @@ async function text(page) {
   if (sw > 390) fails.push("phone: horizontal scroll at 390 (" + sw + ")");
   const ghostTargets = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".card.ghost > button.open, .card.ghost .acts button, .routines-ctl > summary"))
     .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 20), b.getBoundingClientRect().height]));
-  if (ghostTargets.length < 13) fails.push("phone: " + ghostTargets.length + " ghost and control targets shown, want the control and three per ghost");
+  // every shown ghost opens its drawer from its title, and the control is there
+  const ghostsShown = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".card.ghost")).filter((g) => g.offsetParent)
+    .map((g) => !!g.querySelector(":scope > button.open")));
+  if (!ghostsShown.length) fails.push("phone: no ghost shown");
+  if (ghostsShown.includes(false)) fails.push("phone: a shown ghost has no button to its drawer");
+  if (!(await ph.page.locator(".routines-ctl > summary").first().isVisible())) fails.push("phone: the routines control is not shown");
   const smallGhost = ghostTargets.filter((x) => x[1] < 43.5);
   if (smallGhost.length) fails.push("phone: routine targets under 44 px: " + smallGhost.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
   const order = await ph.page.evaluate(() => {

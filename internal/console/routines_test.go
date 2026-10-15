@@ -30,10 +30,10 @@ type fakeRoutines struct {
 	ran    []string
 	runNow func(project, routine string) (factoryd.RoutineRun, error)
 	// limits are the limits Runs was asked for, runsErr its failure, and
-	// onSkip changes the views when a Skip once is set, under mu
+	// onSkip changes the views when a Skip once is set or undone, under mu
 	limits  []int
 	runsErr error
-	onSkip  func(project, routine string)
+	onSkip  func(project, routine string, skip bool)
 }
 
 // known reports whether project's board shows routine, as the service's
@@ -98,8 +98,8 @@ func (f *fakeRoutines) Skip(_ context.Context, project, routine string, skip boo
 		by = ""
 	}
 	f.skips[project+"/"+routine] = by
-	if skip && f.onSkip != nil {
-		f.onSkip(project, routine)
+	if f.onSkip != nil {
+		f.onSkip(project, routine, skip)
 	}
 	return nil
 }
@@ -138,6 +138,7 @@ func (f *fakeRoutines) RunNow(_ context.Context, project, routine string) error 
 func weeklyBump() factoryd.RoutineView {
 	return factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}},
+		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "weekly-bump"},
 		Next:    time.Date(2026, 10, 20, 6, 0, 0, 0, time.UTC), NextWords: "Mon 20 Oct 06:00", Lane: "needs-you"}
 }
 

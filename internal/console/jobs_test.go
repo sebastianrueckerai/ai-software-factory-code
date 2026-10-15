@@ -70,10 +70,10 @@ func TestResourcesPageListsTheClustersJobs(t *testing.T) {
 		`<caption>The cluster's scheduled jobs by namespace</caption>`,
 		`<th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th>` +
 			`<th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th>`,
-		`<tr><td>sf-cluster-daily</td><td>ScheduledBackup</td><td>platform</td><td title="0 0 2 * * *">daily 02:00</td>` +
+		`<tr><td>sf-cluster-daily</td><td>ScheduledBackup</td><td>platform</td><td title="0 0 2 * * *">daily 02:00 UTC</td>` +
 			`<td title="` + utc(ran) + `">3 h ago</td><td>not reported</td><td>no</td></tr>`,
-		`<tr><td>openbao-config</td><td>CronJob</td><td>platform</td><td title="*/10 * * * *">*/10 * * * *</td><td>never</td><td>never</td><td>no</td></tr>`,
-		`<tr><td>forgejo-dump</td><td>CronJob</td><td>forgejo</td><td title="30 2 * * *">daily 02:30</td>` +
+		`<tr><td>openbao-config</td><td>CronJob</td><td>platform</td><td title="*/10 * * * *">*/10 * * * * UTC</td><td>never</td><td>never</td><td>no</td></tr>`,
+		`<tr><td>forgejo-dump</td><td>CronJob</td><td>forgejo</td><td title="30 2 * * *">daily 02:30 UTC</td>` +
 			`<td title="` + utc(ran) + `">3 h ago</td><td title="` + utc(dumped) + `">2 d ago</td><td>yes</td></tr>`,
 	} {
 		if !strings.Contains(jobs, want) {
@@ -118,9 +118,26 @@ func TestResourcesToolReadsTheClustersJobs(t *testing.T) {
 	r.c.cfg.Jobs = fakeJobs{rows: testJobs(now.Add(-3*time.Hour-10*time.Minute), now.Add(-50*time.Hour))}
 	equal(t, "the jobs", reads(t, r, g, "resources", `{}`)[0], "No commissioned resources.\n"+
 		"Jobs of the cluster:\n"+
-		"  sf-cluster-daily · platform · daily 02:00 · last successful not reported\n"+
-		"  openbao-config · platform · */10 * * * * · last successful never\n"+
-		"  forgejo-dump · forgejo · daily 02:30 · last successful 2 d ago · suspended")
+		"  sf-cluster-daily · platform · daily 02:00 UTC · last successful not reported\n"+
+		"  openbao-config · platform · */10 * * * * UTC · last successful never\n"+
+		"  forgejo-dump · forgejo · daily 02:30 UTC · last successful 2 d ago · suspended")
 	r.c.cfg.Jobs = fakeJobs{err: errors.New("kubernetes: forbidden")}
 	equal(t, "no answer", reads(t, r, g, "resources", `{}`)[0], "No commissioned resources.\nJobs of the cluster: the cluster did not answer.")
+}
+
+// A job's schedule in words with its zone: a five-field cron whose minute
+// is 0 keeps every field, a six-field one loses only seconds of 0, and a
+// pattern without words shows as itself.
+func TestJobSchedule(t *testing.T) {
+	for cron, want := range map[string]string{
+		"0 3 * * *":    "daily 03:00 UTC",
+		"0 6 * * 1":    "every Monday 06:00 UTC",
+		"0 0 2 * * *":  "daily 02:00 UTC",
+		"30 0 2 * * *": "30 0 2 * * * UTC",
+		"*/15 * * * *": "*/15 * * * * UTC",
+	} {
+		if got := jobSchedule(cron); got != want {
+			t.Errorf("jobSchedule(%q) = %q, want %q", cron, got, want)
+		}
+	}
 }

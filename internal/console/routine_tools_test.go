@@ -102,7 +102,7 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	original := string(files["projects/demo-app.yaml"])
-	args := `{"name":"dependency-update","title":"Dependency update","schedule":"0 6 * * 4","files":"agent","skill":"deps"}`
+	args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"0 6 * * 4"}],"files":"agent","skill":"deps"}`
 	g.replies = [][]string{{call(1, "routine_write", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"Every Thursday at six, update the dependencies"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, new in projects/demo-app.yaml:\n\n` +
@@ -128,30 +128,30 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 		Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}}, Files: policy.FilesAgent, Skill: "deps"})
 
 	headAt(t, r, infra, files)
-	args = `{"name":"dependency-update","title":"Dependency update","schedule":"0 6 * * 4; merges:20","files":"agent","skill":"deps",` +
+	args = `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"0 6 * * 4"},{"merges":20}],"files":"agent","skill":"deps",` +
 		`"brief_text":"Update the dependencies and run the tests."}`
 	g.replies = [][]string{{call(1, "routine_write", args)}}
 	_, proposed, tokens = chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"Also every 20 merges, with a brief"}})
 	equal(t, "the change's proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n    - merges: 20\n  files: agent\n` +
-		`  brief: routines/demo-app-dependency-update.md\n  skill: deps\n\nIts brief, routines/demo-app-dependency-update.md:\n\n` +
+		`  brief: routines/demo-app.dependency-update.md\n  skill: deps\n\nIts brief, routines/demo-app.dependency-update.md:\n\n` +
 		`Update the dependencies and run the tests.","id":"TOKEN","tool":"routine_write"}`, `done {}`})
 	_, done, _ = chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "the change's Do it", done, ran("routine_write", args,
-		"Pull request #12 changed routine dependency-update in projects/demo-app.yaml and wrote its brief routines/demo-app-dependency-update.md. "+
+		"Pull request #12 changed routine dependency-update in projects/demo-app.yaml and wrote its brief routines/demo-app.dependency-update.md. "+
 			"The board shows it once the factory loads the new configuration."))
 	changed := original + "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n      - cron: 0 6 * * 4\n      - merges: 20\n" +
-		"    files: agent\n    brief: routines/demo-app-dependency-update.md\n    skill: deps\n"
+		"    files: agent\n    brief: routines/demo-app.dependency-update.md\n    skill: deps\n"
 	equal(t, "the change's commit", lastCommit(t, infra), []string{"update factory/projects/demo-app.yaml blob1\n" + changed,
-		"create factory/routines/demo-app-dependency-update.md\nUpdate the dependencies and run the tests.\n"})
-	files["projects/demo-app.yaml"], files["routines/demo-app-dependency-update.md"] = []byte(changed), []byte("Update the dependencies and run the tests.\n")
+		"create factory/routines/demo-app.dependency-update.md\nUpdate the dependencies and run the tests.\n"})
+	files["projects/demo-app.yaml"], files["routines/demo-app.dependency-update.md"] = []byte(changed), []byte("Update the dependencies and run the tests.\n")
 	if tree, err = policy.ParseTree(files); err != nil {
 		t.Fatal(err)
 	}
 	rt, _ = tree.Routine("demo-app", "dependency-update")
 	brief, _ := tree.Brief(rt.Brief)
 	equal(t, "the changed routine and its brief", []any{rt.Schedule, rt.Brief, brief},
-		[]any{[]policy.Trigger{{Cron: "0 6 * * 4"}, {Merges: 20}}, "routines/demo-app-dependency-update.md", "Update the dependencies and run the tests.\n"})
+		[]any{[]policy.Trigger{{Cron: "0 6 * * 4"}, {Merges: 20}}, "routines/demo-app.dependency-update.md", "Update the dependencies and run the tests.\n"})
 
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventRoutineWritten, Detail: routineDetail(map[string]any{"routine": "dependency-update", "created": true})},
@@ -160,34 +160,25 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 
 // A schedule the routine's check refuses comes back as the tool's
 // result, naming the fault, before any proposal: nothing is proposed or
-// committed and the agent answers on.
+// committed and the agent answers on. A trigger that sets none of its
+// keys is refused too.
 func TestRoutineWriteRefusesABadSchedule(t *testing.T) {
 	r, g, infra, _ := routineRig(t)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	args := `{"name":"dependency-update","title":"Dependency update","schedule":"every monday","files":"agent","skill":"deps"}`
-	g.replies = [][]string{{call(1, "routine_write", args)}, {say("The schedule needs a cron.")}}
-	_, events, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"every monday, update the dependencies"}})
-	equal(t, "the stream", []any{events, len(tokens)}, []any{[]string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"routine_write","result":"Refused: projects/demo-app.yaml: routine \"dependency-update\": ` +
-			`cron \"every monday\": five fields, minute hour day-of-month month day-of-week, in policy.yaml's time_zone"}`,
-		`text {"text":"The schedule needs a cron."}`, `done {}`}, 0})
+	for schedule, why := range map[string]string{
+		`[{"cron":"every monday"}]`: `cron \"every monday\": five fields, minute hour day-of-month month day-of-week, in policy.yaml's time_zone`,
+		`[{}]`:                      `a trigger is one of cron, merges or on`,
+	} {
+		args := `{"name":"dependency-update","title":"Dependency update","schedule":` + schedule + `,"files":"agent","skill":"deps"}`
+		g.replies = [][]string{{call(1, "routine_write", args)}, {say("The schedule needs a cron.")}}
+		_, events, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"every monday, update the dependencies"}})
+		equal(t, "the stream", []any{events, len(tokens)}, []any{[]string{
+			`tool {"arguments":` + args + `,"duration_ms":0,"name":"routine_write","result":"Refused: projects/demo-app.yaml: routine \"dependency-update\": ` + why + `"}`,
+			`text {"text":"The schedule needs a cron."}`, `done {}`}, 0})
+	}
 	if len(infra.contents) != 0 || r.events.count() != before {
 		t.Fatalf("a refused schedule committed %+v or recorded %d rows", infra.contents, r.events.count()-before)
-	}
-}
-
-// The schedule's free form: parts split on ";" and trimmed, merges:<n> a
-// count, on:<event> an event, any other part a cron with its spaces
-// made single, which the routine's check then judges.
-func TestScheduleOf(t *testing.T) {
-	got, err := scheduleOf(" 0  6 * * 1 ; merges:20;on:push-main ;")
-	equal(t, "the three triggers", []any{got, err},
-		[]any{[]policy.Trigger{{Cron: "0 6 * * 1"}, {Merges: 20}, {On: "push-main"}}, error(nil)})
-	for _, bad := range []string{"merges:twenty", "merges:0", "merges:-3"} {
-		if _, err := scheduleOf(bad); err == nil || err.Error() != `schedule part "`+bad+`": merges takes a count of merged cards, such as merges:20` {
-			t.Errorf("%s: %v", bad, err)
-		}
 	}
 }
 
@@ -201,9 +192,9 @@ func TestRoutineDeleteRemovesTheRoutineAndItsBrief(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	original := string(files["projects/demo-app.yaml"])
 	entry := "  - name: dependency-update\n    title: Dependency update\n    schedule:\n      - cron: \"0 6 * * 4\"\n    files: agent\n" +
-		"    brief: routines/demo-app-dependency-update.md\n    skill: deps\n"
+		"    brief: routines/demo-app.dependency-update.md\n    skill: deps\n"
 	files["projects/demo-app.yaml"] = []byte(original + "routines:\n" + entry)
-	files["routines/demo-app-dependency-update.md"] = []byte("Update the dependencies.\n")
+	files["routines/demo-app.dependency-update.md"] = []byte("Update the dependencies.\n")
 	headAt(t, r, infra, files)
 	before := r.events.count()
 
@@ -211,13 +202,13 @@ func TestRoutineDeleteRemovesTheRoutineAndItsBrief(t *testing.T) {
 	g.replies = [][]string{{call(1, "routine_delete", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"stop updating the dependencies"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Delete a routine, out of projects/demo-app.yaml:\n\n` +
-		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  brief: routines/demo-app-dependency-update.md\n  skill: deps` +
-		`\n\nIts brief, routines/demo-app-dependency-update.md, goes too.","id":"TOKEN","tool":"routine_delete"}`, `done {}`})
+		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  brief: routines/demo-app.dependency-update.md\n  skill: deps` +
+		`\n\nIts brief, routines/demo-app.dependency-update.md, goes too.","id":"TOKEN","tool":"routine_delete"}`, `done {}`})
 	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "Do it", done, ran("routine_delete", args,
-		"Pull request #12 deleted routine dependency-update from projects/demo-app.yaml, and its brief routines/demo-app-dependency-update.md."))
+		"Pull request #12 deleted routine dependency-update from projects/demo-app.yaml, and its brief routines/demo-app.dependency-update.md."))
 	equal(t, "the commit", lastCommit(t, infra), []string{"update factory/projects/demo-app.yaml blob1\n" + original,
-		"delete factory/routines/demo-app-dependency-update.md blob1\n"})
+		"delete factory/routines/demo-app.dependency-update.md blob1\n"})
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventRoutineDeleted, Detail: routineDetail(map[string]any{"routine": "dependency-update"})})
 
@@ -256,7 +247,7 @@ func TestRoutinesReadListsTheProject(t *testing.T) {
 	r, _, g := newChatRig(t)
 	audit := factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "audit", Title: "Audit pair", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{Merges: 20}},
-			WhileOpen: policy.WhileOpenFold},
+			WhileOpen: policy.WhileOpenFile},
 		NextWords: "after 6 more merges", Last: factoryd.RoutineRun{Run: 2, Outcome: "filed", Issue: 790}, Open: &factoryd.Task{IssueNumber: 790}}
 	bump := weeklyBump()
 	bump.Last = factoryd.RoutineRun{Run: 3, Outcome: "merged", Issue: 781}
@@ -277,7 +268,7 @@ func TestRoutinesReadListsTheProject(t *testing.T) {
 	}
 	equal(t, "the code project's routines", read("ai-software-factory-code"),
 		"weekly-bump · Weekly bump · every Monday 06:00 · files human · next Mon 20 Oct 06:00 · last merged (#781)\n"+
-			"audit · Audit pair · every 20 merges · files agent · skill audit · while open fold · next after 6 more merges · last filed (#790) · open #790\n"+
+			"audit · Audit pair · every 20 merges · files agent · skill audit · while open file · next after 6 more merges · last filed (#790) · open #790\n"+
 			"nightly · Nightly report · daily 02:00 · on each push to main · files report · missed skip · tell quiet · next Tue 02:00 · no run yet")
 	equal(t, "demo-app's", read("demo-app"), "Project demo-app has no routines.")
 }
@@ -361,21 +352,23 @@ func TestRoutineWriteKeepsTheKeysItLeavesOut(t *testing.T) {
 	original := string(files["projects/demo-app.yaml"])
 	routine := func(cron string) string {
 		return "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n      - cron: " + cron + "\n" +
-			"    files: agent\n    skill: deps\n    while_open: fold\n"
+			"    files: agent\n    skill: deps\n    while_open: file\n"
 	}
 	files["projects/demo-app.yaml"] = []byte(original + routine("0 6 * * 4"))
 	headAt(t, r, infra, files)
 	before := r.events.count()
 	write := func(cron string) []string {
 		t.Helper()
-		args := `{"name":"dependency-update","title":"Dependency update","schedule":"` + cron + `","files":"agent"}`
+		args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"` + cron + `"}],"files":"agent"}`
 		g.replies = [][]string{{call(1, "routine_write", args)}}
 		_, _, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"move it"}})
 		_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 		return done
 	}
-	equal(t, "the same routine", write("0 6 * * 4"), []string{`tool {"arguments":{"name":"dependency-update","title":"Dependency update",` +
-		`"schedule":"0 6 * * 4","files":"agent"},"duration_ms":0,"name":"routine_write","result":"Refused: Nothing changes: projects/demo-app.yaml already holds this."}`,
+	// a cron's spaces are made single, so the same routine with more
+	// spaces is the same
+	equal(t, "the same routine", write(" 0  6 * * 4"), []string{`tool {"arguments":{"name":"dependency-update","title":"Dependency update",` +
+		`"schedule":[{"cron":" 0  6 * * 4"}],"files":"agent"},"duration_ms":0,"name":"routine_write","result":"Refused: Nothing changes: projects/demo-app.yaml already holds this."}`,
 		`done {}`})
 	if len(infra.contents) != 0 || len(infra.pulls) != 0 || r.events.count() != before {
 		t.Fatalf("nothing to change committed %+v, opened %+v or recorded %d rows", infra.contents, infra.pulls, r.events.count()-before)
@@ -395,20 +388,20 @@ func TestRoutineWriteMovesItsBrief(t *testing.T) {
 		"      - cron: 0 6 * * 4\n    files: human\n    brief: routines/deps.md\n")
 	files["routines/deps.md"] = []byte("Update them.\n")
 	headAt(t, r, infra, files)
-	args := `{"name":"dependency-update","title":"Dependency update","schedule":"0 6 * * 4","files":"human","brief_text":"Update them and run the tests."}`
+	args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"0 6 * * 4"}],"files":"human","brief_text":"Update them and run the tests."}`
 	g.replies = [][]string{{call(1, "routine_write", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"give it a better brief"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
-		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: human\n  brief: routines/demo-app-dependency-update.md` +
-		`\n\nIts brief, routines/demo-app-dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","id":"TOKEN","tool":"routine_write"}`,
+		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: human\n  brief: routines/demo-app.dependency-update.md` +
+		`\n\nIts brief, routines/demo-app.dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","id":"TOKEN","tool":"routine_write"}`,
 		`done {}`})
 	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "Do it", done, ran("routine_write", args, "Pull request #12 changed routine dependency-update in projects/demo-app.yaml, "+
-		"wrote its brief routines/demo-app-dependency-update.md and deleted its old brief routines/deps.md. The board shows it once the factory loads the new configuration."))
+		"wrote its brief routines/demo-app.dependency-update.md and deleted its old brief routines/deps.md. The board shows it once the factory loads the new configuration."))
 	equal(t, "the commit", lastCommit(t, infra), []string{
 		"update factory/projects/demo-app.yaml blob1\n" + original + "routines:\n  - name: dependency-update\n    title: Dependency update\n    schedule:\n" +
-			"      - cron: 0 6 * * 4\n    files: human\n    brief: routines/demo-app-dependency-update.md\n",
-		"create factory/routines/demo-app-dependency-update.md\nUpdate them and run the tests.\n",
+			"      - cron: 0 6 * * 4\n    files: human\n    brief: routines/demo-app.dependency-update.md\n",
+		"create factory/routines/demo-app.dependency-update.md\nUpdate them and run the tests.\n",
 		"delete factory/routines/deps.md blob1\n"})
 }
 

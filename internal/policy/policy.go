@@ -180,9 +180,9 @@ var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_ver
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
-// base as its files set it, assisted takes the starts and filings off
-// and keeps the always-confirm set, autonomous keeps the always-confirm
-// set only, with merges following the rule.
+// base as its files set it with the always-confirm set, assisted takes
+// the starts and filings off and keeps the always-confirm set, autonomous
+// keeps the always-confirm set only, with merges following the rule.
 func ConfirmFor(level, mergeRule string, base []string) []string {
 	ensure := func(list []string) []string {
 		for _, t := range AlwaysConfirm {
@@ -201,7 +201,7 @@ func ConfirmFor(level, mergeRule string, base []string) []string {
 		}
 		return slices.Clone(AlwaysConfirm)
 	default:
-		return slices.Clone(base)
+		return ensure(slices.Clone(base))
 	}
 }
 

@@ -94,7 +94,7 @@ var cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month 
 
 // cronEpoch is where Validate starts a pattern's search for its next time.
 // A fixed time judges a tree the same on every day, and a pattern that
-// matches any date matches one in the five years robfig searches from it.
+// matches any date matches one within cronHorizon years of it.
 var cronEpoch = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // weekdays word a cron pattern's day of the week.
@@ -156,7 +156,7 @@ func (r Routine) Validate(where string) error {
 			if err != nil {
 				return fmt.Errorf("%s: cron %q: %v", at, tr.Cron, err)
 			}
-			if s.Next(cronEpoch).IsZero() {
+			if nextCron(s, cronEpoch).IsZero() {
 				return fmt.Errorf("%s: cron %q: never fires, no date matches it", at, tr.Cron)
 			}
 		}
@@ -168,6 +168,12 @@ func (r Routine) Validate(where string) error {
 		if rule.v != "" && !slices.Contains(rule.values, rule.v) {
 			return fmt.Errorf("%s: %s is %q, not one of %v", at, rule.key, rule.v, rule.values)
 		}
+	}
+	switch {
+	case r.WhileOpen == WhileOpenFold && r.Files != FilesPullRequest:
+		return fmt.Errorf("%s: while_open fold is a pull-request routine's, whose pass folds into its open pull request: this one files %s, so hold or file", at, r.Files)
+	case r.Files == FilesReport && r.Tell == TellQuiet:
+		return fmt.Errorf("%s: a report routine with tell quiet tells nobody: its report is the poke, so tell inbox", at)
 	}
 	if r.Brief != "" && (path.Dir(r.Brief) != DirRoutines || path.Ext(r.Brief) != ".md") {
 		return fmt.Errorf("%s: brief %q: a file %s/<name>.md", at, r.Brief, DirRoutines)
@@ -248,11 +254,37 @@ func (r Routine) NextCron(now time.Time, loc *time.Location) (time.Time, bool) {
 		if err != nil {
 			continue
 		}
-		if n := s.Next(now.In(loc)); !n.IsZero() && (best.IsZero() || n.Before(best)) {
+		if n := nextCron(s, now.In(loc)); !n.IsZero() && (best.IsZero() || n.Before(best)) {
 			best = n
 		}
 	}
 	return best, !best.IsZero()
+}
+
+// cronHorizon is how far nextCron looks: every day of the month falls on
+// every day of the week within it, the 29th of February too.
+const cronHorizon = 30
+
+// nextCron is s's next time after t as Temporal fires it, zero when none
+// comes within cronHorizon years. Temporal matches the day of the month
+// and the day of the week both, robfig either one when both are
+// restricted (no star bit), so a day that matches only one is stepped
+// past: "0 3 1-7 * 0" is the first Sunday of the month.
+func nextCron(s cron.Schedule, t time.Time) time.Time {
+	spec, ok := s.(*cron.SpecSchedule)
+	const star = 1 << 63
+	if !ok || spec.Dom&star != 0 || spec.Dow&star != 0 {
+		return s.Next(t)
+	}
+	limit := t.AddDate(cronHorizon, 0, 0)
+	for n := s.Next(t); !n.IsZero() && n.Before(limit); n = s.Next(n) {
+		if 1<<uint(n.Day())&spec.Dom != 0 && 1<<uint(n.Weekday())&spec.Dow != 0 {
+			return n
+		}
+		// the rest of the day matches neither: on to its last second
+		n = time.Date(n.Year(), n.Month(), n.Day()+1, 0, 0, 0, 0, n.Location()).Add(-time.Second)
+	}
+	return time.Time{}
 }
 
 // MergesEvery is the routine's count of merged cards between runs, 0 when

@@ -170,6 +170,24 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	}
 }
 
+// A level the project file already holds changes nothing: the POST
+// answers 409 naming the file, and no branch, pull request, merge or
+// event follows.
+func TestSetAutonomyToTheLevelInForceChangesNothing(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\n"}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	rec := r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"assisted"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Nothing changes: projects/demo-app.yaml already holds this.") {
+		t.Fatalf("POST autonomy at the level in force = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(infra.contents) != 0 || len(infra.pulls) != 0 || len(infra.merges) != 0 || r.events.count() != before {
+		t.Fatalf("a change of nothing committed %+v, opened %+v, merged %+v or recorded %d rows", infra.contents, infra.pulls, infra.merges, r.events.count()-before)
+	}
+}
+
 // The roadmap structure check: numbers unique, Sources and
 // Where-it-stands kept.
 func TestRoadmapFindings(t *testing.T) {

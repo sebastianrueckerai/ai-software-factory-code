@@ -75,17 +75,16 @@ type toolInput struct {
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
 	// Name names a routine; the routine tools' other arguments are its
-	// keys, Schedule the triggers in one string, BriefText its brief's
-	// text and SkipUndo a Skip once's undo.
-	Name      string `json:"name,omitempty"`
-	Schedule  string `json:"schedule,omitempty"`
-	Files     string `json:"files,omitempty"`
-	Skill     string `json:"skill,omitempty"`
-	BriefText string `json:"brief_text,omitempty"`
-	WhileOpen string `json:"while_open,omitempty"`
-	Missed    string `json:"missed,omitempty"`
-	Tell      string `json:"tell,omitempty"`
-	SkipUndo  bool   `json:"undo,omitempty"`
+	// keys, BriefText its brief's text and SkipUndo a Skip once's undo.
+	Name      string           `json:"name,omitempty"`
+	Schedule  []policy.Trigger `json:"schedule,omitempty"`
+	Files     string           `json:"files,omitempty"`
+	Skill     string           `json:"skill,omitempty"`
+	BriefText string           `json:"brief_text,omitempty"`
+	WhileOpen string           `json:"while_open,omitempty"`
+	Missed    string           `json:"missed,omitempty"`
+	Tell      string           `json:"tell,omitempty"`
+	SkipUndo  bool             `json:"undo,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -264,8 +263,8 @@ func (t *turn) byTaskID(in *toolInput) error {
 // describe is one line saying what a proposal of tool with in would do,
 // in pinned to the plan revision an accept_plan names, an approve_merge's
 // with its warning; a card of another project refuses it, and so do an
-// approve_merge without a pending merge request and a github_export the
-// console would refuse.
+// approve_merge or a deny_merge without a pending merge request and a
+// github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if tool.name == "routine_write" || tool.name == "routine_delete" {
 		return t.describeRoutine(tool, *in)
@@ -358,6 +357,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 	}
 	desc := strings.Join(parts, ", ")
+	if tool.name == "deny_merge" {
+		if _, err := t.mergeRequest(*in); err != nil {
+			return "", err
+		}
+	}
 	if tool.name == "approve_merge" {
 		if _, err := t.mergeRequest(*in); err != nil {
 			return "", err
@@ -1048,11 +1052,15 @@ var tools = []chatTool{
 		}},
 	{name: "routine_write", title: "Write a routine", write: true,
 		params: map[string]any{"name": routineName, "title": str("the title of the card each run files"),
-			"schedule":   str("a cron, merges:<n> or on:<event>, split by semicolons"),
+			"schedule": map[string]any{"type": "array", "description": "the triggers, any one of which starts a run", "minItems": 1,
+				"items": map[string]any{"type": "object", "description": "exactly one of cron, merges or on", "properties": map[string]any{
+					"cron":   str("five fields in the factory's zone, day and weekday ANDed"),
+					"merges": map[string]any{"type": "integer", "description": "a run every n merged cards of the project", "minimum": 1},
+					"on":     enum("a run on each such event", policy.RoutineEvents...)}}},
 			"files":      enum("what a run files", policy.FilesHuman, policy.FilesAgent, policy.FilesReport),
 			"skill":      str("the skill an agent routine's card runs, unset keeps it"),
 			"brief_text": str("each filed card's body, Markdown, unset keeps it"),
-			"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenValues...),
+			"while_open": enum("what a run does while the last card is open, unset keeps it", policy.WhileOpenHold, policy.WhileOpenFile),
 			"missed":     enum("what a run does when the factory was down, unset keeps it", policy.MissedValues...),
 			"tell":       enum("whether a filing tells the inbox, unset keeps it", policy.TellValues...)},
 		required: []string{"name", "title", "schedule", "files"},
@@ -1162,9 +1170,6 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projec
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
-  routine_write's schedule lists its triggers split by ";", such as "0 6 * * 4; merges:20; on:` + policy.OnPushMain +
-	`": a cron of five fields in the factory's time zone, merges:<n> for every n merged cards, or on:` +
-	strings.Join(policy.RoutineEvents, " or on:") + `.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
 `
