@@ -921,6 +921,10 @@ func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red
 	case ChecksTimeout:
 		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}, true, false
 	}
+	// ChecksFailure lands here, and ChecksPending with it on a run from
+	// before versionApprovalPending, whose guard sent the pending checks
+	// back as findings too; a current run's pending the wait above has
+	// answered already, so this is a concluded red.
 	findings := checks.Findings
 	if len(findings) == 0 {
 		findings = []string{"the checks are not green on " + commit}

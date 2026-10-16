@@ -541,6 +541,37 @@ func TestFactoryPRCardWaitsOutItsPendingHead(t *testing.T) {
 	}
 }
 
+// A factory pull request card whose pending head waits out red asks on
+// the red conclusion, not the read: the request records red checks, which
+// the console answers with the re-run and the close in place of a merge,
+// and a re-run asks again on the green head it makes.
+func TestFactoryPRCardWaitsOutItsPendingHeadToRed(t *testing.T) {
+	red := `check "pr / test": failure — 1 test failed (https://git.example/sf/r/actions/runs/95)`
+	pending := `no check has reported on c7 yet`
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+	})
+	g.onChecks(ChecksResult{State: ChecksSuccess}, ChecksResult{State: ChecksFailure, Findings: []string{red}}, ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{pending}}, ChecksResult{State: ChecksSuccess})
+	var reruns []string
+	g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID, sha string) (string, error) {
+		reruns = append(reruns, sha)
+		return "c8", nil
+	})
+	g.signalAfter(time.Hour, SignalRerunChecks, TaskSignal{Author: "anna", PR: 9})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 2 || g.approvals[0].Commit != "c7" || !g.approvals[0].RedChecks || !g.approvals[0].Factory ||
+		g.approvals[1].Commit != "c8" || g.approvals[1].RedChecks || !g.approvals[1].Factory {
+		t.Fatalf("approvals %+v: want c7's on the wait's red conclusion, then c8's on green", g.approvals)
+	}
+	if !slices.Equal(reruns, []string{"c7"}) || !slices.Equal(g.merges, []string{"9 c8 sebastian"}) || len(g.sessions) != 0 {
+		t.Fatalf("re-runs %v, merges %v, sessions %v: want c7's checks run again once and c8 merged, no session", reruns, g.merges, g.sessions)
+	}
+}
+
 // A change request on a factory pull request card closes it with the
 // human's words, since no agent answers it (roadmap 264): Finish closes
 // the pull request and the issue with them. A run from before the change
