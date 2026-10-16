@@ -150,6 +150,46 @@ async function findAsYouType(p, query, word, label, fails) {
   if ((await page.locator(cards).count()) !== whole || (await page.locator("#q").inputValue()) !== "") fails.push(label + ": the × does not make the board whole again");
 }
 
+// viewChange: the agent's view change (282) holds for the page as a
+// click does. The event's query pushes the URL beside the open doc=,
+// reads the board under it and leaves one more history entry; Back
+// reads the entry's board again; the card opens the drawer and the tab
+// lands once the drawer is in; reset closes the drawer and clears the
+// URL's controls; the panel and the theme work their own controls.
+async function viewChange(p, query, fails) {
+  const page = p.page, label = "view change", cards = "#board [data-card]";
+  await page.goto(base + "/" + query, { waitUntil: "load" });
+  await page.waitForTimeout(600);
+  const before = await page.evaluate(() => history.length);
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent("view",
+    {detail: {query: "?project=ai-software-factory-code&queued=oldest&q=export"}})));
+  await page.waitForTimeout(900);
+  const at = new URL(page.url()).searchParams;
+  if (at.get("q") !== "export" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
+  if ((await page.evaluate(() => history.length)) !== before + 1) fails.push(label + ": the change leaves no history entry");
+  const shown = await page.locator(cards).allInnerTexts();
+  if (!shown.length || shown.some((t) => !t.toLowerCase().includes("export"))) fails.push(label + ": the board shows " + shown.length + " cards that do not say export");
+  await page.goBack({ waitUntil: "load" });
+  await page.waitForTimeout(600);
+  if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": Back leaves q in the URL (" + page.url() + ")");
+  if ((await page.locator(cards).count()) < shown.length + 1) fails.push(label + ": Back does not read the entry's board");
+  await page.locator("#status-toggle").click();
+  await page.waitForTimeout(200);
+  await page.evaluate((card) => document.dispatchEvent(new CustomEvent("view",
+    {detail: {query: "?project=ai-software-factory-code", card: card, tab: "chat", panel: "closed", theme: "light"}})), labID(616));
+  await page.waitForTimeout(900);
+  const card = new URL(page.url()).hash;
+  if (card.indexOf("#card=") !== 0) fails.push(label + ": the drawer's hash is " + card);
+  if (!(await page.locator("#drawer").isVisible())) fails.push(label + ": the drawer does not show");
+  if (!(await page.locator('#drawer .tabs button[aria-selected="true"][hx-get*="tab=chat"]').first().isVisible())) fails.push(label + ": the tab does not land");
+  if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the panel does not fold");
+  if (await page.evaluate(() => document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme")) !== "light") fails.push(label + ": the theme does not change");
+  await page.evaluate(() => document.dispatchEvent(new CustomEvent("view", {detail: {query: "?project=ai-software-factory-code", card: ""}})));
+  await page.waitForTimeout(600);
+  if (await page.locator("#drawer").isVisible()) fails.push(label + ": reset does not close the drawer");
+  if (new URL(page.url()).searchParams.toString() !== "project=ai-software-factory-code") fails.push(label + ": reset leaves " + new URL(page.url()).searchParams);
+}
+
 // lateRead: on the busy board a read of the board goes out and its answer
 // is held 1.5 s, a find answers first, then the read answers. The read is
 // dropped and its promise settles; the box stays in the board with its
@@ -513,6 +553,10 @@ async function text(page) {
       // in a browser without moveBefore (Safari), where htmx's hx-preserve takes the find's
       // form out of the page and puts it back
       await findAsYouType(p, "?queued=oldest&routines=within&within=2&unit=hours", "export", "find as you type", fails);
+      // the agent's view change (282) on the same board: the page stands under the
+      // order's and the routines' menu choices, and the event's query carries the
+      // find and the order, so the merge into the URL reads plainly
+      await viewChange(p, "?queued=oldest&routines=within&within=2&unit=hours", fails);
       const nm = await open(browser, { width: 1440, height: 900 });
       await nm.ctx.addInitScript(() => { delete Element.prototype.moveBefore; });
       await nm.page.goto(base + "/", { waitUntil: "load" });
