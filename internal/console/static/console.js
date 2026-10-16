@@ -273,15 +273,25 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     b.dataset.query = d.query;
     swapBoard();
   });
+  // boardQuery is a URL's query in the form the board's own data-query
+  // holds: doc= aside, the fields sorted, so two entries that differ only
+  // in the docked document or the fields' order name the same board (282)
+  function boardQuery(s) {
+    var p = new URLSearchParams(s);
+    p.delete("doc");
+    p.sort();
+    var out = p.toString();
+    return out ? "?" + out : "";
+  }
   // Back and Forward follow the URL's query: the find's box takes the
   // entry's q without a run of the find, and the board reads the entry's
-  // query when it differs from the one it stands on (282)
+  // query when it differs, in that form, from the one it stands on
   window.addEventListener("popstate", function () {
     var q = new URLSearchParams(location.search).get("q") || "", i = document.getElementById("q");
     if (i && i.value !== q) i.value = q;
-    var b = board();
-    if (b && b.dataset.query !== location.search) {
-      b.dataset.query = location.search;
+    var b = board(), entry = boardQuery(location.search);
+    if (b && boardQuery(b.dataset.query) !== entry) {
+      b.dataset.query = entry;
       swapBoard();
     }
   });

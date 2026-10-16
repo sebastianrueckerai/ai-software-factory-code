@@ -1417,7 +1417,8 @@ console.log(JSON.stringify(out));
 // that never comes leaving the listener armed for the next one. Card ""
 // closes the drawer. The panel works the fold and the theme the theme's
 // own button. Back reads the board under the entry's query and puts the
-// entry's q in the box without running the find.
+// entry's q in the box without running the find; an entry that differs
+// from the board's query only by doc= or the fields' order reads nothing.
 func TestConsoleViewEvent(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1534,6 +1535,23 @@ box.value = "exp";
 requests = [];
 winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popped = [typed.slice(), box.value, requests.slice()];
+await settle();
+await settle();
+// an entry that differs from the board's query only by doc= or the
+// fields' order names the same board: Back reads nothing, the box still
+// takes the entry's q
+Object.assign(sandbox.location, {search: "?doc=docs%2Fa.md&project=code"});
+box.value = "left";
+requests = [];
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popDoc = [box.value, requests.length, byID.board.dataset.query];
+await settle();
+await settle();
+byID.board.dataset.query = "?project=code&q=exp&view=wide";
+Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
+requests = [];
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popOrder = [byID.board.dataset.query, requests.length];
 out.streams = sources.length;
 await settle();
 console.log(JSON.stringify(out));
@@ -1546,7 +1564,8 @@ console.log(JSON.stringify(out));
 	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
 		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"card":["#card=t-9",true],` +
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
-		`"panel":true,"theme":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"streams":1}`
+		`"panel":true,"theme":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
+		`"popOrder":["?project=code&q=exp&view=wide",0],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
