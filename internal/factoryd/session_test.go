@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -111,6 +112,32 @@ func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 	sess, _, _ := store.Session(context.Background(), "s1")
 	if !reflect.DeepEqual(sess.Findings, findings) || string(sess.RestartState) != string(restart) {
 		t.Fatalf("session after snapshot = %+v", sess)
+	}
+}
+
+// Transcript is the live session's record for the in-session check-in:
+// the history so far, whole, as a copy the caller cannot corrupt.
+func TestTranscript(t *testing.T) {
+	objects := &fakeObjectStore{}
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/coding-cheap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := r.Transcript(); len(got) != 0 {
+		t.Fatalf("a fresh recorder's transcript = %q, want nothing", got)
+	}
+	ev := harness.Event{Time: time.Unix(1000, 0).UTC(), Kind: harness.EventCheckpoint, Detail: map[string]any{"diff": map[string]any{"files": 1}}}
+	if err := r.Record(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	want := objects.puts[len(objects.puts)-1].body
+	if got := r.Transcript(); !bytes.Equal(got, want) {
+		t.Fatalf("transcript = %q, want the history as it was put", got)
+	}
+	got := r.Transcript()
+	got[0] = 'X'
+	if again := r.Transcript(); !bytes.Equal(again, want) {
+		t.Fatalf("a mutated transcript reached the history: %q", again)
 	}
 }
 

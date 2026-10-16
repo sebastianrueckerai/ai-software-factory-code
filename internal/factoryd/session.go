@@ -85,6 +85,12 @@ func (r *SessionRecorder) SupervisorTail(n int) json.RawMessage {
 	})
 }
 
+// Transcript is the live session's record so far: the in-session
+// check-in reads it factoryd-side, where the pod's copy does not reach.
+func (r *SessionRecorder) Transcript() []byte {
+	return bytes.Clone(r.history.Bytes())
+}
+
 // jsonlTail is JSONL b's last lines as one JSON array of at most n bytes,
 // so a model reads them as JSON, not escaped into a string: each line
 // whole and as keep makes it, nil leaving it out; a line that is no JSON

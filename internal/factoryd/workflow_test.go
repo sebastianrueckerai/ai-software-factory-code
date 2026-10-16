@@ -1021,6 +1021,44 @@ func TestWorkflowCapReturnCarriesCheckin(t *testing.T) {
 	}
 }
 
+// The next session's input carries what the last round judged and what
+// the last session handed over: the gates once a review round gated, nil
+// before any review ran, the handover empty until the workflow sets it.
+func TestSessionInputCarriesLastGatesAndHandover(t *testing.T) {
+	h := newWorkflowHarness(t)
+	rounds := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if rounds++; rounds == 1 {
+				return Review{Verdict: "concerns", Summary: "the handler races", Findings: []string{"the handler races"}}, nil
+			}
+			return Review{}, nil
+		})
+	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions, finals = %v", final, len(h.sessions), h.finals)
+	}
+	if h.sessions[1].LastGates == nil || !reflect.DeepEqual(*h.sessions[1].LastGates, GateResults{Pin: 7, ChecksPassed: true}) {
+		t.Fatalf("second session's gates = %+v, want the review round's (pin 7, checks passed)", h.sessions[1].LastGates)
+	}
+	if h.sessions[1].Handover != "" {
+		t.Fatalf("second session's handover = %q, want none yet", h.sessions[1].Handover)
+	}
+
+	fresh := newWorkflowHarness(t)
+	fresh.onSessions(pushed("s1", "c1"))
+	fresh.onChecks(ChecksResult{State: ChecksSuccess})
+	fresh.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := fresh.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if fresh.sessions[0].LastGates != nil || fresh.sessions[0].Handover != "" {
+		t.Fatalf("first session = %+v, want nil gates and an empty handover before any review", fresh.sessions[0])
+	}
+}
+
 // A restart between the findings and the check-in is a stated degradation:
 // Reconcile rebuilds the reviews but not gateFindings, so the round runs
 // as it did before the check-in existed — the reviewer's findings reach

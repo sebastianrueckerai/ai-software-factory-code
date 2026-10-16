@@ -3529,3 +3529,53 @@ func TestRunSessionPushesAnEmptyBriefWithoutACheckin(t *testing.T) {
 		t.Fatalf("worker got %q, want the empty brief before the conversation", worker.texts)
 	}
 }
+
+// The check-in inside a live session reads but never edits: run is
+// refused factoryd-side, before any post leaves, and the read tools
+// still post to the worker's /tool.
+func TestRunnerToolsLiveRefuseRun(t *testing.T) {
+	kube := newFakeKube()
+	kube.pods["ns1/p1"] = &fakePod{ns: "ns1", name: "p1"}
+	r := &Runner{kube: kube}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, r)
+	tools := &runnerTools{r: r, ns: "ns1", pod: "p1", token: "bearer-7", live: true,
+		parent: []byte("alpha\nbeta\n"), ask: &CheckInAsk{Gates: &GateResults{Pin: 7}}}
+
+	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "rm -rf ."}); err == nil ||
+		!strings.Contains(err.Error(), "run is not available to the check-in inside a live session") {
+		t.Fatalf("run on a live pod = %v, want the refusal named", err)
+	}
+	worker.mu.Lock()
+	posted := slices.Clone(worker.tools)
+	worker.mu.Unlock()
+	if len(posted) != 0 {
+		t.Fatalf("worker got %q, want no post for a refused run", posted)
+	}
+	worker.mu.Lock()
+	worker.onTool = func(name string, args map[string]any) (int, string) {
+		b, _ := json.Marshal(map[string]any{"output": name + " " + args["path"].(string), "cut": false})
+		return http.StatusOK, string(b)
+	}
+	worker.mu.Unlock()
+	if out, _, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "x.go"}); out != "read_file x.go" || err != nil {
+		t.Fatalf("read_file = (%q, %v), want the post answered", out, err)
+	}
+}
+
+// The no-ask branch pushes the input's handover as the brief: the
+// mid-session note of the session moment rides SessionInput.Handover.
+func TestRunSessionPushesTheInputHandoverAsTheBrief(t *testing.T) {
+	runner, _, worker, _, _ := checkinRig(t, "")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		Handover: "stop polishing the linter, commit the handler fix"}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /brief stop polishing the linter, commit the handler fix"}) {
+		t.Fatalf("worker got %q, want the input's handover as the brief", worker.texts)
+	}
+}

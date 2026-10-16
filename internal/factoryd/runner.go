@@ -449,6 +449,12 @@ type sessionSpec struct {
 	// checkInAsk is the check-in the workflow asks of the session's start;
 	// nil: none runs
 	checkInAsk *CheckInAsk
+	// lastGates are the gates of the round that gated and sent this
+	// session back to the agent; nil when no round gated
+	lastGates *GateResults
+	// handover is the note the workflow hands the session as its brief's
+	// first section (a mid-session handover); "" when none
+	handover string
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -590,7 +596,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return out, nil
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, "")
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover)
 		}
 	}
 
@@ -922,15 +928,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note)
 	}
-	calls, err := r.store.CheckinCalls(ctx, t.ID)
-	if err != nil {
-		log.Printf("task %s: read the check-in calls: %v", t.ID, err)
-	}
-	spent, err := r.store.CheckinSpent(ctx, t.ID)
-	if err != nil {
-		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
-	}
-	eurLeft := limits.CheckinShareOf(t.BudgetEUR) - spent
+	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if calls >= limits.CheckinCallCap() || eurLeft <= 0 {
 		reason := "the check-in's share of the budget is spent"
 		if calls >= limits.CheckinCallCap() {
@@ -970,6 +968,21 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief is the empty one
 	brief("")
 	return nil, false
+}
+
+// checkinBudget is the card's check-in budget: the calls the card has
+// made and what is left of the check-in's share of its budget. A read
+// error is logged and reads as zero, as the check-in proceeds on it.
+func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (int, float64, error) {
+	calls, err := r.store.CheckinCalls(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the check-in calls: %v", t.ID, err)
+	}
+	spent, err := r.store.CheckinSpent(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
+	}
+	return calls, limits.CheckinShareOf(t.BudgetEUR) - spent, err
 }
 
 // pushBrief delivers the session's brief: a check-in's handover note, or
@@ -1027,9 +1040,15 @@ type runnerTools struct {
 	parent         []byte
 	facts          string
 	ask            *CheckInAsk
+	// live says the pod holds a running conversation: the in-session
+	// check-in reads it, and run would edit what the session is doing
+	live bool
 }
 
 func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+	if name == "run" && p.live {
+		return "", false, errors.New("run is not available to the check-in inside a live session; read instead")
+	}
 	switch name {
 	case "transcript_search":
 		query, _ := args["query"].(string)

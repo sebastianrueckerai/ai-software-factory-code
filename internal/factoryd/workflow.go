@@ -286,6 +286,13 @@ type SessionInput struct {
 	// CheckInAsk is the check-in the workflow asks of the session's
 	// start; nil: none runs.
 	CheckInAsk *CheckInAsk
+	// LastGates are the gates of the round that sent the session back to
+	// the agent; nil before any round gated. The in-session check-in
+	// reads them beside the trip.
+	LastGates *GateResults `json:",omitempty"`
+	// Handover is the note the session's brief opens with (a mid-session
+	// handover); "" for the plain brief.
+	Handover string `json:",omitempty"`
 }
 
 type SessionResult struct {
@@ -1572,6 +1579,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		if checkinComing {
 			in.CheckInAsk = t.checkinAsk(parent, slices.Concat(findings, own),
 				append(slices.Clone(sources), slices.Repeat([]string{"session"}, len(own))...), t.lastGates)
+		}
+		if len(t.reviews) > 0 {
+			g := t.lastGates
+			in.LastGates = &g
 		}
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, in)
 		t.gateFindings = false
