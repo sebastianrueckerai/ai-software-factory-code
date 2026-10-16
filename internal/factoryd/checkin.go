@@ -30,6 +30,14 @@ import (
 // in-session and dead-session moments on the same machinery.
 const CheckInGate = "gate"
 
+// CheckInSession is the check-in's moment inside a running session: a
+// detector tripped and the session's next step is the decision.
+const CheckInSession = "session"
+
+// CheckInDead is the check-in's moment before a fresh session: the session
+// before it ended without a result and its handover is still unwritten.
+const CheckInDead = "dead"
+
 // The check-in's verdict on one finding.
 const (
 	CheckConfirmed = "confirmed"
@@ -84,6 +92,9 @@ type CheckInAsk struct {
 	Findings      []CheckFinding
 	Review        *Review
 	Gates         *GateResults
+	Trip          *TripReport `json:",omitempty"`
+	Messages      []string    `json:",omitempty"`
+	Stop          string      `json:",omitempty"`
 }
 
 // CheckInOutcome is the check-in's answer: the decision, the reason and its
@@ -94,6 +105,7 @@ type CheckInOutcome struct {
 	Decision   string
 	ReasonKind string
 	Reason     string
+	Guidance   string `json:",omitempty"`
 	Handover   string
 	Verdicts   map[string]CheckVerdict
 	Remarks    []string       `json:",omitempty"`
@@ -173,54 +185,74 @@ func applyVerdictGuards(findings []CheckFinding, verdicts map[string]CheckVerdic
 // raised them, the tools, the parent session's tail, and the budget left.
 func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float64, handoverCap int) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "You are the factory's check-in at the %s moment: a round came back with findings, and you judge each one before the next session is bought. You never edit anything; you gather evidence and answer.\n\n", ask.Moment)
-
-	b.WriteString("Rules, one verdict per finding:\n")
-	b.WriteString("- confirmed: the finding is real and must be fixed.\n")
-	b.WriteString("- dropped: only with checkable evidence: a file and line at a ref, or a command and its output.\n")
-	b.WriteString("- remark: an opinion: say it, block nothing.\n")
-	b.WriteString("- if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
-	fmt.Fprintf(&b, "The handover note to the next session is at most %d characters.\n\n", handoverCap)
-
-	b.WriteString("Findings:\n")
-	for i, f := range ask.Findings {
-		fmt.Fprintf(&b, "%s: %s (from %s)\n", findingKey(i), f.Text, f.Source)
-		switch {
-		case f.PriorConfirmed == 1:
-			b.WriteString("   confirmed once before\n")
-		case f.PriorConfirmed > 1:
-			fmt.Fprintf(&b, "   confirmed %d times before\n", f.PriorConfirmed)
+	switch ask.Moment {
+	case CheckInSession:
+		fmt.Fprintf(&b, "You are the factory's check-in inside session %s: the detector %s tripped (%s), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Trip.Detector, ask.Trip.Detail)
+		b.WriteString("Rules:\n")
+		b.WriteString("- continue: the session runs on.\n")
+		b.WriteString("- message: guidance carries the exact instruction the agent should take next.\n")
+		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
+		b.WriteString("- human: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
+		if len(ask.Messages) > 0 {
+			b.WriteString("Guidance delivered to the agent this session:\n")
+			for _, m := range ask.Messages {
+				fmt.Fprintf(&b, "- %s\n", m)
+			}
 		}
-		if f.PriorDropped > 0 {
-			b.WriteString("   dropped before: keep it dropped only against new evidence\n")
-		}
-	}
-	b.WriteString("\n")
+		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
+	case CheckInDead:
+		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)
+		fmt.Fprintf(&b, "Your handover note to the next session is at most %d characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat. The agent's report per finding is the last message in its record; verify it, never take it on trust.\n\n", handoverCap)
+	default:
+		fmt.Fprintf(&b, "You are the factory's check-in at the %s moment: a round came back with findings, and you judge each one before the next session is bought. You never edit anything; you gather evidence and answer.\n\n", ask.Moment)
 
-	if ask.Review != nil {
-		fmt.Fprintf(&b, "The review that raised them (verdict %s):\n%s\n\n", ask.Review.Verdict, ask.Review.Summary)
-	}
-	if ask.Gates != nil {
-		g := ask.Gates
-		b.WriteString("The gates:\n")
-		fmt.Fprintf(&b, "- risk class %s is %s", g.Policy.Class, g.Policy.Outcome)
-		if g.Policy.MergeRule != "" {
-			fmt.Fprintf(&b, " (merge rule %s)", g.Policy.MergeRule)
+		b.WriteString("Rules, one verdict per finding:\n")
+		b.WriteString("- confirmed: the finding is real and must be fixed.\n")
+		b.WriteString("- dropped: only with checkable evidence: a file and line at a ref, or a command and its output.\n")
+		b.WriteString("- remark: an opinion: say it, block nothing.\n")
+		b.WriteString("- if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
+		fmt.Fprintf(&b, "The handover note to the next session is at most %d characters.\n\n", handoverCap)
+
+		b.WriteString("Findings:\n")
+		for i, f := range ask.Findings {
+			fmt.Fprintf(&b, "%s: %s (from %s)\n", findingKey(i), f.Text, f.Source)
+			switch {
+			case f.PriorConfirmed == 1:
+				b.WriteString("   confirmed once before\n")
+			case f.PriorConfirmed > 1:
+				fmt.Fprintf(&b, "   confirmed %d times before\n", f.PriorConfirmed)
+			}
+			if f.PriorDropped > 0 {
+				b.WriteString("   dropped before: keep it dropped only against new evidence\n")
+			}
 		}
 		b.WriteString("\n")
-		if g.Reproduction.Ran {
-			fmt.Fprintf(&b, "- reproduction %q exited %d at the head\n", g.Reproduction.Command, g.Reproduction.Exit)
-		} else {
-			b.WriteString("- no reproduction command\n")
-		}
-		if g.ChecksPassed {
-			b.WriteString("- checks green\n\n")
-		} else {
-			b.WriteString("- checks not green\n\n")
-		}
-	}
 
-	b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+		if ask.Review != nil {
+			fmt.Fprintf(&b, "The review that raised them (verdict %s):\n%s\n\n", ask.Review.Verdict, ask.Review.Summary)
+		}
+		if ask.Gates != nil {
+			g := ask.Gates
+			b.WriteString("The gates:\n")
+			fmt.Fprintf(&b, "- risk class %s is %s", g.Policy.Class, g.Policy.Outcome)
+			if g.Policy.MergeRule != "" {
+				fmt.Fprintf(&b, " (merge rule %s)", g.Policy.MergeRule)
+			}
+			b.WriteString("\n")
+			if g.Reproduction.Ran {
+				fmt.Fprintf(&b, "- reproduction %q exited %d at the head\n", g.Reproduction.Command, g.Reproduction.Exit)
+			} else {
+				b.WriteString("- no reproduction command\n")
+			}
+			if g.ChecksPassed {
+				b.WriteString("- checks green\n\n")
+			} else {
+				b.WriteString("- checks not green\n\n")
+			}
+		}
+
+		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+	}
 	if len(tail) > 0 {
 		fmt.Fprintf(&b, "The parent session's whole record sits at /workspace/.factory/sessions/%s.jsonl; its tail:\n<<<SESSION-TAIL>>>\n%s\nSESSION-TAIL>>>\n\n", ask.ParentSession, tail)
 	} else {
@@ -319,6 +351,18 @@ type CheckinTool = OperatorTool
 // verdict never turns on the wording of the finding it judges.
 const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
+// checkinSystemFor is the moment's persona: the gate's, or the one that
+// fits what the moment decides.
+func checkinSystemFor(moment string) string {
+	switch moment {
+	case CheckInSession:
+		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"continue|message|handover|human","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. "message" needs guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+	case CheckInDead:
+		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|human","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+	}
+	return checkinSystem
+}
+
 // checkinTools is the tool list the statement names: the transcript and the
 // card factoryd answers, the workspace through the pod.
 var checkinTools = []CheckinTool{
@@ -336,6 +380,15 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"args": toolArg("the arguments as one string")}, "args")},
 	{Name: "run", Description: "run one command in the workspace and read its output",
 		Parameters: toolSchema(map[string]any{"command": toolArg("the command")}, "command")},
+}
+
+// checkinToolsFor is the moment's tool list: the session's check-in reads
+// a live workspace and gets no run.
+func checkinToolsFor(moment string) []CheckinTool {
+	if moment == CheckInSession {
+		return checkinTools[:len(checkinTools)-1]
+	}
+	return checkinTools
 }
 
 func toolArg(description string) map[string]any {
@@ -366,6 +419,7 @@ type checkinAnswerFinding struct {
 type checkinAnswer struct {
 	Findings   []checkinAnswerFinding `json:"findings"`
 	Decision   string                 `json:"decision"`
+	Guidance   string                 `json:"guidance"`
 	ReasonKind string                 `json:"reason_kind"`
 	Reason     string                 `json:"reason"`
 	Handover   string                 `json:"handover"`
@@ -392,15 +446,39 @@ func foldFindingText(s string) string {
 // finding it did not, and states and decision among the known ones. Every
 // verdict lands keyed by the ask's own text, whatever wording the answer
 // carried.
+// parseCheckinAnswer reads the model's final answer against the ask: the
+// moment's decisions, a message's guidance when it needs one, and — at the
+// gate — a verdict for every finding the ask named, by its id, by its text
+// exactly, or by its text with whitespace and punctuation folded, none for
+// a finding it did not. Every verdict lands keyed by the ask's own text,
+// whatever wording the answer carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
 		return a, fmt.Errorf("not one JSON object: %v", err)
 	}
-	switch a.Decision {
-	case CheckHandover, CheckHuman, CheckDroppedAll:
+	switch ask.Moment {
+	case CheckInSession:
+		switch a.Decision {
+		case "continue", "message", CheckHandover, CheckHuman:
+		default:
+			return a, fmt.Errorf("unknown decision %q", a.Decision)
+		}
+		if a.Decision == "message" && a.Guidance == "" {
+			return a, fmt.Errorf("a message needs its guidance")
+		}
+	case CheckInDead:
+		switch a.Decision {
+		case CheckHandover, CheckHuman:
+		default:
+			return a, fmt.Errorf("unknown decision %q", a.Decision)
+		}
 	default:
-		return a, fmt.Errorf("unknown decision %q", a.Decision)
+		switch a.Decision {
+		case CheckHandover, CheckHuman, CheckDroppedAll:
+		default:
+			return a, fmt.Errorf("unknown decision %q", a.Decision)
+		}
 	}
 	byID := make(map[string]string, len(ask.Findings))
 	byText := make(map[string]bool, len(ask.Findings))
@@ -469,7 +547,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		}
 		calls++
 		at := time.Now()
-		resp, err := chat.Call(ctx, taskID, alias, CheckinRequest{System: checkinSystem, Input: conv, Tools: checkinTools})
+		resp, err := chat.Call(ctx, taskID, alias, CheckinRequest{System: checkinSystemFor(ask.Moment), Input: conv, Tools: checkinToolsFor(ask.Moment)})
 		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: time.Since(at)})
 		rec.CostEUR += resp.UsageEUR
 		if err != nil {
@@ -531,7 +609,7 @@ func checkinOutcome(rec *CheckInRecord, ask *CheckInAsk, a checkinAnswer, handov
 			}
 		}
 	}
-	out := CheckInOutcome{Decision: decision, ReasonKind: a.ReasonKind, Reason: a.Reason, Verdicts: verdicts, Remarks: remarks, Record: rec}
+	out := CheckInOutcome{Decision: decision, ReasonKind: a.ReasonKind, Reason: a.Reason, Guidance: a.Guidance, Verdicts: verdicts, Remarks: remarks, Record: rec}
 	if decision == CheckHandover {
 		out.Handover = cutHandover(a.Handover, handoverCap)
 	}

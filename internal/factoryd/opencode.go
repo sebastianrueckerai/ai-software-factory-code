@@ -721,6 +721,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 			}
 			fmt.Fprintf(&b, "\n- %s", f)
 		}
+		b.WriteString("\nEnd the session with one line per finding you were given: fixed, disputed with the reason, or open.")
 	}
 	if len(brief.Answers) > 0 {
 		b.WriteString("\n\n" + answersHeading)

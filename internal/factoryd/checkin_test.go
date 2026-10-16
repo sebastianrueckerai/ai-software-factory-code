@@ -6,6 +6,7 @@ import (
 	"errors"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -558,5 +559,174 @@ func TestRunnerTools(t *testing.T) {
 	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "sleep"}); err == nil ||
 		!strings.Contains(err.Error(), "context deadline exceeded") {
 		t.Fatalf("a hanging tool = %v, want the deadline named", err)
+	}
+}
+
+// The three moments share the tail markers and the limits line; the gate
+// statement keeps its opening byte for byte, and the session and dead
+// statements open on their own sentences, never on another moment's.
+func TestCheckinStatementMoments(t *testing.T) {
+	const gateOpening = "You are the factory's check-in at the gate moment: a round came back with findings, and you judge each one before the next session is bought."
+	const sessionOpening = "You are the factory's check-in inside session s-live-3: the detector churn tripped (4 writes to the same file in 6 minutes), and you decide what happens before the session continues. You never edit anything; you gather evidence and answer."
+	const deadOpening = "You are the factory's check-in before a fresh session: the session s-dead-2 ended without a result: wall clock with the work uncommitted. You never edit anything; you gather evidence and answer."
+
+	gate := checkinStatement(&CheckInAsk{
+		Moment: CheckInGate, ParentSession: "s-parent-9",
+		Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}},
+	}, []byte("the tail"), 7, 1.5, 2000)
+	if !strings.Contains(gate, gateOpening) {
+		t.Fatalf("gate statement lost its opening:\n%s", gate)
+	}
+
+	session := checkinStatement(&CheckInAsk{
+		Moment: CheckInSession, ParentSession: "s-live-3",
+		Trip:     &TripReport{Detector: TripChurn, Detail: "4 writes to the same file in 6 minutes"},
+		Messages: []string{"stop rewriting the table; write the test first"},
+	}, []byte("the tail"), 7, 1.5, 2000)
+	if !strings.HasPrefix(session, sessionOpening+"\n\n") {
+		t.Fatalf("session statement does not open on the in-session sentence:\n%s", session)
+	}
+	for _, want := range []string{
+		"Guidance delivered to the agent this session:\n- stop rewriting the table; write the test first",
+		"at most 2000 characters",
+		"The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.",
+	} {
+		if !strings.Contains(session, want) {
+			t.Errorf("session statement lacks %q:\n%s", want, session)
+		}
+	}
+	if strings.Contains(session, "\nFindings:\n") {
+		t.Errorf("session statement renders the findings block:\n%s", session)
+	}
+
+	dead := checkinStatement(&CheckInAsk{
+		Moment: CheckInDead, ParentSession: "s-dead-2",
+		Stop: "wall clock with the work uncommitted",
+	}, []byte("the tail"), 7, 1.5, 2000)
+	if !strings.HasPrefix(dead, deadOpening+"\n\n") {
+		t.Fatalf("dead statement does not open on the dead sentence:\n%s", dead)
+	}
+	if want := "Your handover note to the next session is at most 2000 characters. It names: what the earlier session did, the state of the branch, each finding with its verdict and the reason, what to do first, and what not to repeat."; !strings.Contains(dead, want) {
+		t.Errorf("dead statement lacks the note's contents:\n%s", dead)
+	}
+	if strings.Contains(dead, "\nFindings:\n") {
+		t.Errorf("dead statement renders the findings block:\n%s", dead)
+	}
+
+	for _, s := range []struct{ name, text string }{{"gate", gate}, {"session", session}, {"dead", dead}} {
+		if !strings.HasSuffix(s.text, "<<<SESSION-TAIL>>>\nthe tail\nSESSION-TAIL>>>\n\ncalls left 7, 1.50 EUR left for the check-in on this card") {
+			t.Errorf("%s statement does not end in the shared tail and limits:\n%s", s.name, s.text)
+		}
+	}
+	for _, c := range []struct{ text, other, name string }{
+		{session, gateOpening, "session statement carries the gate opening"},
+		{dead, gateOpening, "dead statement carries the gate opening"},
+		{gate, sessionOpening, "gate statement carries the session opening"},
+		{dead, sessionOpening, "dead statement carries the session opening"},
+		{gate, deadOpening, "gate statement carries the dead opening"},
+		{session, deadOpening, "session statement carries the dead opening"},
+	} {
+		if strings.Contains(c.text, c.other) {
+			t.Error(c.name)
+		}
+	}
+}
+
+// The gate persona is today's constant; the session and dead personas name
+// their own answer shapes and none of the gate's verdict vocabulary.
+func TestCheckinSystemPerMoment(t *testing.T) {
+	if checkinSystemFor(CheckInGate) != checkinSystem {
+		t.Fatal("the gate persona is not today's constant")
+	}
+	session := checkinSystemFor(CheckInSession)
+	if !strings.Contains(session, `{"decision":"continue|message|handover|human","guidance":"..."`) {
+		t.Fatalf("session persona lacks the answer's shape:\n%s", session)
+	}
+	if !strings.Contains(session, `"message" needs guidance`) || !strings.Contains(session, `"handover" stops the session`) {
+		t.Fatalf("session persona does not carry the message and handover rules:\n%s", session)
+	}
+	dead := checkinSystemFor(CheckInDead)
+	if !strings.Contains(dead, `{"decision":"handover|human","reason_kind":"..."`) {
+		t.Fatalf("dead persona lacks the answer's shape:\n%s", dead)
+	}
+	for name, persona := range map[string]string{"session": session, "dead": dead} {
+		if strings.Contains(persona, "verdict") || strings.Contains(persona, "dropped_all") {
+			t.Errorf("the %s persona names the gate's verdict vocabulary:\n%s", name, persona)
+		}
+	}
+}
+
+// The answer's shape follows the moment: the session decides the session's
+// next step and needs guidance for a message; the dead one only writes the
+// handover or asks; the gate keeps today's decisions.
+func TestParseCheckinAnswerMoments(t *testing.T) {
+	session := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-3"}
+	a, err := parseCheckinAnswer(`{"decision":"continue","reason":"the write landed twice, not four times"}`, session)
+	if err != nil || a.Decision != "continue" {
+		t.Fatalf("continue = (%+v, %v), want it to parse", a, err)
+	}
+	if _, err := parseCheckinAnswer(`{"decision":"message","reason":"redo the test"}`, session); err == nil {
+		t.Fatal("a message without guidance parsed")
+	}
+	a, err = parseCheckinAnswer(`{"decision":"message","guidance":"write the test first","reason":"redo the test"}`, session)
+	if err != nil || a.Guidance != "write the test first" {
+		t.Fatalf("message = (%+v, %v), want it to parse with its guidance", a, err)
+	}
+	a, err = parseCheckinAnswer(`{"decision":"handover","handover":"the state is on the branch"}`, session)
+	if err != nil || len(a.Findings) != 0 {
+		t.Fatalf("handover = (%+v, %v), want it to parse with no findings", a, err)
+	}
+	for _, text := range []string{
+		`{"decision":"dropped_all"}`,
+		`{"decision":"continue","findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}]}`,
+	} {
+		if _, err := parseCheckinAnswer(text, session); err == nil {
+			t.Errorf("the session ask parsed %s", text)
+		}
+	}
+	_, err = parseCheckinAnswer(`{"decision":"continue","findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}]}`, session)
+	if err == nil || !strings.Contains(err.Error(), `unknown finding "TasksByPR is undefined"`) {
+		t.Fatalf("a session finding = %v, want unknown finding", err)
+	}
+
+	dead := &CheckInAsk{Moment: CheckInDead, ParentSession: "s-dead-2"}
+	for _, text := range []string{
+		`{"decision":"handover","handover":"n"}`,
+		`{"decision":"human","reason_kind":"goal_conflict","reason":"r"}`,
+	} {
+		if _, err := parseCheckinAnswer(text, dead); err != nil {
+			t.Errorf("the dead ask refused %s: %v", text, err)
+		}
+	}
+	for _, text := range []string{
+		`{"decision":"dropped_all"}`,
+		`{"decision":"handover","findings":[{"text":"f","verdict":"confirmed"}]}`,
+	} {
+		if _, err := parseCheckinAnswer(text, dead); err == nil {
+			t.Errorf("the dead ask parsed %s", text)
+		}
+	}
+
+	gate := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}}
+	if _, err := parseCheckinAnswer(`{"decision":"continue","reason":"r"}`, gate); err == nil || !strings.Contains(err.Error(), `unknown decision "continue"`) {
+		t.Fatalf("a gate continue = %v, want unknown decision", err)
+	}
+}
+
+// The gate and dead check-ins may run a command in the workspace; the
+// session's check-in may not, and gets the same list without it.
+func TestCheckinToolsForMoments(t *testing.T) {
+	for _, moment := range []string{CheckInGate, CheckInDead} {
+		tools := checkinToolsFor(moment)
+		if len(tools) != len(checkinTools) || tools[len(tools)-1].Name != "run" {
+			t.Fatalf("%s tools = %d names, want the eight with run last", moment, len(tools))
+		}
+	}
+	session := checkinToolsFor(CheckInSession)
+	if len(session) != len(checkinTools)-1 {
+		t.Fatalf("session tools = %d names, want the seven without run", len(session))
+	}
+	if !reflect.DeepEqual(session, checkinTools[:len(checkinTools)-1]) {
+		t.Fatal("the session's tools are not the gate's list without run")
 	}
 }
