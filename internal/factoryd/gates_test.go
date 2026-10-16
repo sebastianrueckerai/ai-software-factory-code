@@ -229,6 +229,21 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	}
 }
 
+// The policy gate reads the diff: a skipped or removed test is a cheat the
+// workflow sends to the agent, and the gate records it.
+func TestGatePolicyFlagsCheats(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"x_test.go"}`}, diff: skipDiff}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if len(g.Cheats) != 1 || !strings.HasPrefix(g.Cheats[0], "anti-cheat: x_test.go:11") {
+		t.Fatalf("cheats = %q", g.Cheats)
+	}
+	if !strings.Contains(timeline(t, objects), `"cheats":["anti-cheat: x_test.go:11`) {
+		t.Fatalf("the gate_policy step lacks the cheats: %s", timeline(t, objects))
+	}
+}
+
 // A rename out of .forgejo counts under its old name: forbidden, and the
 // comment names the path.
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {
@@ -340,6 +355,7 @@ func TestParseReview(t *testing.T) {
 		"trailing text":        {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
 		"a note smuggled":      {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 		"an overrule smuggled": {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
+		"a drop smuggled":      {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseReview(tc.in)
@@ -720,6 +736,54 @@ func TestModelReviewBeyondItsReachIsNotReviewed(t *testing.T) {
 				t.Fatalf("model_review step = %v", step)
 			}
 		})
+	}
+}
+
+// A diff that fits the pinned review_diff_kib reads in one call, with no
+// part label, however many files it holds; beyond it, parts of that size.
+func TestModelReviewReadsAFittingDiffWhole(t *testing.T) {
+	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10) + diffFile("c.go", 30<<10)
+	for name, tc := range map[string]struct {
+		kib   int
+		calls int
+	}{"default 48": {0, 3}, "256": {256, 1}} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: diff}
+			r, _, _ := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			pinned := testPolicyVersion()
+			pinned.Document.Limits.ReviewDiffKiB = tc.kib
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7, Policy: PolicyGate{Class: "normal"}})
+			if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || len(ll.chats) != tc.calls {
+				t.Fatalf("review = %+v after %d calls, want %d", rv, len(ll.chats), tc.calls)
+			}
+			if tc.calls == 1 && (strings.Contains(userMessage(ll.chats[0]), `"part"`) || strings.Contains(userMessage(ll.chats[0]), "names_in_other_parts")) {
+				t.Fatalf("a whole-diff call carries no part or names: %s", userMessage(ll.chats[0])[:200])
+			}
+		})
+	}
+}
+
+// A later part's call reads the names every other part adds.
+func TestModelReviewPartsReadTheOtherPartsNames(t *testing.T) {
+	diff := diffFile("a.go", 30<<10, "func (s *Store) TasksByPR(ctx int) {}") + diffFile("b.go", 30<<10, "func useIt() {")
+	fj := &gateForgejo{diff: diff}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ll.chats) != 2 {
+		t.Fatalf("calls = %d, want 2", len(ll.chats))
+	}
+	if first := userMessage(ll.chats[0]); !strings.Contains(first, `"names_in_other_parts":"functions: useIt"`) {
+		t.Fatalf("part 1 lacks part 2's names: %s", first[:min(len(first), 600)])
+	}
+	if second := userMessage(ll.chats[1]); !strings.Contains(second, `"names_in_other_parts":"functions: TasksByPR"`) {
+		t.Fatalf("part 2 lacks part 1's names: %s", second[:min(len(second), 600)])
 	}
 }
 

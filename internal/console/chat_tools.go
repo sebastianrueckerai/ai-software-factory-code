@@ -85,6 +85,23 @@ type toolInput struct {
 	Missed    string           `json:"missed,omitempty"`
 	Tell      string           `json:"tell,omitempty"`
 	SkipUndo  bool             `json:"undo,omitempty"`
+	// The view tools' arguments (282), one per control of the screen
+	// board_view works; Find is the find's words, a call that names it
+	// with empty text clearing them.
+	View         string `json:"view,omitempty"`
+	Queued       string `json:"queued,omitempty"`
+	QueuedOnly   string `json:"queued_only,omitempty"`
+	Progress     string `json:"progress,omitempty"`
+	ProgressOnly string `json:"progress_only,omitempty"`
+	Done         string `json:"done,omitempty"`
+	DoneOnly     string `json:"done_only,omitempty"`
+	Routines     string `json:"routines,omitempty"`
+	Within       int    `json:"within,omitempty"`
+	Unit         string `json:"unit,omitempty"`
+	Card         string `json:"card,omitempty"`
+	Tab          string `json:"tab,omitempty"`
+	Panel        string `json:"panel,omitempty"`
+	Theme        string `json:"theme,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -242,7 +259,7 @@ func (tool chatTool) normalized(args string) string {
 // byTaskID names in's cards by their task ids: a card named by its issue
 // number, "#5" or 5, is the chat project's card of that issue.
 func (t *turn) byTaskID(in *toolInput) error {
-	for _, id := range []*string{&in.TaskID, &in.DependsOn} {
+	for _, id := range []*string{&in.TaskID, &in.DependsOn, &in.Card} {
 		n, err := strconv.ParseInt(strings.TrimPrefix(*id, "#"), 10, 64)
 		if err != nil || n <= 0 {
 			continue
@@ -672,6 +689,304 @@ func eventLines(events []factoryd.Event) string {
 		lines[i] = eventLine(e)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// orWords joins words the way a sentence lists them: "a, b or c".
+func orWords(ws ...string) string {
+	if len(ws) < 2 {
+		return strings.Join(ws, "")
+	}
+	return strings.Join(ws[:len(ws)-1], ", ") + " or " + ws[len(ws)-1]
+}
+
+// orderWords are a menu's order words for the view tool, newest naming
+// the default, as its refusal and schema name them.
+func orderWords(m menuSpec) []string {
+	ws := []string{"newest"}
+	for _, o := range m.Orders {
+		if o.Value != "" {
+			ws = append(ws, o.Value)
+		}
+	}
+	return ws
+}
+
+// showWords are a menu's show words for the view tool, all naming the
+// default; queued's also takes plan:n, as its menu offers per plan (C13).
+func showWords(m menuSpec) []string {
+	ws := []string{"all"}
+	for _, o := range m.Onlys {
+		if o.Value != "" {
+			ws = append(ws, o.Value)
+		}
+	}
+	if m.Name == "queued" {
+		ws = append(ws, "plan:n")
+	}
+	return ws
+}
+
+// takeOrder reads the call's order word for one menu: "" leaves the
+// page's choice, newest clears it, a word the menu does not carry is
+// refused naming the words it does, for the tool works the menu and a
+// word it does not offer names no control.
+func takeOrder(m menuSpec, w string) (set bool, v string, err error) {
+	if w == "" {
+		return false, "", nil
+	}
+	if w == "newest" {
+		return true, "", nil
+	}
+	for _, o := range m.Orders {
+		if o.Value == w {
+			return true, w, nil
+		}
+	}
+	return false, "", refuse(http.StatusBadRequest, fmt.Sprintf("The %s order must be %s.", m.Name, orWords(orderWords(m)...)))
+}
+
+// takeShow reads the call's show word for one menu, all naming the
+// default and queued's taking plan:n for the plan with that number.
+func takeShow(m menuSpec, w string) (set bool, v string, err error) {
+	if w == "" {
+		return false, "", nil
+	}
+	if m.Name == "queued" && strings.HasPrefix(w, "plan:") {
+		if _, e := strconv.ParseInt(strings.TrimPrefix(w, "plan:"), 10, 64); e == nil {
+			return true, w, nil
+		}
+		return false, "", refuse(http.StatusBadRequest, fmt.Sprintf("The %s show must be %s.", m.Name, orWords(showWords(m)...)))
+	}
+	if w == "all" {
+		return true, "", nil
+	}
+	for _, o := range m.Onlys {
+		if o.Value == w {
+			return true, w, nil
+		}
+	}
+	return false, "", refuse(http.StatusBadRequest, fmt.Sprintf("The %s show must be %s.", m.Name, orWords(showWords(m)...)))
+}
+
+// pageFilter is the board's filter the member's page stands on (282):
+// the view field the chat's POST carries, read as the URL's query is,
+// under the chat's own project. Only the wide view is a view the board
+// carries, so no other view word rides along.
+func (t *turn) pageFilter() boardFilter {
+	v, _ := url.ParseQuery(strings.TrimPrefix(t.pageQuery, "?"))
+	f := boardFilter{Project: t.p.Name, Q: strings.TrimSpace(v.Get("q"))}
+	if v.Get("view") == viewWide {
+		f.View = viewWide
+	}
+	readCols(&f, v.Get)
+	return f
+}
+
+// viewNote says what the board now shows, in the words of its controls,
+// for the view tools' stored answer (282).
+func (f boardFilter) viewNote() string {
+	var parts []string
+	if f.View == viewWide {
+		parts = append(parts, "the wide view")
+	}
+	if f.Q != "" {
+		parts = append(parts, fmt.Sprintf("find %q", f.Q))
+	}
+	for _, m := range colMenus {
+		c := f.col(m.Name)
+		var ws []string
+		for _, o := range m.Orders {
+			if o.Value != "" && o.Value == c.Order {
+				ws = append(ws, o.Label)
+			}
+		}
+		for _, o := range m.Onlys {
+			if o.Value != "" && o.Value == c.Only {
+				ws = append(ws, o.Label)
+			}
+		}
+		if strings.HasPrefix(c.Only, "plan:") {
+			ws = append(ws, "from "+c.Only)
+		}
+		if len(ws) > 0 {
+			parts = append(parts, columnTitles[m.Col]+" "+strings.Join(ws, " and "))
+		}
+	}
+	switch f.Routines {
+	case "none":
+		parts = append(parts, "no routines")
+	case "within":
+		parts = append(parts, "routines within "+f.Period())
+	}
+	if len(parts) == 0 {
+		return "The board now shows every card, the default view."
+	}
+	return "The board now shows " + strings.Join(parts, ", ") + "."
+}
+
+// tabNames are the drawer's tabs by name, from drawerTabs itself.
+var tabNames = func() (ns []string) {
+	for _, d := range drawerTabs {
+		ns = append(ns, d.Name)
+	}
+	return ns
+}()
+
+// setView is the board view and reset tools' run (282): the page's view
+// and the call's words merge into one filter whose query the member's
+// screen alone then holds, as a click holds it, nothing stored. Reset
+// instead clears every control to the board's default and closes the
+// drawer, leaving the member's panel fold and theme theirs.
+func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
+	var f boardFilter
+	var e map[string]any
+	if reset {
+		f = boardFilter{Project: t.p.Name}
+		e = map[string]any{"card": ""}
+	} else {
+		f = t.pageFilter()
+		e = map[string]any{}
+		for _, m := range colMenus {
+			var order, only string
+			switch m.Name {
+			case "queued":
+				order, only = in.Queued, in.QueuedOnly
+			case "progress":
+				order, only = in.Progress, in.ProgressOnly
+			case "done":
+				order, only = in.Done, in.DoneOnly
+			}
+			c := f.col(m.Name)
+			if set, v, err := takeOrder(m, order); err != nil {
+				return "", nil, err
+			} else if set {
+				c.Order = v
+			}
+			if set, v, err := takeShow(m, only); err != nil {
+				return "", nil, err
+			} else if set {
+				c.Only = v
+			}
+			f.setCol(m.Name, c)
+		}
+		if t.present["find"] {
+			f.Q = strings.TrimSpace(in.Find)
+		}
+		switch in.View {
+		case "":
+		case "wide":
+			f.View = viewWide
+		case "none":
+			f.View = ""
+		default:
+			return "", nil, refuse(http.StatusBadRequest, "The view must be wide or none.")
+		}
+		switch in.Routines {
+		case "":
+		case "all":
+			f.Routines = ""
+		case "none", "within":
+			f.Routines = in.Routines
+		default:
+			return "", nil, refuse(http.StatusBadRequest, "The routines must be all, within or none.")
+		}
+		if in.Within != 0 || t.present["within"] {
+			if in.Within < 1 || in.Within > 999 {
+				return "", nil, refuse(http.StatusBadRequest, "The period must be 1 to 999.")
+			}
+			if f.Routines != "within" {
+				return "", nil, refuse(http.StatusBadRequest, "The within and unit words need routines within.")
+			}
+			f.Within = in.Within
+		}
+		if in.Unit != "" {
+			if _, ok := periodUnits[in.Unit]; !ok {
+				return "", nil, refuse(http.StatusBadRequest, "The unit must be days or hours.")
+			}
+			if f.Routines != "within" {
+				return "", nil, refuse(http.StatusBadRequest, "The within and unit words need routines within.")
+			}
+			f.Unit = in.Unit
+		}
+		// the routines control's own defaults, which the page query's
+		// reader gives a routines=within it stands on
+		if f.Routines == "within" {
+			if f.Within < 1 {
+				f.Within = 1
+			}
+			if f.Unit == "" {
+				f.Unit = "days"
+			}
+		}
+		if in.Tab != "" {
+			if !slices.Contains(tabNames, in.Tab) {
+				return "", nil, refuse(http.StatusBadRequest, "The tab must be "+orWords(tabNames...)+".")
+			}
+			if in.Card == "" {
+				return "", nil, refuse(http.StatusBadRequest, "The tab needs the card it opens.")
+			}
+			e["tab"] = in.Tab
+		}
+		if in.Card != "" {
+			task, err := t.c.cardIn(t.r.Context(), t.a, in.Card)
+			if err != nil {
+				return "", nil, err
+			}
+			e["card"] = task.ID
+		}
+		switch in.Panel {
+		case "":
+		case "open", "closed":
+			e["panel"] = in.Panel
+		default:
+			return "", nil, refuse(http.StatusBadRequest, "The panel must be open or closed.")
+		}
+		switch in.Theme {
+		case "":
+		case "dark", "light":
+			e["theme"] = in.Theme
+		default:
+			return "", nil, refuse(http.StatusBadRequest, "The theme must be dark or light.")
+		}
+	}
+	e["query"] = f.query()
+	t.viewEvent = e
+	if reset {
+		return "The board is back to its default view and the drawer is closed.", nil, nil
+	}
+	note := f.viewNote()
+	if card, ok := e["card"].(string); ok {
+		note = strings.TrimSuffix(note, ".") + ", the card " + card + " open in the drawer."
+	}
+	if p, ok := e["panel"].(string); ok {
+		note = strings.TrimSuffix(note, ".") + ", the panel " + p + "."
+	}
+	if th, ok := e["theme"].(string); ok {
+		note = strings.TrimSuffix(note, ".") + ", the " + th + " theme."
+	}
+	return note, nil, nil
+}
+
+// boardViewParams are the board view tool's controls (282), one per
+// control of the screen, the menus' words read from the menus themselves.
+func boardViewParams() map[string]any {
+	p := map[string]any{
+		"view":     enum("the wide view: wide or none", "wide", "none"),
+		"find":     str("the find's words, empty clears"),
+		"routines": enum("the routines: all, within or none", "all", "within", "none"),
+		"within":   map[string]any{"type": "integer", "description": "the period's length, 1 to 999", "minimum": 1, "maximum": 999},
+		"unit":     enum("the period's unit: days or hours", "days", "hours"),
+		"card":     str("the card to open in the drawer"),
+		"tab":      enum("the card's tab: "+orWords(tabNames...), tabNames...),
+		"panel":    enum("the status panel: open or closed", "open", "closed"),
+		"theme":    enum("the theme: dark or light", "dark", "light"),
+	}
+	for _, m := range colMenus {
+		title := strings.ToLower(columnTitles[m.Col][:1]) + columnTitles[m.Col][1:]
+		p[m.Name] = enum(title+" order: "+orWords(orderWords(m)...), orderWords(m)...)
+		p[m.Name+"_only"] = enum(title+" show: "+orWords(showWords(m)...), showWords(m)...)
+	}
+	return p
 }
 
 // tools are the project agent's tools in policy.ChatTools' order.
@@ -1124,6 +1439,15 @@ var tools = []chatTool{
 			s, err := t.activeThreads()
 			return s, nil, err
 		}},
+	{name: "board_view", title: "Board view",
+		about:  "Works the board's view controls as a click does: menus, find, routines, card, panel, theme.",
+		params: boardViewParams(),
+		run:    func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(in, false) },
+	},
+	{name: "board_view_reset", title: "Board view reset",
+		about: "Clears the board's view controls to the default and closes the drawer.",
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(toolInput{}, true) },
+	},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)

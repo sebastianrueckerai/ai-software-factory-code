@@ -338,7 +338,7 @@ func main() {
 		nudged := map[string]time.Time{}
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
-			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, gates, nudged)
+			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			// SigNoz's rules evaluate every minute, so its list changes no
 			// faster: a sweep a minute heals a lost resolve before a card's
 			// first model call or a promotion's check reads the row

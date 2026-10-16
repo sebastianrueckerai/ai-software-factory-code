@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -90,6 +91,11 @@ type ServerOptions struct {
 	// FactorydToken is the gateway-factoryd token: with it factoryd calls a
 	// model on a task's account for one of policy.Purposes.
 	FactorydToken string
+	// Spend prices a call whose caller left from LiteLLM's spend log; the
+	// read waits SettleWait (45s) at SettleEvery (5s) for a row.
+	Spend       SpendLog
+	SettleWait  time.Duration
+	SettleEvery time.Duration
 }
 
 // factoryd names the task and the purpose of its model calls in these
@@ -668,6 +674,7 @@ type modelCall struct {
 	status   string
 	callCost *float64
 	duration time.Duration
+	note     string // why finish booked what it did, on the audit row
 }
 
 var zero = 0.0
@@ -683,9 +690,12 @@ var zeroCost = &zero
 func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 	cost = policy.KnownCost(cost)
 	c.callCost, c.duration = cost, s.now().Sub(c.started)
-	reason := ""
+	reason := c.note
 	if cost == nil {
 		reason = fmt.Sprintf("cost not reported, booked the hold %.6f EUR", c.hold.EUR)
+		if c.note != "" {
+			reason = c.note + ": " + reason
+		}
 	}
 	b, err := s.opts.Store.ReleaseHold(context.Background(), c.hold, cost, c.usage)
 	if err != nil {
@@ -701,6 +711,54 @@ func (s *Server) finish(c *modelCall, cost *float64, decision string) {
 		return
 	}
 	s.auditCall(c, decision, reason, &b.Spent)
+}
+
+const (
+	defaultSettleWait  = 45 * time.Second
+	defaultSettleEvery = 5 * time.Second
+)
+
+// settleCanceled books a call whose caller left, from LiteLLM's spend log:
+// the rows' sum when they appear within the wait, zero when the log is
+// readable and holds none, the full hold when it cannot be read. It audits
+// the call as client_canceled.
+func (s *Server) settleCanceled(c *modelCall) {
+	var cost *float64
+	var readErr error
+	if s.opts.Spend == nil {
+		readErr = errors.New("no spend log configured")
+	} else {
+		wait, every := cmp.Or(s.opts.SettleWait, defaultSettleWait), cmp.Or(s.opts.SettleEvery, defaultSettleEvery)
+		deadline := time.Now().Add(wait)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			v, found, err := s.readSpend(ctx, c)
+			cancel()
+			readErr = err
+			if found {
+				cost, c.note = &v, fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v)
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(every)
+		}
+	}
+	switch {
+	case cost != nil:
+	case readErr != nil:
+		c.note = fmt.Sprintf("caller left; spend log unreadable (%v)", readErr)
+	default:
+		cost, c.note = zeroCost, "caller left; no spend record for the call: booked 0 EUR"
+	}
+	s.finish(c, cost, "client_canceled")
+}
+
+// readSpend prices this call alone: the hold id tags the call in LiteLLM's
+// log, so a key re-minted mid-call cannot move a spend row to another key.
+func (s *Server) readSpend(ctx context.Context, c *modelCall) (float64, bool, error) {
+	return s.opts.Spend.CallSpend(ctx, c.key.key, c.hold.ID, c.started)
 }
 
 func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, body []byte, stream bool) {
@@ -721,15 +779,18 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		}
 		upReq.Header.Set("Content-Type", contentType(r))
 		upReq.Header.Set("Authorization", "Bearer "+c.key.key)
+		upReq.Header.Set("X-LiteLLM-Spend-Logs-Metadata", fmt.Sprintf(`{"hold_id":%d}`, c.hold.ID))
 
 		res, err := s.http.Do(upReq)
 		if err != nil {
-			// the provider may have run part of the call: book the hold
-			s.finish(c, nil, "")
 			if r.Context().Err() != nil {
-				s.refuse(w, c.pid, c.task.ID, c.kind, "client_canceled", err.Error(), c.alias, statusClientCanceled, "client_canceled")
+				s.settleCanceled(c)
+				w.Header().Set(HeaderDecision, "client_canceled")
+				writeError(w, statusClientCanceled, "client_canceled", err.Error())
 				return
 			}
+			// the provider may have run part of the call: book the hold
+			s.finish(c, nil, "")
 			s.refuse(w, c.pid, c.task.ID, c.kind, "error_upstream", err.Error(), c.alias, http.StatusBadGateway, "upstream_error")
 			return
 		}
@@ -799,8 +860,8 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		// Each call's own cost is booked onto the task. x-litellm-key-spend is
 		// not: it is a cached read that lags, and a stream's headers leave before
 		// its cost exists. A stream's cost arrives in its final usage chunk; a
-		// stream the client broke off never shows it, and books the hold.
-		// Any other answer is one JSON document with its usage.
+		// stream the client broke off never shows it: the spend log prices it
+		// (settleCanceled). Any other answer is one JSON document with its usage.
 		scan := &usageScanner{doc: !stream}
 		s.stream(w, io.TeeReader(res.Body, scan))
 		var cost *float64
@@ -813,6 +874,10 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 			}
 		}
 		c.usage.PromptTokens, c.usage.CachedTokens, c.usage.OutputTokens = scan.usage.Prompt, scan.usage.Details.Cached, scan.usage.Output
+		if cost == nil && r.Context().Err() != nil {
+			s.settleCanceled(c)
+			return
+		}
 		s.finish(c, cost, "allowed")
 		return
 	}

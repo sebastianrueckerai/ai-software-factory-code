@@ -106,6 +106,20 @@ func (w TemporalWorkflows) LastFailure(ctx context.Context, workflowID, activity
 	return "", nil
 }
 
+// Alive: the task's workflow is running now. A workflow that is missing,
+// completed, failed or terminated is not; a Temporal error is an error.
+func (w TemporalWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	res, err := w.Client.DescribeWorkflowExecution(ctx, WorkflowID(taskID), "")
+	var missing *serviceerror.NotFound
+	if errors.As(err, &missing) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return res.GetWorkflowExecutionInfo().GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
+}
+
 func startOptions(taskID string) client.StartWorkflowOptions {
 	return client.StartWorkflowOptions{
 		ID:                    WorkflowID(taskID),
@@ -225,13 +239,14 @@ type StaleCards interface {
 // reporting nothing): a card of a live status (running, waiting-deps,
 // waiting-poster — never the queue, whose wait owes no work) quiet for the
 // stale window is nudged — SignalWithStart starts a workflow that died —
-// and one still quiet a window after its nudge, with no activity of its
-// workflow running here (GateWatch, the gates' own liveness), is escalated
-// to a human like any escalation: waiting-human, the question on the card,
-// an event row, an alert. nudged is the sweep's memory of its signals
-// (task id → when), owned by the caller's loop; a card that reports again
-// is forgotten and starts over.
-func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake, gates *GateWatch, nudged map[string]time.Time) {
+// and one still quiet a window after its nudge is escalated to a human
+// like any escalation: waiting-human, the question on the card, an event
+// row, an alert. A card whose workflow Temporal reports running (alive)
+// is never nudged or escalated, in any state, since a quiet wait is by
+// design. nudged is the sweep's memory of its signals (task id → when),
+// owned by the caller's loop; a card that reports again is forgotten and
+// starts over.
+func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake, alive func(ctx context.Context, taskID string) (bool, error), nudged map[string]time.Time) {
 	var objects ObjectStore
 	if in != nil && in.Timeline != nil {
 		objects = in.Timeline.Objects
@@ -262,8 +277,20 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake,
 			if stepAt := newestStepAt(ctx, objects, t.ID); stepAt.After(at) {
 				at = stepAt
 			}
+			quiet := time.Since(at)
+			if quiet >= StaleWindow {
+				up, err := alive(ctx, t.ID)
+				if err != nil {
+					log.Printf("stale sweep: is the workflow of task %s alive: %v", t.ID, err)
+					continue
+				}
+				if up {
+					delete(nudged, t.ID)
+					continue
+				}
+			}
 			nudge, ok := nudged[t.ID]
-			switch quiet := time.Since(at); {
+			switch {
 			case quiet < StaleWindow:
 				// it reported: the ring comes off and the rungs start over
 				delete(nudged, t.ID)
@@ -278,11 +305,6 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake,
 			case time.Since(nudge) < StaleWindow:
 				// the nudge's grace: the workflow has a window to answer
 			default:
-				if gates != nil {
-					if _, running := gates.RunningActivity(WorkflowID(t.ID)); running {
-						continue
-					}
-				}
 				if err := escalateStale(ctx, store, in, t, quiet); err != nil {
 					log.Printf("stale sweep: escalate task %s: %v", t.ID, err)
 					continue

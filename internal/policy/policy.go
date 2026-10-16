@@ -124,7 +124,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
-	"notes_read", "notes_write", "escalate", "active_threads"}
+	"notes_read", "notes_write", "escalate", "active_threads", "board_view", "board_view_reset"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
@@ -297,6 +297,11 @@ type Limits struct {
 	// NudgeAfter: a repetition gets its nudges first. Absent:
 	// DefaultSameCall.
 	SameCall int `yaml:"same_call,omitempty" json:"same_call"`
+	// ReviewDiffKiB is the most diff, in KiB, one model review call reads,
+	// and the size of a part when a bigger diff reads in parts (at most
+	// ReviewParts). Size it to the review model's context window: about 257
+	// tokens a KiB. Absent: DefaultReviewDiffKiB.
+	ReviewDiffKiB int `yaml:"review_diff_kib,omitempty" json:"review_diff_kib"`
 	// WarnAt is the percent of a card's budget, or of a session's agent
 	// time, spent when factoryd tells the running agent to wrap up and
 	// push, 1 to 99. Absent: DefaultWarnAt.
@@ -319,6 +324,17 @@ const DefaultSameCall = 4
 
 // SameCallAfter is SameCall, or DefaultSameCall when unset.
 func (l Limits) SameCallAfter() int { return cmp.Or(l.SameCall, DefaultSameCall) }
+
+// The review diff limit of a policy without limits.review_diff_kib, and of
+// a version pinned before the key existed, and the most a policy may set
+// (Forgejo's diff answer is cut at 1 MiB).
+const (
+	DefaultReviewDiffKiB = 48
+	MaxReviewDiffKiB     = 1024
+)
+
+// ReviewDiffBytes is ReviewDiffKiB in bytes, DefaultReviewDiffKiB where unset.
+func (l Limits) ReviewDiffBytes() int { return cmp.Or(l.ReviewDiffKiB, DefaultReviewDiffKiB) << 10 }
 
 // The wrap-up warning, the spend-without-push line and the compaction
 // threshold of a policy without the keys, and of a version pinned before
@@ -383,6 +399,7 @@ type limitsJSON struct {
 	NudgeAfter        int    `json:"nudge_after"`
 	Nudges            int    `json:"nudges"`
 	SameCall          int    `json:"same_call"`
+	ReviewDiffKiB     int    `json:"review_diff_kib,omitempty"`
 	WarnAt            int    `json:"warn_at,omitempty"`
 	PlanWarnAt        int    `json:"plan_warn_at,omitempty"`
 	NoPushSpend       int    `json:"no_push_spend,omitempty"`
@@ -390,7 +407,7 @@ type limitsJSON struct {
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -399,7 +416,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
-		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt,
+		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB, WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt,
 		NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
 	for _, d := range []struct {
 		s  string
@@ -463,6 +480,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.NoPushSpend)
 	case l.ContextTokens != 0 && (l.ContextTokens < MinContextTokens || l.ContextTokens > ModelContext):
 		return fmt.Errorf("policy: limits.context_tokens must lie between %d and %d when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", MinContextTokens, ModelContext, l.ContextTokens)
+	case l.ReviewDiffKiB != 0 && (l.ReviewDiffKiB < DefaultReviewDiffKiB || l.ReviewDiffKiB > MaxReviewDiffKiB):
+		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	}
 	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())
