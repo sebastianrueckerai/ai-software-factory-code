@@ -1462,6 +1462,16 @@ func TestChatBoardView(t *testing.T) {
 	if !slices.Contains(ev, `view {"card":"t-r","panel":"closed","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
 		t.Errorf("the card, tab, panel and theme do not ride along:\n%s", strings.Join(ev, "\n"))
 	}
+	// the POST's view field is bounded and only the wide view rides: one
+	// too long reads as absent, a view word the board does not carry drops
+	ev = post("view="+strings.Repeat("v", 4092), `{}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
+		t.Errorf("an overlong view field does not read as absent:\n%s", strings.Join(ev, "\n"))
+	}
+	ev = post("?project=ai-software-factory-code&view=narrow&q=cache", `{}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026q=cache"}`) {
+		t.Errorf("a view word the board does not carry rides along:\n%s", strings.Join(ev, "\n"))
+	}
 	// reset clears every control and closes the drawer
 	g.replies = [][]string{{call(0, "board_view_reset", `{}`)}, {say("done")}}
 	_, ev, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"reset the view"},

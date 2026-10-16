@@ -770,10 +770,14 @@ func takeShow(m menuSpec, w string) (set bool, v string, err error) {
 
 // pageFilter is the board's filter the member's page stands on (282):
 // the view field the chat's POST carries, read as the URL's query is,
-// under the chat's own project.
+// under the chat's own project. Only the wide view is a view the board
+// carries, so no other view word rides along.
 func (t *turn) pageFilter() boardFilter {
 	v, _ := url.ParseQuery(strings.TrimPrefix(t.pageQuery, "?"))
-	f := boardFilter{Project: t.p.Name, View: v.Get("view"), Q: strings.TrimSpace(v.Get("q"))}
+	f := boardFilter{Project: t.p.Name, Q: strings.TrimSpace(v.Get("q"))}
+	if v.Get("view") == viewWide {
+		f.View = viewWide
+	}
 	readCols(&f, v.Get)
 	return f
 }

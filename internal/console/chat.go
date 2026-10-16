@@ -30,6 +30,7 @@ const (
 	chatRounds     = 8                // model calls a turn may make
 	chatTTL        = 30 * time.Minute // a proposal's and an undo's life
 	chatMessageMax = 8 << 10
+	chatViewMax    = 4 << 10 // the view field a chat's POST carries
 	// chatWindow bounds each write of a chat stream: longer than a model
 	// call, during which the stream writes nothing.
 	chatWindow = 3 * time.Minute
@@ -249,7 +250,9 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	t.pageQuery = r.PostFormValue("view")
+	if v := r.PostFormValue("view"); len(v) <= chatViewMax {
+		t.pageQuery = v
+	}
 	text := strings.TrimSpace(r.PostFormValue("message"))
 	if text == "" || len(text) > chatMessageMax {
 		http.Error(w, "a message of up to 8 KiB is required", http.StatusBadRequest)
