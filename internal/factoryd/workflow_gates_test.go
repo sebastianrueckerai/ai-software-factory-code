@@ -802,3 +802,22 @@ func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
 		t.Fatalf("steps = %v", g.steps)
 	}
 }
+
+// A review whose every finding the grep dropped starts no session: the
+// pull request goes to the approval card with the drops, and the verdict
+// stays concerns, so the merge rule auto does not merge it.
+func TestWorkflowDroppedFindingsStartNoSession(t *testing.T) {
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "Sym is missing",
+			Dropped: []Dropped{{Finding: "b.go: Sym is never defined", Kind: ClaimUndefined, Symbol: "Sym", Evidence: "a.go:3 at head: func Sym() {}"}}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 1 || len(g.approvals) != 1 || len(g.approvals[0].Review.Dropped) != 1 || g.approvals[0].Review.Verdict != "concerns" {
+		t.Fatalf("sessions %d, approvals %+v", len(g.sessions), g.approvals)
+	}
+}

@@ -340,6 +340,7 @@ func TestParseReview(t *testing.T) {
 		"trailing text":        {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
 		"a note smuggled":      {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 		"an overrule smuggled": {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
+		"a drop smuggled":      {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseReview(tc.in)

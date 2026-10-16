@@ -120,6 +120,9 @@ type Adjudication struct {
 // strict improvement with no drawback (ruling 149). Adjudicated holds, by
 // the finding's text, the overrules an approval recorded on the review's
 // findings (roadmap 192); the review model neither sees nor answers it.
+// Claims name, by finding index, the absent names a finding asserts;
+// Dropped holds the findings a grep of the repository contradicted, with
+// the evidence (never answer fields).
 type Review struct {
 	Verdict           string                  `json:"verdict"`
 	Summary           string                  `json:"summary"`
@@ -127,6 +130,8 @@ type Review struct {
 	StrictImprovement *bool                   `json:"strict_improvement,omitempty"`
 	Note              string                  `json:"note,omitempty"`
 	Adjudicated       map[string]Adjudication `json:"adjudicated,omitempty"`
+	Claims            []Claim                 `json:"claims,omitempty"`
+	Dropped           []Dropped               `json:"dropped,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto (rulings 149, 167, 169): the
@@ -754,7 +759,7 @@ const reviewPartPrompt = `You review one part of the diff of a pull request an a
 ` + reviewFormat + ` When last_findings is present, it holds the findings on this part's files of your last review of an earlier head of this task, which went back to the agent: say in your summary which of them the new head addressed, and list each one it did not address as a finding again.`
 
 // reviewFormat is the answer both review prompts ask for.
-const reviewFormat = `Answer with one JSON object and nothing else: {"verdict": "approve|concerns", "summary": "...", "findings": ["..."]}. verdict approve when you would merge it as it is, concerns otherwise. summary: under 500 characters. findings: each one concrete issue naming the file, at most 10; empty for approve without remarks. Always add "strict_improvement": true or false: true only when the change fixes a real fault and is a strict improvement with no drawback (nothing anyone could rely on gets worse).`
+const reviewFormat = `Answer with one JSON object and nothing else: {"verdict": "approve|concerns", "summary": "...", "findings": ["..."]}. verdict approve when you would merge it as it is, concerns otherwise. summary: under 500 characters. findings: each one concrete issue naming the file, at most 10; empty for approve without remarks. Always add "strict_improvement": true or false: true only when the change fixes a real fault and is a strict improvement with no drawback (nothing anyone could rely on gets worse). Add "claims" for every finding that says a name is absent, undefined, never called or not implemented: [{"finding": <index of the finding in findings, from 0>, "kind": "undefined|uncalled", "symbol": "<the bare identifier>"}]. undefined: the symbol is defined nowhere in the repository. uncalled: it is defined and nothing calls it. The factory searches the repository at the head and at main for the symbol and drops a finding the search contradicts. Give no claim for any other finding.`
 
 // reviewChecksRan, reviewChecksBeside and reviewChecksApart are the
 // prompt's sentence on the checks, by what the run did: Beside marks a
@@ -858,7 +863,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 		return nil, byPart
 	}
 	last := found[0]
-	last.Summary, last.Adjudicated = textutil.Truncate(last.Summary, maxReviewSummary), nil
+	last.Summary, last.Adjudicated, last.Claims, last.Dropped = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -874,8 +879,8 @@ const (
 )
 
 // parseReview validates the model's verdict: one JSON object, a known
-// verdict, a summary, no other field; a markdown fence is tolerated. An
-// invalid answer is a note, never a failure.
+// verdict, a summary, no field beyond claims; a markdown fence is
+// tolerated. An invalid answer is a note, never a failure.
 func parseReview(content string) Review {
 	s := strings.TrimSpace(content)
 	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
@@ -902,16 +907,27 @@ func parseReview(content string) Review {
 	if rv.Adjudicated != nil {
 		return invalid("adjudicated is not an answer field")
 	}
+	if rv.Dropped != nil {
+		return invalid("dropped is not an answer field")
+	}
 	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
 	}
 	var findings []string
-	for _, f := range rv.Findings {
+	at := map[int]int{}
+	for i, f := range rv.Findings {
 		if f = strings.TrimSpace(f); f != "" && len(findings) < maxReviewFindings {
+			at[i] = len(findings)
 			findings = append(findings, textutil.Truncate(f, maxReviewFinding))
 		}
 	}
-	rv.Findings = findings
+	var claims []Claim
+	for _, c := range rv.Claims {
+		if k, ok := at[c.Finding]; ok && validClaim(c) {
+			claims = append(claims, Claim{k, c.Kind, c.Symbol})
+		}
+	}
+	rv.Findings, rv.Claims = findings, claims
 	return rv
 }
 
@@ -930,7 +946,8 @@ func reviewAnswer(content string, err error) Review {
 
 // combineReviews joins the verdicts of a diff's parts: concerns with every
 // part's findings when any part has concerns, else approve; a strict
-// improvement only when every part says so.
+// improvement only when every part says so. The claims renumber to the
+// joined findings.
 func combineReviews(parts []Review) Review {
 	rv := Review{Verdict: "approve"}
 	var summaries []string
@@ -940,6 +957,10 @@ func combineReviews(parts []Review) Review {
 			rv.Verdict = "concerns"
 		}
 		summaries = append(summaries, p.Summary)
+		for _, c := range p.Claims {
+			c.Finding += len(rv.Findings)
+			rv.Claims = append(rv.Claims, c)
+		}
 		rv.Findings = append(rv.Findings, p.Findings...)
 		asked = asked || p.StrictImprovement != nil
 		strict = strict && p.StrictImprovement != nil && *p.StrictImprovement
@@ -1043,7 +1064,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			answers = append(answers, a)
 		}
 		if rv.Note == "" {
-			rv = combineReviews(answers)
+			rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
 			read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(files), "file", "files"), kib(len(diff)))
 		}
 	}
@@ -1054,8 +1075,12 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, r.untrusted(t, reviewComment(model, commit, rv, read))); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}
-	r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "model": model,
-		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": round}))
+	detail := reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "model": model,
+		"verdict": rv.Verdict, "summary": rv.Summary, "findings": rv.Findings, "note": rv.Note, "round": round})
+	if len(rv.Dropped) > 0 {
+		detail["dropped"] = rv.Dropped
+	}
+	r.record(ctx, t.ID, "model_review", detail)
 	process, lane := processLane(ctx, r.store, t)
 	r.countReview(ctx, rv, round, process, lane)
 	return rv, nil
@@ -1076,6 +1101,9 @@ func reviewComment(model, commit string, rv Review, read string) string {
 	}
 	for _, f := range rv.Findings {
 		fmt.Fprintf(&b, "\n- %s", f)
+	}
+	for _, d := range rv.Dropped {
+		fmt.Fprintf(&b, "\n- Dropped by code, the repository contradicts it (%s): %s", d.Evidence, d.Finding)
 	}
 	fmt.Fprintf(&b, "\n\n%s", read)
 	return b.String()

@@ -543,6 +543,9 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		if review.Verdict == "concerns" {
 			if len(review.Findings) == 0 {
+				if len(review.Dropped) > 0 {
+					return nil, verdict{}, false
+				}
 				return []string{"model review: " + review.Summary}, verdict{}, false
 			}
 			return review.Findings, verdict{}, false
