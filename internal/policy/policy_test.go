@@ -648,6 +648,7 @@ classes:
     review_model: review-frontier
     supervisor_model: supervisor
     audit_model: coding-frontier
+    checkin_model: checkin
   researcher:
     session: code
     models: [coding-cheap]
@@ -675,6 +676,9 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{"coder"}, PurposeSupervisor, "supervisor"},
 		{[]string{"coder"}, PurposeGateSupervisor, "supervisor"},
 		{[]string{"coder"}, PurposeAudit, "coding-frontier"},
+		{[]string{"coder"}, PurposeCheckin, "checkin"},
+		{[]string{"researcher"}, PurposeCheckin, "review-cheap"},
+		{[]string{"plain"}, PurposeCheckin, ""},
 		{[]string{"researcher"}, PurposeAudit, ""},
 		{[]string{"researcher", "coder"}, PurposeReview, "review-cheap"},
 		{[]string{"researcher", "coder"}, PurposeSupervisor, "supervisor"},
@@ -695,6 +699,9 @@ func TestFactoryModel(t *testing.T) {
 	}
 	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"coding-frontier", "review-cheap", "supervisor"}) {
 		t.Fatalf("FactoryModels = %v", got)
+	}
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"checkin", "coding-frontier", "review-frontier", "supervisor"}) {
+		t.Fatalf("FactoryModels(coder) = %v, want the check-in alias once", got)
 	}
 }
 
@@ -1029,6 +1036,32 @@ func TestTimeValidation(t *testing.T) {
 		"review_diff_kib 48":   {func() Limits { l := base; l.ReviewDiffKiB = 48; return l }(), true},
 		"review_diff_kib 1024": {func() Limits { l := base; l.ReviewDiffKiB = 1024; return l }(), true},
 		"review_diff_kib 1025": {func() Limits { l := base; l.ReviewDiffKiB = 1025; return l }(), false},
+
+		"checkin_calls 0":             {func() Limits { l := base; l.CheckinCalls = 0; return l }(), true},
+		"checkin_calls -1":            {func() Limits { l := base; l.CheckinCalls = -1; return l }(), false},
+		"checkin_calls 1":             {func() Limits { l := base; l.CheckinCalls = 1; return l }(), true},
+		"checkin_calls 48":            {func() Limits { l := base; l.CheckinCalls = 48; return l }(), true},
+		"checkin_calls 49":            {func() Limits { l := base; l.CheckinCalls = 49; return l }(), false},
+		"checkin_share 0":             {func() Limits { l := base; l.CheckinShare = 0; return l }(), true},
+		"checkin_share -1":            {func() Limits { l := base; l.CheckinShare = -1; return l }(), false},
+		"checkin_share 1":             {func() Limits { l := base; l.CheckinShare = 1; return l }(), true},
+		"checkin_share 100":           {func() Limits { l := base; l.CheckinShare = 100; return l }(), true},
+		"checkin_share 101":           {func() Limits { l := base; l.CheckinShare = 101; return l }(), false},
+		"checkin_tail_kib 0":          {func() Limits { l := base; l.CheckinTailKiB = 0; return l }(), true},
+		"checkin_tail_kib 3":          {func() Limits { l := base; l.CheckinTailKiB = 3; return l }(), false},
+		"checkin_tail_kib 4":          {func() Limits { l := base; l.CheckinTailKiB = 4; return l }(), true},
+		"checkin_tail_kib 64":         {func() Limits { l := base; l.CheckinTailKiB = 64; return l }(), true},
+		"checkin_tail_kib 65":         {func() Limits { l := base; l.CheckinTailKiB = 65; return l }(), false},
+		"checkin_handover_chars 0":    {func() Limits { l := base; l.CheckinHandoverChars = 0; return l }(), true},
+		"checkin_handover_chars 199":  {func() Limits { l := base; l.CheckinHandoverChars = 199; return l }(), false},
+		"checkin_handover_chars 200":  {func() Limits { l := base; l.CheckinHandoverChars = 200; return l }(), true},
+		"checkin_handover_chars 8000": {func() Limits { l := base; l.CheckinHandoverChars = 8000; return l }(), true},
+		"checkin_handover_chars 8001": {func() Limits { l := base; l.CheckinHandoverChars = 8001; return l }(), false},
+		"checkin_sessions 0":          {func() Limits { l := base; l.CheckinSessions = 0; return l }(), true},
+		"checkin_sessions -1":         {func() Limits { l := base; l.CheckinSessions = -1; return l }(), false},
+		"checkin_sessions 1":          {func() Limits { l := base; l.CheckinSessions = 1; return l }(), true},
+		"checkin_sessions 3":          {func() Limits { l := base; l.CheckinSessions = 3; return l }(), true},
+		"checkin_sessions 4":          {func() Limits { l := base; l.CheckinSessions = 4; return l }(), false},
 	} {
 		t.Run("limits "+name, func(t *testing.T) {
 			if err := tc.limits.validate(); tc.ok != (err == nil) {
@@ -1044,6 +1077,39 @@ func TestReviewDiffBytes(t *testing.T) {
 	}
 	if got := (Limits{ReviewDiffKiB: 256}).ReviewDiffBytes(); got != 256<<10 {
 		t.Fatalf("256 KiB = %d, want 262144", got)
+	}
+}
+
+// The check-in agent's five limits: absent keys read their defaults, of a
+// policy without them and of a version pinned before they existed.
+func TestCheckinLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		limits       Limits
+		wantCap      int
+		wantShare    float64
+		wantTail     int
+		wantHandover int
+		wantSessions int
+	}{
+		{"checkin defaults", Limits{}, 12, 0.5, 24576, 2000, 1},
+		{"checkin set", Limits{CheckinCalls: 20, CheckinShare: 25, CheckinTailKiB: 32, CheckinHandoverChars: 4000, CheckinSessions: 2}, 20, 1.25, 32768, 4000, 2},
+	} {
+		if got := tc.limits.CheckinCallCap(); got != tc.wantCap {
+			t.Errorf("%s: CheckinCallCap = %d, want %d", tc.name, got, tc.wantCap)
+		}
+		if got := tc.limits.CheckinShareOf(5); got != tc.wantShare {
+			t.Errorf("%s: CheckinShareOf(5) = %v, want %v", tc.name, got, tc.wantShare)
+		}
+		if got := tc.limits.CheckinTailBytes(); got != tc.wantTail {
+			t.Errorf("%s: CheckinTailBytes = %d, want %d", tc.name, got, tc.wantTail)
+		}
+		if got := tc.limits.CheckinHandoverCap(); got != tc.wantHandover {
+			t.Errorf("%s: CheckinHandoverCap = %d, want %d", tc.name, got, tc.wantHandover)
+		}
+		if got := tc.limits.CheckinSessionCount(); got != tc.wantSessions {
+			t.Errorf("%s: CheckinSessionCount = %d, want %d", tc.name, got, tc.wantSessions)
+		}
 	}
 }
 
@@ -1113,6 +1179,37 @@ func TestLimitsStopValuesAreBounded(t *testing.T) {
 		_, err := Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, "+doc+"}", 1)))
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%s: Parse = %v, want the refusal %q", doc, err, want)
+		}
+	}
+}
+
+// The check-in's limits are bounded when set: calls 1 to 48, share 1 to 100
+// percent, tail 4 to 64 KiB, handover 200 to 8000 characters, sessions 1 to
+// 3; 0 means absent, as in a version pinned before the keys existed.
+func TestCheckinLimitsAreBounded(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		mutate func(*Limits)
+		want   string
+	}{
+		"checkin_calls -1":      {func(l *Limits) { l.CheckinCalls = -1 }, "limits.checkin_calls must be 0 or lie between 1 and 48, is -1"},
+		"checkin_calls 49":      {func(l *Limits) { l.CheckinCalls = 49 }, "limits.checkin_calls must be 0 or lie between 1 and 48, is 49"},
+		"checkin_share -1":      {func(l *Limits) { l.CheckinShare = -1 }, "limits.checkin_share must be 0 or lie between 1 and 100, is -1"},
+		"checkin_share 101":     {func(l *Limits) { l.CheckinShare = 101 }, "limits.checkin_share must be 0 or lie between 1 and 100, is 101"},
+		"checkin_tail_kib 3":    {func(l *Limits) { l.CheckinTailKiB = 3 }, "limits.checkin_tail_kib must be 0 or lie between 4 and 64, is 3"},
+		"checkin_tail_kib 65":   {func(l *Limits) { l.CheckinTailKiB = 65 }, "limits.checkin_tail_kib must be 0 or lie between 4 and 64, is 65"},
+		"checkin_handover 199":  {func(l *Limits) { l.CheckinHandoverChars = 199 }, "limits.checkin_handover_chars must be 0 or lie between 200 and 8000, is 199"},
+		"checkin_handover 8001": {func(l *Limits) { l.CheckinHandoverChars = 8001 }, "limits.checkin_handover_chars must be 0 or lie between 200 and 8000, is 8001"},
+		"checkin_sessions -1":   {func(l *Limits) { l.CheckinSessions = -1 }, "limits.checkin_sessions must be 0 or lie between 1 and 3, is -1"},
+		"checkin_sessions 4":    {func(l *Limits) { l.CheckinSessions = 4 }, "limits.checkin_sessions must be 0 or lie between 1 and 3, is 4"},
+	} {
+		l := d.Limits
+		tc.mutate(&l)
+		if err := l.validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: validate = %v, want %q", name, err, tc.want)
 		}
 	}
 }

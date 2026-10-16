@@ -302,6 +302,22 @@ type Limits struct {
 	// ReviewParts). Size it to the review model's context window: about 257
 	// tokens a KiB. Absent: DefaultReviewDiffKiB.
 	ReviewDiffKiB int `yaml:"review_diff_kib,omitempty" json:"review_diff_kib"`
+	// CheckinCalls is how many model calls the check-in agent gets per
+	// card, all moments and rounds together. Absent: DefaultCheckinCalls.
+	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
+	// CheckinShare is the most percent of the card's budget the check-in's
+	// calls may spend. Absent: DefaultCheckinShare.
+	CheckinShare int `yaml:"checkin_share,omitempty" json:"checkin_share,omitempty"`
+	// CheckinTailKiB is the parent session record's tail cut into the
+	// check-in's statement. Absent: DefaultCheckinTailKiB.
+	CheckinTailKiB int `yaml:"checkin_tail_kib,omitempty" json:"checkin_tail_kib,omitempty"`
+	// CheckinHandoverChars is the check-in's handover note cap, matching
+	// the session's last-message cut. Absent: DefaultCheckinHandoverChars.
+	CheckinHandoverChars int `yaml:"checkin_handover_chars,omitempty" json:"checkin_handover_chars,omitempty"`
+	// CheckinSessions is how many fresh sessions one confirmed finding
+	// gets before the human is asked for it. Absent:
+	// DefaultCheckinSessions.
+	CheckinSessions int `yaml:"checkin_sessions,omitempty" json:"checkin_sessions,omitempty"`
 	// WarnAt is the percent of a card's budget, or of a session's agent
 	// time, spent when factoryd tells the running agent to wrap up and
 	// push, 1 to 99. Absent: DefaultWarnAt.
@@ -361,6 +377,29 @@ func (l Limits) NoPushShare() float64 {
 // ContextCap is ContextTokens, or DefaultContextTokens when unset.
 func (l Limits) ContextCap() int { return cmp.Or(l.ContextTokens, DefaultContextTokens) }
 
+// The check-in agent's limits of a policy without the keys, and of a
+// version pinned before they existed (the escalation ladder's plan D).
+const (
+	DefaultCheckinCalls         = 12
+	DefaultCheckinShare         = 10
+	DefaultCheckinTailKiB       = 24
+	DefaultCheckinHandoverChars = 2000
+	DefaultCheckinSessions      = 1
+)
+
+// CheckinCallCap, CheckinTailBytes, CheckinHandoverCap and
+// CheckinSessionCount are the keys, their defaults where unset;
+// CheckinShareOf is CheckinShare as a share of a card's budget.
+func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
+func (l Limits) CheckinShareOf(budget float64) float64 {
+	return float64(cmp.Or(l.CheckinShare, DefaultCheckinShare)) / 100 * budget
+}
+func (l Limits) CheckinTailBytes() int { return cmp.Or(l.CheckinTailKiB, DefaultCheckinTailKiB) << 10 }
+func (l Limits) CheckinHandoverCap() int {
+	return cmp.Or(l.CheckinHandoverChars, DefaultCheckinHandoverChars)
+}
+func (l Limits) CheckinSessionCount() int { return cmp.Or(l.CheckinSessions, DefaultCheckinSessions) }
+
 // The loop nudge of a policy without the keys, and of a version pinned
 // before they existed (queue item C).
 const (
@@ -389,25 +428,31 @@ func (l Limits) StepCap() int {
 
 // limitsJSON is Limits with its durations as strings, as in the YAML.
 type limitsJSON struct {
-	Sessions          int    `json:"sessions"`
-	AgentTime         string `json:"agent_time"`
-	CheckIn           string `json:"check_in"`
-	SupervisorCalls   int    `json:"supervisor_calls"`
-	SupervisorTimeout string `json:"supervisor_timeout"`
-	StrongerAfter     int    `json:"stronger_after"`
-	Steps             int    `json:"steps"`
-	NudgeAfter        int    `json:"nudge_after"`
-	Nudges            int    `json:"nudges"`
-	SameCall          int    `json:"same_call"`
-	ReviewDiffKiB     int    `json:"review_diff_kib,omitempty"`
-	WarnAt            int    `json:"warn_at,omitempty"`
-	PlanWarnAt        int    `json:"plan_warn_at,omitempty"`
-	NoPushSpend       int    `json:"no_push_spend,omitempty"`
-	ContextTokens     int    `json:"context_tokens,omitempty"`
+	Sessions             int    `json:"sessions"`
+	AgentTime            string `json:"agent_time"`
+	CheckIn              string `json:"check_in"`
+	SupervisorCalls      int    `json:"supervisor_calls"`
+	SupervisorTimeout    string `json:"supervisor_timeout"`
+	StrongerAfter        int    `json:"stronger_after"`
+	Steps                int    `json:"steps"`
+	NudgeAfter           int    `json:"nudge_after"`
+	Nudges               int    `json:"nudges"`
+	SameCall             int    `json:"same_call"`
+	ReviewDiffKiB        int    `json:"review_diff_kib,omitempty"`
+	CheckinCalls         int    `json:"checkin_calls,omitempty"`
+	CheckinShare         int    `json:"checkin_share,omitempty"`
+	CheckinTailKiB       int    `json:"checkin_tail_kib,omitempty"`
+	CheckinHandoverChars int    `json:"checkin_handover_chars,omitempty"`
+	CheckinSessions      int    `json:"checkin_sessions,omitempty"`
+	WarnAt               int    `json:"warn_at,omitempty"`
+	PlanWarnAt           int    `json:"plan_warn_at,omitempty"`
+	NoPushSpend          int    `json:"no_push_spend,omitempty"`
+	ContextTokens        int    `json:"context_tokens,omitempty"`
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -416,8 +461,9 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
-		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB, WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt,
-		NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
+		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB,
+		CheckinCalls: j.CheckinCalls, CheckinShare: j.CheckinShare, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
+		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -482,6 +528,16 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.context_tokens must lie between %d and %d when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", MinContextTokens, ModelContext, l.ContextTokens)
 	case l.ReviewDiffKiB != 0 && (l.ReviewDiffKiB < DefaultReviewDiffKiB || l.ReviewDiffKiB > MaxReviewDiffKiB):
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
+	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):
+		return fmt.Errorf("policy: limits.checkin_calls must be 0 or lie between 1 and 48, is %d", l.CheckinCalls)
+	case l.CheckinShare != 0 && (l.CheckinShare < 1 || l.CheckinShare > 100):
+		return fmt.Errorf("policy: limits.checkin_share must be 0 or lie between 1 and 100, is %d", l.CheckinShare)
+	case l.CheckinTailKiB != 0 && (l.CheckinTailKiB < 4 || l.CheckinTailKiB > 64):
+		return fmt.Errorf("policy: limits.checkin_tail_kib must be 0 or lie between 4 and 64, is %d", l.CheckinTailKiB)
+	case l.CheckinHandoverChars != 0 && (l.CheckinHandoverChars < 200 || l.CheckinHandoverChars > 8000):
+		return fmt.Errorf("policy: limits.checkin_handover_chars must be 0 or lie between 200 and 8000, is %d", l.CheckinHandoverChars)
+	case l.CheckinSessions != 0 && (l.CheckinSessions < 1 || l.CheckinSessions > 3):
+		return fmt.Errorf("policy: limits.checkin_sessions must be 0 or lie between 1 and 3, is %d", l.CheckinSessions)
 	}
 	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())
@@ -755,6 +811,9 @@ type Class struct {
 	// AuditModel is the alias factoryd's security audit calls on the
 	// task's account (ruling 188).
 	AuditModel string `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
+	// CheckinModel is the alias the check-in agent calls on the task's
+	// account; absent reads ReviewModel (the escalation ladder's plan D).
+	CheckinModel string `yaml:"checkin_model,omitempty" json:"checkin_model,omitempty"`
 	// Time overrides limits.agent_time and limits.check_in for tasks of
 	// this class; a process or project's Time wins over it.
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
@@ -771,10 +830,13 @@ const (
 	// PurposeCompact is a chat thread's compaction (roadmap 239): one
 	// cheap call that summarises the thread before its kept tail.
 	PurposeCompact = "compact"
+	// PurposeCheckin is the check-in agent's conversation at a gate
+	// return (the escalation ladder's plan D).
+	PurposeCheckin = "checkin"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse, PurposeCompact}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse, PurposeCompact, PurposeCheckin}
 
 // PulseModel is the LiteLLM alias of the pulse's calls (purpose pulse).
 const PulseModel = "pulse"
@@ -1130,6 +1192,8 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 			alias = cl.SupervisorModel
 		case PurposeAudit:
 			alias = cl.AuditModel
+		case PurposeCheckin:
+			alias = cmp.Or(cl.CheckinModel, cl.ReviewModel)
 		}
 		if alias != "" {
 			return alias

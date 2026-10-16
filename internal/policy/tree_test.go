@@ -244,12 +244,13 @@ func TestParseTreeStricterWins(t *testing.T) {
 // Limits' durations are strings in JSON, as in YAML: the stored tree, GET
 // /policy and the console show 20m0s, not nanoseconds.
 func TestLimitsJSON(t *testing.T) {
-	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 150, NudgeAfter: 4, Nudges: 2, SameCall: 5, ReviewDiffKiB: 256}
+	l := Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1, Steps: 150, NudgeAfter: 4, Nudges: 2, SameCall: 5, ReviewDiffKiB: 256,
+		CheckinCalls: 12, CheckinShare: 10, CheckinTailKiB: 24, CheckinHandoverChars: 2000, CheckinSessions: 1}
 	b, err := json.Marshal(l)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"sessions":3,"agent_time":"20m0s","check_in":"0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2,"same_call":5,"review_diff_kib":256}`; string(b) != want {
+	if want := `{"sessions":3,"agent_time":"20m0s","check_in":"0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":150,"nudge_after":4,"nudges":2,"same_call":5,"review_diff_kib":256,"checkin_calls":12,"checkin_share":10,"checkin_tail_kib":24,"checkin_handover_chars":2000,"checkin_sessions":1}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Limits
