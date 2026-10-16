@@ -133,14 +133,17 @@ func pemBlock(typ string, der []byte) []byte {
 // clients), the server pair, the checksum-pinned buildkitd tarball from
 // the factory's store (its upstream-files.txt line, roadmap 203, step 2,
 // so the VM reaches no upstream) with its own runc, and a systemd unit
-// serving mTLS on buildVMPort. It carries no secret beyond the VM's own
-// server key.
-func buildVMUserData(p buildPKI) (string, error) {
+// serving mTLS on buildVMPort. The store reads only with a login
+// (roadmap 203, step 2), so the download carries the read:package one
+// of the config — it can read every package and overwrite nothing, and
+// the script scrubs cloud-init's copies of itself once the tarball is
+// in, so the machine keeps only the VM's own server key.
+func buildVMUserData(p buildPKI, storeLogin string) (string, error) {
 	var b bytes.Buffer
 	err := userDataTmpl.Execute(&b, map[string]any{
 		"CA": strings.TrimSpace(string(p.CACert)), "Cert": strings.TrimSpace(string(p.ServerCert)),
 		"Key": strings.TrimSpace(string(p.ServerKey)), "Version": buildkitVersion, "SHA256": buildkitSHA256,
-		"Port": buildVMPort,
+		"Port": buildVMPort, "StoreLogin": storeLogin,
 	})
 	return b.String(), err
 }
@@ -160,11 +163,14 @@ EOF
 EOF
 )
 cd /root
-curl -fsSL --retry 5 -o buildkit.tar.gz https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/{{.Version}}/buildkit-{{.Version}}.linux-amd64.tar.gz
+curl -fsSL --retry 5 -u '{{.StoreLogin}}' -o buildkit.tar.gz https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/{{.Version}}/buildkit-{{.Version}}.linux-amd64.tar.gz
 echo "{{.SHA256}}  buildkit.tar.gz" | sha256sum -c -
 tar -C /usr/local -xzf buildkit.tar.gz bin/buildkitd bin/buildctl bin/buildkit-runc
 ln -sf /usr/local/bin/buildkit-runc /usr/local/bin/runc
 rm -f buildkit.tar.gz
+# the tarball is in and the download's login has no further use: scrub
+# what cloud-init keeps of this script, so no copy of it stays on disk
+rm -rf /var/lib/cloud/instance /var/lib/cloud/instances
 cat > /etc/systemd/system/buildkitd.service <<'EOF'
 [Unit]
 Description=buildkitd
@@ -239,11 +245,15 @@ type BuildVMConfig struct {
 	// from (the nodes' public IPv4s): the only sources the VM's firewall
 	// admits to buildkitd.
 	AllowedSources []string
-	ServerType     string             // "" = cx23
-	Location       string             // "" = fsn1
-	Image          string             // "" = debian-12
-	Lease          time.Duration      // job deadline + margin; the collector's backstop
-	Metrics        *telemetry.Metrics // nil = the no-op meter
+	// StoreLogin is the store's read:package login ("user:token") the
+	// VM's setup script curls the buildkitd tarball with: the store's
+	// generic packages read only with a login (roadmap 203, step 2).
+	StoreLogin string
+	ServerType string             // "" = cx23
+	Location   string             // "" = fsn1
+	Image      string             // "" = debian-12
+	Lease      time.Duration      // job deadline + margin; the collector's backstop
+	Metrics    *telemetry.Metrics // nil = the no-op meter
 }
 
 // BuildVMs creates and deletes build VMs; each resource is registered
@@ -290,6 +300,9 @@ func NewBuildVMs(cfg BuildVMConfig, provider BuildVMProvider, registry cloudres.
 	}
 	if cfg.Lease <= 0 {
 		return nil, errors.New("build vms: Lease is required")
+	}
+	if cfg.StoreLogin == "" {
+		return nil, errors.New("build vms: StoreLogin is required")
 	}
 	sources, err := cloudres.IPv4Sources(cfg.AllowedSources)
 	if err != nil {
@@ -379,7 +392,7 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 	if err != nil {
 		return BuildVM{}, fmt.Errorf("pki: %w", err)
 	}
-	userData, err := buildVMUserData(pki)
+	userData, err := buildVMUserData(pki, b.cfg.StoreLogin)
 	if err != nil {
 		return BuildVM{}, err
 	}

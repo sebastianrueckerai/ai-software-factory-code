@@ -151,7 +151,11 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # scripts/upstream-files uploads: GOPROXY=off leaves no fallback, so a
 # missing or wrong store copy fails the build and go.sum stays the
 # content pin, and GOFLAGS=-mod=mod keeps the download a read of the
-# cache, not a rewrite of go.mod. The module and its package trees are
+# cache, not a rewrite of go.mod. The store reads only with a login
+# (roadmap 203, step 2), so the fetch mounts the HTTP_AUTH_HEADER build
+# secret every builder passes — the same id BuildKit's ADD looks up by
+# the URL's host — readable at this stage's user. The module and its
+# package trees are
 # bind-mounted, so a change outside them (k8s/, docs) keeps this layer:
 # ci.yml's RUNNER_INPUTS name the same paths. Go keys its index of each
 # package by the files' mtimes, and a checkout dates them by its own
@@ -162,8 +166,10 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # clock. Go reads an entry's time only to expire cached test results after
 # `go clean -testcache`, and -count=1 caches none.
 RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
+      --mount=type=secret,id=HTTP_AUTH_HEADER_git.aisoftwarefactory.world,uid=1000,gid=1000 \
       cd /tmp/warm && sum=$(sha256sum go.sum | awk '{print $1}') \
-      && curl -fsSL -o /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && curl -fsSL -H "Authorization: $(cat /run/secrets/HTTP_AUTH_HEADER_git.aisoftwarefactory.world)" \
+            -o /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
       && mkdir -p "$(go env GOMODCACHE)/cache/download" \
       && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
       && rm /tmp/go-modules.tar.gz \

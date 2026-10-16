@@ -138,3 +138,38 @@ func TestSandboxNpmInstallsOfflineFromTheStoresCache(t *testing.T) {
 		t.Errorf("Dockerfile.sandbox: no COPY --from=%s installs on the store's cache", fetcher)
 	}
 }
+
+// The store's packages read only with a login (roadmap 203, step 2 —
+// the anonymous read answers 401): every RUN that fetches from the
+// store mounts the HTTP_AUTH_HEADER build secret and sends its file as
+// the Authorization header, the same id BuildKit's ADD URL source
+// looks up by the URL's host, which every builder passes with
+// --secret. Without it the read fails, and the build with it.
+func TestStoreReadsRunAuthenticated(t *testing.T) {
+	const (
+		storeURL = "https://git.aisoftwarefactory.world/api/packages/upstream/generic/"
+		secretID = "HTTP_AUTH_HEADER_git.aisoftwarefactory.world"
+	)
+	for _, f := range []string{"Dockerfile", "Dockerfile.sandbox", "Dockerfile.runner"} {
+		t.Run(f, func(t *testing.T) {
+			var reads int
+			for _, s := range parseDockerfile(t, filepath.Join("..", "..", f)) {
+				for _, run := range s.runs {
+					if !strings.Contains(run, storeURL) {
+						continue
+					}
+					reads++
+					if !strings.Contains(run, "--mount=type=secret,id="+secretID) {
+						t.Errorf("%s stage %s: a store read without the %s secret mounted: %s", f, s.name, secretID, run)
+					}
+					if !strings.Contains(run, "Authorization: $(cat /run/secrets/"+secretID+")") {
+						t.Errorf("%s stage %s: the store read does not send the secret's file as the Authorization header: %s", f, s.name, run)
+					}
+				}
+			}
+			if reads == 0 {
+				t.Fatalf("%s: no RUN reads the store", f)
+			}
+		})
+	}
+}

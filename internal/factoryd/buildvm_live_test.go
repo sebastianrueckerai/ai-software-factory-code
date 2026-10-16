@@ -15,11 +15,14 @@ import (
 // Live check of a build VM in the Hetzner CI project: provision, wait until
 // buildctl answers over mTLS from this machine, release, collect, and prove
 // the project is empty. Skipped unless FACTORYD_LIVE_HETZNER_CI_KEY,
-// FACTORYD_LIVE_BUILD_SOURCE (this machine's public IPv4) and
-// FACTORYD_LIVE_BUILDCTL (a buildctl binary) are set.
+// FACTORYD_LIVE_BUILD_SOURCE (this machine's public IPv4),
+// FACTORYD_LIVE_BUILDCTL (a buildctl binary) and
+// FACTORYD_LIVE_STORE_LOGIN (the store's "user:token" read:package
+// login, without which the setup script's tarball download fails) are
+// set.
 func TestLiveBuildVM(t *testing.T) {
 	env := map[string]string{}
-	for _, k := range []string{"FACTORYD_LIVE_HETZNER_CI_KEY", "FACTORYD_LIVE_BUILD_SOURCE", "FACTORYD_LIVE_BUILDCTL"} {
+	for _, k := range []string{"FACTORYD_LIVE_HETZNER_CI_KEY", "FACTORYD_LIVE_BUILD_SOURCE", "FACTORYD_LIVE_BUILDCTL", "FACTORYD_LIVE_STORE_LOGIN"} {
 		if env[k] = os.Getenv(k); env[k] == "" {
 			t.Skip(k + " not set")
 		}
@@ -28,7 +31,8 @@ func TestLiveBuildVM(t *testing.T) {
 	hc := hcloud.New(env["FACTORYD_LIVE_HETZNER_CI_KEY"])
 	reg := cloudres.NewMemory()
 	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hc, NodeIPs: []string{env["FACTORYD_LIVE_BUILD_SOURCE"] + "/32"}}
-	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{env["FACTORYD_LIVE_BUILD_SOURCE"]}, Lease: time.Hour}, hc, reg, col)
+	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{env["FACTORYD_LIVE_BUILD_SOURCE"]},
+		StoreLogin: env["FACTORYD_LIVE_STORE_LOGIN"], Lease: time.Hour}, hc, reg, col)
 	if err != nil {
 		t.Fatal(err)
 	}
