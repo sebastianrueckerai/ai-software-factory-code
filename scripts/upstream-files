@@ -11,8 +11,9 @@
 # sha256, and the npm packages of the sandbox image's opencode plugin
 # lockfile (opencode-plugin/) as one tarball, package npm-cache, version
 # the lockfile's sha256, both uploaded only when absent. The module
-# tarball keeps the GOPROXY file layout and the npm tarball _cacache, so
-# roadmap 203's step 2 can build and install from them with no upstream.
+# tarball keeps the GOPROXY file layout and the npm tarball _cacache,
+# and the builds restore and install from them with no upstream
+# (roadmap 203, step 2).
 # The registry takes REGISTRY_USER and REGISTRY_PASSWORD; go and npm run
 # in this directory, on go.mod, go.sum and opencode-plugin/ beside the
 # list.

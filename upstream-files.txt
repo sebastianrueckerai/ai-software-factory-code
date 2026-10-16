@@ -7,13 +7,16 @@
 # the store lacks it, after checking the download against the line's
 # sha256. The lines name every ADD download of Dockerfile.runner and
 # Dockerfile.sandbox and the build VM's buildkit tarball
-# (internal/factoryd/buildvm.go); the builds keep reading their upstreams
-# until roadmap 203's step 2 switches them, because a pull request's
-# build can only read what main CI already copied. Go's module cache and
-# the npm cache of the sandbox image's opencode plugin lockfile ride the
-# same registry as the go-modules and npm-cache tarballs
-# scripts/upstream-files makes of them. The weekly upstream card bumps
-# these lines.
+# (internal/factoryd/buildvm.go); since roadmap 203's step 2 the builds
+# read the store's copy at that path with the line's sha256, so the URL
+# names only where the copy job takes the bytes from, and a pull
+# request's build reads only what main CI already copied. Go's module
+# cache and the npm cache of the sandbox image's opencode plugin lockfile
+# ride the same registry as the go-modules and npm-cache tarballs
+# scripts/upstream-files makes of them: the module tarball keeps the
+# GOPROXY file layout and the npm tarball _cacache, and the builds
+# restore and install from them with no upstream. The weekly upstream
+# card bumps these lines.
 
 # Dockerfile.runner's downloads; the buildkit tarball also runs the
 # build VMs (internal/factoryd/buildvm.go, ruling 110)

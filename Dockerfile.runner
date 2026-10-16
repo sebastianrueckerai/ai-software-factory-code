@@ -13,21 +13,21 @@ ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9@sha256:cf7e928cb9edc2ed8b3cc6fe77ee1ee30b9fea28149564c8840097321a7600ea AS go-toolchain
 
 # The archives the image unpacks, and cosign for the stage below, each
-# checked against its sha256 before a layer holds it. The image's steps
-# mount this stage, so no layer of the image keeps an archive. Node's sum
-# is the tarball's line in nodejs.org's signed SHASUMS256.txt for its
-# version.
+# read from the factory's store (roadmap 203, step 2): the generic
+# package its line of upstream-files.txt fills, at the sha256 the line
+# pins — no build reaches the line's upstream. The image's steps mount
+# this stage, so no layer of the image keeps an archive.
 FROM scratch AS downloads
 ARG BUILDKIT_VERSION
 ARG CRANE_VERSION
 ARG NODE_VERSION
 ARG GOSEC_VERSION
 ARG COSIGN_VERSION
-ADD --checksum=sha256:b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead https://github.com/moby/buildkit/releases/download/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
-ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://github.com/google/go-containerregistry/releases/download/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
-ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
-ADD --checksum=sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://github.com/securego/gosec/releases/download/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
-ADD --checksum=sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 --chmod=0755 https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
+ADD --checksum=sha256:b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
+ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://git.aisoftwarefactory.world/api/packages/upstream/generic/crane/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
+ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+ADD --checksum=sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://git.aisoftwarefactory.world/api/packages/upstream/generic/gosec/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
+ADD --checksum=sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/cosign/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
 
 # cosign alone, which the image does not carry: main CI's image jobs export
 # it from here to sign what they push (roadmap 46), and the infra
@@ -70,7 +70,9 @@ ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
 # alternatives logs carry the build's time.
-ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+# The PGDG signing key, the store's copy of its line of
+# upstream-files.txt (roadmap 203, step 2) at the line's sha256.
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://git.aisoftwarefactory.world/api/packages/upstream/generic/pgdg-key/ACCC4CF8/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && printf '%s\n' 'Acquire::Retries "8";' 'Acquire::http::Timeout "60";' 'Acquire::https::Timeout "60";' 'Acquire::Check-Valid-Until "false";' \
            > /etc/apt/apt.conf.d/80snapshot \
@@ -95,8 +97,10 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \
            /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
 
-# forgejo-runner: single static binary, no extraction.
-ADD --checksum=sha256:fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1 --chmod=0755 https://code.forgejo.org/forgejo/runner/releases/download/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
+# forgejo-runner: single static binary, no extraction. The store's copy
+# of its upstream-files.txt line (roadmap 203, step 2), at the line's
+# sha256.
+ADD --checksum=sha256:fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/forgejo-runner/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
 
 # buildctl only: the image-build job drives buildkitd on its throwaway VM
 # (ruling 110, internal/factoryd/buildvm.go); no docker CLI, no daemon here.
@@ -142,22 +146,33 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # (roadmap 222, item 3), in Go's default places for the runner user: a
 # job compiles only what its pull request changed. main CI rebuilds this
 # image on every push and the roll pins it, so the cache trails main by
-# one roll at most. The module and its package trees are bind-mounted,
-# so a change outside them (k8s/, docs) keeps this layer: ci.yml's
-# RUNNER_INPUTS name the same paths. Go keys its index of each package
-# by the files' mtimes, and a checkout dates them by its own clock: the
-# build reads a copy dated at the commit's time and removes it, so no
-# layer holds the source.
+# one roll at most. The module cache is the store's go-modules tarball
+# of this go.sum (roadmap 203, step 2), in the GOPROXY file layout
+# scripts/upstream-files uploads: GOPROXY=off leaves no fallback, so a
+# missing or wrong store copy fails the build and go.sum stays the
+# content pin, and GOFLAGS=-mod=mod keeps the download a read of the
+# cache, not a rewrite of go.mod. The module and its package trees are
+# bind-mounted, so a change outside them (k8s/, docs) keeps this layer:
+# ci.yml's RUNNER_INPUTS name the same paths. Go keys its index of each
+# package by the files' mtimes, and a checkout dates them by its own
+# clock: the build reads a copy dated at the commit's time and removes
+# it, so no layer holds the source.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
 # `go clean -testcache`, and -count=1 caches none.
 RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,source=go.sum,target=/tmp/warm/go.sum \
-      cd /tmp/warm && go mod download
+      cd /tmp/warm && sum=$(sha256sum go.sum | awk '{print $1}') \
+      && curl -fsSL -o /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && mkdir -p "$(go env GOMODCACHE)/cache/download" \
+      && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
+      && rm /tmp/go-modules.tar.gz \
+      && GOPROXY=off GOFLAGS=-mod=mod go mod download
 RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,source=go.sum,target=/tmp/src/go.sum \
       --mount=type=bind,source=cmd,target=/tmp/src/cmd --mount=type=bind,source=internal,target=/tmp/src/internal \
       --mount=type=bind,source=acceptance,target=/tmp/src/acceptance \
-      cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
+      export GOPROXY=off GOFLAGS=-mod=mod \
+      && cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
       && cd / && rm -r /tmp/warm \
       && cache=$(go env GOCACHE) \

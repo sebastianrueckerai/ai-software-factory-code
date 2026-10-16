@@ -93,7 +93,9 @@ func TestBuildVMUserData(t *testing.T) {
 	}
 	for _, want := range []string{
 		"echo \"" + buildkitSHA256 + "  buildkit.tar.gz\" | sha256sum -c -",
-		"https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
+		// the store's copy of the buildkit release, not its upstream
+		// (roadmap 203, step 2)
+		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
 		strings.TrimSpace(string(p.CACert)), strings.TrimSpace(string(p.ServerCert)), strings.TrimSpace(string(p.ServerKey)),
@@ -101,6 +103,9 @@ func TestBuildVMUserData(t *testing.T) {
 		if !strings.Contains(ud, want) {
 			t.Errorf("user data lacks %q", want)
 		}
+	}
+	if strings.Contains(ud, "github.com") {
+		t.Error("user data reaches an upstream for the buildkit tarball")
 	}
 	if strings.Contains(ud, strings.TrimSpace(string(p.ClientKey))) || strings.Contains(ud, strings.TrimSpace(string(p.ClientCert))) {
 		t.Error("user data carries the client pair")
