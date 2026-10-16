@@ -96,6 +96,15 @@ type turn struct {
 	upto int64
 	// conv is the member's thread the turn answers in (roadmap 239).
 	conv int64
+	// pageQuery is the view the member's page stands on (282): the board's
+	// data-query the chat's POST carries, whose controls the view tools
+	// merge their words onto. present are the argument keys the call itself
+	// named: a parameter the call leaves out keeps the page's choice, one
+	// it names with empty text clears it. viewEvent, set by the view tools,
+	// reaches the member's screen alone, after the tool's block.
+	pageQuery string
+	present   map[string]bool
+	viewEvent map[string]any
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -240,6 +249,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	t.pageQuery = r.PostFormValue("view")
 	text := strings.TrimSpace(r.PostFormValue("message"))
 	if text == "" || len(text) > chatMessageMax {
 		http.Error(w, "a message of up to 8 KiB is required", http.StatusBadRequest)
@@ -453,6 +463,13 @@ const tokenMask = "[token]"
 // a tool block, and for a write that took effect an applied line with its
 // undo, when it has one.
 func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
+	var named map[string]json.RawMessage
+	if json.Unmarshal([]byte(args), &named) == nil {
+		t.present = make(map[string]bool, len(named))
+		for k := range named {
+			t.present[k] = true
+		}
+	}
 	start := time.Now()
 	if err := t.admitTool(tool.name, in); err != nil {
 		result := "Refused: " + t.sentence(err)
@@ -466,6 +483,10 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 	}
 	result = sanitize.Inbound(result)
 	t.block(tool.name, args, time.Since(start), result)
+	if t.viewEvent != nil {
+		t.send("view", t.viewEvent)
+		t.viewEvent = nil
+	}
 	if err != nil || !tool.write {
 		return result
 	}

@@ -836,12 +836,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "active_threads"}},
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "active_threads", "board_view", "board_view_reset"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"active_threads"}},
+			"active_threads", "board_view", "board_view_reset"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -1387,6 +1387,109 @@ func TestChatRefusesAnotherProjectsCard(t *testing.T) {
 	if k, _, _ := r.tasks.Task(t.Context(), "t-ls"); k.HumanSummary != "" || len(r.fg.labelled) != 0 {
 		t.Fatalf("another project's card was touched: summary %q, labelled %q", k.HumanSummary, r.fg.labelled)
 	}
+}
+
+// TestChatBoardView: the view tools work the member's screen (282). The
+// page's view and the call's words merge into one query the view event
+// carries after the tool's block; a find the call names with empty text
+// clears, one it leaves out keeps the page's; a word a menu does not
+// carry is refused naming the menu's words; the tab needs its card;
+// reset clears every control to the default and closes the drawer.
+func TestChatBoardView(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	post := func(view, args string) []string {
+		g.replies = [][]string{{call(0, "board_view", args)}, {say("done")}}
+		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"work the board"}, "view": {view}})
+		return ev
+	}
+	// the page's view and the call's words merge; the routines control's
+	// period rides along, and the event follows the tool's block
+	ev := post("?project=ai-software-factory-code&q=cache&progress=oldest", `{"routines":"within","within":2,"unit":"hours"}`)
+	at := slices.IndexFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"board_view"`)
+	})
+	if at < 0 {
+		t.Fatalf("the turn holds no board_view tool block:\n%s", strings.Join(ev, "\n"))
+	}
+	if want := `view {"query":"?progress=oldest\u0026project=ai-software-factory-code\u0026q=cache\u0026routines=within\u0026unit=hours\u0026within=2"}`; ev[at+1] != want {
+		t.Errorf("the view event does not follow the tool's block:\n%s", strings.Join(ev, "\n"))
+	}
+	// the stored answer names what the board now shows
+	if !strings.Contains(ev[at], "routines within 2 hours") {
+		t.Errorf("the tool's result does not say what the board shows:\n%s", strings.Join(ev, "\n"))
+	}
+	// a find the call names with empty text clears; one it leaves out keeps
+	ev = post("?project=ai-software-factory-code&q=cache", `{"find":""}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
+		t.Errorf("an emptied find does not clear the query:\n%s", strings.Join(ev, "\n"))
+	}
+	ev = post("?project=ai-software-factory-code&q=cache", `{"routines":"none"}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026q=cache\u0026routines=none"}`) {
+		t.Errorf("a call without find drops the page's:\n%s", strings.Join(ev, "\n"))
+	}
+	// newest and all name each menu's default
+	ev = post("?project=ai-software-factory-code&queued=oldest&queued-only=blocked", `{"queued":"newest","queued_only":"all"}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
+		t.Errorf("newest and all do not name the default:\n%s", strings.Join(ev, "\n"))
+	}
+	// a plan's show rides as plan:n
+	ev = post("?project=ai-software-factory-code", `{"queued_only":"plan:558"}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026queued-only=plan%3A558"}`) {
+		t.Errorf("plan:n does not ride along:\n%s", strings.Join(ev, "\n"))
+	}
+	// the card opens the drawer, its tab with it; the panel and theme ride
+	ev = post("?project=ai-software-factory-code", `{"card":"11","tab":"chat","panel":"closed","theme":"light"}`)
+	if !slices.Contains(ev, `view {"card":"t-r","panel":"closed","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
+		t.Errorf("the card, tab, panel and theme do not ride along:\n%s", strings.Join(ev, "\n"))
+	}
+	// reset clears every control and closes the drawer
+	g.replies = [][]string{{call(0, "board_view_reset", `{}`)}, {say("done")}}
+	_, ev, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"reset the view"},
+		"view": {"?project=ai-software-factory-code&q=cache&routines=none&queued=oldest"}})
+	if !slices.Contains(ev, `view {"card":"","query":"?project=ai-software-factory-code"}`) {
+		t.Errorf("reset does not clear the view:\n%s", strings.Join(ev, "\n"))
+	}
+}
+
+// TestChatBoardViewRefusals: a word a control does not carry is refused
+// naming the words it does, the tab needs its card, and the period's
+// bounds hold.
+func TestChatBoardViewRefusals(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	refuse := func(args, want string) {
+		t.Helper()
+		g.replies = [][]string{{call(0, "board_view", args)}, {say("done")}}
+		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"work the board"}, "view": {""}})
+		blocks := 0
+		for _, e := range ev {
+			if !strings.HasPrefix(e, "tool ") {
+				continue
+			}
+			blocks++
+			if !strings.Contains(e, "Refused: "+want) {
+				t.Errorf("args %s refuse with %q, want %q", args, e, want)
+			}
+		}
+		if blocks != 1 {
+			t.Errorf("args %s answer %d tool blocks, want the one refusal:\n%s", args, blocks, strings.Join(ev, "\n"))
+		}
+	}
+	refuse(`{"queued":"first"}`, "The queued order must be newest, oldest or next.")
+	refuse(`{"progress_only":"both"}`, "The progress show must be all or exceptional.")
+	refuse(`{"done":"latest"}`, "The done order must be newest or oldest.")
+	refuse(`{"view":"narrow"}`, "The view must be wide or none.")
+	refuse(`{"routines":"sometimes"}`, "The routines must be all, within or none.")
+	refuse(`{"within":0}`, "The period must be 1 to 999.")
+	refuse(`{"within":1000}`, "The period must be 1 to 999.")
+	refuse(`{"routines":"all","within":2}`, "The within and unit words need routines within.")
+	refuse(`{"unit":"weeks"}`, "The unit must be days or hours.")
+	refuse(`{"tab":"chat"}`, "The tab needs the card it opens.")
+	refuse(`{"tab":"history"}`, "The tab must be overview, chat, activity or files.")
+	refuse(`{"panel":"half"}`, "The panel must be open or closed.")
+	refuse(`{"theme":"blue"}`, "The theme must be dark or light.")
+	refuse(`{"card":"t-nope"}`, "There is no card t-nope in this project.")
 }
 
 // A proposal is its member's: another writer's Do it is refused 403 and
