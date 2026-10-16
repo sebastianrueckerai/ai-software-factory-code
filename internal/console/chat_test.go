@@ -1463,8 +1463,9 @@ func TestChatBoardView(t *testing.T) {
 		t.Errorf("the card, tab, panel and theme do not ride along:\n%s", strings.Join(ev, "\n"))
 	}
 	// the POST's view field is bounded and only the wide view rides: one
-	// too long reads as absent, a view word the board does not carry drops
-	ev = post("view="+strings.Repeat("v", 4092), `{}`)
+	// too long reads as absent (its find with it), a view word the board
+	// does not carry drops
+	ev = post("q="+strings.Repeat("a", chatViewMax+1), `{}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
 		t.Errorf("an overlong view field does not read as absent:\n%s", strings.Join(ev, "\n"))
 	}
