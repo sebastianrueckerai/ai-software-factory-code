@@ -1026,6 +1026,8 @@ func TestTimeValidation(t *testing.T) {
 		"check_in 5m":          {func() Limits { l := base; l.CheckIn = 5 * time.Minute; return l }(), false},
 		"review_diff_kib 0":    {func() Limits { l := base; l.ReviewDiffKiB = 0; return l }(), true},
 		"review_diff_kib 47":   {func() Limits { l := base; l.ReviewDiffKiB = 47; return l }(), false},
+		"review_diff_kib 48":   {func() Limits { l := base; l.ReviewDiffKiB = 48; return l }(), true},
+		"review_diff_kib 1024": {func() Limits { l := base; l.ReviewDiffKiB = 1024; return l }(), true},
 		"review_diff_kib 1025": {func() Limits { l := base; l.ReviewDiffKiB = 1025; return l }(), false},
 	} {
 		t.Run("limits "+name, func(t *testing.T) {

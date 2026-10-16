@@ -226,6 +226,9 @@ func TestStaleSweepLeavesALiveWorkflowAlone(t *testing.T) {
 	if task, _, _ := rig.store.Task(context.Background(), "t-wait"); task.Status != "waiting-poster" || len(rig.wf.signals) != 0 {
 		t.Fatalf("t-wait = %s after %q: an unreadable Temporal must skip the card", task.Status, rig.wf.signals)
 	}
+	if _, ok := nudged["t-wait"]; !ok {
+		t.Fatalf("nudge memory was cleared on a Temporal error")
+	}
 }
 
 // A dead workflow keeps the ladder: a waiting-deps card is nudged once,

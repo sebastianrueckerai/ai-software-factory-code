@@ -2030,10 +2030,11 @@ func (f *fakeSpend) CallSpend(_ context.Context, _ string, holdID int64, _ time.
 }
 
 // canceledCall sends a call whose caller leaves while the provider works
-// on it, settled through spend; stream sends it as a stream whose first
-// chunk arrived. It returns the store, the answer and the metadata header
-// the upstream saw.
-func canceledCall(t *testing.T, spend *fakeSpend, stream bool) (*memStore, *httptest.ResponseRecorder, string) {
+// on it, settled through spend; a nil spend is a server with no spend log
+// at all. settleWait is the server's SettleWait (0: the 45s default);
+// stream sends it as a stream whose first chunk arrived. It returns the
+// store, the answer and the metadata header the upstream saw.
+func canceledCall(t *testing.T, spend SpendLog, settleWait time.Duration, stream bool) (*memStore, *httptest.ResponseRecorder, string) {
 	t.Helper()
 	started := make(chan struct{})
 	var tag atomic.Value
@@ -2057,7 +2058,7 @@ func canceledCall(t *testing.T, spend *fakeSpend, stream bool) (*memStore, *http
 		LiteLLMURL: up.URL,
 		Prices:     testPrices,
 		Spend:      spend,
-		SettleWait: 200 * time.Millisecond, SettleEvery: time.Millisecond,
+		SettleWait: settleWait, SettleEvery: time.Millisecond,
 	})
 	body := chatBody("coding-cheap")
 	if stream {
@@ -2089,7 +2090,7 @@ func canceledCall(t *testing.T, spend *fakeSpend, stream bool) (*memStore, *http
 }
 
 func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
-	store, rr, _ := canceledCall(t, &fakeSpend{}, false)
+	store, rr, _ := canceledCall(t, &fakeSpend{}, 200*time.Millisecond, false)
 	if rr.Code != 499 || rr.Header().Get(HeaderDecision) != "client_canceled" {
 		t.Fatalf("status %d, decision %q, want 499 client_canceled", rr.Code, rr.Header().Get(HeaderDecision))
 	}
@@ -2108,7 +2109,7 @@ func TestCanceledCallIsPricedFromTheSpendLog(t *testing.T) {
 	for name, stream := range map[string]bool{"before any answer": false, "mid-stream": true} {
 		t.Run(name, func(t *testing.T) {
 			spend := &fakeSpend{cost: 0.05, foundAt: 3}
-			store, rr, tag := canceledCall(t, spend, stream)
+			store, rr, tag := canceledCall(t, spend, 200*time.Millisecond, stream)
 			if rr.Code != 499 && !stream {
 				t.Fatalf("status = %d, want 499", rr.Code)
 			}
@@ -2133,7 +2134,7 @@ func TestCanceledCallIsPricedFromTheSpendLog(t *testing.T) {
 // No spend row after the wait: nothing was billed, so nothing is booked,
 // and the audit row says so.
 func TestCanceledCallWithNoSpendRecordBooksNothing(t *testing.T) {
-	store, _, _ := canceledCall(t, &fakeSpend{}, false)
+	store, _, _ := canceledCall(t, &fakeSpend{}, 200*time.Millisecond, false)
 	if _, ok := store.spentOf("42"); ok {
 		t.Fatal("spent updated, want untouched")
 	}
@@ -2149,7 +2150,7 @@ func TestCanceledCallWithNoSpendRecordBooksNothing(t *testing.T) {
 // An unreadable spend log is no proof of no spend: the hold is booked in
 // full, as before.
 func TestCanceledCallWithAnUnreadableSpendLogBooksTheHold(t *testing.T) {
-	store, _, _ := canceledCall(t, &fakeSpend{err: errors.New("litellm down")}, false)
+	store, _, _ := canceledCall(t, &fakeSpend{err: errors.New("litellm down")}, 200*time.Millisecond, false)
 	if got, ok := store.spentOf("42"); !ok || got != 2.131204 {
 		t.Fatalf("spent = (%v, %v), want (2.131204, true): the hold of 132 input tokens at 1e-6 and 32768 output tokens at 4e-6", got, ok)
 	}
@@ -2157,6 +2158,27 @@ func TestCanceledCallWithAnUnreadableSpendLogBooksTheHold(t *testing.T) {
 	want := "caller left; spend log unreadable (litellm down): cost not reported, booked the hold 0.131204 EUR"
 	if last := audits[len(audits)-1]; last.Reason != want {
 		t.Fatalf("reason = %q, want %q", last.Reason, want)
+	}
+}
+
+// A server with no spend log cannot read a price: the hold is booked in
+// full through the unreadable-log wording at once, not after the settle
+// wait — the deadline is a fraction of the 45s default the poll would run.
+func TestCanceledCallWithNoSpendLogBooksTheHoldAtOnce(t *testing.T) {
+	store, rr, _ := canceledCall(t, nil, 0, false)
+	if rr.Code != 499 || rr.Header().Get(HeaderDecision) != "client_canceled" {
+		t.Fatalf("status %d, decision %q, want 499 client_canceled", rr.Code, rr.Header().Get(HeaderDecision))
+	}
+	if got, ok := store.spentOf("42"); !ok || got != 2.131204 {
+		t.Fatalf("spent = (%v, %v), want (2.131204, true)", got, ok)
+	}
+	audits := store.auditRows()
+	want := "caller left; spend log unreadable (no spend log configured): cost not reported, booked the hold 0.131204 EUR"
+	if last := audits[len(audits)-1]; last.Reason != want {
+		t.Fatalf("reason = %q, want %q", last.Reason, want)
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want the hold released", n)
 	}
 }
 

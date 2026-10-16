@@ -723,23 +723,27 @@ const (
 // readable and holds none, the full hold when it cannot be read. It audits
 // the call as client_canceled.
 func (s *Server) settleCanceled(c *modelCall) {
-	wait, every := cmp.Or(s.opts.SettleWait, defaultSettleWait), cmp.Or(s.opts.SettleEvery, defaultSettleEvery)
-	deadline := time.Now().Add(wait)
 	var cost *float64
 	var readErr error
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		v, found, err := s.readSpend(ctx, c)
-		cancel()
-		readErr = err
-		if found {
-			cost, c.note = &v, fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v)
-			break
+	if s.opts.Spend == nil {
+		readErr = errors.New("no spend log configured")
+	} else {
+		wait, every := cmp.Or(s.opts.SettleWait, defaultSettleWait), cmp.Or(s.opts.SettleEvery, defaultSettleEvery)
+		deadline := time.Now().Add(wait)
+		for {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			v, found, err := s.readSpend(ctx, c)
+			cancel()
+			readErr = err
+			if found {
+				cost, c.note = &v, fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v)
+				break
+			}
+			if time.Now().After(deadline) {
+				break
+			}
+			time.Sleep(every)
 		}
-		if time.Now().After(deadline) {
-			break
-		}
-		time.Sleep(every)
 	}
 	switch {
 	case cost != nil:
@@ -751,10 +755,9 @@ func (s *Server) settleCanceled(c *modelCall) {
 	s.finish(c, cost, "client_canceled")
 }
 
+// readSpend prices this call alone: the hold id tags the call in LiteLLM's
+// log, so a key re-minted mid-call cannot move a spend row to another key.
 func (s *Server) readSpend(ctx context.Context, c *modelCall) (float64, bool, error) {
-	if s.opts.Spend == nil {
-		return 0, false, errors.New("no spend log configured")
-	}
 	return s.opts.Spend.CallSpend(ctx, c.key.key, c.hold.ID, c.started)
 }
 

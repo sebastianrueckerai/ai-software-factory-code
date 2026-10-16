@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-const skipDiff = "diff --git a/x_test.go b/x_test.go\n--- a/x_test.go\n+++ b/x_test.go\n@@ -10,3 +10,4 @@ func TestA(t *testing.T) {\n \ta := 1\n+\tt.Skip(\"flaky\")\n \t_ = a\n}\n"
+const skipDiff = "diff --git a/x_test.go b/x_test.go\n--- a/x_test.go\n+++ b/x_test.go\n@@ -10,3 +10,4 @@ func TestA(t *testing.T) {\n \ta := 1\n+\tt.Skip(\"flaky\")\n \t_ = a\n }\n"
 
 func TestCheats(t *testing.T) {
 	for name, tc := range map[string]struct {
