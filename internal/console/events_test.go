@@ -1508,10 +1508,12 @@ fire("view", {card: "t-9", tab: "chat"});
 out.card = [sandbox.location.hash, byID.drawer.hidden];
 winListeners.hashchange.forEach(function (fn) { fn({}); });
 out.opened = [byID.drawer.hidden, requests.slice()];
-// the tab waits for the drawer's swap: nothing clicked yet
-out.tabBeforeSwap = tabBtn.clicks;
+// the tab waits for the drawer's settle, not its swap: a click inside the
+// swap reaches no htmx event, so nothing is clicked yet
 fire("htmx:afterSwap", {target: byID.drawer});
-fire("htmx:afterSwap", {target: byID.drawer});
+out.tabBeforeSettle = tabBtn.clicks;
+fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer});
 out.tab = tabBtn.clicks;
 fire("view", {card: ""});
 out.closed = [byID.drawer.hidden, sandbox.location.hash, replaced.slice()];
@@ -1543,7 +1545,7 @@ console.log(JSON.stringify(out));
 	}
 	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
 		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"card":["#card=t-9",true],` +
-		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSwap":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
+		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"panel":true,"theme":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
