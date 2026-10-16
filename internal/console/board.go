@@ -2212,7 +2212,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 			continue
 		}
 		k := c.approvalCard(ctx, a, v.byID, v.csrf, d.Approver)
-		k.Filter = f
+		k.Filter, k.Writer = f, d.Writes
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
@@ -3054,6 +3054,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
 				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approves(a.Project))
 				m.Filter, m.IDSuffix = k.Filter, "-d"
+				m.Writer = true // the drawer's route already asked for a writer
 				d.Merge = &m
 			}
 		}

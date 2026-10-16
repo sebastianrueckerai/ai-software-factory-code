@@ -1740,33 +1740,38 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
-	// the human lane's approvals column is the wide view's
+	// the human lane's approvals column is the wide view's, its cards as
+	// brief as the narrow view's: each title opens its task's drawer,
+	// which holds the facts in full
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	start := strings.Index(body, `id="col-approvals"`)
 	end := strings.Index(body[start:], "</section>")
 	lane := body[start : start+end]
 	for _, want := range []string{
 		// the resource request: type, purpose, lease, monthly cost, project, the task
-		"Resource request", "<dd>cx33</dd>", "<dd>load test</dd>", "<dd>5 h</dd>", "8.9900 EUR per month; this lease 0.0720 EUR",
-		"<dd>sf/code</dd>", "a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
+		`<article class="card approval" data-card="t-res"`,
+		`<a href="#card=t-res" class="open">Resource request</a>`,
+		`<p class="need-line"><b>cx33</b> · load test</p>`,
+		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
+		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
 		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
-		// the merge request: the PR, the risk class, the migration, the review
-		`Merge <a href="https://git.example/sf/code/pulls/9">PR #9</a>`, "<dd>high</dd>",
-		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>",
-		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
-		// ruling 149: the agent's recommendation and why no auto merge
-		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
-		"<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>",
-		// ruling 177: the reviews of earlier heads, oldest first, with their findings
-		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
-		// ruling 188: the security audit's own section, beside the review
-		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>: an added line has the shape of a private key (pre-check)" +
-			"<br>- the audit gave no verdict: the answer is not one JSON object: EOF</dd>",
+		// the merge request: the PR, the chips, the review in brief
+		`<article class="card approval" data-card="t-m"`,
+		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9">PR #9</a>`,
+		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
+		`<p class="need-line"><b>Model review</b> approve: adds the column safely</p>`,
+		`<p class="need-line"><b>Recommendation</b> Adds the column; merge it.</p>`,
+		`<a href="#card=t-m:reviews" class="details">Details</a>`,
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
 	} {
 		if !strings.Contains(lane, want) {
 			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation"} {
+		if strings.Contains(lane, wall) {
+			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}
 	}
 	if strings.Contains(lane, "/approvals/5/") || !strings.Contains(lane, `Approvals <span class="count">2</span>`) {

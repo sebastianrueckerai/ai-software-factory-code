@@ -391,12 +391,9 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	card := col(t, body, "Needs you")
 	for _, want := range []string{
-		`Plan <a href="https://git.example/linkshort/linkshort/issues/1">#1</a>, revision 2`,
-		"Link shortener\n\nBuild a link shortener.\nAccounts: sign up.\nLinks: shorten.\n…",
+		`<article class="card approval plan" data-card="t-plan"`,
+		`<a href="#card=t-plan" class="open">Plan</a> <a href="https://git.example/linkshort/linkshort/issues/1">#1</a>, revision 2`,
 		"Foundation first, then the API, then the acceptance tests.",
-		`<tr role="row"><td role="cell">foundation</td><td role="cell">foundation</td><td role="cell">Foundation</td><td role="cell">medium</td><td role="cell"></td></tr>`,
-		`<tr role="row"><td role="cell">links-api</td><td role="cell">feature</td><td role="cell">Links API</td><td role="cell">medium</td><td role="cell">foundation</td></tr>`,
-		`<tr role="row"><td role="cell">integration</td><td role="cell">integration</td><td role="cell">Acceptance tests</td><td role="cell">small</td><td role="cell">foundation, links-api</td></tr>`,
 		`action="/tasks/t-plan/plan/accept"`, `<input type="hidden" name="revision" value="2">`, `<input type="hidden" name="sha256" value="sha-2">`,
 		`action="/tasks/t-plan/plan/changes"`, `action="/tasks/t-plan/plan/reject"`,
 	} {
@@ -404,8 +401,10 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
-	if strings.Contains(card, "Stats: per day.") {
-		t.Error("the plan card shows the whole spec, not its first lines")
+	for _, drawerOnly := range []string{"Build a link shortener", "Stats: per day.", `<table class="plan-cards"`} {
+		if strings.Contains(card, drawerOnly) {
+			t.Errorf("the plan card shows what its task's drawer holds, %q", drawerOnly)
+		}
 	}
 	// a plan at the session cap reads the cap line on its card, which
 	// Request changes answers: no second card in Escalations
