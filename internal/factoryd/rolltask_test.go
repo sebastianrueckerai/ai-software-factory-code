@@ -1018,6 +1018,18 @@ func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
 	if !reflect.DeepEqual(got, map[string]string{"k8s/factoryd.yaml": want["k8s/factoryd.yaml"], "k8s/deployment.yaml": want["k8s/deployment.yaml"]}) {
 		t.Fatalf("the branch's diff against main %q, want only the pinned files", got)
 	}
+	// the update changes no digest: the branch pins exactly what each
+	// request recorded, each in the manifest its target pins, the rebase
+	// and the fresh write between them
+	for _, r := range store.rolls {
+		for name, digest := range r.Changes {
+			target, _ := rollTarget(name)
+			ref := registryHost + target.Image + "@" + digest
+			if content := f.files[forkRepo+"@factory/t-roll"][target.File]; !strings.Contains(content, ref) {
+				t.Fatalf("the branch does not pin %s at %s, the digest run %d rolled", name, digest, r.RunID)
+			}
+		}
+	}
 	// the fresh commit writes the worker's pin on the rebased branch, its
 	// file at the blob the branch holds
 	wantUpdate := map[string]any{"branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nroll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
