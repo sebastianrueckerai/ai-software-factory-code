@@ -1,3 +1,5 @@
+//go:build unix
+
 // agent-worker is the in-sandbox half of the runner (architecture 6.4). It
 // clones the task's repository, drives the opencode adapter against the
 // model gateway with the projected task token, commits and pushes the

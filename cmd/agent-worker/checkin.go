@@ -1,3 +1,5 @@
+//go:build unix
+
 package main
 
 // The check-in's endpoints on the worker's message server (the escalation

@@ -1,3 +1,5 @@
+//go:build unix
+
 package main
 
 // The check-in's three endpoints (the escalation ladder's plan D): the
