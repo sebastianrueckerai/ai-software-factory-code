@@ -3238,3 +3238,16 @@ func TestRunSessionSpendWithoutPushAsksTheSupervisor(t *testing.T) {
 		t.Fatalf("comments = %q, want the supervisor's continue on spend_no_push", hub.comments)
 	}
 }
+
+func TestRunSessionPassesTheContextCap(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["CONTEXT_TOKENS"]; got != "100000" {
+		t.Fatalf("CONTEXT_TOKENS = %q, want the default 100000", got)
+	}
+}

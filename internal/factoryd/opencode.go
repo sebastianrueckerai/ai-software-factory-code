@@ -66,6 +66,7 @@ type Opencode struct {
 	Stronger, Cheap string
 	Budget          TokenBudget
 	Steps           int // the agent's step cap, policy limits.steps
+	ContextTokens   int // compaction threshold, policy limits.context_tokens; 0 = opencode's own
 	HTTP            *http.Client
 
 	mu        sync.Mutex
@@ -165,7 +166,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if p, id := splitModel(o.Cheap); o.Cheap != "" && p == provider {
 		subagent = p + "/" + id
 	}
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, subagent, more...)
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, o.ContextTokens, subagent, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -826,7 +827,10 @@ const mcpTimeoutMS = 150000
 // subagent, when set, is the model (provider/id) the general and explore
 // agents run on: the cheap rung under a frontier session (roadmap 222,
 // item 6); more lists further model ids to declare.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, subagent string, more ...string) ([]byte, error) {
+// contextTokens, when positive, is the size at which opencode compacts:
+// limit.input with compaction.reserved 0 makes it the overflow line
+// (overflow.ts at v1.18.32).
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps, contextTokens int, subagent string, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
@@ -841,16 +845,17 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 		if id == "" {
 			continue
 		}
+		limit := map[string]any{"context": policy.ModelContext, "output": outputLimit}
+		if contextTokens > 0 {
+			limit["input"] = contextTokens
+		}
 		models[id] = map[string]any{
 			"name":      "Factory model",
 			"reasoning": true,
 			"interleaved": map[string]any{
 				"field": "reasoning_content",
 			},
-			"limit": map[string]any{
-				"context": 200000,
-				"output":  outputLimit,
-			},
+			"limit": limit,
 		}
 	}
 	cfg := map[string]any{
@@ -874,6 +879,9 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 				"models": models,
 			},
 		},
+	}
+	if contextTokens > 0 {
+		cfg["compaction"] = map[string]any{"auto": true, "reserved": 0}
 	}
 	return json.Marshal(cfg)
 }

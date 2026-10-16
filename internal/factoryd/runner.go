@@ -1495,6 +1495,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
+		{"name": "CONTEXT_TOKENS", "value": strconv.Itoa(s.policy.Limits.ContextCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
 		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, maxCarriedFindings, true, "oldest", "findings")},
 		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, maxCarriedAnswers, false, "oldest", "answers to the escalations")},

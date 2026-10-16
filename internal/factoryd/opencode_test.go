@@ -237,7 +237,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, "")
+	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +280,7 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 // rejected call continues the loop (processor.ts:200-201, 647); steps caps
 // every agent that loops (session/prompt.ts:1178-1179).
 func TestOpencodeConfigGolden(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +296,7 @@ func TestOpencodeConfigGolden(t *testing.T) {
 		t.Fatalf("config =\n%s\nwant\n%s", indented.String(), want)
 	}
 	for _, steps := range []int{0, -1} {
-		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, ""); err == nil {
+		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, 0, ""); err == nil {
 			t.Errorf("steps %d accepted: a session must not run uncapped", steps)
 		}
 	}
@@ -1074,7 +1074,7 @@ func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
 // The stronger model is declared beside the session's, so a running
 // session can switch to it (roadmap 222, item 5); none twice.
 func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, "", "coding-frontier", "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 0, "", "coding-frontier", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1101,7 +1101,7 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 // model, declared beside the session's (roadmap 222, item 6); the work
 // guide names the rule once a class lists delegate.
 func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-frontier", 10000, 40, "factory/coding-cheap", "coding-cheap")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-frontier", 10000, 40, 0, "factory/coding-cheap", "coding-cheap")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1135,5 +1135,44 @@ func TestBriefStatesTheSessionsFacts(t *testing.T) {
 	}
 	if got := briefText(harness.TaskBrief{Objective: "o"}, "T"); strings.Contains(got, "factoryd's facts") {
 		t.Fatal("a brief without facts must not mention them")
+	}
+}
+
+// opencode compacts when the last step's token total reaches
+// limit.input - compaction.reserved (overflow.ts, v1.18.32): with reserved 0,
+// the threshold is limit.input.
+func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 100000, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Compaction map[string]any `json:"compaction"`
+		Provider   map[string]struct {
+			Models map[string]struct {
+				Limit map[string]float64 `json:"limit"`
+			} `json:"models"`
+		} `json:"provider"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	limit := cfg.Provider["factory"].Models["coding-cheap"].Limit
+	if limit["input"] != 100000 || limit["context"] != 200000 || limit["output"] != 10000 {
+		t.Fatalf("limit = %v, want input 100000 inside context 200000", limit)
+	}
+	if cfg.Compaction["auto"] != true || cfg.Compaction["reserved"] != float64(0) {
+		t.Fatalf("compaction = %v, want auto with reserved 0", cfg.Compaction)
+	}
+}
+
+// A version pinned before context_tokens leaves opencode's own threshold.
+func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"compaction"`) || strings.Contains(string(raw), `"input"`) {
+		t.Fatalf("config = %s, want no compaction block and no limit.input", raw)
 	}
 }
