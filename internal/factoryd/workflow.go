@@ -399,6 +399,10 @@ const (
 	ChecksSuccess ChecksState = "success"
 	ChecksFailure ChecksState = "failure"
 	ChecksTimeout ChecksState = "timeout"
+	// ChecksPending is HeadChecks' answer for a head whose checks have
+	// not settled (still running, or none reported yet): not red — the
+	// approval stage waits their conclusion out (versionApprovalPending).
+	ChecksPending ChecksState = "pending"
 )
 
 type ChecksResult struct {
@@ -487,6 +491,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
 	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
+	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -974,6 +979,16 @@ const (
 	// answer to any wait then buys agent time (grantTime). A run from
 	// before the change fails at the limit at once.
 	versionPlannerRetry workflow.Version = 1
+	// versionApprovalPending (change id "approval-pending"): a head whose
+	// checks are pending at the approval stage's read — not started, not
+	// settled — is not red (a request opened before they started would
+	// else record them red and park the pull request un-approvable):
+	// headGreen waits for their conclusion as the checks stage does,
+	// within the task's checks timeout, and only the conclusion proceeds
+	// — green to the request, red back with the findings, none the
+	// checks stage's timeout. A run from before sends the pending checks
+	// back as findings, as it did.
+	versionApprovalPending workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1071,6 +1086,7 @@ type taskRun struct {
 	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
 	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
 	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
+	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)

@@ -137,14 +137,116 @@ func TestStagesRedHeadAtApprovalGoesBackToTheAgent(t *testing.T) {
 	}
 }
 
-// A staged head whose checks are still running at the approval goes back
-// with the pending checks named; no request exists while it runs.
+// A staged head whose checks are still running at the approval is
+// pending, not red (versionApprovalPending): the wait the checks stage
+// runs answers it — within its bound — and a green conclusion opens the
+// request on that very head, so the card never goes back and no request
+// records red checks for checks that had not started.
+func TestStagesPendingHeadAtApprovalWaitsForItsChecks(t *testing.T) {
+	pending := `check "test" is still pending on c1 (running)`
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{pending}})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.headChecks, []string{"c1"}) || len(g.approvals) != 1 ||
+		g.approvals[0].Commit != "c1" || g.approvals[0].RedChecks {
+		t.Fatalf("head reads %v, approvals %+v: want one read of c1 and its request, no red checks", g.headChecks, g.approvals)
+	}
+	if len(g.sessions) != 1 {
+		t.Fatalf("sessions = %+v: the pending head waited for its checks, the card did not go back", g.sessions)
+	}
+}
+
+// A pending head whose wait concludes red goes back with the wait's
+// findings — the failing checks, not the pending ones — and the request
+// exists only from the next pass, on the head the green read answered.
+func TestStagesPendingHeadAtApprovalWaitsToRed(t *testing.T) {
+	pending := `check "test" is still pending on c1 (running)`
+	red := `check "pr / test": failure — 1 test failed (https://git.example/sf/r/actions/runs/95)`
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess},
+		ChecksResult{State: ChecksFailure, Findings: []string{red}},
+		ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{pending}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || g.approvals[0].RedChecks {
+		t.Fatalf("approvals = %+v: want one request, on the head the red wait sent back and the agent replaced", g.approvals)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{red}) {
+		t.Fatalf("sessions = %+v: want the wait's red finding sent back, not the pending one", g.sessions)
+	}
+	if !slices.Equal(g.headChecks, []string{"c1", "c2"}) {
+		t.Fatalf("head reads = %v, want c1 then c2", g.headChecks)
+	}
+}
+
+// A pending head whose checks never conclude takes the checks stage's
+// timeout path, not a red-checks request: the task fails with the checks
+// timeout and no approval exists.
+func TestStagesPendingHeadAtApprovalTimesOut(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess}, ChecksResult{State: ChecksTimeout})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{"no check has reported on c1 yet"}})
+
+	if final := g.run(t); final != "failed" || g.finals[0][1] != "checks did not finish within 45m0s" {
+		t.Fatalf("final = %q, finals %v: want the checks stage's timeout", final, g.finals)
+	}
+	if len(g.approvals) != 0 {
+		t.Fatalf("approvals = %+v: a head whose checks never concluded asks no one", g.approvals)
+	}
+}
+
+// A merge landing while the approval waits a pending head out is taken:
+// the wait races the terminal signals as the checks stage's does, so the
+// task ends done without a request or a merge of its own.
+func TestStagesPendingHeadAtApprovalTakesTheMergeDuringTheWait(t *testing.T) {
+	n := 0
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.onSessions(pushed("s1", "c1"))
+	// the pull request behind the merge signal; the wait answers green at
+	// once only from the checks stage, never for the pending head
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).
+		Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{`check "test" is still pending on c1 (running)`}})
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(2 * time.Hour).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			n++
+			if n == 1 {
+				return ChecksResult{State: ChecksSuccess}, nil // the checks stage's own wait
+			}
+			return ChecksResult{State: ChecksTimeout}, nil // the pending head's never settles
+		})
+	g.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged" {
+		t.Fatalf("final = %q, finals %v: the merge during the wait decides the task", final, g.finals)
+	}
+	if len(g.approvals) != 0 || len(g.merges) != 0 {
+		t.Fatalf("approvals %+v, merges %v: no request existed while the head was pending", g.approvals, g.merges)
+	}
+}
+
+// A run from before versionApprovalPending keeps its shape on replay: the
+// activity answers pending, the old guard sends the head back to the
+// agent with the pending checks named, as it did.
 func TestStagesPendingHeadAtApprovalGoesBackToTheAgent(t *testing.T) {
 	pending := `check "test" is still pending on c1 (running)`
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.env.OnGetVersion("approval-pending", workflow.DefaultVersion, versionApprovalPending).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.onHeadChecks(ChecksResult{State: ChecksFailure, Findings: []string{pending}}, ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{pending}}, ChecksResult{State: ChecksSuccess})
 	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := g.run(t); final != "done" {

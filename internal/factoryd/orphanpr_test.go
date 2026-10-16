@@ -516,6 +516,31 @@ func TestFactoryPRCardRerunsItsRedChecks(t *testing.T) {
 	}
 }
 
+// A factory pull request card whose head's checks have not started when
+// the approval reads it is pending, not red: a request opened on that
+// read would record red checks, which the console turns into a refusal
+// to merge — the card parks un-approvable. The approval waits the checks
+// out (versionApprovalPending) and asks on their green conclusion, which
+// the approval merges.
+func TestFactoryPRCardWaitsOutItsPendingHead(t *testing.T) {
+	pending := `no check has reported on c7 yet`
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceTemplateUpdate, PR: PullRequest{Number: 9}, Head: "c7"}
+	})
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{pending}})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c7" || g.approvals[0].RedChecks || !g.approvals[0].Factory {
+		t.Fatalf("approvals %+v: want one factory request on c7 that says nothing of red checks", g.approvals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) || len(g.sessions) != 0 {
+		t.Fatalf("merges %v, sessions %v: want the approved merge, no session", g.merges, g.sessions)
+	}
+}
+
 // A change request on a factory pull request card closes it with the
 // human's words, since no agent answers it (roadmap 264): Finish closes
 // the pull request and the issue with them. A run from before the change

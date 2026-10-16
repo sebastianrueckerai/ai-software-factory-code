@@ -701,8 +701,9 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 // HeadChecks reads the head's combined status once, without the checks
 // wait's polling: green passes, a failure answers its failing check as
 // WaitChecks reports it, and a head whose checks have not settled — some
-// still running, or none reported yet — answers the pending (or absent)
-// checks as the findings, which the approval sends back to the agent.
+// still running, or none reported yet — answers pending with those
+// checks as the findings, which the approval stage waits out
+// (versionApprovalPending).
 func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
@@ -732,13 +733,13 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 		res.Findings[0] != `check "pr / vet-and-format": failure — go vet failed (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` {
 		t.Fatalf("m1 = %+v, want the failing check as the checks wait reports it", res)
 	}
-	if res := head(t, "p1"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+	if res := head(t, "p1"); res.State != ChecksPending || len(res.Findings) != 1 ||
 		res.Findings[0] != `check "pr / test" is still pending on p1 (running)` {
-		t.Fatalf("p1 = %+v, want the pending check named", res)
+		t.Fatalf("p1 = %+v, want pending with the pending check named", res)
 	}
-	if res := head(t, "n0"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+	if res := head(t, "n0"); res.State != ChecksPending || len(res.Findings) != 1 ||
 		res.Findings[0] != "no check has reported on n0 yet" {
-		t.Fatalf("n0 = %+v, want the absent checks named", res)
+		t.Fatalf("n0 = %+v, want pending with the absent checks named", res)
 	}
 	if fj.polls != 1 || fj.pollsBySHA["c1"]+fj.pollsBySHA["m1"]+fj.pollsBySHA["p1"] != 3 {
 		t.Fatalf("polls = %d %+v: each head read once, no polling", fj.polls, fj.pollsBySHA)
