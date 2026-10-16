@@ -904,6 +904,16 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 			}
 			f.Unit = in.Unit
 		}
+		// the routines control's own defaults, which the page query's
+		// reader gives a routines=within it stands on
+		if f.Routines == "within" {
+			if f.Within < 1 {
+				f.Within = 1
+			}
+			if f.Unit == "" {
+				f.Unit = "days"
+			}
+		}
 		if in.Tab != "" {
 			if !slices.Contains(tabNames, in.Tab) {
 				return "", nil, refuse(http.StatusBadRequest, "The tab must be "+orWords(tabNames...)+".")

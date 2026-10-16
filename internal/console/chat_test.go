@@ -1419,6 +1419,25 @@ func TestChatBoardView(t *testing.T) {
 	if !strings.Contains(ev[at], "routines within 2 hours") {
 		t.Errorf("the tool's result does not say what the board shows:\n%s", strings.Join(ev, "\n"))
 	}
+	// routines within without its unit still names one: the control's own
+	// defaults apply, as the page query's path gives them
+	ev = post("?project=ai-software-factory-code", `{"routines":"within","within":2}`)
+	at = slices.IndexFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"board_view"`)
+	})
+	if at < 0 || ev[at+1] != `view {"query":"?project=ai-software-factory-code\u0026routines=within\u0026unit=days\u0026within=2"}` {
+		t.Errorf("routines within without a unit does not take days:\n%s", strings.Join(ev, "\n"))
+	}
+	if at >= 0 && !strings.Contains(ev[at], "routines within 2 days") {
+		t.Errorf("the tool's result does not say the period whole:\n%s", strings.Join(ev, "\n"))
+	}
+	ev = post("?project=ai-software-factory-code", `{"routines":"within"}`)
+	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026routines=within\u0026unit=days\u0026within=1"}`) ||
+		!slices.ContainsFunc(ev, func(e string) bool {
+			return strings.HasPrefix(e, "tool ") && strings.Contains(e, "routines within 1 day")
+		}) {
+		t.Errorf("routines within without its period does not default to one day:\n%s", strings.Join(ev, "\n"))
+	}
 	// a find the call names with empty text clears; one it leaves out keeps
 	ev = post("?project=ai-software-factory-code&q=cache", `{"find":""}`)
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code"}`) {
