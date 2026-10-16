@@ -285,16 +285,20 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		return s, startError{"prepare brief", err}
 	}
 	s.gate = newPushGate()
+	checkin := newCheckinServe(ws)
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)
 		}
 		return s.oc.Message(ctx, text)
-	}, log)
+	}, checkin, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
 	}
 	s.stopMessages = stop
+	// the check-in runs before the coding conversation; its handover, when
+	// one arrives within the wait, is the brief's first section
+	s.brief.Handover = checkin.waitBrief(log)
 	if s.env.report == "" {
 		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base); err != nil {
 			return s, startError{"checkpoint store", err}
@@ -717,15 +721,39 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	return strings.TrimSpace(out.String()), nil
 }
 
-// capBuffer keeps the first max bytes written to it.
+// capBuffer keeps the first max bytes written to it and says whether it cut.
 type capBuffer struct {
 	bytes.Buffer
 	max int
+	cut bool
 }
 
 func (b *capBuffer) Write(p []byte) (int, error) {
+	if b.Len()+len(p) > b.max {
+		b.cut = true
+	}
 	b.Buffer.Write(p[:min(len(p), max(0, b.max-b.Len()))])
 	return len(p), nil
+}
+
+// ReadFrom keeps io.Copy (os/exec's writer path) on Write: the buffer's own
+// ReadFrom would grow past max unseen.
+func (b *capBuffer) ReadFrom(r io.Reader) (int64, error) {
+	var n int64
+	p := make([]byte, 32<<10)
+	for {
+		k, err := r.Read(p)
+		if k > 0 {
+			n += int64(k)
+			b.Write(p[:k])
+		}
+		if err == io.EOF {
+			return n, nil
+		}
+		if err != nil {
+			return n, err
+		}
+	}
 }
 
 // prepareRepo puts the clone on the task branch at the task SHA and returns

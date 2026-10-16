@@ -54,6 +54,10 @@ type TaskBrief struct {
 	// failed. Both empty for a project without a document repository.
 	Docs       bool   `json:"docs,omitempty"`
 	DocsFailed string `json:"docs_failed,omitempty"`
+	// Handover is the check-in agent's note on the findings this session
+	// starts from, pushed before the conversation began; "" when no
+	// check-in ran.
+	Handover string `json:"handover,omitempty"`
 }
 
 // Author standings (ruling 152).

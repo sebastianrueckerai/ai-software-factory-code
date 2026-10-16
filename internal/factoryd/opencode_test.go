@@ -742,6 +742,23 @@ func TestBriefSaysWhatTheEnvLeftOut(t *testing.T) {
 	}
 }
 
+// The check-in's handover stands at the very top of the brief, above
+// every section and every finding, so nothing outranks it; a brief
+// without one opens as before.
+func TestBriefOpensWithTheHandover(t *testing.T) {
+	const note = "the finding is false; build and test as usual"
+	got := briefText(harness.TaskBrief{Objective: "o", LeftOut: []string{"1 of the 33 answers"}, Handover: note}, "T")
+	if head := "<<<HANDOVER>>>\n" + note + "\nHANDOVER>>>\n\n"; !strings.HasPrefix(got, head) {
+		t.Fatalf("brief =\n%s\nwant it to open with\n%s", got, head)
+	}
+	if !strings.Contains(got, "factoryd left out") {
+		t.Fatalf("brief =\n%s\nwant the left-out section below the handover", got)
+	}
+	if plain := briefText(harness.TaskBrief{Objective: "o"}, "T"); strings.Contains(plain, "HANDOVER") {
+		t.Fatalf("brief without a handover = %q", plain)
+	}
+}
+
 // A card's repository map is its own section after the findings; a
 // brief without one has none.
 func TestBriefCarriesTheRepositoryMap(t *testing.T) {

@@ -37,7 +37,7 @@ func parseHash(hexed string) ([32]byte, error) {
 // messageHandler serves factoryd's messages: text for the agent's next
 // turn, with model when the session continues on another model from then
 // on (roadmap 222, item 5).
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error) http.Handler {
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool {
 		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
@@ -90,6 +90,7 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	ck.serve(mux, authorized)
 	return mux
 }
 
@@ -155,12 +156,12 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 }
 
 // serveMessages listens on harness.MessagePort until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, log func(string, ...any)) (stop func(), err error) {
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, log func(string, ...any)) (stop func(), err error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: messageHandler(tokenSHA256, gate, send), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: messageHandler(tokenSHA256, gate, send, ck), ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log("message endpoint: %v", err)

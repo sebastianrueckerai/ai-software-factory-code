@@ -37,6 +37,19 @@ func (r *Runner) messageWorker(ctx context.Context, ns, pod, token, text string)
 	return r.postWorker(ctx, ns, pod, token, "/message", map[string]string{"text": text})
 }
 
+// recordsWorker delivers the parent session's record into the pod, where
+// it lands at /workspace/.factory/sessions/<session>.jsonl for the
+// check-in's tools and the coding agent to read.
+func (r *Runner) recordsWorker(ctx context.Context, ns, pod, token, session, record string) error {
+	return r.postWorker(ctx, ns, pod, token, "/records", map[string]string{"session": session, "record": record})
+}
+
+// briefWorker hands the check-in's handover to the pod, which holds its
+// conversation's start for it.
+func (r *Runner) briefWorker(ctx context.Context, ns, pod, token, handover string) error {
+	return r.postWorker(ctx, ns, pod, token, "/brief", map[string]string{"handover": handover})
+}
+
 // answerPush answers the worker asking for its push token, which it does
 // once every agent process in its pod is dead: write on the bot's fork,
 // minted at the first ask into minted (Forgejo takes one token of a name;

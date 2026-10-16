@@ -644,6 +644,9 @@ func randomTag() string {
 // last message between markers tagged tag.
 func briefText(brief harness.TaskBrief, tag string) string {
 	var b strings.Builder
+	if brief.Handover != "" {
+		fmt.Fprintf(&b, "<<<HANDOVER>>>\n%s\nHANDOVER>>>\n\n", brief.Handover)
+	}
 	if len(brief.LeftOut) > 0 {
 		b.WriteString("factoryd left out of this brief what is past its bounds; the issue and the card keep it:\n")
 		for _, n := range brief.LeftOut {

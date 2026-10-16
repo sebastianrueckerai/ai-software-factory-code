@@ -58,7 +58,7 @@ func TestMessageEndpoint(t *testing.T) {
 		}
 		sent = append(sent, text)
 		return answer
-	})
+	}, newCheckinServe(t.TempDir()))
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/message", strings.NewReader(body))
 		if auth != "" {
@@ -105,7 +105,7 @@ func TestMessageEndpoint(t *testing.T) {
 func TestPushTokenOnlyAfterTheAgentIsGone(t *testing.T) {
 	dir, e, base, mainHead, fork := changedSession(t)
 	gate := newPushGate()
-	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil })
+	h := messageHandler(mustHash(t, testMessageHash), gate, func(context.Context, string, string) error { return nil }, newCheckinServe(t.TempDir()))
 	post := func(auth, body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/push", strings.NewReader(body))
 		req.Header.Set("Authorization", auth)
