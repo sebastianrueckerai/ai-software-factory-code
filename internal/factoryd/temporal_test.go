@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -264,5 +265,35 @@ func TestTemporalLastFailureIsThePendingRunsOwn(t *testing.T) {
 		if got, err := w.LastFailure(context.Background(), "task-t1", id); err != nil || got != want {
 			t.Errorf("LastFailure(%s) = %q, %v; want %q", id, got, err, want)
 		}
+	}
+}
+
+// Alive answers whether the task's workflow runs now: a missing, completed,
+// failed or terminated workflow is not alive, and a Temporal outage is an
+// error, not a dead workflow.
+func TestTemporalAliveIsARunningWorkflow(t *testing.T) {
+	for name, tc := range map[string]struct {
+		res  *workflowservice.DescribeWorkflowExecutionResponse
+		err  error
+		want bool
+	}{
+		"running":   {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}}, nil, true},
+		"completed": {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED}}, nil, false},
+		"failed":    {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_FAILED}}, nil, false},
+		"not found": {nil, serviceerror.NewNotFound("no such workflow"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(tc.res, tc.err)
+			got, err := TemporalWorkflows{Client: c}.Alive(context.Background(), "t1")
+			if err != nil || got != tc.want {
+				t.Fatalf("Alive = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	c := &mocks.Client{}
+	c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(nil, errors.New("frontier down"))
+	if _, err := (TemporalWorkflows{Client: c}).Alive(context.Background(), "t1"); err == nil {
+		t.Fatal("a Temporal outage must be an error, not a dead workflow")
 	}
 }
