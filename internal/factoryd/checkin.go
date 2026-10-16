@@ -254,7 +254,13 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
 	}
 	if len(tail) > 0 {
-		fmt.Fprintf(&b, "The parent session's whole record sits at /workspace/.factory/sessions/%s.jsonl; its tail:\n<<<SESSION-TAIL>>>\n%s\nSESSION-TAIL>>>\n\n", ask.ParentSession, tail)
+		// the session moment tails the live session's own record, which no
+		// push copied into the pod; the other moments' parents sit there
+		if ask.Moment == CheckInSession {
+			fmt.Fprintf(&b, "The live session's record so far, its tail:\n<<<SESSION-TAIL>>>\n%s\nSESSION-TAIL>>>\n\n", tail)
+		} else {
+			fmt.Fprintf(&b, "The parent session's whole record sits at /workspace/.factory/sessions/%s.jsonl; its tail:\n<<<SESSION-TAIL>>>\n%s\nSESSION-TAIL>>>\n\n", ask.ParentSession, tail)
+		}
 	} else {
 		b.WriteString("The parent session's record is absent.\n\n")
 	}

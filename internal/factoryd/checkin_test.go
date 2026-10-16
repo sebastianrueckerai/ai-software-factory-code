@@ -598,6 +598,9 @@ func TestCheckinStatementMoments(t *testing.T) {
 	if strings.Contains(session, "\nFindings:\n") {
 		t.Errorf("session statement renders the findings block:\n%s", session)
 	}
+	if strings.Contains(session, "/workspace/.factory/sessions/") {
+		t.Errorf("session statement claims a pushed record copy the live pod does not hold:\n%s", session)
+	}
 
 	dead := checkinStatement(&CheckInAsk{
 		Moment: CheckInDead, ParentSession: "s-dead-2",
@@ -611,6 +614,9 @@ func TestCheckinStatementMoments(t *testing.T) {
 	}
 	if strings.Contains(dead, "\nFindings:\n") {
 		t.Errorf("dead statement renders the findings block:\n%s", dead)
+	}
+	if !strings.Contains(dead, "/workspace/.factory/sessions/s-dead-2.jsonl") {
+		t.Errorf("dead statement does not name the pushed parent record:\n%s", dead)
 	}
 
 	for _, s := range []struct{ name, text string }{{"gate", gate}, {"session", session}, {"dead", dead}} {
