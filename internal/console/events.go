@@ -240,6 +240,38 @@ func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error
 	}
 }
 
+// sightWait bounds a stream connect's retries of a sight check that
+// errors; a test shortens it.
+var sightWait = 4 * time.Second
+
+// sight is follows with the connect's patience: a check that errors —
+// a canceled ask, a Forgejo blip — is asked again until sightWait is
+// out, keeping the distinction the stream's own heartbeat makes (its
+// allowed, below: an error is waited out, a refusal ends the stream).
+// So one errored check does not answer 503, which closes the browser's
+// EventSource for good, while an outage cannot hold connects open
+// either; a refusal is never retried, and the answer is whatever the
+// last ask said.
+func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool, err error) {
+	deadline := time.Now().Add(sightWait)
+	for {
+		sees, writes, err = c.follows(r, p)
+		if err == nil {
+			return sees, writes, nil
+		}
+		wait := time.Until(deadline)
+		if wait <= 0 {
+			return sees, writes, err
+		}
+		wait = min(wait, moveFailTTL) // re-ask once the failure cache has breathed out
+		select {
+		case <-r.Context().Done():
+			return false, false, err
+		case <-time.After(wait):
+		}
+	}
+}
+
 // projectEventsStream answers GET /projects/{name}/events/stream to whoever
 // sees the project's board. A writer gets one SSE message per new events
 // row, event "event", its id the row's, its data the feed's row, and a
@@ -268,7 +300,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	sees, writes, err := c.follows(r, p)
+	sees, writes, err := c.sight(r, p)
 	switch {
 	case err != nil:
 		log.Printf("console: may %s see %s: %v", user, p.Repository, err)

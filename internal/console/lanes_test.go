@@ -668,9 +668,10 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 }
 
 // Review I1: the board asks MayMove once per repository, user and
-// moved_by, a failure included, and keeps the answer a minute: a render
-// with several backlog cards and the polls after it do not stall on
-// Forgejo, and the buttons stay hidden while the check fails.
+// moved_by, a failure included, and keeps a yes a minute, a failure only
+// a breath (moveFailTTL): a render with several backlog cards and the
+// polls right after it do not stall on Forgejo, and the buttons stay
+// hidden while the check fails.
 func TestBoardAsksWhoMayMoveOncePerRepository(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)

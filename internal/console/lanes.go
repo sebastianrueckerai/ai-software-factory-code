@@ -34,9 +34,17 @@ type answer struct {
 	at  time.Time
 }
 
-// mayMoveCached is Config.MayMove for the board's buttons: an answer, a
-// failure too, is kept for writersTTL per repository, user and moved_by,
-// so a render and the polls after it ask Forgejo once for each.
+// moveFailTTL is how long a failed MayMove ask is served as the answer:
+// a breath, so a render and the polls right after it ask Forgejo once
+// each, while a healthy ask follows one broken render within seconds
+// instead of a minute of hidden buttons and closed streams.
+var moveFailTTL = 2 * time.Second
+
+// mayMoveCached is Config.MayMove for the board's buttons: an answer is
+// kept for writersTTL per repository, user and moved_by, so a render and
+// the polls after it ask Forgejo once for each; a failure is kept for
+// moveFailTTL only, so a canceled ask (a browser abort mid-render) never
+// poisons the renders and the stream connects after it.
 func (c *Console) mayMoveCached(ctx context.Context, repository, user, movedBy string) (bool, error) {
 	if user == "" {
 		return false, nil // the pulse's view of the board, no member's
@@ -45,7 +53,7 @@ func (c *Console) mayMoveCached(ctx context.Context, repository, user, movedBy s
 	c.mu.Lock()
 	a, ok := c.moves[key]
 	c.mu.Unlock()
-	if ok && time.Since(a.at) < writersTTL {
+	if ok && time.Since(a.at) < writersTTL && (a.err == nil || time.Since(a.at) < moveFailTTL) {
 		return a.ok, a.err
 	}
 	ask, cancel := context.WithTimeout(ctx, moveAsk)
