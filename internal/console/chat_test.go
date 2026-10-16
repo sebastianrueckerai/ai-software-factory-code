@@ -1492,6 +1492,36 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	refuse(`{"card":"t-nope"}`, "There is no card t-nope in this project.")
 }
 
+// TestChatBoardViewSchema: the tool's published parameter names are the
+// ones toolInput decodes (282), so a call that follows the schema works
+// every control: the show keys carry underscores, no hyphen.
+func TestChatBoardViewSchema(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hi"}})
+	var def map[string]any
+	for _, d := range g.calls()[0]["tools"].([]any) {
+		if f := d.(map[string]any)["function"].(map[string]any); f["name"] == "board_view" {
+			def = f
+		}
+	}
+	if def == nil {
+		t.Fatal("the model is offered no board_view tool")
+	}
+	props := def["parameters"].(map[string]any)["properties"].(map[string]any)
+	for _, k := range []string{"queued_only", "progress_only", "done_only"} {
+		if _, ok := props[k]; !ok {
+			t.Errorf("board_view's schema lacks %q, which toolInput decodes: %v", k, slices.Sorted(maps.Keys(props)))
+		}
+	}
+	for k := range props {
+		if strings.HasSuffix(k, "-only") {
+			t.Errorf("board_view's schema holds %q, which toolInput drops", k)
+		}
+	}
+}
+
 // A proposal is its member's: another writer's Do it is refused 403 and
 // leaves it, an expired or unknown one is 404, and an undo token goes the
 // same way.
