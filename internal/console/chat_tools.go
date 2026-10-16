@@ -817,6 +817,9 @@ var tools = []chatTool{
 		required: []string{"title"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			if flags := filingFlags(in.Title, in.Body); len(flags) > 0 {
+				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
+			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size, in.Rung, in.RungReason)
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},

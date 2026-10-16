@@ -82,6 +82,9 @@ type EventKind string
 //     carry no detail
 //   - supervisor (factoryd): detector, trip, digest summary, decision,
 //     guidance, reason
+//   - note (an adapter): bytes, a dropped too-long opencode event line's
+//     size, and event and part, its event type and part id where the
+//     line's first bytes showed them
 const (
 	EventModelCall  EventKind = "model_call"
 	EventToolCall   EventKind = "tool_call"
@@ -92,6 +95,7 @@ const (
 	EventPushed     EventKind = "pushed"      // the worker pushed the task branch; detail carries branch and commit
 	EventPushFailed EventKind = "push_failed" // the worker's push failed or was refused; detail carries branch and error
 	EventSupervisor EventKind = "supervisor"  // factoryd's supervisor decided after a trip; never from a worker
+	EventNote       EventKind = "note"        // an adapter's note on its own stream: a dropped too-long opencode event line
 )
 
 // Event is one normalized stream item from a running harness. The git

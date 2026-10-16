@@ -764,6 +764,10 @@ func (s *acceptanceStore) UncommittedRolls(context.Context, string) ([]factoryd.
 	return nil, nil
 }
 
+func (s *acceptanceStore) TaskRolls(context.Context, string) ([]factoryd.RollRequest, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) MarkRollsCommitted(context.Context, string, []string, string) error {
 	return nil
 }

@@ -110,11 +110,11 @@ func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
 	return err
 }
 
-// UncommittedRolls are the roll requests of task its branch does not carry
-// yet, oldest first.
-func (s *PGStore) UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, changes, summary, created_at FROM roll_requests
-		WHERE task_id = $1 AND NOT committed ORDER BY run_id`, taskID)
+// TaskRolls are task's roll requests, oldest first: an update writes them
+// all again, on main's head (roadmap 279).
+func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at FROM roll_requests
+		WHERE task_id = $1 ORDER BY run_id`, taskID)
 	if err != nil {
 		return nil, err
 	}
@@ -123,7 +123,7 @@ func (s *PGStore) UncommittedRolls(ctx context.Context, taskID string) ([]RollRe
 	for rows.Next() {
 		r := RollRequest{TaskID: taskID}
 		var changes []byte
-		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &changes, &r.Summary, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.Committed, &changes, &r.Summary, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(changes, &r.Changes); err != nil {
@@ -132,6 +132,16 @@ func (s *PGStore) UncommittedRolls(ctx context.Context, taskID string) ([]RollRe
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// UncommittedRolls are the roll requests of task its branch does not carry
+// yet, oldest first.
+func (s *PGStore) UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
+	reqs, err := s.TaskRolls(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	return slices.DeleteFunc(reqs, func(r RollRequest) bool { return r.Committed }), nil
 }
 
 func (s *PGStore) MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error {
@@ -275,9 +285,9 @@ type RollerStore interface {
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
 // and for a changed image files a task of source roll whose one commit
 // bumps the digests; while a roll task is open, a newer set of images is
-// folded into it as a second commit. A changed image without a signature
-// by SigningKey refuses the commit: a human card says why, and nothing of
-// it rolls. It judges each commit once.
+// folded into it, its branch cut from main's head again. A changed image
+// without a signature by SigningKey refuses the commit: a human card says
+// why, and nothing of it rolls. It judges each commit once.
 type Roller struct {
 	Forgejo  *Forgejo
 	Registry *Registry
@@ -690,10 +700,16 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 }
 
 // RollCommit writes a roll task's requests its branch does not carry yet
-// onto the branch on the bot's fork, as one commit: the first from main's
-// head (the fork synced first), a fold on top. It returns the branch head,
-// the branch as it is when nothing is left to write. It is the roll's
-// only work: no session, no sandbox, no model.
+// onto the branch on the bot's fork, always based on main's head (the
+// fork synced first): the first write opens the branch, and every update
+// rebases it onto main's head again — the pull request's update, style
+// rebase, an endpoint of the factory's Forgejo — and then writes the
+// pins as one fresh commit of all the task's requests on it, so the pull
+// request's base is always main's head and its diff only the pins
+// (roadmap 279). A branch whose rebase conflicts is cut from main's head
+// again and its pull request filed fresh (refile). It returns the branch
+// head, the branch as it is when nothing is left to write. It is the
+// roll's only work: no session, no sandbox, no model.
 func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -732,10 +748,20 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 			if !recorded {
 				// a run that died between its write and its record finds
 				// its own commit: the one it would write, on what it wrote
-				// before or on the base it cut the branch from
+				// before, or — a re-cut (roadmap 279) — the one fresh
+				// commit of every pin on the base it cut the branch from
 				own, err := r.ownCommit(ctx, fork, head, cmp.Or(written, t.SHA), pending)
 				if err != nil {
 					return "", err
+				}
+				if !own && written != "" {
+					var all []RollRequest
+					if all, err = r.store.TaskRolls(ctx, t.ID); err != nil {
+						return "", err
+					}
+					if own, err = r.ownCommit(ctx, fork, head, t.SHA, all); err != nil {
+						return "", err
+					}
 				}
 				if !own {
 					return "", terminalError("the roll's branch %s is at %s, not at %s, the commit factoryd wrote: a roll builds on and adopts only its own commits",
@@ -764,46 +790,125 @@ func (r *Runner) RollCommit(ctx context.Context, taskID string) (string, error) 
 		}
 		return head, nil
 	}
-	from, newBranch := branch, ""
 	if !exists {
 		if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 			return "", err
 		}
-		if err := r.forgejo.SyncFork(ctx, fork); err != nil {
-			return "", err
-		}
-		// the workflow-directory guard compares the branch with its base
-		base, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, prBase)
-		if err != nil {
-			return "", err
-		}
-		if err := r.store.SetTaskSHA(ctx, t.ID, base); err != nil {
-			return "", err
-		}
-		from, newBranch = prBase, branch
 	}
-	changes, err := r.rollEdits(ctx, fork, from, pending)
+	if err := r.forgejo.SyncFork(ctx, fork); err != nil {
+		return "", err
+	}
+	// the workflow-directory guard compares the branch with its base
+	base, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, prBase)
 	if err != nil {
 		return "", err
 	}
-	commit := head
-	switch {
-	case len(changes) > 0:
-		var messages []string
-		for _, req := range pending {
-			messages = append(messages, req.Summary)
-		}
-		if commit, err = r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, from, newBranch,
-			Attribution{Role: "roll", Task: t.ID, Human: t.Author}, strings.Join(messages, "\n\n"), changes); err != nil {
-			return "", err
-		}
-	case !exists:
-		return "", terminalError("main already pins every digest of roll task %s", t.ID)
-	}
-	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(pending), commit); err != nil {
+	if err := r.store.SetTaskSHA(ctx, t.ID, base); err != nil {
 		return "", err
 	}
-	r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": commit, "rolls": rollSHAs(pending), "files": len(changes)})
+	// an update carries every request of the task: its branch rebased
+	// onto main's head, the pins written on it as one fresh commit, each
+	// file at the blob the rebased branch holds
+	reqs, ref := pending, prBase
+	if exists {
+		if reqs, err = r.store.TaskRolls(ctx, t.ID); err != nil {
+			return "", err
+		}
+		if t.PRNumber == 0 {
+			return "", terminalError("the roll's branch %s is open with no pull request to rebase onto main's head", branch)
+		}
+		if err := r.forgejo.RebasePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+			if errors.Is(err, ErrUpdateConflict) {
+				return r.refile(ctx, t, repo, fork, branch, reqs)
+			}
+			return "", err
+		}
+		ref = branch
+	}
+	changes, err := r.rollEdits(ctx, fork, ref, reqs)
+	if err != nil {
+		return "", err
+	}
+	if len(changes) == 0 {
+		return "", terminalError("main already pins every digest of roll task %s", t.ID)
+	}
+	var messages []string
+	for _, req := range reqs {
+		messages = append(messages, req.Summary)
+	}
+	attribution := Attribution{Role: "roll", Task: t.ID, Human: t.Author}
+	newBranch := ""
+	if !exists {
+		newBranch = branch
+	}
+	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, ref, newBranch, attribution,
+		strings.Join(messages, "\n\n"), changes)
+	if err != nil {
+		return "", err
+	}
+	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(reqs), commit); err != nil {
+		return "", err
+	}
+	r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": commit, "rolls": rollSHAs(reqs), "files": len(changes)})
+	return commit, nil
+}
+
+// refile answers a roll branch that cannot be rebased onto main's head
+// (roadmap 279) by cutting it from main's head again: the superseded pull
+// request closes with a note, the branch is deleted and written as its
+// first commit — one fresh commit of every pin of the task on main's
+// head — and a fresh pull request is filed for it, which the roll card
+// names. It returns the fresh branch head.
+func (r *Runner) refile(ctx context.Context, t Task, repo, fork Repo, branch string, reqs []RollRequest) (string, error) {
+	changes, err := r.rollEdits(ctx, fork, prBase, reqs)
+	if err != nil {
+		return "", err
+	}
+	if len(changes) == 0 {
+		return "", terminalError("main already pins every digest of roll task %s", t.ID)
+	}
+	if st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+		return "", err
+	} else if st.State == "open" {
+		note := "factoryd: closing this roll: its branch cannot be rebased onto main's head, so a fresh one is filed from main's head"
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.PRNumber, note); err != nil {
+			return "", err
+		}
+		if err := r.forgejo.ClosePullRequest(ctx, repo.Owner, repo.Name, t.PRNumber); err != nil {
+			return "", err
+		}
+	}
+	if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
+		return "", err
+	}
+	var messages []string
+	for _, req := range reqs {
+		messages = append(messages, req.Summary)
+	}
+	attribution := Attribution{Role: "roll", Task: t.ID, Human: t.Author}
+	commit, err := r.forgejo.CommitFiles(ctx, fork.Owner, fork.Name, prBase, branch, attribution,
+		strings.Join(messages, "\n\n"), changes)
+	if err != nil {
+		return "", err
+	}
+	objective := r.untrusted(t, t.Objective)
+	body := fmt.Sprintf("%s\n\nCloses #%d\n\nOpened by factoryd for task %s.", objective, t.IssueNumber, t.ID)
+	fresh, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, FirstLine(objective), body)
+	if err != nil {
+		return "", err
+	}
+	if err := r.store.SetTaskPR(ctx, t.ID, fresh.Number); err != nil {
+		return "", err
+	}
+	card := fmt.Sprintf("factoryd: main moved and this roll's branch could not be rebased onto its head; pull request #%d is superseded by #%d: %s",
+		t.PRNumber, fresh.Number, fresh.URL)
+	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, card); err != nil {
+		log.Printf("roller: task %s: name the fresh pull request on the card: %v", t.ID, err)
+	}
+	if err := r.store.MarkRollsCommitted(ctx, t.ID, rollSHAs(reqs), commit); err != nil {
+		return "", err
+	}
+	r.record(ctx, t.ID, "roll_commit", map[string]any{"commit": commit, "rolls": rollSHAs(reqs), "files": len(changes), "refiled": true, "pr": fresh.Number})
 	return commit, nil
 }
 
@@ -858,12 +963,13 @@ const ownCommitDepth = 16
 
 // ownCommit reports whether head carries the commit RollCommit wrote for
 // pending: the recorded parent reachable from head by following first
-// parents within ownCommitDepth. A queue-staged merge moves the tip off
-// factoryd's commit, so tip equality is stronger than the hazard this
-// guard tests; a tip that does not descend from the recorded commit still
-// refuses. On the tip itself, where the walk ends, the roll's files must
-// hold exactly what the requests make of them; a merge tip is not compared
-// for diff or content beyond that.
+// parents within ownCommitDepth — for a re-cut (roadmap 279), the base it
+// cut the branch from and every request of the task. A queue-staged merge
+// moves the tip off factoryd's commit, so tip equality is stronger than
+// the hazard this guard tests; a tip that does not descend from the
+// recorded commit still refuses. On the tip itself, where the walk ends,
+// the roll's files must hold exactly what the requests make of them; a
+// merge tip is not compared for diff or content beyond that.
 func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, pending []RollRequest) (bool, error) {
 	if len(pending) == 0 || parent == "" {
 		return false, nil
