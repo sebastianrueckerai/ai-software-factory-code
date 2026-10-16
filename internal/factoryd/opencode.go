@@ -22,7 +22,6 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -195,8 +194,8 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	// opencode and everything the agent starts share one process group, so
 	// nothing it leaves behind outlives the session; a leftover holding the
 	// output pipe gets WaitDelay before the group dies.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
+	ownProcessGroup(cmd)
+	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 2 * time.Second
 	if err := cmd.Start(); err != nil {
 		return o.finish(emit, false, err.Error())
@@ -217,7 +216,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	case <-ctx.Done():
 		serveErr = ctx.Err()
 	}
-	syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) // #nosec G104 -- best-effort: the server never exits on its own; ESRCH once it has
+	killProcessGroup(cmd) // #nosec G104 -- best-effort: the server never exits on its own; ESRCH once it has
 	<-exited
 
 	success := serveErr == nil && p.stopped && p.errMessage() == ""
@@ -1078,7 +1077,7 @@ func capArgs(in map[string]any) map[string]any {
 // so a symlink, fifo or device yields no hash instead of a read through it
 // or a blocked open.
 func fileSHA256(path string) (string, int64) {
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0) // #nosec G304 -- only hashed, never returned; non-regular files are refused below
+	f, err := os.OpenFile(path, os.O_RDONLY|noFollowFlags(), 0) // #nosec G304 -- only hashed, never returned; non-regular files are refused below
 	if err != nil {
 		return "", 0
 	}

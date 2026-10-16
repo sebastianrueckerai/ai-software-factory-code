@@ -1,5 +1,3 @@
-//go:build unix
-
 package main
 
 // checkpoint_endtoend_test.go is plan #495's integration card: the full
