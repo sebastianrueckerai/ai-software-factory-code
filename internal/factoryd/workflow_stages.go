@@ -70,6 +70,22 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // AtSessionCap: escalation is the card of a task at its session cap.
 func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
 
+// atGateStop: escalation is the gate supervisor's stop of one of the
+// verification's gates (actOnGate), not of a session or the screening.
+func atGateStop(escalation string) bool {
+	return slices.ContainsFunc([]string{ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge},
+		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
+}
+
+// atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).
+func atQueueLeft(escalation string) bool { return strings.HasPrefix(escalation, leftQueue) }
+
+// atReproStart: escalation is the reproduction gate's sandbox that cannot
+// start, not a session's.
+func atReproStart(escalation string) bool {
+	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
+}
+
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
 // findings, the newest, each at most maxCardLine.
 const (

@@ -943,16 +943,18 @@ const (
 	// in a restarted run too (TaskUsage.LastUncounted), and the
 	// unansweredSessions-th such session in a row asks a human; a restarted
 	// run's answer to a floor's refusal, to pods that never started or to
-	// the provider's refusals buys nothing, as the live wait's does; an
+	// the provider's refusals buys nothing, as the live wait's does, and
+	// its answer to a gate's escalation verifies the head again from the
+	// first stage (the review runs again, the approval is asked again); an
 	// answer at a cap (a change request, the cap card, the cap question
 	// after a restart) buys an attempt only at the session cap, whatever
 	// the last session counted, else the agent time alone; the check before
 	// a session is SessionFunded (the opening calls and the floor of the
 	// rung); every wait for a human adds the change requests that answered
-	// it to the next session's findings. A run from before
-	// counts every session that ran and every attempt the budget refused,
-	// buys an attempt with every answer at a cap or after a restart, funds
-	// on AttemptFunded and drops the budget wait's change requests.
+	// it to the next session's findings. A run from before counts every
+	// session that ran and every attempt the budget refused, buys an attempt
+	// with every answer at a cap or after a restart, funds on AttemptFunded
+	// and drops the budget wait's change requests.
 	versionSessionLadder workflow.Version = 1
 	// versionReviewRemark (change id "review-remark"): a review that
 	// answers concerns and names no finding is a remark on the card, not a
@@ -1336,6 +1338,19 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
+			case atGateStop(st.Question), atQueueLeft(st.Question), atReproStart(st.Question):
+				// a gate's answer verifies again, as the live gate does:
+				// here from the first stage, change requests back to the agent
+				if len(answer) > 0 {
+					apply(verdict{findings: answer, reason: "changes requested", requested: true})
+					break
+				}
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				v := t.verify(st.Head)
+				if v.final != "" {
+					return t.finish(v.final, v.reason)
+				}
+				apply(v)
 			default:
 				buy()
 			}
@@ -2725,6 +2740,9 @@ func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
 
+// gateStopped opens the gate supervisor's escalation.
+const gateStopped = "The gate supervisor stopped "
+
 // gateAnswer waits for SuperviseGate's decision; a failed call escalates.
 func (t *taskRun) gateAnswer(ask workflow.Future) GateDecision {
 	var d GateDecision
@@ -2746,7 +2764,7 @@ func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdic
 	case ActionCancel:
 		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis, cancelled: true}, true
 	case ActionEscalate:
-		reason := fmt.Sprintf("The gate supervisor stopped %s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
+		reason := fmt.Sprintf(gateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
 			strings.ReplaceAll(d.Diagnosis, "\n", " "))
 		if d.Recommendation != "" {
 			reason += "\nRecommendation: " + d.Recommendation

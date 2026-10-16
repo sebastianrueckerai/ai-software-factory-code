@@ -1588,6 +1588,90 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	}
 }
 
+// A run restarted while a gate's escalation waits takes the answer as the
+// live gate does, by verifying again, here from the first stage
+// (versionSessionLadder): the head c2 goes through the review again and the
+// approval is asked again, no session starts and no attempt is bought. A
+// run from before the gate bought an attempt and started a session, whose
+// push c3 went through verification instead.
+func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
+	questions := map[string]string{
+		"the gate supervisor's": "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+		"the merge queue's": "the checks are still red after the merge queue's turns: main moved on 1 of 3 turns, and the red checks ran again on 2, " +
+			"so the pull request left the queue until a human answers",
+		"the reproduction's start": "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+			"then answer to run the reproduction again, or close the card.",
+	}
+	for kind, question := range questions {
+		for _, pinned := range []bool{false, true} {
+			name := kind
+			if pinned {
+				name += ", before the gate"
+			}
+			h := newWorkflowHarness(t)
+			if pinned {
+				h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+			}
+			h.state = RunState{Status: "waiting-human", Question: question, PR: PullRequest{Number: 9}, Head: "c2",
+				Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+			reviewed := []string{}
+			h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+					reviewed = append(reviewed, commit)
+					return Review{}, nil
+				})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+			}
+			want := struct {
+				sessions int
+				reviewed []string
+				steps    []string
+				usage    []TaskUsage
+			}{0, []string{"c2"}, []string{"pr c2 after 1 cards", "approval c2"}, nil}
+			if pinned {
+				want.sessions, want.reviewed, want.steps = 1, []string{"c3"}, []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}
+				want.usage = []TaskUsage{{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1}, {AgentTime: 5 * time.Minute, Attempts: 2, ExtraAttempts: 1}}
+			}
+			if len(h.sessions) != want.sessions || !slices.Equal(reviewed, want.reviewed) || !slices.Equal(steps, want.steps) || !slices.Equal(h.usage, want.usage) {
+				t.Errorf("%s: sessions %d, reviewed %q, steps %q, usage %+v; want %d, %q, %q, %+v",
+					name, len(h.sessions), reviewed, steps, h.usage, want.sessions, want.reviewed, want.steps, want.usage)
+			}
+		}
+	}
+}
+
+// A change request answering a restarted gate's escalation goes back to the
+// agent, as the live gate's does: no verification of c2, the next session
+// is attempt 2 with the request, and nothing is bought below the cap.
+func TestWorkflowRestartedGateEscalationTakesAChangeRequestToTheAgent(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+	if f := h.sessions[0].Findings; len(f) != 1 || !strings.HasSuffix(f[0], "requested changes: rename it") {
+		t.Fatalf("findings = %q, want the change request", f)
+	}
+	if want := []TaskUsage{{AgentTime: 5 * time.Minute, Attempts: 2}}; !slices.Equal(h.usage, want) {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
+	}
+}
+
 func TestWorkflowRepetitionTripClimbsTheLadder(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Findings: []string{"changed a.go"}}, pushed("s2", "c2"))
