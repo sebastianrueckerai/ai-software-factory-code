@@ -1413,8 +1413,8 @@ console.log(JSON.stringify(out));
 // as a click does. The event's query pushes the URL beside the open
 // doc= and the drawer's hash and reads the board under it; with no board
 // on the page it touches nothing. The card opens the drawer as its link
-// does and the tab is clicked once the drawer's swap is in, a swap that
-// never comes leaving the listener armed for the next one. Card ""
+// does and the tab is clicked once the drawer's settle is in, a settle
+// that never comes leaving the listener armed for the next one. Card ""
 // closes the drawer. The panel works the fold and the theme the theme's
 // own button. Back reads the board under the entry's query and puts the
 // entry's q in the box without running the find.
