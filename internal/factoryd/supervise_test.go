@@ -1429,7 +1429,10 @@ func TestSpendWithoutPushIsOffWhereItDoesNotApply(t *testing.T) {
 // A spend trip after the supervisor's message is no evidence of being stuck.
 func TestSpendTripAfterAMessageIsNotTheStuckRule(t *testing.T) {
 	s := spendSupervisor(t, nil)
-	s.Messaged(time.Unix(1, 0))
+	if trip := s.Tick(time.Unix(400, 0)); trip == nil || trip.Kind != TripNoProgress {
+		t.Fatalf("setup trip = %+v, want no_progress", trip)
+	}
+	s.Messaged(time.Unix(401, 0))
 	trip := s.Spent(3.5, 5)
 	if trip == nil || trip.decided != nil {
 		t.Fatalf("trip = %+v, want the supervisor asked, not the stuck climb", trip)

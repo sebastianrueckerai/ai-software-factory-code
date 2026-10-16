@@ -3213,10 +3213,11 @@ func TestRunSessionSpendWithoutPushAsksTheSupervisor(t *testing.T) {
 	store.tasks["t2"] = tk
 	f := &fakeLiteLLM{content: `{"action":"continue","reason":"it is making progress"}`}
 	runner.supervisor = testSupervisorModel(f.srv(t).URL)
-	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second
+	runner.cfg.Supervisor.NoProgressAfter = time.Hour
+	runner.tick = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		deadline := time.Now().Add(6 * time.Second)
+		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
 			hub.mu.Lock()
 			found := slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "spend_no_push") })

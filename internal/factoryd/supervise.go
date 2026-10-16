@@ -359,15 +359,13 @@ func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
 // Resume clears the trip after the supervisor answered continue and resets
 // the detector that tripped; the time the supervisor took is not silence.
 func (s *Supervisor) Resume(now time.Time) {
-	if s.tripped != nil {
-		switch s.tripped.Kind {
-		case TripRepetition:
-			s.sinceChange = 0
-		case TripNoWrite:
-			s.noWriteFrom = now
-		default:
-			s.traces.reset(s.tripped)
-		}
+	switch s.tripped.Kind {
+	case TripRepetition:
+		s.sinceChange = 0
+	case TripNoWrite:
+		s.noWriteFrom = now
+	default:
+		s.traces.reset(s.tripped)
 	}
 	s.lastSeen = now
 	s.tripped = nil
