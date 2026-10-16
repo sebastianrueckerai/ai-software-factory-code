@@ -6,15 +6,29 @@ ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
-# builds the same digest at any wall-clock time.
+# builds the same digest at any wall-clock time. The stage builds offline
+# (roadmap 203, step 2): its module cache is the store's go-modules
+# tarball of this go.sum, restored below in the GOPROXY file layout
+# scripts/upstream-files uploads; GOPROXY=off leaves no fallback, so a
+# missing or wrong store copy fails the build and go.sum stays the
+# content pin, and GOFLAGS=-mod=mod keeps the download a read of the
+# cache, not a rewrite of go.mod.
 ARG SOURCE_DATE_EPOCH
-ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    GOPROXY=off \
+    GOFLAGS=-mod=mod
 WORKDIR /src
 COPY go.mod go.sum ./
 # Go telemetry off before the first go call: its counter files carry the
 # build's date, and `go telemetry off` would date its mode file too; an
 # undated "off" is the same mode.
-RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && go mod download
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" \
+      && sum=$(sha256sum go.sum | awk '{print $1}') \
+      && wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && mkdir -p "$(go env GOMODCACHE)/cache/download" \
+      && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
+      && rm /tmp/go-modules.tar.gz \
+      && go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \

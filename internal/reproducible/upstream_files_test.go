@@ -80,6 +80,8 @@ func dockerfileARGs(lines []string) map[string]string {
 
 // addDownloads is every ADD download of the Dockerfile at path: its URL
 // with the file's ARG defaults filled in, by its --checksum sha256.
+// Every URL must be the store's copy of an upstream-files.txt line:
+// /api/packages/upstream/generic/<package>/<version>/<file>.
 func addDownloads(t *testing.T, path string) map[string]string {
 	t.Helper()
 	raw, err := os.ReadFile(path)
@@ -113,16 +115,35 @@ func addDownloads(t *testing.T, path string) map[string]string {
 	return downloads
 }
 
+// genericStoreURL is the store's copy of a line of upstream-files.txt:
+// https://git.aisoftwarefactory.world/api/packages/upstream/generic/<package>/<version>/<file>.
+const genericStoreURL = "https://git.aisoftwarefactory.world/api/packages/upstream/generic/"
+
+// storePath is the download's <package>/<version>/<file> in the store,
+// or "" when the URL reads anywhere but the store's generic packages.
+func storePath(url string) string {
+	rest, ok := strings.CutPrefix(url, genericStoreURL)
+	if !ok || strings.Contains(rest, "?") {
+		return ""
+	}
+	parts := strings.Split(rest, "/")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return ""
+	}
+	return rest
+}
+
 var (
 	buildVMVersion = regexp.MustCompile(`buildkitVersion\s*=\s*"([^"]+)"`)
 	buildVMSHA256  = regexp.MustCompile(`buildkitSHA256\s*=\s*"([0-9a-f]{64})"`)
-	buildVMTarURL  = regexp.MustCompile(`https://github\.com/moby/buildkit/releases/download/\{\{\.Version\}\}/[^\s'"]+`)
+	buildVMTarURL  = regexp.MustCompile(`https://git\.aisoftwarefactory\.world/api/packages/upstream/generic/buildkit/\{\{\.Version\}\}/[^\s'"]+`)
 )
 
-// buildVMsTarball is the buildkit release tarball the build VM's
-// cloud-init curls (ruling 110, internal/factoryd/buildvm.go), pinned by
-// buildkitSHA256: its URL and sha256 as the store's list names them.
-func buildVMsTarball(t *testing.T) (url, sha string) {
+// buildVMsTarball is the buildkit tarball the build VM's cloud-init
+// curls (ruling 110, internal/factoryd/buildvm.go), pinned by
+// buildkitSHA256: its store path and sha256 as upstream-files.txt names
+// them.
+func buildVMsTarball(t *testing.T) (path, sha string) {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "factoryd", "buildvm.go"))
 	if err != nil {
@@ -132,16 +153,16 @@ func buildVMsTarball(t *testing.T) (url, sha string) {
 	s := buildVMSHA256.FindStringSubmatch(string(raw))
 	u := buildVMTarURL.FindString(string(raw))
 	if v == nil || s == nil || u == "" {
-		t.Fatal("buildvm.go: no buildkit version, sha256 and tarball URL of the VM's user data")
+		t.Fatal("buildvm.go: no buildkit version, sha256 and store tarball URL of the VM's user data")
 	}
-	return strings.ReplaceAll(u, "{{.Version}}", v[1]), s[1]
+	return storePath(strings.ReplaceAll(u, "{{.Version}}", v[1])), s[1]
 }
 
 // Every file the builds download with ADD and the build VM's buildkit
-// tarball are lines of upstream-files.txt at the same sha256 (roadmap
-// 203, step 1): scripts/upstream-files fills the store from the list, so
-// a download no line names would stay at its upstream, and a sha256
-// that differs would fill the store with bytes no Dockerfile pins.
+// tarball are the store's copy of a line of upstream-files.txt at the
+// same sha256 (roadmap 203, step 2): scripts/upstream-files fills the
+// store from the list, so a download no line names has no store copy to
+// read, and a sha256 that differs pins bytes the line does not name.
 // Hand-derived from the two Dockerfiles and buildvm.go as they stand:
 // eight lines, the runner image's seven downloads (its buildkit tarball
 // also the build VM's) and opencode's; node and the PGDG key serve both
@@ -154,35 +175,71 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 	want := map[string]string{}
 	for _, f := range []string{"Dockerfile.runner", "Dockerfile.sandbox"} {
 		for url, sha := range addDownloads(t, filepath.Join("..", "..", f)) {
-			want[url] = sha
+			p := storePath(url)
+			if p == "" {
+				t.Fatalf("%s: ADD %s reads outside the store's generic packages", f, url)
+			}
+			want[p] = sha
 		}
 	}
-	url, sha := buildVMsTarball(t)
-	if prev, ok := want[url]; ok && prev != sha {
-		t.Fatalf("the build VM's %s is pinned at two sha256", url)
+	path, sha := buildVMsTarball(t)
+	if path == "" {
+		t.Fatal("buildvm.go: the VM's buildkit tarball reads outside the store's generic packages")
 	}
-	want[url] = sha
+	if prev, ok := want[path]; ok && prev != sha {
+		t.Fatalf("the build VM's %s is pinned at two sha256", path)
+	}
+	want[path] = sha
 	if len(want) != 8 {
 		t.Errorf("the builds download %d files, want the eight of the two Dockerfiles and the build VM", len(want))
 	}
 	seen := map[string]bool{}
 	for _, l := range listed {
-		sha, ok := want[l.url]
+		p := l.pkg + "/" + l.version + "/" + l.name
+		sha, ok := want[p]
 		if !ok {
 			t.Errorf("upstream-files.txt: %s names no ADD download of the Dockerfiles nor the build VM's tarball", l.url)
 			continue
 		}
-		if seen[l.url] {
+		if seen[p] {
 			t.Errorf("upstream-files.txt: %s twice", l.url)
 		}
 		if l.sha != sha {
 			t.Errorf("upstream-files.txt: %s pins sha256 %s, its download pins %s", l.url, l.sha, sha)
 		}
-		seen[l.url] = true
+		seen[p] = true
 	}
-	for url := range want {
-		if !seen[url] {
-			t.Errorf("upstream-files.txt: no line names %s", url)
+	for p := range want {
+		if !seen[p] {
+			t.Errorf("upstream-files.txt: no line names the store's %s", p)
+		}
+	}
+}
+
+// No build reaches an upstream for its files (roadmap 203, step 2): the
+// three Dockerfiles and the build VM's cloud-init carry no URL of the
+// hosts upstream-files.txt downloads from — the store's copies answer
+// every read, and a missing one fails the build instead of falling back.
+func TestBuildsNameNoUpstreamFileURL(t *testing.T) {
+	banned := []string{"https://github.com/", "https://nodejs.org/", "https://code.forgejo.org/", "https://www.postgresql.org/"}
+	for _, f := range []string{"Dockerfile", "Dockerfile.sandbox", "Dockerfile.runner"} {
+		raw, err := os.ReadFile(filepath.Join("..", "..", f))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, host := range banned {
+			if strings.Contains(string(raw), host) {
+				t.Errorf("%s: the build reaches %s", f, host)
+			}
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join("..", "..", "internal", "factoryd", "buildvm.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range banned {
+		if strings.Contains(string(raw), host) {
+			t.Errorf("buildvm.go: the build VM reaches %s", host)
 		}
 	}
 }
