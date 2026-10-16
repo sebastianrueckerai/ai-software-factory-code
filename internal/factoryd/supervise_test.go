@@ -1375,3 +1375,70 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 		t.Fatalf("a session without the cap tripped: %+v", trip)
 	}
 }
+
+func spendSupervisor(t *testing.T, mutate func(*SupervisorConfig)) *Supervisor {
+	t.Helper()
+	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 100, MaxCalls: 3,
+		NoWriteAfter: 100 * time.Hour, NoPushSpend: 0.6}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	s, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// 60 percent of 5 EUR is 3.00: 2.90 is under the line, 3.10 over it.
+func TestSpendWithoutPushTripsOncePastTheShare(t *testing.T) {
+	s := spendSupervisor(t, nil)
+	if trip := s.Spent(2.9, 5); trip != nil {
+		t.Fatalf("tripped at 58 percent: %+v", trip)
+	}
+	trip := s.Spent(3.1, 5)
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "3.10 of the card's 5.00 EUR are spent (62 percent, the line is 60) and no work is pushed" {
+		t.Fatalf("trip = %+v", trip)
+	}
+	s.Resume(time.Unix(10, 0))
+	if again := s.Spent(4.9, 5); again != nil {
+		t.Fatalf("tripped twice in a session: %+v", again)
+	}
+}
+
+func TestSpendWithoutPushIsOffWhereItDoesNotApply(t *testing.T) {
+	for name, mutate := range map[string]func(*SupervisorConfig){
+		"unset":            func(c *SupervisorConfig) { c.NoPushSpend = 0 },
+		"a report session": func(c *SupervisorConfig) { c.ReadOnly = true },
+		"work pushed":      func(c *SupervisorConfig) { c.PriorPush = true },
+	} {
+		if trip := spendSupervisor(t, mutate).Spent(4.9, 5); trip != nil {
+			t.Errorf("%s: tripped: %+v", name, trip)
+		}
+	}
+	if trip := spendSupervisor(t, nil).Spent(1, 0); trip != nil {
+		t.Errorf("a zero budget tripped: %+v", trip)
+	}
+	s := spendSupervisor(t, nil)
+	s.Event(harness.Event{Kind: harness.EventPushed}, time.Unix(1, 0))
+	if trip := s.Spent(4.9, 5); trip != nil {
+		t.Errorf("a pushed session tripped: %+v", trip)
+	}
+}
+
+// A spend trip after the supervisor's message is no evidence of being stuck.
+func TestSpendTripAfterAMessageIsNotTheStuckRule(t *testing.T) {
+	s := spendSupervisor(t, nil)
+	s.Messaged(time.Unix(1, 0))
+	trip := s.Spent(3.5, 5)
+	if trip == nil || trip.decided != nil {
+		t.Fatalf("trip = %+v, want the supervisor asked, not the stuck climb", trip)
+	}
+}
+
+func TestSpendNoPushShareMustBeBelowOne(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, MaxCalls: 3, NoPushSpend: 1}
+	if _, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0)); err == nil {
+		t.Fatal("a share of 1 accepted")
+	}
+}

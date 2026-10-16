@@ -79,6 +79,11 @@ type SupervisorConfig struct {
 	// CheapCap: a session on the start rung's first attempt has this long
 	// to push before it climbs in place (roadmap 222, item 5); 0 = none.
 	CheapCap time.Duration
+	// NoPushSpend is the share of the card's budget (0 to under 1) whose
+	// spend with nothing pushed trips the supervisor; 0 = off. PriorPush:
+	// an earlier session of the card already pushed work.
+	NoPushSpend float64
+	PriorPush   bool
 }
 
 func (c SupervisorConfig) validate() error {
@@ -97,6 +102,9 @@ func (c SupervisorConfig) validate() error {
 	}
 	if c.NoWriteAfter < 0 {
 		return fmt.Errorf("supervisor: NoWriteAfter must be positive (0 = default), is %s", c.NoWriteAfter)
+	}
+	if c.NoPushSpend < 0 || c.NoPushSpend >= 1 {
+		return fmt.Errorf("supervisor: NoPushSpend must be a share from 0 up to under 1, is %v", c.NoPushSpend)
 	}
 	return nil
 }
@@ -130,6 +138,8 @@ type Supervisor struct {
 	// started is the session's start; pushed, that it pushed (the cheap cap)
 	started time.Time
 	pushed  bool
+
+	spendTripped bool
 }
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
@@ -270,6 +280,20 @@ func (s *Supervisor) cheapCap(at time.Time) *Trip {
 	return s.trip(&Trip{Kind: TripCheapCap, Detail: detail, decided: &Decision{Action: ActionRetryStronger, Reason: detail}})
 }
 
+// Spent trips once per session when the card has spent its share of the
+// budget with nothing pushed (roadmap 199): a session that reads and
+// edits for hours without a push is what the budget pays for. A report
+// session pushes nothing and is warned instead.
+func (s *Supervisor) Spent(spent, budget float64) *Trip {
+	if s.tripped != nil || s.spendTripped || s.cfg.NoPushSpend <= 0 || s.cfg.ReadOnly || s.cfg.PriorPush || s.pushed ||
+		budget <= 0 || spent < s.cfg.NoPushSpend*budget {
+		return nil
+	}
+	s.spendTripped = true
+	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("%.2f of the card's %.2f EUR are spent (%.0f percent, the line is %.0f) and no work is pushed",
+		spent, budget, 100*spent/budget, 100*s.cfg.NoPushSpend)})
+}
+
 // Climbed: the session switched to the stronger rung in place; the cheap
 // cap no longer applies.
 func (s *Supervisor) Climbed() { s.cfg.CheapCap = 0 }
@@ -335,13 +359,15 @@ func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
 // Resume clears the trip after the supervisor answered continue and resets
 // the detector that tripped; the time the supervisor took is not silence.
 func (s *Supervisor) Resume(now time.Time) {
-	switch s.tripped.Kind {
-	case TripRepetition:
-		s.sinceChange = 0
-	case TripNoWrite:
-		s.noWriteFrom = now
-	default:
-		s.traces.reset(s.tripped)
+	if s.tripped != nil {
+		switch s.tripped.Kind {
+		case TripRepetition:
+			s.sinceChange = 0
+		case TripNoWrite:
+			s.noWriteFrom = now
+		default:
+			s.traces.reset(s.tripped)
+		}
 	}
 	s.lastSeen = now
 	s.tripped = nil
@@ -371,7 +397,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
-	case TripCheckIn, TripWallClock, TripNoProgress:
+	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush:
 		return false
 	case TripFlipFlop, TripChurn:
 		return s.messagedOnce
@@ -434,6 +460,8 @@ const (
 	// TripCheapCap: the start rung's first attempt ran its cap without a
 	// push (roadmap 222, item 5)
 	TripCheapCap TripKind = "cheap_cap"
+	// TripSpendNoPush: the card spent its policy share of the budget and nothing is pushed
+	TripSpendNoPush TripKind = "spend_no_push"
 )
 
 // Detector defaults; each has an env override in cmd/factoryd.

@@ -3203,3 +3203,37 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 		t.Fatalf("%d message steps recorded, want only the first failure:\n%s", steps, timeline)
 	}
 }
+
+// A card past its budget share with nothing pushed asks the supervisor.
+func TestRunSessionSpendWithoutPushAsksTheSupervisor(t *testing.T) {
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
+	store.tasks["t2"] = tk
+	f := &fakeLiteLLM{content: `{"action":"continue","reason":"it is making progress"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(6 * time.Second)
+		for time.Now().Before(deadline) {
+			hub.mu.Lock()
+			found := slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "spend_no_push") })
+			hub.mu.Unlock()
+			if found {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if !slices.ContainsFunc(hub.comments, func(c string) bool {
+		return strings.Contains(c, "spend_no_push") && strings.Contains(c, "**continue**")
+	}) {
+		t.Fatalf("comments = %q, want the supervisor's continue on spend_no_push", hub.comments)
+	}
+}

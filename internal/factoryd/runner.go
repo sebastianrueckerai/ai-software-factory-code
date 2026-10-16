@@ -567,6 +567,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
+	supCfg.PriorPush = s.startRef != s.base
 	if s.attempt == 1 && r.canClimb(s) {
 		supCfg.CheapCap = r.cheapCap
 	}
@@ -831,7 +832,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case <-tick.C:
 			trip := sup.Tick(time.Now())
 			if trip == nil {
-				trip = r.watchLimits(ctx, t, s, ns, podName, watch)
+				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup)
 			}
 			if trip != nil {
 				if end, err := onTrip(trip); end {
@@ -921,6 +922,7 @@ func (r *Runner) supervisorConfig(d policy.Document, agentTime, checkIn time.Dur
 	c.CheckIn = checkIn
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
 	c.SameCall = d.Limits.SameCallAfter()
+	c.NoPushSpend = d.Limits.NoPushShare()
 	return c
 }
 
@@ -2018,7 +2020,7 @@ func (k *InClusterKube) Namespace() string {
 // watchLimits reads the card's spend once per tick and sends the agent the
 // warning it is due; a warning the pod did not take stays due, and only its
 // first failure is recorded on the timeline.
-func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch) *Trip {
+func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor) *Trip {
 	cur, ok, err := r.store.Task(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the card's spend: %v", t.ID, err)
@@ -2043,5 +2045,5 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 		}
 		w.sent(wn.kind)
 	}
-	return nil
+	return sup.Spent(cur.SpentEUR, cur.BudgetEUR)
 }
