@@ -73,12 +73,17 @@ func fixtureStat(t *testing.T, root, state, start string) {
 	}
 	// fields 3..22: state, then 18 numbers, then starttime (field 22)
 	stat := "7 (a b) " + state + strings.Repeat(" 0", 18) + " " + start + " 0 0\n"
-	tmp := filepath.Join(root, "stat.tmp")
-	if err := os.WriteFile(tmp, []byte(stat), 0o644); err != nil {
+	f, err := os.CreateTemp(dir, "stat.*")
+	if err != nil {
 		t.Error(err)
 		return
 	}
-	if err := os.Rename(tmp, filepath.Join(dir, "stat")); err != nil {
+	_, werr := f.WriteString(stat)
+	if cerr := f.Close(); werr != nil || cerr != nil {
+		t.Error(werr, cerr)
+		return
+	}
+	if err := os.Rename(f.Name(), filepath.Join(dir, "stat")); err != nil {
 		t.Error(err)
 	}
 }
