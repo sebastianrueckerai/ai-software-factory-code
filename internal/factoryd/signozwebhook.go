@@ -226,17 +226,20 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, a := range msg.Alerts {
 		if err := in.take(r.Context(), a, time.Now()); err != nil {
 			if row, seen, rerr := in.Store.AlertByFingerprint(r.Context(), AlertSigNoz, a.Fingerprint); rerr == nil &&
-				seen && row.Detail["starts_at"] == stamp(a.StartsAt) && row.Detail["issue"] == nil {
+				seen && in.replays(r.Context(), row, a) {
 				// The failure sits after the alerts row, the dedupe key, was
-				// written with its task's id: the row holds the firing, and
-				// the sweep finishes its filing each minute. Answering 5xx
-				// here made SigNoz redeliver the failure again and again,
-				// every retry another 5xx request on factoryd, until the
-				// 5xx-rate rule fired on factoryd itself (8 of 141 requests,
+				// written: whatever step of the delivery is left — the filing
+				// under the row's task id, the fired-again comment on its
+				// running task's issue, the resolve — a later delivery of the
+				// firing walks again, and the sweep finishes a filing or a
+				// resolve left behind. Answering 5xx here made SigNoz
+				// redeliver the failure again and again, every retry another
+				// 5xx request on factoryd, until the 5xx-rate rule fired on
+				// factoryd itself (8 of 141 requests,
 				// 2026-10-16T16:04:45Z). Accepted, not failed: the 5xx stays
 				// for a failure before the row — the project read, the
 				// insert — whose only repair is SigNoz's redelivery.
-				log.Printf("signoz webhook: alert %s: %v: the row is written, the sweep finishes its filing", strconv.Quote(a.Fingerprint), err) // #nosec G706 -- strconv.Quote escapes the alert's text
+				log.Printf("signoz webhook: alert %s: %v: the row is written, a redelivery or the sweep finishes it", strconv.Quote(a.Fingerprint), err) // #nosec G706 -- strconv.Quote escapes the alert's text
 				continue
 			}
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(a.Fingerprint), err))
@@ -244,13 +247,32 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := errors.Join(errs...); err != nil {
 		// SigNoz sends the notification again on a 5xx, the repair for a
-		// failure before the alerts row was written; a failure between the
-		// issue and the task row leaves the first issue without a task
+		// failure before the alerts row was written: after the row, a 5xx
+		// only adds factoryd's own failed requests without adding repair
 		log.Printf("signoz webhook: %v", err) // #nosec G706 -- strconv.Quote escapes the alert's text
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// replays reports whether alert a's failed delivery already wrote the
+// durable state its remaining work replays against: its alerts row, the
+// dedupe key, found as row. A resolve only finishes that row, whatever
+// step of it failed, and a firing of the row's own start replays against
+// it — an unfiled filing continued under the row's task id, a refile of a
+// firing its task did not end tried again; the fired-again comment on the
+// issue of the row's still-running task is posted by the next delivery of
+// the firing. A delivery that files anew — no row, or a start of its own
+// once the row's task ended — repairs only through SigNoz's redelivery,
+// which the 5xx asks for; a task read that itself fails cannot tell the
+// two apart, so the delivery fails for its redelivery.
+func (in *AlertIntake) replays(ctx context.Context, row Alert, a SigNozAlert) bool {
+	if a.Status == "resolved" || row.Detail["starts_at"] == stamp(a.StartsAt) {
+		return true
+	}
+	t, filed, err := in.Store.Task(ctx, row.TaskID)
+	return err == nil && filed && row.Detail["issue"] != nil && !Final(t.Status)
 }
 
 // take judges alert a at now, the time of its delivery or of the pass that

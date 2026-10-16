@@ -32,6 +32,9 @@ type alertForgejo struct {
 	comments []string // "#n body"
 	closed   []int64  // issues closed
 	failNext int      // issue creations to answer 500
+	// failComments is how many comment posts still answer 500: Forgejo's
+	// blip on the one call a delivery makes
+	failComments int
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
@@ -69,6 +72,11 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.labels[n] = in.Labels
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPost && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			if fj.failComments > 0 {
+				fj.failComments--
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			var in struct{ Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))

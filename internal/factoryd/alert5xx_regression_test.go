@@ -175,3 +175,72 @@ func TestAlertIntakeHoldsAFailedFilingToNo5xxStorm(t *testing.T) {
 		t.Fatalf("row's issue %v, want 9", got)
 	}
 }
+
+// The same burst, one step further along the delivery: the failing call
+// sat after the row was written AND after its issue was filed — the
+// "fired again" comment on the running task's issue, or the resolve's
+// comment — where the accept above covered only a row without its issue.
+// SigNoz redelivered such a notification just the same: every redelivery
+// retried the comment, failed on the same blip, and answered 500 again,
+// another burst of 8 in 141 on this rule's share. The row is the
+// delivery's dedupe key on these paths too — the next delivery of the
+// firing posts the comment again, and the sweep finishes a resolve SigNoz
+// no longer lists — so the delivery is accepted and the 5xx stays only
+// for a failure before the row was written, whose only repair is SigNoz's
+// redelivery.
+//
+// Reproduce in place:
+//
+//	cd /workspace/repo && go test ./internal/factoryd/ -run TestAlertIntakeHoldsAFailingCommentToNo5xxStorm -count=1 -v
+func TestAlertIntakeHoldsAFailingCommentToNo5xxStorm(t *testing.T) {
+	// the fired-again comment: fp1's task runs, the alert fires anew and
+	// its comment blips
+	r := newAlertRig(t)
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	r.fj.failComments = 8
+	for i := 1; i <= 8; i++ {
+		if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds)); rr.Code != http.StatusOK {
+			t.Fatalf("redelivery %d: status %d, want 200: %s", i, rr.Code, rr.Body)
+		}
+	}
+	if len(r.fj.issues) != 1 || len(r.store.tasks) != 1 || len(r.fj.comments) != 0 {
+		t.Fatalf("through the blip: %d issues, %d tasks, %d comments; want 1, 1, 0", len(r.fj.issues), len(r.store.tasks), len(r.fj.comments))
+	}
+	// the blip heals: the next delivery of the firing posts the comment
+	// once and records its start on the row
+	r.fj.failComments = 0
+	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds)); rr.Code != http.StatusOK {
+		t.Fatalf("the delivery after the blip: status %d: %s", rr.Code, rr.Body)
+	}
+	if want := []string{"#1 factoryd: the alert fired again at 2026-09-28T21:00:00Z.\n\n```\nvalue=14.29\n```"}; !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("comments %q, want %q once", r.fj.comments, want)
+	}
+	if got := r.store.alertRows()[0].Detail["starts_at"]; got != "2026-09-28T21:00:00Z" {
+		t.Fatalf("row's starts_at %v, want the new firing's", got)
+	}
+
+	// the resolve's comment: its burst is accepted the same way, and the
+	// sweep, not a 5xx-retry storm, finishes it
+	r2 := newAlertRig(t)
+	r2.post(t, "signoz", "hook-pw", sigAlert("firing", "fp2", "demo-staging", firedAt, neverEnds))
+	r2.fj.failComments = 8
+	for i := 1; i <= 8; i++ {
+		if rr := r2.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp2", "demo-staging", firedAt, resolvedAt)); rr.Code != http.StatusOK {
+			t.Fatalf("resolve redelivery %d: status %d, want 200: %s", i, rr.Code, rr.Body)
+		}
+	}
+	if len(r2.fj.comments) != 0 {
+		t.Fatalf("through the blip: %d comments, want 0", len(r2.fj.comments))
+	}
+	r2.fj.failComments = 0
+	r2.in.SigNoz = &fakeAlerts{}
+	if err := r2.in.SweepSigNoz(context.Background(), at(resolvedAt)); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"#1 factoryd: resolved at " + resolvedAt}; !slices.Equal(r2.fj.comments, want) {
+		t.Fatalf("comments %q, want %q once", r2.fj.comments, want)
+	}
+	if _, firing := firingSince(r2.store.alertRows()[0]); firing {
+		t.Fatal("the swept row still fires")
+	}
+}
