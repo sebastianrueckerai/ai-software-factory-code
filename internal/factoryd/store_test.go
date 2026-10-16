@@ -790,6 +790,14 @@ func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time
 	return s.answered[taskID], nil
 }
 
+func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
+	return 0, nil
+}
+
+func (s *fakeStore) CheckinCalls(ctx context.Context, taskID string) (int, error) {
+	return 0, nil
+}
+
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
@@ -2384,6 +2392,34 @@ func TestPGStoreModelAnswered(t *testing.T) {
 		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
 			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
 		}
+	}
+}
+
+// The check-in's spend and calls on a card: every purpose checkin row of
+// the task counts, a tool's call included; other kinds and other tasks
+// count not.
+func TestCheckinSpentAndCalls(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_checkin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, tool, spend_eur, ts) VALUES
+		('a', 'allowed', '', 'checkin', '', 0.01, '2026-10-15 10:00:00Z'),
+		('a', 'allowed', '', 'checkin', 'grep', 0.02, '2026-10-15 10:01:00Z'),
+		('a', 'allowed', '', 'agent', '', 0.5, '2026-10-15 10:02:00Z'),
+		('b', 'allowed', '', 'checkin', '', 0.04, '2026-10-15 10:03:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	eur, err := s.CheckinSpent(ctx, "a")
+	if err != nil || eur != 0.03 {
+		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.03, nil)", eur, err)
+	}
+	n, err := s.CheckinCalls(ctx, "a")
+	if err != nil || n != 2 {
+		t.Errorf("CheckinCalls(a) = (%v, %v), want (2, nil)", n, err)
 	}
 }
 

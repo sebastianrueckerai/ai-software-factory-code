@@ -2497,3 +2497,44 @@ func TestSandboxNamesNoThread(t *testing.T) {
 		t.Errorf("the agent's audit row = kind %q thread %q, want neither", last.Kind, last.Thread)
 	}
 }
+
+// A purposeful call may carry tools: the gateway forwards them to the
+// upstream untouched and books the call under ref checkin/<alias> with the
+// purpose as the audit row's kind.
+func TestChatPurposefulCallCarriesTools(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.125"}})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, Status: "in-review"})
+	store.setPolicy(factoryPolicy())
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: fakePrices{"review-frontier": testPrice}, FactorydToken: testFactorydToken})
+	tools := `[{"type":"function","function":{"name":"grep","description":"git grep the workspace at a ref","parameters":{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"]}}}]`
+	rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, "42", policy.PurposeCheckin,
+		`{"messages":[{"role":"user","content":"judge the finding"}],"model":"review-frontier","stream":false,"tools":`+tools+`}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status %d, want 200: %s", rr.Code, rr.Body)
+	}
+	_, bodies, _ := stub.seen()
+	if len(bodies) != 1 {
+		t.Fatalf("upstream calls = %d, want 1", len(bodies))
+	}
+	var sent, got struct {
+		Tools []any `json:"tools"`
+	}
+	if err := json.Unmarshal([]byte(`{"tools":`+tools+`}`), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(bodies[0]), &got); err != nil {
+		t.Fatalf("the upstream body is not JSON: %v", err)
+	}
+	if !reflect.DeepEqual(got.Tools, sent.Tools) {
+		t.Fatalf("the upstream tools = %v, want them intact: %v", got.Tools, sent.Tools)
+	}
+	if len(store.ledger) != 1 || store.ledger[0] != (ledgerRow{"42", "checkin/review-frontier", 0.125, policy.KindModel}) {
+		t.Fatalf("ledger = %+v, want the call booked under ref checkin/review-frontier", store.ledger)
+	}
+	audits := store.auditRows()
+	if len(audits) != 1 || audits[0].Kind != policy.PurposeCheckin {
+		t.Fatalf("audits = %+v, want one row of kind checkin", audits)
+	}
+}

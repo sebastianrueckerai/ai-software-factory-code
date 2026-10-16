@@ -419,6 +419,14 @@ func (s *acceptanceStore) ModelAnswered(context.Context, string, time.Time) (boo
 	return false, nil
 }
 
+func (s *acceptanceStore) CheckinSpent(context.Context, string) (float64, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) CheckinCalls(context.Context, string) (int, error) {
+	return 0, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

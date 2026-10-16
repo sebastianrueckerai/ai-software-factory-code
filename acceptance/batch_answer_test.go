@@ -469,6 +469,12 @@ func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, sinc
 func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CheckinCalls(context.Context, string) (int, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }

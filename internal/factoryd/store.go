@@ -325,6 +325,12 @@ type Store interface {
 	// ModelAnswered reports whether the task's agent got a model answer
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
+	// CheckinSpent is what the task's check-in conversations spent on the
+	// card: every purpose checkin row of the task, a tool's call included.
+	CheckinSpent(ctx context.Context, taskID string) (float64, error)
+	// CheckinCalls is how many calls the task's check-in conversations made
+	// on the card, every purpose checkin row of the task.
+	CheckinCalls(ctx context.Context, taskID string) (int, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -860,6 +866,22 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
 		taskID, gateway.AuditKindAgent, since).Scan(&answered)
 	return answered, err
+}
+
+func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
+	var eur float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(spend_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
+		taskID, policy.PurposeCheckin).Scan(&eur)
+	return eur, err
+}
+
+func (s *PGStore) CheckinCalls(ctx context.Context, taskID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit WHERE task_id = $1 AND kind = $2`,
+		taskID, policy.PurposeCheckin).Scan(&n)
+	return n, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar
