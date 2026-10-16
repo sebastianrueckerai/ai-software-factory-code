@@ -415,6 +415,10 @@ func (s *acceptanceStore) ProviderRefusal(context.Context, string, time.Time) (s
 	return "", false, nil
 }
 
+func (s *acceptanceStore) ModelAnswered(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -761,6 +765,10 @@ func (s *acceptanceStore) SetTaskIssue(_ context.Context, id string, issue int64
 }
 
 func (s *acceptanceStore) UncommittedRolls(context.Context, string) ([]factoryd.RollRequest, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) TaskRolls(context.Context, string) ([]factoryd.RollRequest, error) {
 	return nil, nil
 }
 

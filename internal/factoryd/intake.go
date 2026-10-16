@@ -672,13 +672,14 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 	}
 	size, eur := askedBudget(issue.Body)
+	rung := rungOf(issue.Body, size)
 	task := Task{
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
 		RiskClass:    "standard",
-		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, eur),
+		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
 		Size:         size,
-		Rung:         rungOf(issue.Body, size),
+		Rung:         rung,
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
@@ -932,7 +933,7 @@ func FileFactoryPRTask(ctx context.Context, store interface {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
-	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", 0)
+	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", false, 0)
 	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
 }
 
@@ -1353,7 +1354,7 @@ func (in *Intake) signalEvent(ctx context.Context, taskID string, e IntakeEvent,
 // whether it is a decision that ends the task. A pull request decision
 // carries its own pull request (its CommentID), a change request pr.
 func signalOf(e IntakeEvent, pr int64) (name string, sig TaskSignal, decision bool) {
-	sig = TaskSignal{Author: e.Author, Body: e.Body}
+	sig = TaskSignal{Author: e.Author, Body: e.Body, At: e.CreatedAt}
 	switch e.Kind {
 	case "issue_comment":
 		name, sig.Comment = SignalHumanComment, e.CommentID

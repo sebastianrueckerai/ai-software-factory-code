@@ -1543,7 +1543,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	refusal := "the remaining budget cannot fund a call: 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and the cheapest call needs more. " +
 		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 	var asked string
-	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		asked = taskID + " " + model
 		return refusal, nil
 	}
@@ -1558,7 +1558,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
 	}
 	// a failed read is no refusal: the workflow's grant still guards the attempt
-	r.c.cfg.AttemptFunded = func(ctx context.Context, taskID, model string) (string, error) {
+	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		return "", errors.New("the price book is down")
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther {
@@ -1574,7 +1574,7 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
 	}...)
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) {
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
 		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
 			"0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free", nil
 	}
@@ -1903,7 +1903,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks are red, so it cannot merge: run them again "+
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
 		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") || len(r.fg.calls) != 0 {
 		t.Fatalf("approve on red = %d %q, calls %q: want the refusal and no review", rec.Code, rec.Body, r.fg.calls)
 	}
@@ -1936,6 +1936,48 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	}
 }
 
+// An agent card's merge request on red checks (#838: the cap reached, the sync
+// with main turned the head red) cannot merge: its card offers the return to
+// the agent and the close, no Approve, and an approve refuses naming both.
+func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	start := strings.Index(body, `action="/approvals/4/`)
+	if start < 0 {
+		t.Fatalf("the board shows no form of request 4:\n%s", body)
+	}
+	start = strings.LastIndex(body[:start], "<article")
+	got := body[start : start+strings.Index(body[start:], "</article>")]
+	for _, want := range []string{`aria-controls="deny-4">Return or close</button>`, `name="action" value="request_changes" checked`, "return it to the agent",
+		`name="action" value="reject"`, "close it (closes the pull request)", `aria-label="Return or close PR #9 of t-m">Send</button>`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the red agent request lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>"} {
+		if strings.Contains(got, not) {
+			t.Errorf("the red agent request shows %q:\n%s", not, got)
+		}
+	}
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") || len(r.fg.calls) != 0 {
+		t.Fatalf("approve on red = %d %q, calls %q: want the refusal naming both ways and no review", rec.Code, rec.Body, r.fg.calls)
+	}
+	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("return = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "make the stub match the interface" {
+		t.Fatalf("reviews = %v: want one REQUEST_CHANGES with the note", r.fg.reviews)
+	}
+}
+
 // A factory pull request's merge request on red checks fits its re-run and
 // its close, not an approval, wherever a refusal names what fits a card; on
 // green checks approve and deny decide it as any merge request.
@@ -1948,6 +1990,17 @@ func TestFittingAFactoryPullRequest(t *testing.T) {
 	equal(t, "on red checks", fitting(card, capFactsFrom(card, 0, "", request(true))),
 		"rerun_checks runs its red checks again, or deny_merge closes it with your words")
 	equal(t, "on green checks", fitting(card, capFactsFrom(card, 0, "", request(false))), "approve_merge or deny_merge decide its merge request")
+}
+
+// An agent pull request's merge request on red checks fits its return and
+// its close, not an approval.
+func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
+	const want = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+	req := []factoryd.ApprovalRequest{{TaskID: "t-a", Kind: factoryd.ApprovalMerge, Spec: json.RawMessage(`{"head_sha":"c1","red_checks":true}`)}}
+	for _, status := range []string{"in-review", "waiting-human"} {
+		card := factoryd.Task{ID: "t-a", Status: status, IssueNumber: 37}
+		equal(t, status, fitting(card, capFactsFrom(card, 0, "", req)), want)
+	}
 }
 
 // A resource request is approved for its task, once; the project's

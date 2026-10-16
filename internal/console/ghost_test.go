@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -118,52 +119,101 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 	}
 }
 
-// The control shows every ghost, those within 7 days, or none; a lane
-// with hidden ghosts says how many, linked to the board with all of them.
-// The choice travels with the poll and the acts' forms.
+// The control shows every ghost, those whose next run is within its
+// period, or none; a routine with no next time, counted in merges or run
+// on an event, stays within any period. A lane with hidden ghosts says
+// how many, linked to the board with all of them. The choice travels
+// with the poll, the find and the acts' forms; the control's own form
+// carries none of it.
 func TestBoardRoutinesFilter(t *testing.T) {
 	r := newRig(t)
-	deps := factoryd.RoutineView{Project: "ai-software-factory-code",
-		Routine: policy.Routine{Name: "dependency-update", Title: "Dependency update", Files: policy.FilesAgent, Skill: "deps", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}}},
-		Next:    time.Now().Add(10 * 24 * time.Hour), NextWords: "Sun 25 Oct 06:00", Lane: "queued"}
-	r.routines.views = []factoryd.RoutineView{deps, audit(), soonBump()}
+	queuedAt := func(name string, next time.Duration) factoryd.RoutineView {
+		return factoryd.RoutineView{Project: "ai-software-factory-code",
+			Routine: policy.Routine{Name: name, Title: name, Files: policy.FilesAgent, Skill: "deps", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}}},
+			Next:    time.Now().Add(next), NextWords: "Thu 06:00", Lane: "queued"}
+	}
+	deps, pass := queuedAt("dependency-update", 10*24*time.Hour), queuedAt("template-pass", 5*time.Hour)
+	onConfig := factoryd.RoutineView{Project: "ai-software-factory-code",
+		Routine: policy.Routine{Name: "on-config", Title: "On config", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{On: policy.OnConfigurationVersion}}},
+		Lane:    "queued"}
+	r.routines.views = []factoryd.RoutineView{deps, pass, onConfig, audit(), soonBump()}
 	r.tasks.set("", factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Lane: policy.LaneReady})
 	ck, s := r.loggedIn(t)
+	board := func(query string) (body, needs, queued string) {
+		t.Helper()
+		body = r.do(httptest.NewRequest(http.MethodGet, codeBoard+query, nil), ck).Body.String()
+		return body, col(t, body, "Needs you"), col(t, body, "Queued")
+	}
+	// shown checks the queued ghosts the board shows, and that it hides the rest
+	shown := func(query, queued string, want ...string) {
+		t.Helper()
+		for _, name := range []string{"dependency-update", "template-pass", "on-config", "audit"} {
+			if has := strings.Contains(queued, `data-ghost="ai-software-factory-code/`+name+`"`); has != slices.Contains(want, name) {
+				t.Errorf("%s: Queued shows %s: %v, want %v", query, name, has, !has)
+			}
+		}
+	}
 
-	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
-	queued := col(t, body, "Queued")
+	body, needs, queued := board("")
 	if deps := strings.Index(queued, `data-ghost="ai-software-factory-code/dependency-update"`); deps < 0 || strings.Index(queued, `data-ghost="ai-software-factory-code/audit"`) < deps {
 		t.Fatalf("a merge-counted ghost sorts before a dated one:\n%s", queued)
 	}
-
-	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&routines=week", nil), ck).Body.String()
-	needs, queued := col(t, body, "Needs you"), col(t, body, "Queued")
-	ghostIn(t, needs, "weekly-bump")
-	ghostIn(t, queued, "audit")
-	if strings.Contains(queued, "dependency-update") {
-		t.Fatalf("within 7 days shows a run 10 days out:\n%s", queued)
+	shown("", queued, "dependency-update", "template-pass", "on-config", "audit")
+	if strings.Contains(body, "ghosts-hidden") || !strings.Contains(body, `<input type="radio" name="routines" value="all" checked>`) {
+		t.Fatal("all hides a ghost or does not show as chosen")
 	}
-	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;routines=all">1 routine hidden</a></p>`) {
+
+	body, needs, queued = board("&routines=within&within=2&unit=hours")
+	ghostIn(t, needs, "weekly-bump")
+	shown("2 hours", queued, "on-config", "audit")
+	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;routines=all">2 routines hidden</a></p>`) {
 		t.Fatalf("Queued does not say what it hides:\n%s", queued)
 	}
 	if strings.Contains(needs, "ghosts-hidden") || !strings.Contains(queued, `Queued <span class="count">1</span>`) {
 		t.Fatalf("the hidden line or the count is wrong:\n%s\n%s", needs, queued)
 	}
-	if !strings.Contains(body, `data-query="?project=ai-software-factory-code&amp;routines=week"`) ||
-		!strings.Contains(body, `<summary class="on" aria-label="Routines on the board: within 7 days"`) ||
-		!strings.Contains(body, `<input type="radio" name="routines" value="week" checked>`) {
-		t.Fatal("the board does not keep within 7 days")
+	for _, want := range []string{
+		`data-query="?project=ai-software-factory-code&amp;routines=within&amp;unit=hours&amp;within=2"`,
+		`<summary class="on" aria-label="Routines on the board: within 2 hours" title="Routines on the board">↻ routines</summary>`,
+		`<form method="get" action="/" class="menu-pop auto-submit"><input type="hidden" name="project" value="ai-software-factory-code"><fieldset><legend>Show</legend>`,
+		`<label><input type="radio" name="routines" value="all"><span>all</span></label><div class="within"><label><input type="radio" name="routines" value="within" checked><span>within</span></label>` +
+			`<input type="number" name="within" min="1" max="999" value="2" aria-label="The period's length"><select name="unit" aria-label="The period's unit"><option value="days">days</option><option value="hours" selected>hours</option></select></div>`,
+		`<input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="routines" value="within"><input type="hidden" name="within" value="2"><input type="hidden" name="unit" value="hours"><label class="visually-hidden" for="q">`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("within 2 hours: the board lacks %s", want)
+		}
 	}
-	if !strings.Contains(ghostIn(t, queued, "audit"), `<input type="hidden" name="routines" value="week">`) {
+	if !strings.Contains(ghostIn(t, queued, "audit"), `<input type="hidden" name="routines" value="within"><input type="hidden" name="within" value="2"><input type="hidden" name="unit" value="hours">`) {
 		t.Fatal("a ghost's form drops the choice")
 	}
 
-	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&routines=none", nil), ck).Body.String()
-	needs, queued = col(t, body, "Needs you"), col(t, body, "Queued")
+	body, _, queued = board("&routines=within&within=3&unit=days")
+	shown("3 days", queued, "template-pass", "on-config", "audit")
+	if !strings.Contains(queued, `>1 routine hidden</a></p>`) || !strings.Contains(body, `aria-label="Routines on the board: within 3 days"`) ||
+		!strings.Contains(body, `value="3" aria-label="The period's length"><select name="unit" aria-label="The period's unit"><option value="days">days</option><option value="hours">hours</option></select>`) {
+		t.Fatalf("within 3 days: the lane or the control is wrong:\n%s", queued)
+	}
+
+	// a period the control does not take reads as 1 day
+	body, _, queued = board("&routines=within&within=0&unit=weeks")
+	shown("within=0&unit=weeks", queued, "template-pass", "on-config", "audit")
+	if !strings.Contains(body, `data-query="?project=ai-software-factory-code&amp;routines=within&amp;unit=days&amp;within=1"`) ||
+		!strings.Contains(body, `aria-label="Routines on the board: within 1 day"`) || !strings.Contains(body, `value="1" aria-label="The period's length">`) {
+		t.Fatal("a refused period does not read as 1 day")
+	}
+	// the old week is no choice: it reads as all
+	body, _, queued = board("&routines=week")
+	shown("week", queued, "dependency-update", "template-pass", "on-config", "audit")
+	if !strings.Contains(body, `<summary aria-label="Routines on the board" title="Routines on the board">`) || strings.Contains(body, "routines=week") {
+		t.Fatal("routines=week does not read as all")
+	}
+
+	body, needs, queued = board("&routines=none")
 	if strings.Contains(body, "data-ghost=") {
 		t.Fatal("none shows a ghost")
 	}
-	if !strings.Contains(needs, `>1 routine hidden</a></p>`) || !strings.Contains(queued, `>2 routines hidden</a></p>`) ||
+	if !strings.Contains(needs, `>1 routine hidden</a></p>`) || !strings.Contains(queued, `>4 routines hidden</a></p>`) ||
 		!strings.Contains(queued, `Queued <span class="count">1</span>`) {
 		t.Fatalf("none: the lanes say wrong:\n%s\n%s", needs, queued)
 	}
@@ -173,17 +223,17 @@ func TestBoardRoutinesFilter(t *testing.T) {
 
 	// the hidden line's link keeps the find and the column's order, and
 	// the find leaves the ghosts standing
-	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard+"&q=455&queued=oldest&routines=week", nil), ck).Body.String()
-	needs, queued = col(t, body, "Needs you"), col(t, body, "Queued")
+	_, needs, queued = board("&q=455&queued=oldest&routines=within&within=2&unit=hours")
 	ghostIn(t, needs, "weekly-bump")
 	ghostIn(t, queued, "audit")
-	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;q=455&amp;queued=oldest&amp;routines=all">1 routine hidden</a></p>`) {
+	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;q=455&amp;queued=oldest&amp;routines=all">2 routines hidden</a></p>`) {
 		t.Fatalf("the hidden line drops the board's state:\n%s", queued)
 	}
 
 	// an act's answer keeps the choice it carried
-	rec := r.do(htmxPost("/routines/ai-software-factory-code/audit/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "routines": {"week"}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-query="?project=ai-software-factory-code&amp;routines=week"`) {
+	rec := r.do(htmxPost("/routines/ai-software-factory-code/audit/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"routines": {"within"}, "within": {"2"}, "unit": {"hours"}}), ck)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-query="?project=ai-software-factory-code&amp;routines=within&amp;unit=hours&amp;within=2"`) {
 		t.Fatalf("skip = %d:\n%s", rec.Code, rec.Body)
 	}
 }

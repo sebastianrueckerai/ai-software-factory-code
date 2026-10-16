@@ -1,9 +1,9 @@
 {{define "board"}}<div id="board" data-project="{{.Project}}" data-query="{{.Query}}">
 <div class="board-head"><h2 id="board-title">Board</h2>
-<form class="find{{if .Q}} on{{end}}" id="find" role="search" method="get" action="/">{{range .Hidden "q"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<label class="visually-hidden" for="q">Find on the board</label><input id="q" name="q" type="text" value="{{.Q}}" placeholder="Find: a word, #612, plan:558" autocomplete="off" spellcheck="false" aria-keyshortcuts="f">{{if .Q}}<a class="find-x" href="/{{.ClearQuery}}" aria-label="Clear the find" title="Clear the find">×</a>{{end}}</form>
+<form class="find" id="find" role="search" method="get" action="/" hx-get="/" hx-trigger="input changed delay:250ms" hx-target="#board" hx-select="#board" hx-swap="outerHTML" hx-preserve>{{range .Hidden "q"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<label class="visually-hidden" for="q">Find on the board</label><input id="q" name="q" type="text" value="{{.Q}}" placeholder="Find: a word, #612, plan:558" autocomplete="off" spellcheck="false" aria-keyshortcuts="f"><a class="find-x" href="/{{.ClearQuery}}" aria-label="Clear the find" title="Clear the find">×</a></form>
 {{if .Docs}}<button type="button" id="documents" class="documents" aria-controls="doc-view" aria-expanded="false" title="The project's documents; the last one opens where you left it">Documents</button>{{end}}
-{{if .HasRoutines}}<details class="col-menu routines-ctl"><summary{{if .Routines}} class="on"{{end}} aria-label="Routines on the board{{if eq .Routines "week"}}: within 7 days{{else if .Routines}}: none{{end}}" title="Routines on the board">↻ routines</summary>
-<form method="get" action="/" class="menu-pop auto-submit">{{range .Hidden "routines"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Show</legend><label><input type="radio" name="routines" value="all"{{if not .Routines}} checked{{end}}><span>all</span></label><label><input type="radio" name="routines" value="week"{{if eq .Routines "week"}} checked{{end}}><span>within 7 days</span></label><label><input type="radio" name="routines" value="none"{{if eq .Routines "none"}} checked{{end}}><span>none</span></label></fieldset></form></details>
+{{if .HasRoutines}}<details class="col-menu routines-ctl"><summary{{if .Routines}} class="on"{{end}} aria-label="Routines on the board{{if eq .Routines "within"}}: within {{.Period}}{{else if .Routines}}: none{{end}}" title="Routines on the board">↻ routines</summary>
+<form method="get" action="/" class="menu-pop auto-submit">{{range .Hidden "routines"}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}<fieldset><legend>Show</legend><label><input type="radio" name="routines" value="all"{{if not .Routines}} checked{{end}}><span>all</span></label><div class="within"><label><input type="radio" name="routines" value="within"{{if eq .Routines "within"}} checked{{end}}><span>within</span></label><input type="number" name="within" min="1" max="999" value="{{or .Within 1}}" aria-label="The period's length"><select name="unit" aria-label="The period's unit"><option value="days">days</option><option value="hours"{{if eq .Unit "hours"}} selected{{end}}>hours</option></select></div><label><input type="radio" name="routines" value="none"{{if eq .Routines "none"}} checked{{end}}><span>none</span></label></fieldset></form></details>
 {{end}}<a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
 
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>
@@ -92,8 +92,8 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
 <label for="fund-{{$.Card.ID}}{{$.Suffix}}">Fund this card, EUR</label>
 <input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}{{$.Suffix}}" name="eur" required>
-<label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">why</label>
-<input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="2000" required>
+<label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">note, also the card's answer</label>
+<input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="{{maxAnswer}}" required>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
 </form>{{end}}{{with .Card.AcceptanceClose}}<form method="post" action="/tasks/{{$.Card.ID}}/acceptance-close" class="inline">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
@@ -123,23 +123,23 @@
 {{end}}{{if .Rerun}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/rerun">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Re-run the checks of PR #{{.PRNumber}} of {{.TaskID}}">Re-run the checks</button>
-</form>{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
+</form>{{else if .Returns}}<div class="acts">{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
 {{end}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
-<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else}}Deny{{end}}</button>
+<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else if .Returns}}Return or close{{else}}Deny{{end}}</button>
 {{template "split" .}}</div>
 <form method="post" action="/approvals/{{.ID}}/deny" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}" hidden>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
+<label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else if .Returns}}What the agent changes, or why it closes, posted on the pull request as you{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
 <textarea id="note-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
-{{if and (eq .Kind "merge") (not .Merge.Factory)}}<fieldset><legend>Deny by</legend>
-<label><input type="radio" name="action" value="request_changes" checked> requesting changes</label>
-<label><input type="radio" name="action" value="reject"> rejecting (closes the pull request)</label>
+{{if and (eq .Kind "merge") (not .Merge.Factory)}}<fieldset><legend>{{if .Returns}}Send it{{else}}Deny by{{end}}</legend>
+<label><input type="radio" name="action" value="request_changes" checked> {{if .Returns}}return it to the agent{{else}}requesting changes{{end}}</label>
+<label><input type="radio" name="action" value="reject"> {{if .Returns}}close it (closes the pull request){{else}}rejecting (closes the pull request){{end}}</label>
 </fieldset>{{end}}
 {{if .Merge.Factory}}<button type="submit" class="deny" aria-label="Close PR #{{.PRNumber}} of {{.TaskID}} and its card">Close</button>
-{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
+{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
 </form>
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}

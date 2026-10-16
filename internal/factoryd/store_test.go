@@ -65,6 +65,7 @@ type fakeStore struct {
 	daySpent    float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
+	answered         map[string]bool // ModelAnswered's answer by task
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -772,6 +773,10 @@ func (s *fakeStore) CapRefusal(ctx context.Context, taskID string, since time.Ti
 	return nil, nil
 }
 
+func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	return s.answered[taskID], nil
+}
+
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
@@ -1259,7 +1264,7 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, ExtraAttempts: 1, PosterAttempts: 1}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
@@ -1899,6 +1904,10 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// the row's time is the database's: the answer's date is set, not today's
+	if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = '2026-10-15T13:30:00Z' WHERE comment_id = 650`); err != nil {
+		t.Fatal(err)
+	}
 	events, err := s.IntakeEvents(ctx, "t-wd")
 	if err != nil {
 		t.Fatal(err)
@@ -1912,7 +1921,7 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 		t.Fatalf("intake events = %q, want %q", got, want)
 	}
 	answers, _, _ := answersFrom(events)
-	if want := []string{`sebastian, to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
+	if want := []string{`sebastian (2026-10-15), to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
 	}
 }
@@ -2330,6 +2339,37 @@ func TestPGStoreMonthCap(t *testing.T) {
 	for range 2 {
 		if id, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", Fingerprint: month + "/50"}); err != nil || id == 0 {
 			t.Fatalf("SigNoz alert = %d, %v", id, err)
+		}
+	}
+}
+
+// A session got a model answer when the gateway booked one of its agent's
+// calls allowed: a supervisor's call, a refused call and an earlier session's
+// do not count.
+func TestPGStoreModelAnswered(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_answered"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, ts) VALUES
+		('a', 'allowed', '', 'supervisor', '2026-10-15 10:00:00Z'),
+		('b', 'refused_budget', 'the task', 'agent', '2026-10-15 10:00:00Z'),
+		('c', 'allowed', '', 'agent', '2026-10-15 10:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 15, h, m, 0, 0, time.UTC) }
+	for _, tc := range []struct {
+		task  string
+		since time.Time
+		want  bool
+	}{
+		{"a", at(9, 0), false}, {"b", at(9, 0), false}, {"c", at(9, 0), true}, {"c", at(10, 0), true}, {"c", at(10, 1), false}, {"nobody", at(9, 0), false},
+	} {
+		if got, err := s.ModelAnswered(ctx, tc.task, tc.since); err != nil || got != tc.want {
+			t.Errorf("ModelAnswered(%s, %v) = (%v, %v), want %v", tc.task, tc.since, got, err, tc.want)
 		}
 	}
 }

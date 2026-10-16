@@ -70,6 +70,22 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // AtSessionCap: escalation is the card of a task at its session cap.
 func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
 
+// atGateStop: escalation is the gate supervisor's stop of one of the
+// verification's gates (actOnGate), not of a session or the screening.
+func atGateStop(escalation string) bool {
+	return slices.ContainsFunc([]string{ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge},
+		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
+}
+
+// atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).
+func atQueueLeft(escalation string) bool { return strings.HasPrefix(escalation, leftQueue) }
+
+// atReproStart: escalation is the reproduction gate's sandbox that cannot
+// start, not a session's.
+func atReproStart(escalation string) bool {
+	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
+}
+
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
 // findings, the newest, each at most maxCardLine.
 const (
@@ -151,6 +167,10 @@ func (t *taskRun) runStages(commit string) verdict {
 		reviewed = reviewed || s.Name == policy.StageReview
 		if s.Name == policy.StageReview && review.Verdict == "" && !t.rolling && t.v20 >= versionReviewVerdict {
 			card = append(card, s.Name+": "+noVerdict+cmp.Or(review.Note, "no reason recorded"))
+			continue
+		}
+		if s.Name == policy.StageReview && t.remarked(review) {
+			card = append(card, s.Name+": remark, no finding: "+review.Summary)
 			continue
 		}
 		if len(findings) == 0 {
@@ -533,6 +553,12 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 	return nil, verdict{}, false
 }
 
+// remarked: the review answered concerns and named no finding
+// (versionReviewRemark), a remark on the card.
+func (t *taskRun) remarked(review Review) bool {
+	return t.reviewRemark >= versionReviewRemark && review.Verdict == "concerns" && len(review.Findings) == 0
+}
+
 // besideRun is a gate scheduled beside the checks wait, by its stage: the
 // model review (versionReviewParallel) or the audit (versionAuditBeside).
 // head is the commit it reads, the one the checks stage was waiting on
@@ -687,7 +713,7 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 	}
-	t.insertAnswer(answerKey{a.comment, sig.Comment}, answerText(sig.Author, a.question, sig.Body))
+	t.insertAnswer(answerKey{a.comment, sig.Comment}, answerText(sig.Author, a.question, sig.Body, sig.At))
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.asked != "" && f.comment == a.comment }); i >= 0 {
 		t.beside[i].answered = true
 	}

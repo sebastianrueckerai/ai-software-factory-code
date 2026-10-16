@@ -48,6 +48,7 @@ type Trip struct {
 	Kind     TripKind
 	Findings []string
 	Detail   string // what the detector saw, for the supervisor and the record
+	Stuck    string // the stuck rule's line, "" when it did not end the session
 	key      string // which evidence tripped, so a continue resets only that
 	decided  *Decision
 }
@@ -346,11 +347,6 @@ func (s *Supervisor) Resume(now time.Time) {
 	s.tripped = nil
 }
 
-// Findings is a copy of what the session has done so far.
-func (s *Supervisor) Findings() []string {
-	return append([]string(nil), s.findings...)
-}
-
 // Messaged resumes the session after the supervisor's message reached it
 // and arms the stuck rule until the next write. The command detectors
 // start afresh at the message; the alternation memory (contents, churn)
@@ -388,7 +384,7 @@ func (s *Supervisor) trip(t *Trip) *Trip {
 	t.Findings = append([]string(nil), s.findings...)
 	if t.decided == nil && s.stuck(t) {
 		stuck := fmt.Sprintf("stuck after the supervisor's message: %s: %s", t.Kind, t.Detail)
-		t.Findings = append(t.Findings, stuck)
+		t.Findings, t.Stuck = append(t.Findings, stuck), stuck
 		t.decided = &Decision{Action: ActionRetryStronger, Reason: stuck}
 	}
 	s.tripped = t

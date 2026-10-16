@@ -21,8 +21,8 @@ const (
 	EventTaskEnded         = "task_ended"
 	EventPullRequestMerged = "pull_request_merged"
 	EventAllChildrenDone   = "all_children_done"
-	// the model tier's measurements (roadmap 222, item 5): a session's
-	// start with its model and attempt, its push with the minutes since
+	// the model tier's measurements (roadmap 222, item 5): an answered
+	// session's start with its model and attempt, its push with the minutes since
 	// the start, and a switch of the running session's model
 	EventSessionStarted = "session_started"
 	EventSessionPushed  = "session_pushed"

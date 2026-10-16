@@ -1348,7 +1348,7 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"recorded PR open": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
 			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"recorded PR open, change request signalled after the last session": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: open}},
-			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes: rename it"}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7", Findings: []string{"reviewer sebastian requested changes (2026-10-15): rename it"}}},
 		"recorded PR merged, issue closed": {withPR(prTask, 12), &prForgejo{issueOff: true, pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":true}`}},
 			RunState{Status: "running", Source: "api", Merged: true, IssueClosed: true}},
 		"recorded PR closed": {withPR(prTask, 12), &prForgejo{pulls: map[int64]string{12: `{"number":12,"state":"closed","merged":false}`}},
@@ -1359,13 +1359,13 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 	} {
 		r, store, _ := newActivityRunner(t, tc.task, tc.fj)
 		if len(tc.want.Findings) > 0 {
-			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Now().Add(-time.Hour)})
+			store.InsertSession(context.Background(), Session{ID: "s-old", TaskID: "t1", CreatedAt: time.Date(2026, 10, 14, 12, 0, 0, 0, time.UTC)})
 			// an untrusted one, one never signalled and one an earlier session already took up count for nothing
 			for _, e := range []IntakeEvent{
-				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "rename it", CommentID: 90, Trusted: true, Signalled: true},
+				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "rename it", CommentID: 90, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 				{TaskID: "t1", Kind: "pull_request_comment", Author: "reader", Body: "drive-by", CommentID: 91},
 				{TaskID: "t1", Kind: "pull_request_comment", Author: "sebastian", Body: "not yet signalled", CommentID: 92, Trusted: true},
-				{TaskID: "t1", Kind: "pull_request_review_rejected", Author: "sebastian", Body: "taken up", Trusted: true, Signalled: true, CreatedAt: time.Now().Add(-2 * time.Hour)},
+				{TaskID: "t1", Kind: "pull_request_review_rejected", Author: "sebastian", Body: "taken up", Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)},
 			} {
 				store.InsertIntakeEvent(context.Background(), e)
 			}
@@ -1409,11 +1409,11 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	for _, e := range []IntakeEvent{
 		{Kind: "issue_comment", Author: "sebastian", Body: "before", CommentID: 500, Trusted: true, Signalled: true},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which file?\nWhy: open", CommentID: 600},
-		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "a.txt", CommentID: 601, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)},
 		{Kind: "issue_comment", Author: "reader", Body: "spam", CommentID: 602},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: "The agent asks: Which text?\nWhy: open", CommentID: 603, Choices: []string{"hello", "bye"}},
 		{Kind: IntakeEscalation, Author: "factoryd", Body: healedReason, CommentID: 604},
-		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "ok", CommentID: 605, Trusted: true, Signalled: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
 	} {
 		e.TaskID = "t1"
 		store.InsertIntakeEvent(context.Background(), e)
@@ -1423,7 +1423,7 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 	if err != nil || val.Get(&got) != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	want := []string{`sebastian, to "Which text?": ok`, `sebastian, to "Which file?": a.txt`}
+	want := []string{`sebastian (2026-10-15), to "Which text?": ok`, `sebastian (2026-10-14), to "Which file?": a.txt`}
 	if !slices.Equal(got.Answers, want) || got.Question != "Which text?" || !slices.Equal(got.Choices, []string{"hello", "bye"}) || got.Screening {
 		t.Fatalf("answers = %q, question = %q, choices %q, screening %v; want %q, Which text?, hello and bye", got.Answers, got.Question, got.Choices, got.Screening, want)
 	}
@@ -2473,6 +2473,49 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil ||
 		!strings.Contains(why, "needs 0.015360 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
 		t.Fatalf("nothing measured: (%q, %v)", why, err)
+	}
+}
+
+// A session needs more than its opening calls: the floor of its rung (budget.session_floor_*_eur)
+// is the least free budget it starts on. Card of 5 EUR with 4.50 spent has 0.50 free: the frontier
+// floor 0.60 refuses, naming 0.600000 EUR; the cheap floor 0.30 funds. At 4.80 spent (0.20 free) the
+// cheap floor refuses too. With the floor absent only the opening decides.
+func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}}}
+	ctx := context.Background()
+
+	why, err := r.SessionFunded(ctx, "t-1", "factory/coding-frontier")
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/coding-frontier needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push.") {
+		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	}
+	if why, err := r.SessionFunded(ctx, "t-1", "coding-frontier"); err != nil || !BudgetRefusal(why) ||
+		!strings.Contains(why, "a session on coding-frontier needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	}
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("cheap at 0.50 free = (%q, %v), want funded", why, err)
+	}
+	raised := store.tasks["t-1"]
+	raised.SpentEUR = 4.8
+	store.tasks["t-1"] = raised
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil ||
+		!strings.Contains(why, "a session on factory/coding-cheap needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
+		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.300000 EUR floor named", why, err)
+	}
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+		t.Fatalf("cheap without a floor at 0.20 free = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
 	}
 }
 

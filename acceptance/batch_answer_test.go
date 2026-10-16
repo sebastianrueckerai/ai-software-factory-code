@@ -466,6 +466,9 @@ func (s *accBatchStore) CapRefusal(ctx context.Context, taskID string, since tim
 func (s *accBatchStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error) {
 	panic("unused")
 }
+func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }
@@ -592,6 +595,9 @@ func (s *accBatchStore) SetTaskIssue(ctx context.Context, id string, issue int64
 	panic("unused")
 }
 func (s *accBatchStore) UncommittedRolls(ctx context.Context, taskID string) ([]factoryd.RollRequest, error) {
+	panic("unused")
+}
+func (s *accBatchStore) TaskRolls(ctx context.Context, taskID string) ([]factoryd.RollRequest, error) {
 	panic("unused")
 }
 func (s *accBatchStore) MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error {

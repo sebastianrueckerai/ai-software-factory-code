@@ -66,7 +66,8 @@ type TaskSignal struct {
 	Author  string
 	Body    string
 	PR      int64
-	Comment int64 // the issue comment's id, for human_comment
+	Comment int64     // the issue comment's id, for human_comment
+	At      time.Time // when the comment or review was made; zero for a signal from before dates
 	// Revision and SHA256 are the plan revision plan_accepted accepts,
 	// Revision and Index the plan question plan_answered answers.
 	Revision int
@@ -117,6 +118,8 @@ const (
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
 	ActivityAttemptFunded               = "AttemptFunded"
+	ActivitySessionFunded               = "SessionFunded"
+	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityDayResume                   = "DayResume"
 )
 
@@ -237,6 +240,14 @@ type ProviderWait struct {
 	Backoff time.Duration
 }
 
+// SessionAnswerInput asks whether the session that began at Since got a
+// model answer (versionSessionLadder); the rest is its record.
+type SessionAnswerInput struct {
+	TaskID, SessionID, Model string
+	Attempt                  int
+	Since                    time.Time
+}
+
 // SessionInput is one attempt: StartRef is the commit the worker starts
 // from (empty = the task's base SHA).
 type SessionInput struct {
@@ -271,6 +282,9 @@ type SessionResult struct {
 	Commit    string // pushed; for a supervisor stop, the work in progress
 	Summary   string
 	Findings  []string
+	// LastMessage is the agent's last message, cut at maxHandoverMessage, ""
+	// when it said none; the next session is told it beside the stop reason.
+	LastMessage string
 	// Reason is the supervisor's escalation reason with the progress
 	// digest's summary, for the issue; Choices the answers the agent
 	// offered with its own escalation.
@@ -291,6 +305,9 @@ type SessionResult struct {
 	Acceptance *AcceptanceHit
 	// Capped is a day_cap session's refusal.
 	Capped *CapRefusal `json:",omitempty"`
+	// Started is when the session began, its pod's first start for a
+	// session reattached after a restart: the since of its answer read.
+	Started time.Time `json:",omitzero"`
 }
 
 type PullRequest struct {
@@ -464,6 +481,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.besideLadder = workflow.GetVersion(ctx, "beside-ladder", workflow.DefaultVersion, versionBesideLadder)
 	run.factoryPRFindings = workflow.GetVersion(ctx, "factory-pr-findings", workflow.DefaultVersion, versionFactoryPRFindings)
 	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
+	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
+	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -915,6 +934,33 @@ const (
 	// A run from before the change hears no re-run and fails on a change
 	// request.
 	versionFactoryPRActions workflow.Version = 1
+	// versionSessionLadder (change id "session-ladder"): the session cap
+	// counts the sessions that got a model answer (SessionAnswered), read
+	// after every session whatever ended it, since the session's own start
+	// (a reattached session's pod start), so a starved or refused session
+	// takes no number and no branch of the loop corrects the count; an
+	// answer after a session that took none buys agent time but no attempt,
+	// in a restarted run too (TaskUsage.LastUncounted), and the
+	// unansweredSessions-th such session in a row asks a human; a restarted
+	// run's answer to a floor's refusal, to pods that never started or to
+	// the provider's refusals buys nothing, as the live wait's does, and
+	// its answer to a gate's escalation verifies the head again from the
+	// first stage (the review runs again, the approval is asked again); an
+	// answer at a cap (a change request, the cap card, the cap question
+	// after a restart) buys an attempt only at the session cap, whatever
+	// the last session counted, else the agent time alone; the check before
+	// a session is SessionFunded (the opening calls and the floor of the
+	// rung); every wait for a human adds the change requests that answered
+	// it to the next session's findings. A run from before counts every
+	// session that ran and every attempt the budget refused, buys an attempt
+	// with every answer at a cap or after a restart, funds on AttemptFunded
+	// and drops the budget wait's change requests.
+	versionSessionLadder workflow.Version = 1
+	// versionReviewRemark (change id "review-remark"): a review that
+	// answers concerns and names no finding is a remark on the card, not a
+	// finding for the agent and not a session. A run from before turns it into
+	// the finding "model review: <summary>".
+	versionReviewRemark workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1009,6 +1055,8 @@ type taskRun struct {
 	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
 	factoryPRFindings workflow.Version // a factory pull request card's findings go to a human (versionFactoryPRFindings)
 	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
+	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
+	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1082,6 +1130,15 @@ func (t *taskRun) lifecycle() (string, error) {
 	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
 	// least is the agent time a session needs to start (versionKeepWork)
 	least := min(minSession, t.cfg.WallClockCap)
+	// capAnswer is what an answer at a cap buys: an attempt only at the
+	// session cap, else the agent time alone (versionSessionLadder)
+	capAnswer := func() {
+		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.ExtraAttempts {
+			t.grantTime(&u)
+			return
+		}
+		t.grant(&u)
+	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
 	// (versionKeepWork, ruling 225): it buys the session, answered.
@@ -1092,10 +1149,46 @@ func (t *taskRun) lifecycle() (string, error) {
 		findings, own, reason = v.findings, nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
-			t.grant(&u)
+			capAnswer()
 			return true
 		}
 		return false
+	}
+	// buy is what an answer after a session buys: an attempt, or agent time
+	// alone after one that took no number (u.LastUncounted)
+	buy := func() {
+		if u.LastUncounted {
+			t.grantTime(&u)
+			return
+		}
+		t.grant(&u)
+	}
+	// held ends every wait for a human of this loop: the task's final state
+	// when the wait decided one, else the change requests that answered it join
+	// the next session's findings (the human's comments are in t.answers)
+	held := func(final, why string, answer []string) (string, string) {
+		if final == "" {
+			findings = append(findings, answer...)
+		}
+		return final, why
+	}
+	// unanswered is how many sessions in a row got no model answer
+	// (versionSessionLadder); at unansweredSessions of them askUnanswered
+	// asks a human, whose answer buys agent time, and counts again
+	unanswered := 0
+	askUnanswered := func() (final, why string) {
+		if unanswered < unansweredSessions {
+			return "", ""
+		}
+		ask := fmt.Sprintf(noModelAnswer+"%d sessions in a row ended without one and took no number of the session cap. "+
+			"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: %s",
+			unanswered, reason)
+		unanswered = 0
+		if final, why := held(t.awaitHuman(ask, nil)); final != "" {
+			return final, why
+		}
+		buy()
+		return "", ""
 	}
 	// verifyAtCap takes the branch's head past the base through verify
 	// when no verification judged it (versionKeepWork): head "" for none.
@@ -1126,12 +1219,10 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
-		if final != "" {
+		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
-		findings = append(findings, answer...)
-		t.grant(&u)
+		capAnswer()
 		return "", ""
 	}
 	if t.v2 >= versionReconcileRace {
@@ -1237,8 +1328,31 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			findings = answer
-			if t.v5 >= versionPersistUsage {
+			switch {
+			case t.v5 < versionPersistUsage:
+			case AtSessionCap(st.Question):
+				capAnswer()
+			case t.sessionLadder < versionSessionLadder:
 				t.grant(&u)
+			case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
+				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
+				// the live loop answers these waits with the next
+				// session alone
+			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
+				// a gate's answer verifies again, as the live gate does:
+				// here from the first stage, change requests back to the agent
+				if len(answer) > 0 {
+					apply(verdict{findings: answer, reason: "changes requested", requested: true})
+					break
+				}
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				v := t.verify(st.Head)
+				if v.final != "" {
+					return t.finish(v.final, v.reason)
+				}
+				apply(v)
+			default:
+				buy()
 			}
 		case t.v14 >= versionNeedsInfo && st.Status == "waiting-poster":
 			t.pr, startRef = st.PR, st.Head
@@ -1285,27 +1399,33 @@ func (t *taskRun) lifecycle() (string, error) {
 			findings = append(findings, more...)
 		}
 	}
-	for attempt := u.Attempts + 1; ; attempt++ {
+	// taken is how many numbers the budget's refusals took since the last
+	// session, in a run from before versionSessionLadder
+	taken := 0
+	for {
+		attempt := u.Attempts + 1 + taken
 		if t.attemptFunded >= versionAttemptFunded {
-			// the attempt is refused before it starts (ruling 322),
-			// whatever granted it: no session, no key, no failure round,
-			// and the card says why an answer will not run
+			// the session is refused before it starts: no session, no key,
+			// no failure round, and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
 				if DayCapped(why) {
 					// a spent day cap resets on its own: the day cap's
-					// wait, not a human's, and no attempt ran
+					// wait, not a human's, and no session ran
 					_, state, _ := strings.Cut(why, "\n")
 					until := dayTurn(workflow.Now(t.ctx))
-					final, end, answer := t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)
-					if final != "" {
+					if final, end := held(t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)); final != "" {
 						return t.finish(final, end)
 					}
-					findings = append(findings, answer...)
-					attempt--
 					continue
 				}
-				final, end, _ := t.awaitHuman(why, nil)
-				if final != "" {
+				if t.sessionLadder >= versionSessionLadder {
+					if final, end := held(t.awaitHuman(why, nil)); final != "" {
+						return t.finish(final, end)
+					}
+					continue
+				}
+				taken++
+				if final, end, _ := t.awaitHuman(why, nil); final != "" {
 					return t.finish(final, end)
 				}
 				continue
@@ -1323,11 +1443,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				final, why, answer := t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 				t.grant(&u)
 			}
 		}
@@ -1351,11 +1469,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
-		final, why, answer := t.screenAnswers()
-		if final != "" {
+		if final, why := held(t.screenAnswers()); final != "" {
 			return t.finish(final, why)
 		}
-		findings = append(findings, answer...)
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
 		}
@@ -1372,52 +1488,46 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
-				final, why, answer := t.awaitHuman(ask, nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 			}
-			attempt--
 			continue
 		}
 		t.pendingPods = 0
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
-				final, why, answer := t.awaitHuman(ask, nil)
-				if final != "" {
+				if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 			}
-			attempt--
 			continue
 		}
 		dayCapped := t.dayCap >= versionDayCap && err == nil && !decided && res.Outcome == OutcomeDayCap && res.Capped != nil && res.Acceptance == nil
 		if dayCapped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
-			final, why, answer := t.awaitCap(*res.Capped, model)
-			if final != "" {
+			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
-			attempt--
 			continue
 		}
 		if !res.StartFailed {
 			t.providerAnswered(&refusals, err)
 			u.AgentTime += workflow.Now(t.ctx).Sub(began)
 		}
-		u.Attempts = attempt
+		u.LastUncounted = t.sessionLadder >= versionSessionLadder && !t.sessionAnswered(res, began, attempt, model)
+		if u.LastUncounted {
+			unanswered++
+		} else {
+			u.Attempts, taken, unanswered = attempt, 0, 0
+		}
 		t.recordUsage(u)
 		if decided && v.escalate != "" {
 			// a human's answer to a stopped session buys the next one
-			final, why, answer := t.awaitHuman(v.escalate, nil)
-			if final != "" {
+			if final, why := held(t.awaitHuman(v.escalate, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
-			t.grant(&u)
+			buy()
 			continue
 		}
 		if decided {
@@ -1439,6 +1549,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
+			}
 			continue
 		}
 		parent = res.SessionID
@@ -1457,17 +1570,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
-		// started has no lines of its own.
+		// started has no lines of its own; a pushed one's commit goes to
+		// verification, whose apply drops them.
 		if !res.StartFailed {
-			own = res.Findings
+			own = slices.Concat(res.Findings, t.handoverLines(res))
 		}
 		if dayCapped {
 			// it made calls before the cap refused one: an attempt
-			final, why, answer := t.awaitCap(*res.Capped, model)
-			if final != "" {
+			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
 			continue
 		}
 		switch res.Outcome {
@@ -1485,6 +1597,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v18 >= versionSessionCap {
 				t.sessionReturn(res, attempt, last)
 			}
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
+			}
 			continue
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap, OutcomeNotStarted:
 			if t.v18 >= versionSessionCap {
@@ -1492,14 +1607,15 @@ func (t *taskRun) lifecycle() (string, error) {
 					model = t.cfg.Models.Stronger
 				}
 			}
+			if final, why := askUnanswered(); final != "" {
+				return t.finish(final, why)
+			}
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
 			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
-				final, why, answer := t.awaitPoster(res.Reason)
-				if final != "" {
+				if final, why := held(t.awaitPoster(res.Reason)); final != "" {
 					return t.finish(final, why)
 				}
-				findings = append(findings, answer...)
 				t.grantPoster(&u)
 				continue
 			}
@@ -1507,12 +1623,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.v3 < versionSupervisor {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
-			final, why, answer := t.awaitHuman(res.Reason, res.Choices)
-			if final != "" {
+			if final, why := held(t.awaitHuman(res.Reason, res.Choices)); final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, answer...)
-			t.grant(&u)
+			buy()
 			continue
 		}
 		startRef = res.Commit
@@ -1553,8 +1667,39 @@ func (t *taskRun) providerRefused(refusals *int, w ProviderWait) (ask string) {
 // started before the card asks a human.
 const podWaits = 3
 
+// unansweredSessions is how many sessions in a row may get no model answer
+// before the card asks a human, with noModelAnswer opening the question
+// (versionSessionLadder).
+const (
+	unansweredSessions = 3
+	noModelAnswer      = "No session got a model answer: "
+)
+
 // podNeverStarted opens the question of a card whose pods never started.
 const podNeverStarted = "No node started the session's pod: "
+
+// handoverLines are what the next session is told beside a session's stop
+// lines when that ended without a push: the commit its branch holds and
+// whether the gates judged it, and the agent's last message. The check-in
+// agent's handover note replaces them.
+func (t *taskRun) handoverLines(res SessionResult) []string {
+	var lines []string
+	if res.Commit != "" {
+		judged := "the gates have not judged it"
+		if slices.Contains(t.judged, res.Commit) {
+			judged = "the gates have judged it"
+		}
+		lines = append(lines, fmt.Sprintf("the branch holds %s; %s", res.Commit, judged))
+	}
+	if res.LastMessage != "" {
+		lines = append(lines, lastMessageLine+res.LastMessage)
+	}
+	return lines
+}
+
+// lastMessageLine opens the handover line of the agent's last message,
+// which the brief fences as untrusted (briefText).
+const lastMessageLine = "the agent's last message: "
 
 // notStarted takes a session whose pod never left Pending, why its
 // summary, which names what the pod waited on (versionPodWait): the next
@@ -1713,27 +1858,52 @@ func (t *taskRun) climbed(stronger bool) bool {
 	return stronger
 }
 
-// unfunded is the attempt grant's floor (ruling 322): "" when the task's
-// remaining budget can fund the cheapest call of model, else the refusal
-// the card carries. A failed read is no refusal: the per-call hold still
+// unfunded is the session's floor: "" when the task's remaining budget can
+// fund the session on model, else the refusal the card carries
+// (SessionFunded; a run from before versionSessionLadder asks
+// AttemptFunded). A failed read is no refusal: the per-call hold still
 // guards the money.
 func (t *taskRun) unfunded(model string) string {
+	activity := ActivityAttemptFunded
+	if t.sessionLadder >= versionSessionLadder {
+		activity = ActivitySessionFunded
+	}
 	var why string
-	if err := workflow.ExecuteActivity(t.short, ActivityAttemptFunded, t.taskID, model).Get(t.ctx, &why); err != nil {
+	if err := workflow.ExecuteActivity(t.short, activity, t.taskID, model).Get(t.ctx, &why); err != nil {
 		workflow.GetLogger(t.ctx).Warn("read the attempt's funding", "task", t.taskID, "error", err)
 		return ""
 	}
 	return why
 }
 
+// sessionAnswered reports whether the session that started on model got a
+// model answer (versionSessionLadder), and records its start. The read runs
+// from the session's own start when its result carries one, which for a
+// session reattached after a restart lies before began. A failed read
+// counts the session: a broken ledger must not loosen the cap.
+func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt int, model string) bool {
+	var ok bool
+	in := SessionAnswerInput{TaskID: t.taskID, SessionID: res.SessionID, Model: model, Attempt: attempt, Since: cmp.Or(res.Started, began)}
+	if err := workflow.ExecuteActivity(t.short, ActivitySessionAnswered, in).Get(t.ctx, &ok); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read whether the session got an answer", "task", t.taskID, "error", err)
+		return true
+	}
+	return ok
+}
+
 // grant is what a human answer buys; only a human raises a limit. One
-// more attempt, and when less than the slice of agent time is left, the
-// difference, so the attempt is not born at the cap. The slice is a
-// quarter of the resolved agent time, never under the 5 minutes a session
-// needs to start (versionAnswerSlice); a run from before the change id
-// keeps WorkflowConfig.AnswerSlice instead.
+// more attempt, and grantTime's agent time.
 func (t *taskRun) grant(u *TaskUsage) {
 	u.ExtraAttempts++
+	t.grantTime(u)
+}
+
+// grantTime is an answer's agent time: when less than the slice of agent
+// time is left, the difference, so the attempt is not born at the cap. The
+// slice is a quarter of the resolved agent time, never under the 5 minutes
+// a session needs to start (versionAnswerSlice); a run from before the
+// change id keeps WorkflowConfig.AnswerSlice instead.
+func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.v5 < versionPersistUsage {
 		return
 	}
@@ -2570,6 +2740,9 @@ func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
 
+// gateStopped opens the gate supervisor's escalation.
+const gateStopped = "The gate supervisor stopped "
+
 // gateAnswer waits for SuperviseGate's decision; a failed call escalates.
 func (t *taskRun) gateAnswer(ask workflow.Future) GateDecision {
 	var d GateDecision
@@ -2591,7 +2764,7 @@ func (t *taskRun) actOnGate(trip GateTrip, d GateDecision, run *gateRun) (verdic
 	case ActionCancel:
 		return verdict{final: "failed", reason: "the gate supervisor cancelled " + trip.Activity + ": " + d.Diagnosis, cancelled: true}, true
 	case ActionEscalate:
-		reason := fmt.Sprintf("The gate supervisor stopped %s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
+		reason := fmt.Sprintf(gateStopped+"%s (attempt %d) past its bound of %s: %s", trip.Activity, trip.Attempt, trip.Bound,
 			strings.ReplaceAll(d.Diagnosis, "\n", " "))
 		if d.Recommendation != "" {
 			reason += "\nRecommendation: " + d.Recommendation
@@ -2679,8 +2852,8 @@ func (t *taskRun) decide(name string, sig TaskSignal) (final, reason string, ok 
 
 // changeRequested phrases a reviewer's change request as a finding, the
 // same way from a signal and from Reconcile so the two coincide.
-func changeRequested(author, body string) string {
-	return "reviewer " + author + " requested changes: " + body
+func changeRequested(author, body string, at time.Time) string {
+	return "reviewer " + author + " requested changes" + dated(at) + ": " + body
 }
 
 // drainChanges coalesces every pending change request (one review with
@@ -2690,7 +2863,7 @@ func (t *taskRun) drainChanges() []string {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(&sig) {
 		if t.counted(SignalChangesRequested, sig) {
-			out = append(out, changeRequested(sig.Author, sig.Body))
+			out = append(out, changeRequested(sig.Author, sig.Body, sig.At))
 		}
 	}
 	return out
@@ -2784,10 +2957,10 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 				continue
 			}
 			if t.besideLadder >= versionBesideLadder {
-				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body))
+				t.insertAnswer(answerKey{t.escalation, sig.Comment}, answerText(sig.Author, question, sig.Body, sig.At))
 				continue
 			}
-			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body))
+			t.answers = slices.Insert(t.answers, at, answerText(sig.Author, question, sig.Body, sig.At))
 			if t.answerBurst >= versionAnswerBurst {
 				at++
 			}
@@ -3116,7 +3289,7 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 	case SignalIssueClosed:
 		return t.issueClosed()
 	}
-	return "", "", []string{"reviewer " + sig.Author + " requested changes: " + sig.Body}
+	return "", "", []string{changeRequested(sig.Author, sig.Body, sig.At)}
 }
 
 // finish is the one exit of every path. It retries for a day (backoff
@@ -3196,7 +3369,15 @@ func escalationQuestion(reason string) string {
 }
 
 // answerText is one human answer as the sessions get it, tagged with the
-// question it answers.
-func answerText(author, question, body string) string {
-	return fmt.Sprintf("%s, to %q: %s", author, textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+// question it answers and its date.
+func answerText(author, question, body string, at time.Time) string {
+	return fmt.Sprintf("%s%s, to %q: %s", author, dated(at), textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+}
+
+// dated is " (YYYY-MM-DD)" in UTC, "" for no time.
+func dated(at time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	return " (" + at.UTC().Format("2006-01-02") + ")"
 }

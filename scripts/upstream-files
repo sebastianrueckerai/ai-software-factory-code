@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# scripts/upstream-files [list] fills the factory's store, org upstream
+# of git.aisoftwarefactory.world, with every build input that is not an
+# image (roadmap 203, step 1). The list (upstream-files.txt by default)
+# holds one file a line: <package> <version> <file> <https URL> <sha256>,
+# uploaded to the store's generic package registry,
+# /api/packages/upstream/generic/<package>/<version>/<file>, only when
+# the store lacks it: the download is checked against the line's sha256
+# first, and a mismatch fails the copy naming the file. The Go modules of
+# go.sum ride as one tarball, package go-modules, version go.sum's
+# sha256, and the npm packages of the sandbox image's opencode plugin
+# lockfile (opencode-plugin/) as one tarball, package npm-cache, version
+# the lockfile's sha256, both uploaded only when absent. The module
+# tarball keeps the GOPROXY file layout and the npm tarball _cacache, so
+# roadmap 203's step 2 can build and install from them with no upstream.
+# The registry takes REGISTRY_USER and REGISTRY_PASSWORD; go and npm run
+# in this directory, on go.mod, go.sum and opencode-plugin/ beside the
+# list.
+set -euo pipefail
+list=${1:-upstream-files.txt}
+store=${UPSTREAM_STORE:-git.aisoftwarefactory.world/upstream}
+generic=https://${store%%/*}/api/packages/${store#*/}/generic
+login=${REGISTRY_USER:?the generic registry takes REGISTRY_USER and REGISTRY_PASSWORD}:${REGISTRY_PASSWORD:?}
+work=$(mktemp -d)
+trap 'rm -r "$work"' EXIT
+status=0
+fail() {
+  echo "upstream-files: $*" >&2
+  status=1
+}
+# held <package> <version> <file>: the store's copy answers a read
+held() {
+  curl -fsS -o /dev/null -u "$login" "$generic/$1/$2/$3"
+}
+# put <package> <version> <file> <path>: the store's new copy
+put() {
+  curl -fsS -o /dev/null -u "$login" -X PUT --upload-file "$4" "$generic/$1/$2/$3"
+}
+# sha <file>: its sha256
+sha() {
+  sha256sum "$1" | awk '{print $1}'
+}
+while read -r package version name url sum; do
+  case "$package" in '' | '#'*) continue ;; esac
+  if held "$package" "$version" "$name"; then
+    continue
+  fi
+  file=$work/$name
+  if ! curl -fsSL --retry 5 -o "$file" "$url" || ! echo "$sum  $file" | sha256sum -c --quiet -; then
+    fail "$name: its URL does not serve the pinned sha256 $sum"
+    continue
+  fi
+  if put "$package" "$version" "$name" "$file"; then
+    echo "uploaded $package $version $name"
+  else
+    fail "$url: the upload failed"
+  fi
+done < "$list"
+
+# go.sum's module download cache, one tarball in the GOPROXY file
+# layout. The runner image's GOMODCACHE is warm already, so the download
+# only fills what go.sum added since the image was built.
+sum=$(sha go.sum)
+if ! held go-modules "$sum" go-modules.tar.gz; then
+  if go mod download \
+    && tar -C "$(go env GOMODCACHE)/cache/download" -czf "$work/go-modules.tar.gz" . \
+    && put go-modules "$sum" go-modules.tar.gz "$work/go-modules.tar.gz"; then
+    echo "uploaded go-modules $sum"
+  else
+    fail "go-modules $sum: the tarball failed"
+  fi
+fi
+
+# the opencode plugin lockfile's npm cache, one tarball of its _cacache
+sum=$(sha opencode-plugin/package-lock.json)
+if ! held npm-cache "$sum" npm-cache.tar.gz; then
+  if (cd opencode-plugin && npm ci --cache "$work/npm-cache") \
+    && tar -C "$work/npm-cache" -czf "$work/npm-cache.tar.gz" _cacache \
+    && put npm-cache "$sum" npm-cache.tar.gz "$work/npm-cache.tar.gz"; then
+    echo "uploaded npm-cache $sum"
+  else
+    fail "npm-cache $sum: the cache failed"
+  fi
+fi
+exit "$status"

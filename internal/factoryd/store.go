@@ -145,6 +145,9 @@ func (t Task) Standing() string {
 // maxAgentSummary bounds the agent's last word kept on the task row.
 const maxAgentSummary = 2000
 
+// maxHandoverMessage bounds the agent's last message handed to the next session.
+const maxHandoverMessage = 2000
+
 // Final reports whether status ends a task.
 func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 
@@ -158,6 +161,10 @@ type TaskUsage struct {
 	ExtraAttempts int           // one per human answer
 	// PosterAttempts are the ExtraAttempts the issue author's answers bought
 	PosterAttempts int
+	// LastUncounted: the last session got no model answer and took no
+	// attempt, so an answer after it buys agent time alone
+	// (versionSessionLadder)
+	LastUncounted bool
 }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
@@ -308,6 +315,9 @@ type Store interface {
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
 	ProviderRefusal(ctx context.Context, taskID string, since time.Time) (reason string, ok bool, err error)
+	// ModelAnswered reports whether the task's agent got a model answer
+	// since since: the gateway booked one of its calls allowed.
+	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -459,6 +469,9 @@ type Store interface {
 	// UncommittedRolls and MarkRollsCommitted are a roll task's requests
 	// its branch does not carry yet (RollCommit).
 	UncommittedRolls(ctx context.Context, taskID string) ([]RollRequest, error)
+	// TaskRolls are a roll task's requests, oldest first: an update writes
+	// them all again on main's head (RollCommit).
+	TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error)
 	MarkRollsCommitted(ctx context.Context, taskID string, shas []string, head string) error
 	// RollHead is the branch commit RollCommit last wrote for a roll task.
 	RollHead(ctx context.Context, taskID string) (string, error)
@@ -646,7 +659,7 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number,
-	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, repro_command, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size`
@@ -656,7 +669,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size); err != nil {
@@ -785,8 +798,9 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 }
 
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts)
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
+		last_uncounted = $7 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -823,6 +837,14 @@ func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time
 		return "", false, nil
 	}
 	return reason, err == nil, err
+}
+
+func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	var answered bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = 'allowed' AND ts >= $3)`,
+		taskID, gateway.AuditKindAgent, since).Scan(&answered)
+	return answered, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar

@@ -14,36 +14,43 @@ import (
 // Roadmap 210: a card that outlives its budget has an operator path — an
 // approver's Fund action on the capped card (the same cards ruling 322's
 // unfunded answer refuses), which raises budget_eur by the stated amount
-// and lands in the event spine as its own row. The answer box is
-// unchanged: the card resumes on the next answer, now with headroom.
+// and lands in the event spine as its own row. The answer box stays
+// beside it: Fund posts its note as the answer, so the card resumes at
+// once, now with headroom.
 
-// budgetRefusal is what the floors answer for a card whose remaining
-// budget cannot fund a call (factoryd's Runner.AttemptFunded and
-// Runner.SessionFunded).
+// budgetRefusal is what the floor answers for a card whose remaining
+// budget cannot fund a call (factoryd's Runner.SessionFunded).
 const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 
-// cappedCard is a waiting card of sf/code whose remaining budget cannot
-// fund a call, with both floors refusing it.
+// cappedCard is a waiting card of sf/code whose remaining budget of 2 EUR
+// cannot fund a call, with both floors refusing it until a raise.
 func cappedCard(r *rig, t *testing.T) {
 	t.Helper()
 	r.tasks.set(budgetRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
-	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
+	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
 }
 
-// Card #704 (roadmap 243): its remaining budget funds the answer path's
-// cheapest call but not a session's opening calls, so the answer box stays
-// and the Fund action is offered beside it, and a raise goes through.
+// raisedFloor is the floor's answer for a card that is funded once its
+// budget is raised above 2 EUR: budgetRefusal until then, after it raised.
+func (r *rig) raisedFloor(ctx context.Context, id, raised string) string {
+	if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
+		return raised
+	}
+	return budgetRefusal
+}
+
+// Card #704 (roadmap 243): its remaining budget cannot fund a session's
+// opening calls, so the answer box stays and the Fund action is offered
+// beside it, and a raise goes through.
 func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	var asked string
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return "", nil }
-	r.c.cfg.SessionFunded = func(_ context.Context, taskID, model string) (string, error) {
+	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		asked = taskID + " " + model
-		return budgetRefusal, nil
+		return r.raisedFloor(ctx, taskID, ""), nil
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`action="/tasks/t-e/answer"`, `action="/tasks/t-e/fund"`} {
@@ -97,8 +104,7 @@ func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	const unpriced = "the attempt's floor on factory/coding-cheap cannot be read: no price for coding-cheap"
-	r.c.cfg.AttemptFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
-	r.c.cfg.SessionFunded = r.c.cfg.AttemptFunded
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
 		t.Error("the board offers Fund for a card no budget lets start, or lost its answer box")
@@ -174,8 +180,8 @@ func TestFundWritesTheAuditRow(t *testing.T) {
 		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
 	}
 	rows := r.events.rows
-	if len(rows) != 1 {
-		t.Fatalf("the raise wrote %d event rows, want one", len(rows))
+	if len(rows) != 2 || rows[1].Kind != factoryd.EventQuestionAnswered {
+		t.Fatalf("the raise wrote %d event rows, want the raise and the answer it carries", len(rows))
 	}
 	e := rows[0]
 	switch {
@@ -223,5 +229,88 @@ func TestFundRefusesACardThatIsNotWaiting(t *testing.T) {
 		if rec := r.do(post("/tasks/t-r/fund", form), ck); rec.Code != http.StatusBadRequest {
 			t.Fatalf("fund with %v = %d: %s", form, rec.Code, rec.Body)
 		}
+	}
+}
+
+// Fund takes a note and resumes the card in one step (plan A): the note is
+// posted on the issue as the member's answer, so a fund is the answer and no
+// second form is owed. A note over the answer bound is refused before the budget moves.
+func TestFundIsTheAnswer(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	// the note is bounded on the board as the answer box is
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="reason" maxlength="4000" required>`) {
+		t.Errorf("the fund note is not bounded at the answer's 4000 bytes:\n%s", body)
+	}
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "funded; the fix is in store.go" {
+		t.Fatalf("issue comment = %q, want the note as the answer", got)
+	}
+	if rows := r.events.rows; len(rows) != 2 || rows[0].Kind != factoryd.EventCardFunded || rows[1].Kind != factoryd.EventQuestionAnswered {
+		t.Fatalf("event rows = %+v, want card_funded then question_answered", rows)
+	}
+
+	r = newRig(t)
+	ck, s = r.loggedIn(t)
+	cappedCard(r, t)
+	rec = r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {strings.Repeat("x", factoryd.MaxAnswer+1)}}), ck)
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); rec.Code != http.StatusBadRequest || task.BudgetEUR != 2 || len(r.fg.comments) != 0 {
+		t.Fatalf("fund with a long note = %d, budget %v, %d comments; want 400, 2, none", rec.Code, task.BudgetEUR, len(r.fg.comments))
+	}
+}
+
+// A raise too small for a session still raises and still posts the note as
+// the answer, and the member hears at once what the floor still refuses,
+// its amount named, not on the card's next question: 2 EUR raised by 0.10.
+func TestFundTooSmallSaysWhatTheFloorStillRefuses(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	const short = "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"0.270 EUR of the 2.100 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, short), nil }
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.1"}, "reason": {"funded a little"}}), ck)
+	want := "Raised #13's budget by 0.10 EUR to 2.10 and posted your note as the answer, but a session still cannot start: " + short
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("fund = %d: %s, want 409 %q", rec.Code, rec.Body, want)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.1 {
+		t.Fatalf("budget_eur = %v, want 2.1", task.BudgetEUR)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "funded a little" {
+		t.Fatalf("issue comment = %q, want the note as the answer", got)
+	}
+	if rows := r.events.rows; len(rows) != 2 || rows[0].Kind != factoryd.EventCardFunded || rows[1].Kind != factoryd.EventQuestionAnswered {
+		t.Fatalf("event rows = %+v, want card_funded then question_answered", rows)
+	}
+}
+
+// Forgejo refusing the note after the raise answers 502: the budget stays
+// raised, its one card_funded row written, and the card waits on the human
+// still, whom the refusal sends to the board's answer.
+func TestFundWhoseNoteForgejoRefusesKeepsTheRaise(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	cappedCard(r, t)
+	r.fg.failAPI = true
+	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded"}}), ck)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "Raised #13's budget by 0.50 EUR to 2.50, but Forgejo refused the note") {
+		t.Fatalf("fund = %d: %s, want 502 naming the raise", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.5 || task.Status != "waiting-human" {
+		t.Fatalf("card = %+v, want budget 2.5 and waiting-human", task)
+	}
+	funded := 0
+	for _, e := range r.events.rows {
+		if e.Kind == factoryd.EventCardFunded {
+			funded++
+		}
+	}
+	if funded != 1 || len(r.events.rows) != 1 {
+		t.Fatalf("event rows = %+v, want the one card_funded row alone", r.events.rows)
 	}
 }
