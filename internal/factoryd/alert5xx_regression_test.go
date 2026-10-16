@@ -1,10 +1,12 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -104,5 +106,72 @@ func TestReproAlert5xxOnFactorydWithoutTheWiring(t *testing.T) {
 	}
 	if strings.TrimSpace(payload) == "" {
 		t.Fatal("the 500 has an empty body: that is the response SigNoz could not read and retried until factoryd's own 5xx share crossed this rule's threshold")
+	}
+}
+
+// The same rule fired again on 2026-10-16T16:04:45Z, at 5.673758865248227:
+// exactly 8 of 141 requests on factoryd answered 5xx in its 5-minute
+// window. The eight were this webhook's own answers: a filing that fails
+// after its alerts row was written answered 500, and SigNoz redelivers a
+// 5xx notification — every redelivery re-failed the filing and answered
+// 500 again, each one another failed request on factoryd, until the burst
+// of retries alone crossed the rule's 5 % share: the alert pipeline
+// feeding the rule that watches it. The row, the dedupe key, is written
+// first with its task's id, so nothing is lost by accepting the delivery:
+// the sweep finishes the filing each minute, as a redelivery would. The
+// 5xx stays for a failure before the row (the project read, the insert),
+// whose only repair is SigNoz's redelivery.
+//
+// Reproduce in place:
+//
+//	cd /workspace/repo && go test ./internal/factoryd/ -run 'TestAlertIntakeHoldsAFailedFilingToNo5xxStorm' -count=1 -v
+func TestAlertIntakeHoldsAFailedFilingToNo5xxStorm(t *testing.T) {
+	r := newAlertRig(t)
+	flaky := &flakyBook{fakeStore: r.store, creates: 8}
+	r.in.Store = flaky
+
+	// SigNoz redelivered the notification while it read 5xx; the filing
+	// keeps failing through all eight retries, and not one redelivery may
+	// answer 5xx again: on the base commit every one of these posts is
+	// another 500 span on factoryd — the burst that fired this rule.
+	for i := 1; i <= 8; i++ {
+		if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusOK {
+			t.Fatalf("redelivery %d: status %d, want 200: %s", i, rr.Code, rr.Body)
+		}
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 1 || rows[0].TaskID == "" || rows[0].Detail["issue"] != nil {
+		t.Fatalf("after the failing redeliveries: %d rows, first %+v; want one row holding its task id, unfiled", len(rows), rows)
+	}
+	if len(r.store.tasks) != 0 {
+		t.Fatalf("after the failing redeliveries: %d tasks, want 0", len(r.store.tasks))
+	}
+
+	// the transient failure heals: the sweep, not a 5xx-retry storm,
+	// finishes the filing under the row's task id
+	flaky.creates = 0
+	live := firing("active", map[string]string{"alertname": "5xx rate above 5 %", "namespace": "demo-staging", "project": "demo-app",
+		"severity": "critical", "ruleId": "r-1", "threshold.name": "critical"}, "5xx share of the requests over 5 minutes")
+	live.Fingerprint, live.StartsAt, live.GeneratorURL = "fp1", at(firedAt), "https://signoz.example/alerts/overview?ruleId=r-1"
+	r.in.SigNoz = &fakeAlerts{list: []FiringAlert{live}}
+	if err := r.in.SweepSigNoz(context.Background(), at("2026-10-16T16:06:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	rows = r.store.alertRows()
+	if len(rows) != 1 {
+		t.Fatalf("after the sweep: %d rows, want 1", len(rows))
+	}
+	id := rows[0].TaskID
+	if len(r.store.tasks) != 1 {
+		t.Fatalf("after the sweep: %d tasks, want 1", len(r.store.tasks))
+	}
+	if got := r.store.tasks[id].IssueNumber; got != 9 {
+		t.Fatalf("task's issue %d, want 9 (issues 1-8 are the failed deliveries' orphans)", got)
+	}
+	if !slices.Equal(r.flows.started, []string{id}) {
+		t.Fatalf("started %v, want [%s]", r.flows.started, id)
+	}
+	if got := rows[0].Detail["issue"]; got != int64(9) {
+		t.Fatalf("row's issue %v, want 9", got)
 	}
 }

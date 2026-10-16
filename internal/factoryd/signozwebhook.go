@@ -225,14 +225,27 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var errs []error
 	for _, a := range msg.Alerts {
 		if err := in.take(r.Context(), a, time.Now()); err != nil {
+			if row, seen, rerr := in.Store.AlertByFingerprint(r.Context(), AlertSigNoz, a.Fingerprint); rerr == nil &&
+				seen && row.Detail["starts_at"] == stamp(a.StartsAt) && row.Detail["issue"] == nil {
+				// The failure sits after the alerts row, the dedupe key, was
+				// written with its task's id: the row holds the firing, and
+				// the sweep finishes its filing each minute. Answering 5xx
+				// here made SigNoz redeliver the failure again and again,
+				// every retry another 5xx request on factoryd, until the
+				// 5xx-rate rule fired on factoryd itself (8 of 141 requests,
+				// 2026-10-16T16:04:45Z). Accepted, not failed: the 5xx stays
+				// for a failure before the row — the project read, the
+				// insert — whose only repair is SigNoz's redelivery.
+				log.Printf("signoz webhook: alert %s: %v: the row is written, the sweep finishes its filing", strconv.Quote(a.Fingerprint), err) // #nosec G706 -- strconv.Quote escapes the alert's text
+				continue
+			}
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(a.Fingerprint), err))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		// SigNoz sends the notification again on a 5xx. The alerts row, the
-		// dedupe key, is written first with its task's id, so the retry files
-		// that one task; a failure between the issue and the task row leaves
-		// the first issue without a task
+		// SigNoz sends the notification again on a 5xx, the repair for a
+		// failure before the alerts row was written; a failure between the
+		// issue and the task row leaves the first issue without a task
 		log.Printf("signoz webhook: %v", err) // #nosec G706 -- strconv.Quote escapes the alert's text
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -417,7 +430,9 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 // nothing, so the stale rows a first sweep finds resolve quietly and only
 // a running card's issue gets the comment. A held row SigNoz still lists
 // goes to take as its redelivery would, which files it once no rollout's
-// window holds now. A list whose active alerts carry no fingerprint cannot
+// window holds now, and so does a row whose filing failed after it was
+// written: the webhook accepts that delivery, this sweep is its repair. A
+// list whose active alerts carry no fingerprint cannot
 // be matched and resolves nothing. The rows are read before the list, so a
 // row filed meanwhile waits for the next sweep.
 func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
@@ -453,7 +468,9 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 			ns, _ := row.Detail["namespace"].(string)
 			a = SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
 				Labels: map[string]string{"alertname": row.Source, "namespace": ns}, swept: true}
-		case held(row) && row.Detail["issue"] == nil:
+		case row.Detail["issue"] == nil && (held(row) || row.Detail["starts_at"] == stamp(f.StartsAt)):
+			// held for a rollout, or a filing that failed after its row was
+			// written: taken as its redelivery would, which files it
 			a = SigNozAlert{Status: "firing", Labels: f.Labels, Annotations: f.Annotations, StartsAt: f.StartsAt,
 				GeneratorURL: f.GeneratorURL, Fingerprint: row.Fingerprint}
 		default:
@@ -604,7 +621,8 @@ func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns str
 // file writes the alert's row, the dedupe key, with the id of the task it
 // files, then files that task; refiled when the same firing outlived the
 // task of the last one. A delivery that fails after the row is written is
-// finished by SigNoz's retry under the same task id (take).
+// accepted (ServeHTTP) and finished by the sweep, or a redelivery, under
+// the same task id (take).
 func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
 	row := alertRow(a, p, ns, at, refiled)
 	var err error
@@ -629,7 +647,7 @@ func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
 
 // fileTask files the issue and task of the alert a on project p whose row,
 // written first, names the task's id: a delivery that fails here leaves the
-// row, so SigNoz's retry files the same one task (take).
+// row, so the sweep or a redelivery files the same one task (take).
 func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, ns string, row Alert) error {
 	repo := p.Repo()
 	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")

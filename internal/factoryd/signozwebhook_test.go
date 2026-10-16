@@ -258,13 +258,15 @@ func (b *flakyBook) CreateTask(ctx context.Context, t Task) error {
 }
 
 // TestAlertIntakeRetryAfterAFailedFilingFilesOneTask: a delivery that
-// fails after the issue was filed leaves its alerts row, so SigNoz's
-// retry files the same one task, not a second issue and task.
+// fails after the issue was filed leaves its alerts row and is answered
+// 200 (the row holds the firing; the sweep is its repair, so SigNoz is not
+// made to storm 5xx retries), so a redelivery files the same one task,
+// not a second issue and task.
 func TestAlertIntakeRetryAfterAFailedFilingFilesOneTask(t *testing.T) {
 	r := newAlertRig(t)
 	r.in.Store = &flakyBook{fakeStore: r.store, creates: 1}
-	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusInternalServerError {
-		t.Fatalf("first post: status %d, want 500", rr.Code)
+	if rr := r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)); rr.Code != http.StatusOK {
+		t.Fatalf("first post: status %d, want 200", rr.Code)
 	}
 	rows := r.store.alertRows()
 	if len(rows) != 1 || rows[0].TaskID == "" {
