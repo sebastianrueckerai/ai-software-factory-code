@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -49,17 +50,44 @@ const (
 // buildVMUpstreamHosts are the hosts the store fronts files from (every
 // host upstream-files.txt names, roadmap 203, step 3): the VM's own
 // rules deny them, so a build that names one anyway — an ADD, a wget, a
-// FROM off the store — cannot reach it. They are denied by name in each
-// connection's first bytes (TLS SNI, or the HTTP Host on port 80), not
-// by address: these hosts share CDN addresses with hosts project builds
-// on the shared VM must reach — nodejs.org and registry.npmjs.org both
-// sit on Cloudflare — and no build-time fetcher sends an encrypted
-// client hello that would hide the name. Verified on the stock debian-12
-// image: the matches load, all four hosts refuse within a fifth of a
-// second, while registry.npmjs.org, its tarballs, the store and
-// snapshot.debian.org answer 200.
+// FROM off the store — cannot reach it. The name travels in the clear
+// twice before any payload hides it: in the DNS query, and in TLS's SNI
+// (or the HTTP Host on port 80), and the rules deny both, so an
+// encrypted client hello — which would hide the SNI — finds nothing left
+// to resolve. Not by address: these hosts share CDN addresses with
+// hosts project builds on the shared VM must reach — nodejs.org and
+// registry.npmjs.org both sit on Cloudflare. Verified on the stock
+// debian-12 image: the matches load, all four hosts refuse within a
+// fifth of a second, while registry.npmjs.org, its tarballs, the store
+// and snapshot.debian.org answer 200.
 var buildVMUpstreamHosts = []string{
 	"github.com", "nodejs.org", "code.forgejo.org", "www.postgresql.org",
+}
+
+// dnsWireName is host as its bytes stand inside a DNS query — each label
+// length-prefixed, the root's zero byte after — the hex string
+// iptables' --hex-string matches: |06|github|03|com|00 written as one
+// run of hex. No other name contains those bytes: a query for github.com
+// or www.github.com carries them, github.com.example.org and
+// xgithub.com do not.
+func dnsWireName(host string) string {
+	var b strings.Builder
+	b.WriteByte('|')
+	for _, label := range strings.Split(host, ".") {
+		fmt.Fprintf(&b, "%02x%s", len(label), hex.EncodeToString([]byte(label)))
+	}
+	b.WriteString("00|")
+	return b.String()
+}
+
+// dnsDenyNames is buildVMUpstreamHosts as the quoted wire-format hex
+// strings the VM's DNS rules match, ready for the script's for-list.
+func dnsDenyNames() string {
+	names := make([]string, len(buildVMUpstreamHosts))
+	for i, host := range buildVMUpstreamHosts {
+		names[i] = `"` + dnsWireName(host) + `"`
+	}
+	return strings.Join(names, " ")
 }
 
 // ErrNoBuildVMSlot: the VM cap or the project's IP quota is reached; the
@@ -158,7 +186,7 @@ func buildVMUserData(p buildPKI) (string, error) {
 	err := userDataTmpl.Execute(&b, map[string]any{
 		"CA": strings.TrimSpace(string(p.CACert)), "Cert": strings.TrimSpace(string(p.ServerCert)),
 		"Key": strings.TrimSpace(string(p.ServerKey)), "Version": buildkitVersion, "SHA256": buildkitSHA256,
-		"Port": buildVMPort, "Deny": strings.Join(buildVMUpstreamHosts, " "),
+		"Port": buildVMPort, "Deny": strings.Join(buildVMUpstreamHosts, " "), "DenyDNS": dnsDenyNames(),
 	})
 	return b.String(), err
 }
@@ -186,10 +214,17 @@ rm -f buildkit.tar.gz
 # The VM's own egress rules (roadmap 203, step 3): the hosts the store
 # fronts files from (buildVMUpstreamHosts) must be unreachable from a
 # build, not merely unnamed. buildkitd and every RUN container share this
-# host's network namespace, so OUTPUT covers each fetch a build makes;
-# the match is by name in the connection's first bytes — TLS SNI, or the
-# HTTP Host on port 80 — never in the payload past them, so bulk
-# transfers through allowed hosts are not inspected.
+# host's network namespace, so OUTPUT covers each fetch a build makes.
+# The name leaves in the clear twice: in the DNS query, which is denied
+# by its wire-format name so nothing on the VM resolves the host — not
+# even a fetcher whose TLS would hide the SNI with an encrypted client
+# hello — and in TLS's SNI or the HTTP Host of anything that resolves
+# anyway (a hard-coded address), which is denied by name in the
+# connection's first bytes. The byte cap does not bound the scan: the
+# packet the name travels in is scanned whole however large its
+# ClientHello, and only the bulk bytes past it, transfers through allowed
+# hosts, are left uninspected. DNS-over-TLS carries no fetch a build
+# makes and is refused outright.
 for host in {{.Deny}}; do
   for port in 80 443; do
     iptables -I OUTPUT 1 -p tcp --dport "$port" \
@@ -197,6 +232,13 @@ for host in {{.Deny}}; do
       -m string --string "$host" --algo bm -j REJECT --reject-with tcp-reset
   done
 done
+for name in {{.DenyDNS}}; do
+  for proto in udp tcp; do
+    iptables -I OUTPUT 1 -p "$proto" --dport 53 \
+      -m string --hex-string "$name" --algo bm -j REJECT
+  done
+done
+iptables -I OUTPUT 1 -p tcp --dport 853 -j REJECT
 cat > /etc/systemd/system/buildkitd.service <<'EOF'
 [Unit]
 Description=buildkitd
