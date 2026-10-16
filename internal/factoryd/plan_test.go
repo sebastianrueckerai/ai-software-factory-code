@@ -824,19 +824,21 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 const planSession = 5 * time.Minute
 
 // planHarness is the workflow harness on a plan card: its RunPlan answers
-// results in order, RequestPlan posts revision n as comment 699+n,
-// CreateChildren files three cards unless refuse says why not, or answers
-// children's result when set, OpenPlanQuestions answers open in order.
+// results in order, RequestPlan posts revision n as comment 699+n or
+// answers what requestPlan returns when set, CreateChildren files three
+// cards unless refuse says why not, or answers children's result when set,
+// OpenPlanQuestions answers open in order.
 type planHarness struct {
 	*workflowHarness
-	plans    [][]string // RunPlan's findings, per call
-	models   []string
-	requests []int
-	created  []string
-	refuse   [][]string // CreateChildren's refusals, in order
-	open     []int      // OpenPlanQuestions' answers, in order
-	asked    []int      // the revisions OpenPlanQuestions was asked about
-	children func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
+	plans       [][]string // RunPlan's findings, per call
+	models      []string
+	requests    []int
+	created     []string
+	refuse      [][]string // CreateChildren's refusals, in order
+	open        []int      // OpenPlanQuestions' answers, in order
+	asked       []int      // the revisions OpenPlanQuestions was asked about
+	children    func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
+	requestPlan func(taskID string, revision int) (PlanRef, error)
 }
 
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
@@ -850,6 +852,9 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, revision int) (PlanRef, error) {
 			h.requests = append(h.requests, revision)
+			if h.requestPlan != nil {
+				return h.requestPlan(taskID, revision)
+			}
 			if revision == 0 {
 				revision = 1
 			}
@@ -1416,8 +1421,8 @@ func TestPGStorePlans(t *testing.T) {
 }
 
 // A planner session that ends without filing a plan says so, with its
-// last message beside the finding; a filing an earlier session left is
-// stale, not this session's answer.
+// last message and the files it read beside the finding; a filing an
+// earlier session left is stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -1438,11 +1443,12 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
-	kube.scriptPods(0, resultLine(true, said))
+	kube.scriptPods(0, envLine(readEvent("/workspace/repo/go.mod"))+"\n"+resultLine(true, said))
 	if err := <-done; err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said}
+	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said,
+		"the planner session read 1 files before it ended: /workspace/repo/go.mod. File the plan from what they hold; read a file again only where the plan needs a detail."}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
@@ -2090,5 +2096,178 @@ func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	}
 	if got := briefObjective(objective, false); !strings.Contains(got, "Directories (guidance, not a boundary): internal/links\nDepends on") || strings.Contains(got, "Size") || strings.Contains(got, "Rung") {
 		t.Fatalf("brief objective without a map =\n%s", got)
+	}
+}
+
+func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
+	got := readsFinding([]string{"/workspace/repo/a.go", "/workspace/docs/b.md"})
+	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. File the plan from what they hold; read a file again only where the plan needs a detail."
+	if got != want {
+		t.Fatalf("readsFinding = %q, want %q", got, want)
+	}
+}
+
+// A planner that used its time gets one fresh session with its findings
+// instead of a fail. The cap is 20m and a human's answer granted 5m: 20m
+// used leaves 5m, the first session's whole time (5m + 2m grace), and it
+// uses all of it. 0 left is under the 5m a session needs, so 10m of retry
+// time top the next session up to half the cap (10m + 2m grace); the
+// human's 5m neither block that nor grow.
+func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
+	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. File the plan from what they hold; read a file again only where the plan needs a detail."}
+	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, Attempts: 1}}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v, want done after a second planner", final, h.finals)
+	}
+	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], found) {
+		t.Fatalf("plans %q, want a second session with the first's findings", h.plans)
+	}
+	if !slices.Equal(budgets, []time.Duration{7 * time.Minute, 12 * time.Minute}) {
+		t.Fatalf("RunPlan budgets %v, want 7m and 12m", budgets)
+	}
+	if want := (TaskUsage{AgentTime: 25 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
+		t.Fatalf("usage %+v, want the grant %+v second", h.usage, want)
+	}
+}
+
+// Once only: a planner out of time with no automatic session to come asks
+// a human, its retry used (20m cap + 10m retry - 30m used = 0 left) or its
+// cap too short for one (half of 8m, 4m, is under the 5m a session needs).
+// The answer buys what an answer leaves a session, 5m (a quarter of 20m;
+// for 8m the 5m minimum), and starts a session with them (5m + 2m grace)
+// and the answer. A run from before the gate fails at once.
+func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
+	retryUsed := TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}
+	shortCap := TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}
+	for _, tc := range []struct {
+		name     string
+		cap      time.Duration
+		usage    TaskUsage
+		version  workflow.Version
+		question string // "" for the old fail
+	}{
+		{"retry used", 0, retryUsed, versionPlannerRetry,
+			"the planner used its agent time and its automatic second session without filing a plan: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"},
+		{"cap too short", 8 * time.Minute, shortCap, versionPlannerRetry,
+			"the planner used its agent time without filing a plan, and its 8-minute cap is too short for an automatic second session: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"},
+		{"retry used, before planner-retry", 0, retryUsed, workflow.DefaultVersion, ""},
+		{"cap too short, before planner-retry", 8 * time.Minute, shortCap, workflow.DefaultVersion, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			if tc.cap != 0 {
+				h.taskConfig.AgentTime = tc.cap
+			}
+			h.state = RunState{Status: "running", Usage: tc.usage}
+			h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(tc.version)
+			var budgets []time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityRunPlan {
+					budgets = append(budgets, info.StartToCloseTimeout)
+				}
+			})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
+			h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+			final := h.run(t)
+			if tc.question == "" {
+				if final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 || len(h.escalated) != 0 || len(h.usage) != 0 {
+					t.Fatalf("final %q, finals %v, plans %q, escalated %q, usage %+v, want the old fail", final, h.finals, h.plans, h.escalated, h.usage)
+				}
+				return
+			}
+			if final != "done" || !slices.Equal(h.escalated, []string{tc.question}) || escalationSource(tc.question) != "cap" {
+				t.Fatalf("final %q, finals %v, escalated %q, want done after the question", final, h.finals, h.escalated)
+			}
+			if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||
+				!slices.Equal(budgets, []time.Duration{7 * time.Minute}) {
+				t.Fatalf("plans %q, budgets %v, want one session of 7m with the answer", h.plans, budgets)
+			}
+			want := tc.usage
+			want.ExtraTime = 5 * time.Minute
+			if len(h.usage) == 0 || h.usage[0] != want {
+				t.Fatalf("usage %+v, want the answer's grant %+v first", h.usage, want)
+			}
+		})
+	}
+}
+
+// An answer to the planner's own question that finds its time used, the
+// retry with it, buys agent time and asks nothing more: 25m used of the
+// 20m cap + 10m retry leaves 5m, a session (5m + 2m grace) that asks and
+// uses them; the answer buys 5m for the next (7m again).
+func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Escalate: "which login do accounts use?"}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 25 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "magic links", Comment: 801})
+	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{"which login do accounts use?"}) {
+		t.Fatalf("final %q, finals %v, escalated %q, want done after the planner's own question alone", final, h.finals, h.escalated)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: magic links"}) ||
+		!slices.Equal(budgets, []time.Duration{7 * time.Minute, 7 * time.Minute}) {
+		t.Fatalf("plans %q, budgets %v", h.plans, budgets)
+	}
+	if want := (TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
+		t.Fatalf("usage %+v, want the answer's grant %+v second", h.usage, want)
+	}
+}
+
+// A run healed while it waited on the time question asks it again
+// (healedReason, which opens no second alert) and its answer still buys
+// the time: 30m used of the 20m cap + 10m retry leaves none, the answer
+// buys 5m, and the session (5m + 2m grace) files the plan.
+func TestPlanLoopHealedOnTheTimeQuestionAsksAgain(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{}, nil // the planner filed no plan: the wait was the time question's
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Comment: int64(699 + revision)}, nil
+	}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
+	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v, want done after the re-ask", final, h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{healedReason}) {
+		t.Fatalf("escalated %q, want the healed re-ask alone: Escalate opens an alert for every reason but it", h.escalated)
+	}
+	if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||
+		!slices.Equal(budgets, []time.Duration{7 * time.Minute}) {
+		t.Fatalf("plans %q, budgets %v, want one session of 7m with the answer", h.plans, budgets)
+	}
+	if want := (TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}); len(h.usage) == 0 || h.usage[0] != want {
+		t.Fatalf("usage %+v, want the answer's grant %+v first", h.usage, want)
+	}
+}
+
+// A run from before the change fails at the limit (20m cap, 20m used).
+func TestPlanLoopBeforePlannerRetryFailsAtTheLimit(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(workflow.DefaultVersion)
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
+		t.Fatalf("final %q, finals %v, plans %q", final, h.finals, h.plans)
 	}
 }

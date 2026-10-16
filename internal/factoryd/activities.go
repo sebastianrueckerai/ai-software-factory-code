@@ -634,6 +634,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
+	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
@@ -744,6 +745,18 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	res := sessionResult(s, out)
 	res.Model, res.Started = s.model, startedAt
+	if res.Outcome == OutcomeNoPush && out.commit != "" {
+		// the card's budget stopped the session after its worker pushed the
+		// work in progress: the branch goes to verification, no later
+		// session of the card could pick the work up
+		refused, err := r.store.BudgetRefused(ctx, t.ID, startedAt)
+		if err != nil {
+			return SessionResult{}, err
+		}
+		if refused {
+			res.Outcome = OutcomePushed
+		}
+	}
 	if res.Outcome == OutcomePushed {
 		r.timeline.recordEvent(ctx, t.ID, EventSessionPushed, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt,
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})
@@ -977,20 +990,20 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	if strings.HasPrefix(reason, splitFailed) || strings.HasPrefix(reason, splitCapped) {
 		// the approval card answers it; the approval wait reads no reply
 		next = "Approve, deny or split it on the board."
 	}
 	if floorRefused(reason) {
 		// no answer can run (ruling 322): the card names why and the way out
-		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
+		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
 	}
 	if strings.HasPrefix(reason, dayCapResumes) {
-		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to fail the task."
+		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
-		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
+		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
 	}
 	safe := r.untrusted(t, reason)
 	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(safe)

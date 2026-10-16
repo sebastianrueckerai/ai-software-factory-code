@@ -1222,3 +1222,7 @@ func (f *accBatchChat) ThreadTotals(context.Context, string) (int, float64, erro
 func (s *accBatchStore) OverHoldCall(ctx context.Context, taskID string, since time.Time) (*factoryd.OverHoldCall, error) {
 	panic("unused")
 }
+
+func (s *accBatchStore) BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	panic("unused")
+}

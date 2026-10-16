@@ -4,6 +4,6 @@ The factory pins every outside input of its builds and its cluster (roadmaps 203
 - **Debian snapshot**: `DEBIAN_SNAPSHOT` in Dockerfile.runner and Dockerfile.sandbox, one snapshot.debian.org time for both, moved with the `debian:bookworm-slim` line.
 - **PostgreSQL**: `POSTGRESQL_VERSION`, `LIBPQ_VERSION` and `POSTGRESQL_COMMON_VERSION` in both Dockerfiles, the versions bookworm-pgdg serves now, which apt-archive.postgresql.org keeps.
 - **Go toolchain**: the patch release of go.mod's `toolchain` and of the golang lines, one Go for all (`TestDockerfilesBuildWithOneGo`).
-- **Downloaded tools**: the version ARGs and the `ADD --checksum` sums of Dockerfile.runner and Dockerfile.sandbox, and `buildkitVersion` and `buildkitSHA256` in internal/factoryd/buildvm.go with `BUILDKIT_VERSION`.
+- **Downloaded tools**: the version ARGs and the `ADD --checksum` sums of Dockerfile.runner and Dockerfile.sandbox, and `buildkitVersion` and `buildkitSHA256` in internal/factoryd/buildvm.go with `BUILDKIT_VERSION`, and the same URLs' and sha256s' lines of `upstream-files.txt` (the store's copies of those downloads, main CI's upstream job uploads them), which move with the `ADD` sums and buildkit's pin.
 
 The pull request's image-build builds the changed images from the upstreams at the new digests. Its merge has main CI's upstream job copy the new lines into the store. Only then can the infra repository's references move to them, since a pod whose copy is missing does not start.

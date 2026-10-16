@@ -886,3 +886,7 @@ func (s *acceptanceStore) EndRoutineRun(context.Context, string, string, int, st
 func (s *acceptanceStore) OverHoldCall(context.Context, string, time.Time) (*factoryd.OverHoldCall, error) {
 	return nil, nil
 }
+
+func (s *acceptanceStore) BudgetRefused(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}

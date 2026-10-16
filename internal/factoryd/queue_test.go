@@ -878,7 +878,7 @@ func TestQueueLeftEscalationLinksTheJob(t *testing.T) {
 	}
 	_, after, ok := strings.Cut(hub.comments[0], "hxxps://evil[.]test/x\n```")
 	want := "\n\nLinks:\n- https://git.example/sf/r/actions/runs/96/jobs/0\n\n" +
-		"Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
+		"Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
 	if !ok || after != want {
 		t.Fatalf("comment %q, want the fence followed by %q", hub.comments[0], want)
 	}

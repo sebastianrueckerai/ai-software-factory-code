@@ -251,8 +251,11 @@ type SessionAnswerInput struct {
 // SessionInput is one attempt: StartRef is the commit the worker starts
 // from (empty = the task's base SHA).
 type SessionInput struct {
-	TaskID   string
-	Attempt  int
+	TaskID  string
+	Attempt int
+	// Sessions is the cap Attempt counts against: the session limit and
+	// the attempts human answers granted
+	Sessions int
 	Model    string
 	Findings []string
 	// Answers are every human answer to the task's escalations, newest
@@ -483,6 +486,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.factoryPRActions = workflow.GetVersion(ctx, "factory-pr-actions", workflow.DefaultVersion, versionFactoryPRActions)
 	run.sessionLadder = workflow.GetVersion(ctx, "session-ladder", workflow.DefaultVersion, versionSessionLadder)
 	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
+	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -961,6 +965,15 @@ const (
 	// finding for the agent and not a session. A run from before turns it into
 	// the finding "model review: <summary>".
 	versionReviewRemark workflow.Version = 1
+	// versionPlannerRetry (change id "planner-retry"): a plan card with
+	// less than min(minSession, cap) of its agent time left gets one fresh
+	// planner session with its findings, topped up to half the cap by
+	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
+	// whose half is under that minimum gets none. Out of time with no such
+	// session to come, the planner asks a human (plannerTimeCard), and an
+	// answer to any wait then buys agent time (grantTime). A run from
+	// before the change fails at the limit at once.
+	versionPlannerRetry workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1057,6 +1070,7 @@ type taskRun struct {
 	factoryPRActions  workflow.Version // a factory pull request card's approval fits its head (versionFactoryPRActions)
 	sessionLadder     workflow.Version // the cap counts answered sessions (versionSessionLadder)
 	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
+	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1148,7 +1162,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		findings, own, reason = v.findings, nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
 			capAnswer()
 			return true
 		}
@@ -1459,12 +1473,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		if t.keepWork >= versionKeepWork && remaining < least {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
-			remaining = t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+			remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -1481,7 +1495,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res SessionResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
-			TaskID: t.taskID, Attempt: attempt, Model: model,
+			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
@@ -1898,23 +1912,27 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
-// grantTime is an answer's agent time: when less than the slice of agent
-// time is left, the difference, so the attempt is not born at the cap. The
-// slice is a quarter of the resolved agent time, never under the 5 minutes
-// a session needs to start (versionAnswerSlice); a run from before the
-// change id keeps WorkflowConfig.AnswerSlice instead.
+// grantTime is an answer's agent time: when less than answerTime of agent
+// time is left, the difference, so the attempt is not born at the cap.
 func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.v5 < versionPersistUsage {
 		return
 	}
-	slice := min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
-	if t.answerSlice >= versionAnswerSlice {
-		slice = max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
-	}
-	if left := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime; left < slice {
+	if left, slice := t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime, t.answerTime(); left < slice {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)
+}
+
+// answerTime is the agent time an answer leaves the next session: a
+// quarter of the resolved agent time, never under the 5 minutes a session
+// needs to start (versionAnswerSlice); a run from before the change id
+// keeps WorkflowConfig.AnswerSlice instead.
+func (t *taskRun) answerTime() time.Duration {
+	if t.answerSlice >= versionAnswerSlice {
+		return max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
+	}
+	return min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
 }
 
 // grantPoster is grant for an answer to an information request, up to
