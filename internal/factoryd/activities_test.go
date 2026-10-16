@@ -1032,21 +1032,30 @@ func testWaitChecksRecordsTheHeadsJobs(t *testing.T, factory bool) {
 	}
 }
 
+// The wait the approval stage runs on a pending head (versionApprovalPending)
+// keeps the real activity's bound: a head whose checks never settle — some
+// still running, or none reported yet, the read a request opened before its
+// run started answers — ends in the checks timeout, not a red read.
 func TestWaitChecksTimesOutWhilePending(t *testing.T) {
-	fj := &prForgejo{statuses: []string{statusBody("pending", [4]string{"pending", "pr / image-build", "", ""})}}
-	r, _, objects := newActivityRunner(t, prTask, fj)
-	r.cfg.ChecksTimeout = 50 * time.Millisecond
+	for name, body := range map[string]string{
+		"a check is still running": statusBody("pending", [4]string{"pending", "pr / image-build", "", ""}),
+		"no check has reported":    statusBody(""),
+	} {
+		fj := &prForgejo{statuses: []string{body}}
+		r, _, objects := newActivityRunner(t, prTask, fj)
+		r.cfg.ChecksTimeout = 50 * time.Millisecond
 
-	var res ChecksResult
-	from := time.Now()
-	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
-	if err != nil || val.Get(&res) != nil || res.State != ChecksTimeout {
-		t.Fatalf("result = (%+v, %v), want timeout", res, err)
+		var res ChecksResult
+		from := time.Now()
+		val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+		if err != nil || val.Get(&res) != nil || res.State != ChecksTimeout {
+			t.Fatalf("%s: result = (%+v, %v), want timeout", name, res, err)
+		}
+		if fj.polls < 2 {
+			t.Fatalf("%s: polls = %d, want it to keep polling until the timeout", name, fj.polls)
+		}
+		startedWithin(t, objects, "checks", from)
 	}
-	if fj.polls < 2 {
-		t.Fatalf("polls = %d, want it to keep polling until the timeout", fj.polls)
-	}
-	startedWithin(t, objects, "checks", from)
 }
 
 func TestSetStateMovesTaskAndMirrorsLabel(t *testing.T) {
