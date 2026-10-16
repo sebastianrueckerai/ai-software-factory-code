@@ -970,7 +970,7 @@ func boardViewParams() map[string]any {
 	for _, m := range colMenus {
 		title := strings.ToLower(columnTitles[m.Col][:1]) + columnTitles[m.Col][1:]
 		p[m.Name] = enum(title+" order: "+orWords(orderWords(m)...), orderWords(m)...)
-		p[m.Name+"-only"] = enum(title+" show: "+orWords(showWords(m)...), showWords(m)...)
+		p[m.Name+"_only"] = enum(title+" show: "+orWords(showWords(m)...), showWords(m)...)
 	}
 	return p
 }
