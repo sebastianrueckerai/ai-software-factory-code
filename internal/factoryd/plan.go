@@ -1046,6 +1046,14 @@ func (t *taskRun) planLoop() (string, error) {
 	refusals := 0 // refused sessions in a row (versionSessionRefusals)
 	// day is the wait on the day cap the next ask holds (versionDayCap)
 	var day *dayWait
+	// a healed run whose planner is out of time with no retry due waited
+	// on the time question: it asks it again (healedReason, which posts no
+	// second alert), and its answer buys the time at the wait's branch below
+	if healed && !wait && t.plannerRetry >= versionPlannerRetry {
+		if short, retry := t.plannerTime(u); short && !retry {
+			ask = healedReason
+		}
+	}
 	if healed && t.dayCap >= versionDayCap && st.DayCap != "" && workflow.Now(t.ctx).Before(st.DayCapUntil) {
 		ask, day = st.DayCap, &dayWait{until: st.DayCapUntil, model: t.cfg.Models.Stronger}
 	}
@@ -1072,9 +1080,10 @@ func (t *taskRun) planLoop() (string, error) {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
-			// an answer at the session cap buys a session, one to a planner
-			// out of time agent time (versionPlannerRetry), the day's turn
-			// nothing
+			// an answer at the session cap buys a session; one to a planner
+			// out of time, its automatic session used or the cap too short
+			// for one, buys agent time (versionPlannerRetry); an answer on
+			// the day's turn buys nothing
 			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts && !day.over() {
 				t.grant(&u)
 			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !day.over() {

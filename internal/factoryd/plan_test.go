@@ -824,19 +824,21 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 const planSession = 5 * time.Minute
 
 // planHarness is the workflow harness on a plan card: its RunPlan answers
-// results in order, RequestPlan posts revision n as comment 699+n,
-// CreateChildren files three cards unless refuse says why not, or answers
-// children's result when set, OpenPlanQuestions answers open in order.
+// results in order, RequestPlan posts revision n as comment 699+n or
+// answers what requestPlan returns when set, CreateChildren files three
+// cards unless refuse says why not, or answers children's result when set,
+// OpenPlanQuestions answers open in order.
 type planHarness struct {
 	*workflowHarness
-	plans    [][]string // RunPlan's findings, per call
-	models   []string
-	requests []int
-	created  []string
-	refuse   [][]string // CreateChildren's refusals, in order
-	open     []int      // OpenPlanQuestions' answers, in order
-	asked    []int      // the revisions OpenPlanQuestions was asked about
-	children func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
+	plans       [][]string // RunPlan's findings, per call
+	models      []string
+	requests    []int
+	created     []string
+	refuse      [][]string // CreateChildren's refusals, in order
+	open        []int      // OpenPlanQuestions' answers, in order
+	asked       []int      // the revisions OpenPlanQuestions was asked about
+	children    func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
+	requestPlan func(taskID string, revision int) (PlanRef, error)
 }
 
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
@@ -850,6 +852,9 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, revision int) (PlanRef, error) {
 			h.requests = append(h.requests, revision)
+			if h.requestPlan != nil {
+				return h.requestPlan(taskID, revision)
+			}
 			if revision == 0 {
 				revision = 1
 			}
@@ -2218,6 +2223,42 @@ func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
 	}
 	if want := (TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
 		t.Fatalf("usage %+v, want the answer's grant %+v second", h.usage, want)
+	}
+}
+
+// A run healed while it waited on the time question asks it again
+// (healedReason, which opens no second alert) and its answer still buys
+// the time: 30m used of the 20m cap + 10m retry leaves none, the answer
+// buys 5m, and the session (5m + 2m grace) files the plan.
+func TestPlanLoopHealedOnTheTimeQuestionAsksAgain(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{}, nil // the planner filed no plan: the wait was the time question's
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Comment: int64(699 + revision)}, nil
+	}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
+	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v, want done after the re-ask", final, h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{healedReason}) {
+		t.Fatalf("escalated %q, want the healed re-ask alone: Escalate opens an alert for every reason but it", h.escalated)
+	}
+	if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||
+		!slices.Equal(budgets, []time.Duration{7 * time.Minute}) {
+		t.Fatalf("plans %q, budgets %v, want one session of 7m with the answer", h.plans, budgets)
+	}
+	if want := (TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}); len(h.usage) == 0 || h.usage[0] != want {
+		t.Fatalf("usage %+v, want the answer's grant %+v first", h.usage, want)
 	}
 }
 

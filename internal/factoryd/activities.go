@@ -978,20 +978,20 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	if strings.HasPrefix(reason, splitFailed) || strings.HasPrefix(reason, splitCapped) {
 		// the approval card answers it; the approval wait reads no reply
 		next = "Approve, deny or split it on the board."
 	}
 	if floorRefused(reason) {
 		// no answer can run (ruling 322): the card names why and the way out
-		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to fail the task."
+		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
 	}
 	if strings.HasPrefix(reason, dayCapResumes) {
-		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to fail the task."
+		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
-		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to fail the task."
+		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
 	}
 	safe := r.untrusted(t, reason)
 	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(safe)
