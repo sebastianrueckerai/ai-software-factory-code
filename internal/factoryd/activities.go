@@ -754,7 +754,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			return SessionResult{}, err
 		}
 		if refused {
-			res.Outcome, res.Commit = OutcomePushed, out.commit
+			res.Outcome = OutcomePushed
 		}
 	}
 	if res.Outcome == OutcomePushed {

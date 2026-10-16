@@ -48,6 +48,11 @@ func TestSandboxToolsAreTheImages(t *testing.T) {
 			t.Errorf("sandboxTools names %s, which Dockerfile.sandbox does not install", p)
 		}
 	}
+	for _, p := range sandboxIncidental {
+		if !slices.Contains(image, p) {
+			t.Errorf("sandboxIncidental names %s, which Dockerfile.sandbox does not install", p)
+		}
+	}
 	b, _ := os.ReadFile("../../Dockerfile.sandbox")
 	if !strings.Contains(string(b), "golang:1.26.") || !strings.Contains(string(b), "ARG NODE_VERSION=24.") {
 		t.Error("Dockerfile.sandbox no longer carries Go 1.26 and Node 24, which SandboxFacts states")

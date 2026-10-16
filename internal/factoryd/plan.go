@@ -1046,9 +1046,9 @@ func (t *taskRun) planLoop() (string, error) {
 	refusals := 0 // refused sessions in a row (versionSessionRefusals)
 	// day is the wait on the day cap the next ask holds (versionDayCap)
 	var day *dayWait
-	// a healed run whose planner is out of time with no retry due waited
-	// on the time question: it asks it again (healedReason, which posts no
-	// second alert), and its answer buys the time at the wait's branch below
+	// a healed run with no plan pending whose planner is out of time with
+	// no retry due re-asks as healedReason, so no second alert posts; the
+	// answer buys the time at the wait's branch below
 	if healed && !wait && t.plannerRetry >= versionPlannerRetry {
 		if short, retry := t.plannerTime(u); short && !retry {
 			ask = healedReason
