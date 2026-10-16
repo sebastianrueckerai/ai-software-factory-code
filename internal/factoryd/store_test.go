@@ -86,6 +86,7 @@ type fakeStore struct {
 	deps        map[string][]string // task → the tasks it depends on
 	plans       map[string][]PlanRevision
 	questions   map[string][]PlanQuestion // by "task revision"
+	catches     map[string][]string       // the recording rule's ledger, by "task revision kind finder"
 	queue       []queueEntry              // the merge queues, oldest first
 	holds       map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -2471,6 +2472,18 @@ func (s *fakeStore) PutPlanQuestions(ctx context.Context, id string, revision in
 		s.questions = map[string][]PlanQuestion{}
 	}
 	s.questions[k] = slices.Clone(qs)
+	return true, nil
+}
+
+func (s *fakeStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
+	k := fmt.Sprintf("%s %d %s %s", id, revision, kind, finder)
+	if _, ok := s.catches[k]; ok {
+		return false, nil
+	}
+	if s.catches == nil {
+		s.catches = map[string][]string{}
+	}
+	s.catches[k] = slices.Clone(details)
 	return true, nil
 }
 

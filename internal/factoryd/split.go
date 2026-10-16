@@ -122,7 +122,7 @@ func splitGuide(pr int64, files []PRFile, bound int, limits policy.Limits) strin
 		"directories lists the files and directories the card carries over; a file may go to more than one card. "+
 		"Your last message is the whole result: one fenced ```json block and nothing else, holding "+
 		`{"summary": "a paragraph: how the work is split and in which order it lands", "cards": [{"key": "...", "role": "feature", "title": "...", "brief": "...", `+
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large"}]}. `+
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"text": "..."}], "size": "small|medium|large"}]}. `+
 		"depends_on lists the keys of the cards a card needs merged first. "+
 		"title and brief: markdown. directories: paths relative to the repository's root. "+
 		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+

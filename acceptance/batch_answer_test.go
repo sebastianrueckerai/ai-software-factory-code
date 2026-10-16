@@ -589,6 +589,9 @@ func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan jso
 func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []factoryd.PlanQuestion) (bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
+	panic("unused")
+}
 
 // AnswerPlanQuestion is factoryd.PGStore.AnswerPlanQuestion on the fixture's // rows: an unknown number answers ErrNotFound, an answered one ErrAnswered.
 func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {

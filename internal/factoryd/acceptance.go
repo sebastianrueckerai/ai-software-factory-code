@@ -74,7 +74,11 @@ func (r *Runner) planAcceptance(ctx context.Context, t Task) ([]string, error) {
 	}
 	for _, c := range p.Cards {
 		if c.Key == t.PlanKey {
-			return c.Acceptance, nil
+			texts := make([]string, len(c.Acceptance))
+			for i, it := range c.Acceptance {
+				texts[i] = it.Text
+			}
+			return texts, nil
 		}
 	}
 	return nil, nil
