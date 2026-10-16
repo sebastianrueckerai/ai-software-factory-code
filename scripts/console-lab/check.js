@@ -152,10 +152,11 @@ async function findAsYouType(p, query, word, label, fails) {
 
 // viewChange: the agent's view change (282) holds for the page as a
 // click does. The event's query pushes the URL beside the open doc=,
-// reads the board under it and leaves one more history entry; Back
-// reads the entry's board again; the card opens the drawer and the tab
-// lands once the drawer is in; reset closes the drawer and clears the
-// URL's controls; the panel and the theme work their own controls.
+// reads the board under it, leaves one more history entry and puts its
+// q in the find's box; Back reads the entry's board again; the card
+// opens the drawer and the tab lands once the drawer is in; reset
+// closes the drawer and clears the URL's controls; the panel and the
+// theme work their own controls.
 async function viewChange(p, query, fails) {
   const page = p.page, label = "view change", cards = "#board [data-card]";
   await page.goto(base + "/" + query, { waitUntil: "load" });
@@ -166,6 +167,8 @@ async function viewChange(p, query, fails) {
   await page.waitForTimeout(900);
   const at = new URL(page.url()).searchParams;
   if (at.get("q") !== "export" || at.get("queued") !== "oldest" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
+  const words = await page.locator("#q").inputValue();
+  if (words !== "export") fails.push(label + ": the find's box holds " + JSON.stringify(words) + ", not the event's q");
   if ((await page.evaluate(() => history.length)) !== before + 1) fails.push(label + ": the change leaves no history entry");
   const shown = await page.locator(cards).allInnerTexts();
   if (!shown.length || shown.some((t) => !t.toLowerCase().includes("export"))) fails.push(label + ": the board shows " + shown.length + " cards that do not say export");

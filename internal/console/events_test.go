@@ -1419,6 +1419,8 @@ console.log(JSON.stringify(out));
 // own button. Back reads the board under the entry's query and puts the
 // entry's q in the box without running the find; an entry that differs
 // from the board's query only by doc= or the fields' order reads nothing.
+// The find's box takes the event's q when the read goes out, held or not,
+// without an input event, and a query without q clears it..
 func TestConsoleViewEvent(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1495,14 +1497,17 @@ function settle() {
 function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, target: detail && detail.target, detail: detail}); }); }
 (async function () {
 var out = {};
+box.value = "old";
 fire("view", {query: "?project=code&q=exp"});
 out.pushed = pushed.slice();
+out.box = box.value;
 out.query = [byID.board.dataset.query, requests.slice()];
 // a read in flight holds the next: it goes out once the first settles
 fire("view", {query: "?project=code"});
 await settle();
 await settle();
 out.queued = requests.slice();
+out.queuedBox = box.value;
 // the card opens the drawer as its link does, the tab once its swap is in
 requests = [];
 fire("view", {card: "t-9", tab: "chat"});
@@ -1561,8 +1566,8 @@ console.log(JSON.stringify(out));
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
-		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"card":["#card=t-9",true],` +
+	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"box":"exp","query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
+		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"queuedBox":"","card":["#card=t-9",true],` +
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"panel":true,"theme":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
 		`"popOrder":["?project=code&q=exp&view=wide",0],"streams":1}`

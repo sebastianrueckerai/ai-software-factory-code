@@ -204,7 +204,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down.
 (function () {
-  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "";
+  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null;
   function board() { return document.getElementById("board"); }
   function retry() {
     var ids = Object.keys(missed);
@@ -251,6 +251,14 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       missed[""] = true;
       return;
     }
+    // a view change's read carries its own q for the find's box, which the
+    // swap would else leave holding the member's words: it goes in here,
+    // where no find is in flight, at once or when a held read finally runs
+    if (viewQ !== null) {
+      var i = document.getElementById("q");
+      if (i && i.value !== viewQ) i.value = viewQ;
+      viewQ = null;
+    }
     reading = true;
     var done = function () {
       reading = false;
@@ -261,10 +269,12 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   // the agent's view change (282): the merged query holds for this page
   // as a click's does, nothing stored, so it pushes the URL beside the
   // open document's doc= and the drawer's hash, then reads the board
-  // under it, the guards of a read holding as ever
+  // under it, the guards of a read holding as ever, and the find's box
+  // takes the query's q as Back hands it the entry's
   document.addEventListener("view", function (e) {
     var d = e.detail || {}, b = board();
     if (typeof d.query !== "string" || !b) return;
+    viewQ = new URLSearchParams(d.query).get("q") || "";
     var u = new URL(location.href);
     u.search = d.query;
     var doc = new URLSearchParams(location.search).get("doc");
