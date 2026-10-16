@@ -1079,8 +1079,8 @@ func TestLimitsStopValuesAreBounded(t *testing.T) {
 		"warn_at 100":         {func(l *Limits) { l.WarnAt = 100 }, "limits.warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
 		"plan_warn_at -1":     {func(l *Limits) { l.PlanWarnAt = -1 }, "limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is -1"},
 		"no_push_spend 100":   {func(l *Limits) { l.NoPushSpend = 100 }, "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
-		"context_tokens 1000": {func(l *Limits) { l.ContextTokens = 1000 }, "limits.context_tokens must lie between 20000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000"},
-		"context past window": {func(l *Limits) { l.ContextTokens = 200001 }, "limits.context_tokens must lie between 20000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 200001"},
+		"context_tokens 1000": {func(l *Limits) { l.ContextTokens = 1000 }, "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000"},
+		"context past window": {func(l *Limits) { l.ContextTokens = 200001 }, "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 200001"},
 	} {
 		l := d.Limits
 		tc.mutate(&l)
@@ -1092,8 +1092,8 @@ func TestLimitsStopValuesAreBounded(t *testing.T) {
 		"warn_at: 0":           "properties/warn_at: minimum: 0/1 is less than 1",
 		"plan_warn_at: 0":      "properties/plan_warn_at: minimum: 0/1 is less than 1",
 		"no_push_spend: 0":     "properties/no_push_spend: minimum: 0/1 is less than 1",
-		"context_tokens: 0":    "properties/context_tokens: minimum: 0/1 is less than 20000",
-		"context_tokens: 1000": "limits.context_tokens must lie between 20000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000",
+		"context_tokens: 0":    "properties/context_tokens: minimum: 0/1 is less than 40000",
+		"context_tokens: 1000": "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000",
 		"no_push_spend: 100":   "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100",
 	} {
 		_, err := Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, "+doc+"}", 1)))

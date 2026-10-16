@@ -329,7 +329,7 @@ const (
 	DefaultPlanWarnAt    = 67
 	DefaultNoPushSpend   = 60
 	DefaultContextTokens = 100000
-	MinContextTokens     = 20000
+	MinContextTokens     = 40000
 	ModelContext         = 200000
 )
 
