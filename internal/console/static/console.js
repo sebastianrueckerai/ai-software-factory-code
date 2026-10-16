@@ -615,7 +615,9 @@ document.addEventListener("htmx:afterSwap", function (e) {
 
 // the agent's view change opens the drawer's card as its link does, the
 // tab clicked once the drawer's own settle is in (a click inside the
-// swap reaches no htmx event), and card "" closes it (282)
+// swap reaches no htmx event), a second event before that settle
+// replacing the shot, and card "" closes it (282)
+var pendingTabShot;
 document.addEventListener("view", function (e) {
   var d = e.detail || {};
   if (d.card === "") return closeDrawer();
@@ -624,12 +626,15 @@ document.addEventListener("view", function (e) {
   if (location.hash === want) showDrawer();
   else location.hash = want;
   if (!d.tab || d.tab === "overview") return;
-  document.addEventListener("htmx:afterSettle", function tab(ev) {
+  if (pendingTabShot) document.removeEventListener("htmx:afterSettle", pendingTabShot);
+  pendingTabShot = function (ev) {
     if (!ev.target || ev.target.id !== "drawer") return;
-    document.removeEventListener("htmx:afterSettle", tab);
+    document.removeEventListener("htmx:afterSettle", pendingTabShot);
+    pendingTabShot = null;
     var b = ev.target.querySelector('button[hx-get*="tab=' + d.tab + '"]');
     if (b) b.click();
-  });
+  };
+  document.addEventListener("htmx:afterSettle", pendingTabShot);
 });
 
 // The board's keys, listed by ? : w switches the view, Escape closes the

@@ -1414,7 +1414,8 @@ console.log(JSON.stringify(out));
 // doc= and the drawer's hash and reads the board under it; with no board
 // on the page it touches nothing. The card opens the drawer as its link
 // does and the tab is clicked once the drawer's settle is in, a settle
-// that never comes leaving the listener armed for the next one. Card ""
+// that never comes leaving the listener armed for the next one, a second
+// event before it replacing the shot. Card ""
 // closes the drawer. The panel works the fold and the theme the theme's
 // own button. Back reads the board under the entry's query and puts the
 // entry's q in the box without running the find; an entry that differs
@@ -1575,6 +1576,19 @@ Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
 requests = [];
 winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popOrder = [byID.board.dataset.query, requests.length];
+// two card+tab events before any settle arm one shot, not two: the
+// latest tab alone is clicked, once
+var chatTab = el({clicks: 0, click: function () { this.clicks++; }}), actTab = el({clicks: 0, click: function () { this.clicks++; }});
+drawer.querySelector = function (sel) {
+  if (sel === 'button[hx-get*="tab=chat"]') return chatTab;
+  if (sel === 'button[hx-get*="tab=activity"]') return actTab;
+  return null;
+};
+fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
+fire("view", {query: "?project=code", card: "t-9", tab: "activity"});
+fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer});
+out.twoShots = [chatTab.clicks, actTab.clicks];
 out.streams = sources.length;
 await settle();
 console.log(JSON.stringify(out));
@@ -1589,7 +1603,7 @@ console.log(JSON.stringify(out));
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"panel":true,"theme":1,"flatPanel":[0,true,["GET /board?project=code"]],` +
 		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
-		`"popOrder":["?project=code&q=exp&view=wide",0],"streams":1}`
+		`"popOrder":["?project=code&q=exp&view=wide",0],"twoShots":[0,1],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
