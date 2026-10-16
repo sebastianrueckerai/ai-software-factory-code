@@ -225,19 +225,54 @@ func (in *AlertIntake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var errs []error
 	for _, a := range msg.Alerts {
 		if err := in.take(r.Context(), a, time.Now()); err != nil {
+			if row, seen, rerr := in.Store.AlertByFingerprint(r.Context(), AlertSigNoz, a.Fingerprint); rerr == nil &&
+				seen && in.replays(r.Context(), row, a) {
+				// The failure sits after the alerts row, the dedupe key, was
+				// written: whatever step of the delivery is left — the filing
+				// under the row's task id, the fired-again comment on its
+				// running task's issue, the resolve — a later delivery of the
+				// firing walks again, and the sweep finishes a filing or a
+				// resolve left behind. Answering 5xx here made SigNoz
+				// redeliver the failure again and again, every retry another
+				// 5xx request on factoryd, until the 5xx-rate rule fired on
+				// factoryd itself (8 of 141 requests,
+				// 2026-10-16T16:04:45Z). Accepted, not failed: the 5xx stays
+				// for a failure before the row — the project read, the
+				// insert — whose only repair is SigNoz's redelivery.
+				log.Printf("signoz webhook: alert %s: %v: the row is written, a redelivery or the sweep finishes it", strconv.Quote(a.Fingerprint), err) // #nosec G706 -- strconv.Quote escapes the alert's text
+				continue
+			}
 			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(a.Fingerprint), err))
 		}
 	}
 	if err := errors.Join(errs...); err != nil {
-		// SigNoz sends the notification again on a 5xx. The alerts row, the
-		// dedupe key, is written first with its task's id, so the retry files
-		// that one task; a failure between the issue and the task row leaves
-		// the first issue without a task
+		// SigNoz sends the notification again on a 5xx, the repair for a
+		// failure before the alerts row was written: after the row, a 5xx
+		// only adds factoryd's own failed requests without adding repair
 		log.Printf("signoz webhook: %v", err) // #nosec G706 -- strconv.Quote escapes the alert's text
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// replays reports whether alert a's failed delivery already wrote the
+// durable state its remaining work replays against: its alerts row, the
+// dedupe key, found as row. A resolve only finishes that row, whatever
+// step of it failed, and a firing of the row's own start replays against
+// it — an unfiled filing continued under the row's task id, a refile of a
+// firing its task did not end tried again; the fired-again comment on the
+// issue of the row's still-running task is posted by the next delivery of
+// the firing. A delivery that files anew — no row, or a start of its own
+// once the row's task ended — repairs only through SigNoz's redelivery,
+// which the 5xx asks for; a task read that itself fails cannot tell the
+// two apart, so the delivery fails for its redelivery.
+func (in *AlertIntake) replays(ctx context.Context, row Alert, a SigNozAlert) bool {
+	if a.Status == "resolved" || row.Detail["starts_at"] == stamp(a.StartsAt) {
+		return true
+	}
+	t, filed, err := in.Store.Task(ctx, row.TaskID)
+	return err == nil && filed && row.Detail["issue"] != nil && !Final(t.Status)
 }
 
 // take judges alert a at now, the time of its delivery or of the pass that
@@ -417,7 +452,9 @@ func (in *AlertIntake) flux(ctx context.Context, name string, e Environment, s F
 // nothing, so the stale rows a first sweep finds resolve quietly and only
 // a running card's issue gets the comment. A held row SigNoz still lists
 // goes to take as its redelivery would, which files it once no rollout's
-// window holds now. A list whose active alerts carry no fingerprint cannot
+// window holds now, and so does a row whose filing failed after it was
+// written: the webhook accepts that delivery, this sweep is its repair. A
+// list whose active alerts carry no fingerprint cannot
 // be matched and resolves nothing. The rows are read before the list, so a
 // row filed meanwhile waits for the next sweep.
 func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
@@ -453,7 +490,9 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 			ns, _ := row.Detail["namespace"].(string)
 			a = SigNozAlert{Status: "resolved", EndsAt: now, Fingerprint: row.Fingerprint,
 				Labels: map[string]string{"alertname": row.Source, "namespace": ns}, swept: true}
-		case held(row) && row.Detail["issue"] == nil:
+		case row.Detail["issue"] == nil && (held(row) || row.Detail["starts_at"] == stamp(f.StartsAt)):
+			// held for a rollout, or a filing that failed after its row was
+			// written: taken as its redelivery would, which files it
 			a = SigNozAlert{Status: "firing", Labels: f.Labels, Annotations: f.Annotations, StartsAt: f.StartsAt,
 				GeneratorURL: f.GeneratorURL, Fingerprint: row.Fingerprint}
 		default:
@@ -604,7 +643,8 @@ func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns str
 // file writes the alert's row, the dedupe key, with the id of the task it
 // files, then files that task; refiled when the same firing outlived the
 // task of the last one. A delivery that fails after the row is written is
-// finished by SigNoz's retry under the same task id (take).
+// accepted (ServeHTTP) and finished by the sweep, or a redelivery, under
+// the same task id (take).
 func (in *AlertIntake) file(ctx context.Context, a SigNozAlert, p Project, ns, at string, refiled bool) error {
 	row := alertRow(a, p, ns, at, refiled)
 	var err error
@@ -629,7 +669,7 @@ func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
 
 // fileTask files the issue and task of the alert a on project p whose row,
 // written first, names the task's id: a delivery that fails here leaves the
-// row, so SigNoz's retry files the same one task (take).
+// row, so the sweep or a redelivery files the same one task (take).
 func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, ns string, row Alert) error {
 	repo := p.Repo()
 	sha, err := in.Forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
