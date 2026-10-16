@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,6 +59,65 @@ func TestWaitSaysWhenThePidIsNoJob(t *testing.T) {
 	var out bytes.Buffer
 	if code := runWait([]string{"2147483646", "5"}, &out, 20*time.Millisecond); code != 0 || out.String() != "pid 2147483646 is not running (it ended, or it never was a job)\n" {
 		t.Fatalf("exit %d, output %q", code, out.String())
+	}
+}
+
+func fixtureStat(t *testing.T, root, state, start string) {
+	t.Helper()
+	dir := filepath.Join(root, "7")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// fields 3..22: state, then 18 numbers, then starttime (field 22)
+	stat := "7 (a b) " + state + strings.Repeat(" 0", 18) + " " + start + " 0 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(stat), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProcStartReadsStartTimeAndRefusesZombies(t *testing.T) {
+	root := t.TempDir()
+	fixtureStat(t, root, "S", "4242")
+	if s, ok := procStart(7, root); !ok || s != "4242" {
+		t.Fatalf("running: %q %v", s, ok)
+	}
+	for _, state := range []string{"Z", "X"} {
+		fixtureStat(t, root, state, "4242")
+		if _, ok := procStart(7, root); ok {
+			t.Errorf("state %s counted as running", state)
+		}
+	}
+}
+
+func TestWaitTreatsAReusedPidAsEnded(t *testing.T) {
+	root := t.TempDir()
+	fixtureStat(t, root, "S", "100")
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		fixtureStat(t, root, "S", "200")
+	}()
+	var out bytes.Buffer
+	if code := waitFor(7, 10*time.Second, root, &out, 10*time.Millisecond); code != 0 || !strings.HasPrefix(out.String(), "pid 7 ended after ") {
+		t.Fatalf("exit %d, output %q", code, out.String())
+	}
+}
+
+func TestParseWait(t *testing.T) {
+	for _, c := range []struct {
+		args  []string
+		limit time.Duration
+		bad   bool
+	}{
+		{[]string{"7"}, 540 * time.Second, false},
+		{[]string{"7", "30"}, 30 * time.Second, false},
+		{[]string{"7", "590"}, 590 * time.Second, false},
+		{[]string{"7", "900"}, 590 * time.Second, false},
+		{nil, 0, true}, {[]string{"1"}, 0, true}, {[]string{"7", "0"}, 0, true}, {[]string{"7", "x"}, 0, true}, {[]string{"7", "5", "6"}, 0, true},
+	} {
+		pid, limit, bad := parseWait(c.args)
+		if (bad != "") != c.bad || limit != c.limit || (!c.bad && pid != 7) {
+			t.Errorf("%v: pid %d limit %s bad %q", c.args, pid, limit, bad)
+		}
 	}
 }
 
