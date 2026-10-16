@@ -38,6 +38,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "wait" {
+		os.Exit(runWait(os.Args[2:], os.Stdout, time.Second))
+	}
 	log := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "agent-worker: "+format+"\n", args...)
 	}

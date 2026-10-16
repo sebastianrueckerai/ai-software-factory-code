@@ -1176,3 +1176,10 @@ func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
 		t.Fatalf("config = %s, want no compaction block and no limit.input", raw)
 	}
 }
+
+func TestWorkGuideNamesTheBlockingWait(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o"}, "T")
+	if !strings.Contains(got, "agent-worker wait <pid> [seconds up to 590]") || !strings.Contains(got, "timeout of 600000 ms") {
+		t.Fatalf("brief lacks the wait: %s", got)
+	}
+}
