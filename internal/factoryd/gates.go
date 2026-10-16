@@ -44,6 +44,9 @@ type PolicyGate struct {
 	// pull request (factoryPRSources), which is no agent's change: Outcome
 	// is requires_approval, and a human approves its change to Paths.
 	Factory bool
+	// Cheats is the diff's anti-cheat findings (cheats): for the agent,
+	// through the checks stage's rule.
+	Cheats []string `json:",omitempty"`
 }
 
 // large: the pull request is class large by its lines.
@@ -358,6 +361,11 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
+	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr, maxForgejoAnswer)
+	if err != nil {
+		return PolicyGate{}, err
+	}
+	g.Cheats = cheats(splitDiff(diff))
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 		return PolicyGate{}, err
 	} else if ok {
@@ -384,7 +392,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		return PolicyGate{}, err
 	}
 	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
-		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule}))
+		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats}))
 	return g, nil
 }
 

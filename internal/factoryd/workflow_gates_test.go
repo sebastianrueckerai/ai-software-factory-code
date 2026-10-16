@@ -24,6 +24,8 @@ type gateHarness struct {
 	merges       []string // "pr commit approver"
 	checkedHeads []string // Merge's checkedHead per call
 	gate         PolicyGate
+	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
+	policyCalls  int
 	repro        []ReproResult // in order, the last repeating
 	review       Review
 	reviews      []Review      // in order, the last repeating; empty: review
@@ -80,6 +82,10 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			g.policyPins = append(g.policyPins, pin)
 			g.policyCommits = append(g.policyCommits, commit)
 			g.steps = append(g.steps, "policy")
+			g.policyCalls++
+			if len(g.gateSeq) > 0 {
+				return g.gateSeq[min(g.policyCalls, len(g.gateSeq))-1], nil
+			}
 			return g.gate, nil
 		})
 	g.env.OnActivity(ActivityGateMigration, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
@@ -339,6 +345,29 @@ func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
 	if second.Model != "factory/coding-frontier" || len(second.Findings) != 1 ||
 		!strings.Contains(second.Findings[0], "exit 1") || !strings.Contains(second.Findings[0], "--- FAIL: TestX") || !strings.Contains(second.Findings[0], "go test ./x") {
 		t.Fatalf("second attempt = %+v", second)
+	}
+}
+
+// A cheat found by the policy gate goes back to the agent through the
+// checks stage's rule, before the checks wait and the review start; the
+// next session's findings name it.
+func TestWorkflowCheatsGoBackToTheAgent(t *testing.T) {
+	g := newGateHarness(t)
+	g.gateSeq = []PolicyGate{
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Cheats: []string{"anti-cheat: x_test.go:11 adds a skip to a test: t.Skip(\"flaky\")"}},
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7},
+	}
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 2 || len(g.sessions[1].Findings) != 1 || !strings.Contains(g.sessions[1].Findings[0], "adds a skip to a test") {
+		t.Fatalf("sessions = %+v, want a second session holding the cheat", g.sessions)
+	}
+	if want := []string{"policy", "policy", "repro c2", "review c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
 

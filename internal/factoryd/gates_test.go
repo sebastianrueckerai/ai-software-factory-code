@@ -229,6 +229,21 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	}
 }
 
+// The policy gate reads the diff: a skipped or removed test is a cheat the
+// workflow sends to the agent, and the gate records it.
+func TestGatePolicyFlagsCheats(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"x_test.go"}`}, diff: skipDiff}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	if len(g.Cheats) != 1 || !strings.HasPrefix(g.Cheats[0], "anti-cheat: x_test.go:11") {
+		t.Fatalf("cheats = %q", g.Cheats)
+	}
+	if !strings.Contains(timeline(t, objects), `"cheats":["anti-cheat: x_test.go:11`) {
+		t.Fatalf("the gate_policy step lacks the cheats: %s", timeline(t, objects))
+	}
+}
+
 // A rename out of .forgejo counts under its old name: forbidden, and the
 // comment names the path.
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {

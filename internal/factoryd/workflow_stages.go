@@ -174,6 +174,11 @@ func (t *taskRun) runStages(commit string) verdict {
 			continue
 		}
 		if len(findings) == 0 {
+			if s.Name == policy.StagePolicy {
+				if v, stop := t.cheatFindings(g, &capped, &card); stop {
+					return v
+				}
+			}
 			continue
 		}
 		if s.Name == policy.StageReview && s.OnFindings == policy.FindingsAgent && t.adjudicated >= versionAdjudicated && !t.rolling {
@@ -323,6 +328,17 @@ func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]
 		*card = append(*card, s.Name+": "+f)
 	}
 	return verdict{}, false
+}
+
+// cheatFindings sends the policy gate's anti-cheat findings where the
+// checks stage's on_findings sends its own: the policy stage's rule is fail
+// by a floor and would fail the task for a skipped test.
+func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict, bool) {
+	if len(g.Policy.Cheats) == 0 {
+		return verdict{}, false
+	}
+	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+	return t.onFindings(t.cfg.Stages[i], g.Policy.Cheats, capped, card)
 }
 
 // recordFindings keeps findings meant for the agent on the timeline, sent
