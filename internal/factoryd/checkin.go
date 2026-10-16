@@ -237,6 +237,47 @@ func cutHandover(s string, cap int) string {
 	return string(r[:cap])
 }
 
+// The factoryd side of the check-in's own waits and caps, mirroring the
+// worker's (cmd/agent-worker/checkin.go): how long a brief or record
+// delivery retries while the worker's endpoint is still coming up, and one
+// workspace tool's run cap with the transport's slack. Vars, like the
+// worker's checkinWait, so a test shortens them.
+var (
+	checkinBriefWait   = 10 * time.Minute
+	checkinToolTimeout = 15*time.Minute + time.Minute
+)
+
+// checkinOutputCap cuts every tool answer the check-in's model sees.
+const checkinOutputCap = 32 << 10
+
+// cutTail keeps the record's last n bytes, advanced past the partial line
+// the cut lands in, so the tail starts where a line does.
+func cutTail(b []byte, n int) []byte {
+	if len(b) <= n {
+		return b
+	}
+	cut := len(b) - n
+	if i := bytes.IndexByte(b[cut:], '\n'); i >= 0 {
+		cut += i + 1
+	}
+	return b[cut:]
+}
+
+// cutToolOutput caps a local tool's answer the way the worker caps its
+// own: a plain byte cut, the cut flagged for the model to be told.
+func cutToolOutput(s string) (string, bool) {
+	if len(s) <= checkinOutputCap {
+		return s, false
+	}
+	return s[:checkinOutputCap], true
+}
+
+// argInt reads a tool argument the model answered as a JSON number.
+func argInt(a any) int {
+	f, _ := a.(float64)
+	return int(f)
+}
+
 // checkinChat is the check-in's model: one call of the alias on the task's
 // account. The production client is checkinGateway; tests script answers.
 type checkinChat interface {
@@ -367,9 +408,8 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // the round runs as if no check-in existed. An answer the runner cannot
 // read gets one repair round and then a human. The call cap is a human ask
 // under spend. Every call lands in the record.
-func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions int) CheckInOutcome {
+func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int) CheckInOutcome {
 	start := time.Now()
-	handoverCap := policy.Limits{}.CheckinHandoverCap()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
 	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)

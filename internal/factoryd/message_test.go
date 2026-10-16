@@ -35,25 +35,47 @@ type fakeWorkerEndpoint struct {
 	auth   []string
 	texts  []string
 	onPush func()
+	// onTool answers POST /tool with its status and body; tools records
+	// every ask as the tool's name with its args
+	onTool func(name string, args map[string]any) (int, string)
+	tools  []string
 }
 
 func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		var in struct {
-			Text     string `json:"text"`
-			Token    string `json:"token"`
-			Session  string `json:"session"`
-			Record   string `json:"record"`
-			Handover string `json:"handover"`
+			Text     string         `json:"text"`
+			Token    string         `json:"token"`
+			Session  string         `json:"session"`
+			Record   string         `json:"record"`
+			Handover string         `json:"handover"`
+			Name     string         `json:"name"`
+			Args     map[string]any `json:"args"`
 		}
 		b, _ := io.ReadAll(req.Body)
 		json.Unmarshal(b, &in)
 		f.mu.Lock()
 		f.auth = append(f.auth, req.Header.Get("Authorization"))
-		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token+in.Session+in.Record+in.Handover)
+		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token+in.Session+in.Record+in.Handover+in.Name)
 		status := f.status
 		f.mu.Unlock()
+		if req.URL.Path == "/tool" {
+			if args, err := json.Marshal(in.Args); err == nil {
+				f.mu.Lock()
+				f.tools = append(f.tools, in.Name+" "+string(args))
+				f.mu.Unlock()
+			}
+			code, body := http.StatusOK, `{"output":"","cut":false}`
+			if f.onTool != nil {
+				f.mu.Lock()
+				code, body = f.onTool(in.Name, in.Args)
+				f.mu.Unlock()
+			}
+			w.WriteHeader(code)
+			io.WriteString(w, body)
+			return
+		}
 		if req.URL.Path == "/push" {
 			if f.onPush != nil {
 				f.onPush()
@@ -98,7 +120,7 @@ func TestRunSessionNudgesTheRunningSession(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if len(worker.texts) != 1 || worker.texts[0] != "POST /message "+readNudge {
+	if len(worker.texts) != 2 || worker.texts[0] != "POST /brief " || worker.texts[1] != "POST /message "+readNudge {
 		t.Fatalf("worker got %q", worker.texts)
 	}
 	// the pod carries the bearer's hash, never the bearer
@@ -152,7 +174,7 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push after the stop", got)
 	}
-	want := []string{"POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2"}
+	want := []string{"POST /brief ", "POST /message " + readNudge, "POST /message " + readNudge, "POST /message " + readNudge, "POST /push tok-task-t2"}
 	if !slices.Equal(worker.texts, want) {
 		t.Fatalf("worker got %q, want three nudges and the push token", worker.texts)
 	}
@@ -302,7 +324,7 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if len(worker.texts) != 1 || worker.texts[0] != "POST /message use the store's New" {
+	if len(worker.texts) != 2 || worker.texts[0] != "POST /brief " || worker.texts[1] != "POST /message use the store's New" {
 		t.Fatalf("worker got %q", worker.texts)
 	}
 	if len(f.chats) != 1 {
@@ -513,7 +535,7 @@ func TestPushTokenMintedAtThePushRequest(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t1"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1"}) {
 		t.Fatalf("worker got %q, want the minted token on POST /push", worker.texts)
 	}
 	// the session's message bearer, the one whose hash the pod holds
@@ -543,7 +565,7 @@ func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t1"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t1"}) {
 		t.Fatalf("worker got %q, want one token, posted on the answered ask", worker.texts)
 	}
 }
@@ -616,7 +638,7 @@ func TestSupervisorStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
 		t.Fatalf("worker got %q, write mints %v", worker.texts, writeMints(hub))
 	}
 	if len(hub.revoked) != 2 {
@@ -641,7 +663,7 @@ func TestWallClockStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t5"}) || len(hub.revoked) != 2 {
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t5"}) || len(hub.revoked) != 2 {
 		t.Fatalf("worker got %q, revoked %v", worker.texts, hub.revoked)
 	}
 }
@@ -664,7 +686,9 @@ func TestShutdownDetachesWithoutAStop(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
 		t.Fatalf("err = %v, want the retryable stop", err)
 	}
-	if got := order(); len(got) != 0 || len(worker.texts) != 0 || len(hub.revoked) != 0 {
+	// the brief may have landed before the stop; nothing else may have
+	briefed := len(worker.texts) == 0 || (len(worker.texts) == 1 && worker.texts[0] == "POST /brief ")
+	if got := order(); len(got) != 0 || !briefed || len(hub.revoked) != 0 {
 		t.Fatalf("order = %v, worker got %q, revoked %v; want the worker left running", got, worker.texts, hub.revoked)
 	}
 	if _, ok := store.liveSessions["t2"]; !ok {

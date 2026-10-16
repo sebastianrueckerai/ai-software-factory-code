@@ -68,6 +68,10 @@ type fakeStore struct {
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
+	// checkinCalls and checkinSpent are CheckinCalls' and CheckinSpent's
+	// answers by task
+	checkinCalls map[string]int
+	checkinSpent map[string]float64
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -791,11 +795,11 @@ func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time
 }
 
 func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
-	return 0, nil
+	return s.checkinSpent[taskID], nil
 }
 
 func (s *fakeStore) CheckinCalls(ctx context.Context, taskID string) (int, error) {
-	return 0, nil
+	return s.checkinCalls[taskID], nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {

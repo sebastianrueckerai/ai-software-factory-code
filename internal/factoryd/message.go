@@ -30,6 +30,10 @@ func messageTokenHash(token string) string {
 // but past the worker's own bound on the hand-over.
 var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout}
 
+// checkinMessages has no timeout of its own: a check-in tool call runs as
+// long as its own bound (checkinToolTimeout) says, and the context holds it.
+var checkinMessages = &http.Client{}
+
 // messageWorker posts text to the running worker's POST /message, which
 // hands it to the harness. The worker's 501 is harness.ErrNotSupported,
 // its 409 (the session has ended) harness.ErrNotRunning.

@@ -507,8 +507,8 @@ func TestRunSessionRepetitionRefusalIsALoop(t *testing.T) {
 	if end == nil || end["outcome"] != "redirect" || end["summary"] != said {
 		t.Fatalf("timeline session_end = %v", end)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /push tok-task-t2"}) {
-		t.Fatalf("worker got %q, want the push token", worker.texts)
+	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t2"}) {
+		t.Fatalf("worker got %q, want the brief and the push token", worker.texts)
 	}
 }
 

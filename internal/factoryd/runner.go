@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"maps"
 	"math"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -122,9 +124,15 @@ type Runner struct {
 	objects    ObjectStore
 	timeline   *Timeline
 	supervisor *SupervisorModel
-	stopWait   time.Duration
-	cheapCap   time.Duration // cheapAttemptCap; a test shortens it
-	tick       time.Duration // the supervision tick; a test sets it
+	// checkin is the check-in's model client, wired like the supervisor's
+	// (the gateway under the task's account); a test scripts it
+	checkin checkinChat
+	// endpointWait bounds how long the worker's message endpoint is given
+	// to come up for a brief or record delivery; a test shortens it
+	endpointWait time.Duration
+	stopWait     time.Duration
+	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
+	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
 	// a test shortens both
@@ -327,6 +335,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		cfg.ChecksPoll = HeartbeatEvery
 	}
 	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
+		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
 			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}, nil
@@ -437,6 +446,9 @@ type sessionSpec struct {
 	// messageToken is the bearer of the worker's message endpoint, made
 	// per session; the pod gets its hash
 	messageToken string
+	// checkInAsk is the check-in the workflow asks of the session's start;
+	// nil: none runs
+	checkInAsk *CheckInAsk
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -451,11 +463,12 @@ type sessionOutcome struct {
 	decision  *Decision
 	digest    string
 	noResult  string
-	start     *startFailure // the session could not start
-	pending   *podPending   // its pod never left Pending: no session ran
-	model     string        // the model the session ended on
-	overHold  *OverHoldCall // the session's newest call booked beyond its hold
-	reads     []string      // the paths a report session read
+	start     *startFailure   // the session could not start
+	pending   *podPending     // its pod never left Pending: no session ran
+	model     string          // the model the session ended on
+	overHold  *OverHoldCall   // the session's newest call booked beyond its hold
+	reads     []string        // the paths a report session read
+	checkIn   *CheckInOutcome // the check-in that ran at the session's start
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -563,6 +576,23 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return out, nil
 	}
 	progress(0)
+
+	// The worker holds the start of its coding conversation for a brief
+	// (task 4): every session delivers one — a check-in's handover when a
+	// check-in decided one, empty when none ran. A reattached pod already
+	// had its brief. A check-in that stops the session here stops it
+	// before anything of the conversation is spent.
+	if live == nil {
+		if s.checkInAsk != nil {
+			var stop bool
+			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop)
+			if stop {
+				return out, nil
+			}
+		} else {
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, "")
+		}
+	}
 
 	// the supervisor's clocks start with the pod: a slow pull is no time
 	// the agent had
@@ -877,6 +907,211 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		}
 	}
+}
+
+// checkinBlock runs the check-in the workflow asked of the session's
+// start, inside the session's own pod and before its coding conversation:
+// the limits are read before anything is bought, the parent session's
+// record is delivered whole to the pod and its tail to the conversation,
+// and a human or dropped-all decision stops the pod with nothing of the
+// conversation spent. stop says the session ends here.
+func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) (ck *CheckInOutcome, stop bool) {
+	limits := s.policy.Limits
+	ask := *s.checkInAsk
+	ask.ParentSession = s.parent
+	brief := func(note string) {
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note)
+	}
+	calls, err := r.store.CheckinCalls(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the check-in calls: %v", t.ID, err)
+	}
+	spent, err := r.store.CheckinSpent(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
+	}
+	eurLeft := limits.CheckinShareOf(t.BudgetEUR) - spent
+	if calls >= limits.CheckinCallCap() || eurLeft <= 0 {
+		reason := "the check-in's share of the budget is spent"
+		if calls >= limits.CheckinCallCap() {
+			reason = "check-in call cap reached"
+		}
+		rec := &CheckInRecord{Model: factoryModel(s.policy, t, policy.PurposeCheckin), Session: s.id,
+			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
+		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}, true
+	}
+	if alias := factoryModel(s.policy, t, policy.PurposeCheckin); alias != "" {
+		var parent []byte
+		if s.parent != "" {
+			if rec, err := r.objects.Get(ctx, "sessions/"+t.ID+"/"+s.parent+".jsonl"); err != nil {
+				log.Printf("task %s: read session %s's record for the check-in: %v", t.ID, s.parent, err)
+			} else {
+				parent = rec
+				if err := r.postWorkerUntil(ctx, workerStop, ns, pod, s.messageToken, "/records",
+					map[string]string{"session": s.parent, "record": string(rec)}, r.endpointWait); err != nil && !errors.Is(err, errWorkerStop) {
+					log.Printf("task %s: deliver session %s's record to the pod: %v", t.ID, s.parent, err)
+				}
+			}
+		}
+		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
+			facts: checkinFacts(t, s), ask: &ask}
+		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
+			limits.CheckinCallCap()-calls, eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+		if out.Record != nil {
+			out.Record.Session = s.id
+		}
+		if out.Decision == CheckHandover {
+			brief(out.Handover)
+			return &out, false
+		}
+		return &out, true
+	}
+	// no model under the check-in's purpose: the session runs as if no
+	// check-in was asked, and its brief is the empty one
+	brief("")
+	return nil, false
+}
+
+// pushBrief delivers the session's brief: a check-in's handover note, or
+// the empty one a session without a check-in gets. The worker holds its
+// conversation's start for it.
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string) {
+	if err := r.postWorkerUntil(ctx, workerStop, ns, pod, token, "/brief", map[string]string{"handover": handover}, r.endpointWait); err != nil && !errors.Is(err, errWorkerStop) {
+		log.Printf("task %s: deliver the brief: %v", taskID, err)
+	}
+}
+
+// postWorkerUntil posts to the worker's message endpoint until it answers:
+// the endpoint comes up only once the pod's clone and prepare are done, so
+// a first post can meet connection refused. It gives up at ctx's end, a
+// stopping factoryd, or wait after the first try, with the last error said.
+func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}, ns, pod, token, path string, body any, wait time.Duration) error {
+	end := time.Now().Add(wait)
+	var err error
+	for {
+		if err = r.postWorker(ctx, ns, pod, token, path, body); err == nil {
+			return nil
+		}
+		pause := min(r.startPoll, time.Until(end))
+		if pause <= 0 {
+			return err
+		}
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-workerStop:
+			timer.Stop()
+			return errWorkerStop
+		case <-timer.C:
+		}
+	}
+}
+
+// checkinFacts is the small JSON of the card's facts the runner already
+// holds; the check-in's card_facts answers it verbatim.
+func checkinFacts(t Task, s sessionSpec) string {
+	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.SpentEUR,
+		"attempt": s.attempt, "sessions": s.sessions})
+	return string(b)
+}
+
+// runnerTools is the check-in's tool set. The factoryd-side tools are
+// answered locally — the parent record's lines, the card's facts, the
+// ask's gates — and the workspace tools are posted to the worker's /tool,
+// every answer cut at the worker's own cap.
+type runnerTools struct {
+	r              *Runner
+	ns, pod, token string
+	parent         []byte
+	facts          string
+	ask            *CheckInAsk
+}
+
+func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+	switch name {
+	case "transcript_search":
+		query, _ := args["query"].(string)
+		var found []string
+		for _, line := range strings.Split(string(p.parent), "\n") {
+			if query != "" && strings.Contains(line, query) {
+				found = append(found, line)
+			}
+		}
+		out, cut := cutToolOutput(strings.Join(found, "\n"))
+		return out, cut, nil
+	case "transcript_read":
+		lines := strings.Split(strings.TrimSuffix(string(p.parent), "\n"), "\n")
+		from, to := argInt(args["from"]), argInt(args["to"])
+		if from < 1 {
+			from = 1
+		}
+		if to > len(lines) {
+			to = len(lines)
+		}
+		if from > to {
+			return "", false, fmt.Errorf("the parent record holds %d lines", len(lines))
+		}
+		out, cut := cutToolOutput(strings.Join(lines[from-1:to], "\n"))
+		return out, cut, nil
+	case "card_facts":
+		out, cut := cutToolOutput(p.facts)
+		return out, cut, nil
+	case "gates":
+		if p.ask.Gates == nil {
+			return "no gates for the round", false, nil
+		}
+		b, err := json.Marshal(p.ask.Gates)
+		if err != nil {
+			return "", false, err
+		}
+		out, cut := cutToolOutput(string(b))
+		return out, cut, nil
+	}
+	return p.post(ctx, name, args)
+}
+
+// post runs a workspace tool in the pod: the worker's /tool answers with
+// its output and cut flag, and a non-200 answer is an error whose text the
+// model sees.
+func (p *runnerTools) post(ctx context.Context, name string, args map[string]any) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, checkinToolTimeout)
+	defer cancel()
+	body, err := json.Marshal(map[string]any{"name": name, "args": args})
+	if err != nil {
+		return "", false, err
+	}
+	ip, err := p.r.kube.PodIP(ctx, p.ns, p.pod)
+	if err != nil {
+		return "", false, fmt.Errorf("pod address: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"http://"+net.JoinHostPort(ip, strconv.Itoa(p.r.messagePort()))+"/tool", bytes.NewReader(body))
+	if err != nil {
+		return "", false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.token)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := checkinMessages.Do(req)
+	if err != nil {
+		return "", false, err
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode != http.StatusOK {
+		return "", false, fmt.Errorf("tool %s: worker answered %d: %s", name, resp.StatusCode,
+			textutil.Truncate(string(bytes.TrimSpace(raw)), 300))
+	}
+	var answer struct {
+		Output string `json:"output"`
+		Cut    bool   `json:"cut"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return "", false, err
+	}
+	out, cut := cutToolOutput(answer.Output)
+	return out, cut || answer.Cut, nil
 }
 
 // cheapAttemptCap is how long the start rung's first attempt has to push

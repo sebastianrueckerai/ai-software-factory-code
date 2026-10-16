@@ -2,10 +2,14 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"maps"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -250,7 +254,7 @@ func TestCheckinRunnerDropsWithEvidence(t *testing.T) {
 		{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"}],"decision":"handover","handover":"the finding is false; build and test as usual"}`, UsageEUR: 0.5},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, []byte("the tail"), chat,
-		scriptedTools{out: map[string]string{"grep": grepOut}}, 12, 1.5, 1)
+		scriptedTools{out: map[string]string{"grep": grepOut}}, 12, 1.5, 1, 2000)
 	if out.Decision != CheckHandover {
 		t.Fatalf("decision = %q, want handover", out.Decision)
 	}
@@ -298,9 +302,9 @@ func TestCheckinRunnerDropsWithEvidence(t *testing.T) {
 
 	t.Run("the handover is cut at the cap", func(t *testing.T) {
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"}],"decision":"handover","handover":"` + strings.Repeat("k", 2500) + `"}`}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 		if n := utf8.RuneCountInString(out.Handover); n != 2000 {
-			t.Fatalf("handover holds %d runes, want the 2000 of the default cap", n)
+			t.Fatalf("handover holds %d runes, want the cap's 2000 runes", n)
 		}
 	})
 }
@@ -329,7 +333,7 @@ func TestCheckinRunnerGuardsUpgradeToHuman(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{c.finding}}
 			out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
-				&scriptedChat{answers: []CheckinResponse{{Text: c.answer}}}, scriptedTools{}, 12, 1.5, 1)
+				&scriptedChat{answers: []CheckinResponse{{Text: c.answer}}}, scriptedTools{}, 12, 1.5, 1, 2000)
 			if out.Decision != CheckHuman {
 				t.Fatalf("decision = %q, want human", out.Decision)
 			}
@@ -343,7 +347,7 @@ func TestCheckinRunnerGuardsUpgradeToHuman(t *testing.T) {
 func TestCheckinRunnerRefusedCallsEndTheConversation(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}
 	chat := &scriptedChat{} // the provider refuses every call
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1)
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 	if out.Decision != CheckHandover || out.Handover != "" || len(out.Verdicts) != 0 {
 		t.Fatalf("outcome = %+v, want a handover with no note and no verdicts: the round runs as if no check-in existed", out)
 	}
@@ -364,7 +368,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 	unreadable := func(t *testing.T, text, want string) {
 		t.Helper()
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: text}, {Text: text}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("outcome = %q %q, want a human over the unreadable answer", out.Decision, out.Reason)
 		}
@@ -392,7 +396,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 			{Text: "not json"},
 			{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"handover","handover":"drop one, fix the other"}`},
 		}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 		if out.Decision != CheckHandover || out.Verdicts["no test covers the handler"].State != CheckConfirmed {
 			t.Fatalf("outcome = %+v, want the repaired answer to stand", out)
 		}
@@ -402,7 +406,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 	})
 	t.Run("a mixed dropped_all is a handover", func(t *testing.T) {
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"dropped_all"}`}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 		if out.Decision != CheckHandover {
 			t.Fatalf("decision = %q, want handover: a set with a finding left standing verifies nothing", out.Decision)
 		}
@@ -417,7 +421,7 @@ func TestCheckinRunnerLimits(t *testing.T) {
 		{ToolName: "grep", ToolArgs: map[string]any{"pattern": "c"}},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
-		scriptedTools{out: map[string]string{"grep": "one line"}}, 2, 1.5, 1)
+		scriptedTools{out: map[string]string{"grep": "one line"}}, 2, 1.5, 1, 2000)
 	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached" {
 		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
 	}
@@ -426,5 +430,82 @@ func TestCheckinRunnerLimits(t *testing.T) {
 	}
 	if out.Record.ToolCalls != 2 {
 		t.Errorf("tool calls = %d, want 2", out.Record.ToolCalls)
+	}
+}
+
+// runnerTools answers the transcript and card questions itself and runs
+// the workspace tools through the worker's /tool endpoint: the local
+// answers, the posted ones with their bearer, a non-200 the model sees,
+// the output cut at the cap, and a run that outlives its timeout named.
+func TestRunnerTools(t *testing.T) {
+	kube := newFakeKube()
+	kube.pods["ns1/p1"] = &fakePod{ns: "ns1", name: "p1"}
+	r := &Runner{kube: kube}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, r)
+	tools := &runnerTools{r: r, ns: "ns1", pod: "p1", token: "bearer-7",
+		parent: []byte("alpha\nbeta\ngamma\n"), facts: `{"budget_eur":0.3,"spent_eur":0.05,"attempt":1,"sessions":3}`,
+		ask: &CheckInAsk{Gates: &GateResults{Pin: 7}}}
+	setTool := func(reply func(name string, args map[string]any) (int, string)) {
+		worker.mu.Lock()
+		worker.onTool = reply
+		worker.mu.Unlock()
+	}
+
+	if out, cut, err := tools.Tool(t.Context(), "transcript_search", map[string]any{"query": "beta"}); out != "beta" || cut || err != nil {
+		t.Fatalf("search = (%q, %v, %v), want the matching line", out, cut, err)
+	}
+	if out, _, _ := tools.Tool(t.Context(), "transcript_search", map[string]any{"query": "zzz"}); out != "" {
+		t.Fatalf("search without a match = %q, want the empty answer git grep gives", out)
+	}
+	if out, cut, err := tools.Tool(t.Context(), "transcript_read", map[string]any{"from": 2.0, "to": 3.0}); out != "beta\ngamma" || cut || err != nil {
+		t.Fatalf("read = (%q, %v, %v), want the span's lines", out, cut, err)
+	}
+	if _, _, err := tools.Tool(t.Context(), "transcript_read", map[string]any{"from": 9.0, "to": 12.0}); err == nil ||
+		!strings.Contains(err.Error(), "the parent record holds 3 lines") {
+		t.Fatalf("read past the end = %v, want the record's size named", err)
+	}
+	if out, _, err := tools.Tool(t.Context(), "card_facts", nil); out != tools.facts || err != nil {
+		t.Fatalf("card_facts = (%q, %v), want the card's facts", out, err)
+	}
+	if out, _, err := tools.Tool(t.Context(), "gates", nil); err != nil || !strings.Contains(out, `"Pin":7`) {
+		t.Fatalf("gates = (%q, %v), want the ask's gates serialized", out, err)
+	}
+
+	setTool(func(name string, args map[string]any) (int, string) {
+		b, _ := json.Marshal(map[string]any{"output": name + " " + args["path"].(string), "cut": false})
+		return http.StatusOK, string(b)
+	})
+	if out, cut, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "x.go"}); out != "read_file x.go" || cut || err != nil {
+		t.Fatalf("posted tool = (%q, %v, %v), want the worker's answer", out, cut, err)
+	}
+	worker.mu.Lock()
+	asks, auth := slices.Clone(worker.tools), slices.Clone(worker.auth)
+	worker.mu.Unlock()
+	if !slices.Equal(asks, []string{`read_file {"path":"x.go"}`}) || !slices.Equal(auth, []string{"Bearer bearer-7"}) {
+		t.Fatalf("worker got %q with %q, want the tool's ask under the session's bearer", asks, auth)
+	}
+
+	setTool(func(string, map[string]any) (int, string) { return http.StatusBadRequest, "unknown tool rm" })
+	if _, _, err := tools.Tool(t.Context(), "rm", nil); err == nil ||
+		!strings.Contains(err.Error(), "400") || !strings.Contains(err.Error(), "unknown tool rm") {
+		t.Fatalf("a refused tool = %v, want the status and the text the model sees", err)
+	}
+
+	setTool(func(string, map[string]any) (int, string) {
+		b, _ := json.Marshal(map[string]any{"output": strings.Repeat("k", 40<<10), "cut": false})
+		return http.StatusOK, string(b)
+	})
+	if out, cut, _ := tools.Tool(t.Context(), "run", map[string]any{"command": "cat big"}); len(out) != 32<<10 || !cut {
+		t.Fatalf("posted tool = %d bytes cut %v, want the cap's cut", len(out), cut)
+	}
+
+	old := checkinToolTimeout
+	checkinToolTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { checkinToolTimeout = old })
+	setTool(func(string, map[string]any) (int, string) { time.Sleep(time.Second); return http.StatusOK, "{}" })
+	if _, _, err := tools.Tool(t.Context(), "run", map[string]any{"command": "sleep"}); err == nil ||
+		!strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("a hanging tool = %v, want the deadline named", err)
 	}
 }

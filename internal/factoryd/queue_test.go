@@ -703,7 +703,7 @@ func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
 		}
 		reran(t, q)
 		if len(q.sessions) != 2 || !slices.Equal(q.sessions[1].Findings, []string{"reviewer sebastian requested changes: TestRace is real: fix it"}) {
-			t.Fatalf("%d sessions, second's findings %q", len(q.sessions), q.sessions)
+			t.Fatalf("%d sessions, second's findings %v", len(q.sessions), q.sessions)
 		}
 		if len(q.enters) != 6 || q.enters[5] != 3*time.Hour || !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
 			t.Fatalf("EnterQueue ran at %v, merges %v; want c2 entering anew after the change request", q.enters, q.merges)

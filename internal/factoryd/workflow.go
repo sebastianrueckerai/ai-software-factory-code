@@ -226,6 +226,14 @@ const (
 	// OutcomeNotStarted: the session's pod never left Pending within its
 	// start's wait (Summary says on what): no session ran.
 	OutcomeNotStarted SessionOutcome = "not_started"
+	// OutcomeCheckinHuman: the check-in at the session's start ended on
+	// only a human can act (CheckIn carries the reason and its kind); no
+	// conversation ran, so the session spent nothing and is no attempt.
+	OutcomeCheckinHuman SessionOutcome = "checkin_human"
+	// OutcomeCheckinDropped: the check-in dropped every finding against
+	// evidence (CheckIn carries the verdicts); the round verifies again
+	// instead of buying a session.
+	OutcomeCheckinDropped SessionOutcome = "checkin_dropped"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -274,6 +282,9 @@ type SessionInput struct {
 	// zero falls back to the pinned policy's limits.
 	AgentTime time.Duration
 	CheckIn   time.Duration
+	// CheckInAsk is the check-in the workflow asks of the session's
+	// start; nil: none runs.
+	CheckInAsk *CheckInAsk
 }
 
 type SessionResult struct {
@@ -293,6 +304,9 @@ type SessionResult struct {
 	// offered with its own escalation.
 	Reason  string
 	Choices []string
+	// CheckIn is the check-in that ran at the session's start; nil when
+	// none ran. The workflow records its steps from it.
+	CheckIn *CheckInOutcome `json:",omitempty"`
 	// Trip is the TripKind the supervisor stopped the session on, loop for
 	// the provider's refusal of repeated calls too, "" for none.
 	Trip string

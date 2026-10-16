@@ -728,6 +728,7 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 		t.Fatal(err)
 	}
 	runner.stopWait = 500 * time.Millisecond
+	runner.endpointWait = 50 * time.Millisecond
 	return runner, hub, store
 }
 
@@ -2192,7 +2193,9 @@ func TestRunSessionWorkerStopDetachesAndKeepsThePod(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	stop := make(chan struct{})
-	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	// the stop lands once the session's pre-conversation work (its brief
+	// delivery) is through and the loop has taken the scripted lines
+	kube.onCreatePod = func() { go func() { time.Sleep(200 * time.Millisecond); close(stop) }() }
 	var last sessionProgress
 	var mu sync.Mutex
 
@@ -3071,8 +3074,8 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: this session continues on the stronger model, coding-frontier: the cheap rung's 50ms passed without a push.") {
-		t.Fatalf("worker got %q, want the climb's message", texts)
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, coding-frontier: the cheap rung's 50ms passed without a push.") {
+		t.Fatalf("worker got %q, want the brief and the climb's message", texts)
 	}
 	if store.tasks["t2"].ModelAlias != "coding-frontier" {
 		t.Fatalf("model_alias = %q, want the stronger alias for the gateway", store.tasks["t2"].ModelAlias)
@@ -3163,8 +3166,8 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left.") {
-		t.Fatalf("worker got %q, want one budget warning", texts)
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left.") {
+		t.Fatalf("worker got %q, want the brief and one budget warning", texts)
 	}
 }
 
@@ -3284,5 +3287,245 @@ func TestRunSessionOnlyABudgetRefusalAfterAPushIsPushed(t *testing.T) {
 	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(false, "free headroom 0 EUR"))
 	if err != nil || res.Outcome != OutcomeNoPush {
 		t.Fatalf("refusal without a push: (%+v, %v), want no_push", res, err)
+	}
+}
+
+// checkinRig is a session whose check-in runs against one scripted final
+// answer, over a worker endpoint that takes every push.
+func checkinRig(t *testing.T, answer string) (*Runner, *fakeKube, *fakeWorkerEndpoint, *scriptedChat, *fakeObjectStore) {
+	t.Helper()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: answer}}}
+	runner.checkin = chat
+	return runner, kube, worker, chat, objects
+}
+
+// A check-in that asks a human stops the pod before the coding
+// conversation starts: nothing of the session is spent, the pushed result
+// the pod's log was scripted to hold is never read, and the outcome
+// carries the ask's reason and the record of the conversation that ran
+// under the class's review model.
+func TestRunSessionCheckinHumanStopsBeforeTheConversation(t *testing.T) {
+	finding := "the objective contradicts the review"
+	runner, kube, worker, chat, objects := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomeCheckinHuman || res.Commit != "" || res.Reason != "the objective contradicts the review" {
+		t.Fatalf("result = (%+v, %v), want the human ask before any spend", res, err)
+	}
+	if res.CheckIn == nil || res.CheckIn.Decision != CheckHuman || res.CheckIn.ReasonKind != CheckGoalConflict ||
+		res.CheckIn.Verdicts[finding].State != CheckConfirmed {
+		t.Fatalf("check-in = %+v, want the human ask under goal_conflict with the verdict", res.CheckIn)
+	}
+	if rec := res.CheckIn.Record; rec == nil || rec.Model != "review-frontier" || rec.ParentSession != "" ||
+		rec.Decision != CheckHuman || rec.ReasonKind != CheckGoalConflict {
+		t.Fatalf("record = %+v, want the coder class's review model and the ask carried to Task 6", res.CheckIn.Record)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("chat calls = %d, want the one deciding call", chat.calls)
+	}
+	if len(kube.deletedPods) != 1 || !strings.HasPrefix(kube.deletedPods[0], "factory-agents-t2/worker-s-") {
+		t.Fatalf("deleted pods = %q, want the session's pod stopped before the conversation", kube.deletedPods)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if len(worker.texts) != 0 {
+		t.Fatalf("worker got %q, want nothing: no brief and no conversation for a stopped session", worker.texts)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	if !strings.Contains(string(tl), `"step":"session_start"`) || !strings.Contains(string(tl), `"outcome":"checkin_human"`) {
+		t.Fatalf("timeline = %s, want the pod's start and the check-in's end", tl)
+	}
+}
+
+// A check-in that hands a note over pushes it as the brief and the coding
+// conversation runs: the session's own result stands with the check-in
+// riding it.
+func TestRunSessionCheckinHandoverRunsTheConversation(t *testing.T) {
+	finding := "no test covers the handler"
+	runner, _, worker, _, _ := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"handover","handover":"fix the handler test first"}`)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want the conversation's own push", res, err)
+	}
+	if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Handover != "fix the handler test first" {
+		t.Fatalf("check-in = %+v, want the handover riding the result", res.CheckIn)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /brief fix the handler test first"}) {
+		t.Fatalf("worker got %q, want the note pushed as the brief before the conversation", worker.texts)
+	}
+}
+
+// A check-in that drops every finding against evidence stops the session
+// the way a human ask does. A mixed set answered dropped_all is the
+// guards' handover: the conversation runs.
+func TestRunSessionCheckinDropped(t *testing.T) {
+	good := "internal/factoryd/store.go:672 at main: func (s *PGStore) TasksByPR"
+	dropped := `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + good + `"}],"decision":"dropped_all"}`
+
+	t.Run("every finding dropped", func(t *testing.T) {
+		runner, kube, worker, _, _ := checkinRig(t, dropped)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.Outcome != OutcomeCheckinDropped || res.Commit != "" || res.CheckIn == nil ||
+			res.CheckIn.Verdicts["TasksByPR is undefined"].State != CheckDropped ||
+			res.CheckIn.Verdicts["TasksByPR is undefined"].Evidence != good {
+			t.Fatalf("result = (%+v, %v), want the dropped outcome with the verdict and its evidence", res, err)
+		}
+		if len(kube.deletedPods) != 1 {
+			t.Fatalf("deleted pods = %q, want the pod stopped", kube.deletedPods)
+		}
+		worker.mu.Lock()
+		defer worker.mu.Unlock()
+		if len(worker.texts) != 0 {
+			t.Fatalf("worker got %q, want no conversation", worker.texts)
+		}
+	})
+
+	t.Run("a mixed dropped_all is the guards' handover", func(t *testing.T) {
+		runner, _, worker, _, _ := checkinRig(t,
+			`{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"`+good+`"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"dropped_all"}`)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined"}, {Text: "no test covers the handler"}}}}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+			t.Fatalf("result = (%+v, %v), want the conversation to run", res, err)
+		}
+		if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+			t.Fatalf("check-in = %+v, want the guards' handover for a set with a finding left standing", res.CheckIn)
+		}
+		worker.mu.Lock()
+		defer worker.mu.Unlock()
+		if len(worker.texts) != 1 || worker.texts[0] != "POST /brief "+res.CheckIn.Handover {
+			t.Fatalf("worker got %q, want the handover pushed as the brief", worker.texts)
+		}
+	})
+}
+
+// The parent session's record is delivered whole to the pod for its copy,
+// while the check-in's statement sees only the tail: the policy's cut,
+// advanced past the partial line the cut lands in.
+func TestRunSessionCheckinParentRecord(t *testing.T) {
+	record := "HEAD-OF-THE-FIRST-LINE " + strings.Repeat("a", 30_000) + "\nTHE-SECOND-LINE\nTHE-THIRD-LINE\n"
+	finding := "the objective contradicts the review"
+	runner, _, worker, chat, _ := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+	if err := runner.objects.Put(t.Context(), "sessions/t2/s-parent-1.jsonl", []byte(record)); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", ParentSessionID: "s-parent-1",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil)
+	if err != nil || res.Outcome != OutcomeCheckinHuman {
+		t.Fatalf("result = (%+v, %v), want the human ask", res, err)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /records s-parent-1" + record}) {
+		t.Fatalf("worker got %d texts, want the whole record delivered for the pod's copy", len(worker.texts))
+	}
+	statement := chat.got.Input
+	for _, want := range []string{"/workspace/.factory/sessions/s-parent-1.jsonl", "<<<SESSION-TAIL>>>", "THE-SECOND-LINE", "THE-THIRD-LINE"} {
+		if !strings.Contains(statement, want) {
+			t.Errorf("the statement lacks %s", want)
+		}
+	}
+	if strings.Contains(statement, "HEAD-OF-THE-FIRST-LINE") {
+		t.Error("the statement holds the head of a record the tail cut past")
+	}
+	if rec := res.CheckIn.Record; rec.ParentSession != "s-parent-1" || rec.TailBytes != len("THE-SECOND-LINE\nTHE-THIRD-LINE\n") {
+		t.Fatalf("record = %+v, want the parent named and the tail's own size", res.CheckIn.Record)
+	}
+}
+
+// The limits are read before anything is bought: with the call cap or the
+// budget share already spent, the session stops on the human ask under
+// spend and no conversation runs.
+func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
+	for _, c := range []struct {
+		name  string
+		calls map[string]int
+		spent map[string]float64
+		want  string
+	}{
+		{name: "calls at the cap", calls: map[string]int{"t2": policy.DefaultCheckinCalls}, want: "check-in call cap reached"},
+		// the coder card's 0.3 EUR budget at the default 10 percent share
+		{name: "the budget share spent", spent: map[string]float64{"t2": 0.03}, want: "the check-in's share of the budget is spent"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			runner, kube, worker, chat, _ := checkinRig(t, "")
+			store := runner.store.(*fakeStore)
+			store.checkinCalls, store.checkinSpent = c.calls, c.spent
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+				CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != c.want {
+				t.Fatalf("result = (%+v, %v), want the human ask under spend: %s", res, err, c.want)
+			}
+			if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
+				t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
+			}
+			worker.mu.Lock()
+			defer worker.mu.Unlock()
+			if len(worker.texts) != 0 {
+				t.Fatalf("worker got %q, want nothing pushed", worker.texts)
+			}
+		})
+	}
+}
+
+// A session stopped by its check-in is no session: the timeline holds the
+// pod's start but no session_started, and SessionAnswered says no model
+// answered for it.
+func TestRunSessionCheckinHumanIsNoSession(t *testing.T) {
+	finding := "the objective contradicts the review"
+	runner, _, _, _, objects := checkinRig(t,
+		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil)
+	if err != nil || res.Outcome != OutcomeCheckinHuman {
+		t.Fatalf("result = (%+v, %v), want the human ask", res, err)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	if !strings.Contains(string(tl), `"step":"session_start"`) || strings.Contains(string(tl), `"event":"session_started"`) {
+		t.Fatalf("timeline = %s, want the pod's start and no session_started", tl)
+	}
+	if ok, err := runner.SessionAnswered(t.Context(), SessionAnswerInput{TaskID: "t2", SessionID: res.SessionID, Model: "m",
+		Attempt: 1, Since: time.Now().Add(-time.Minute)}); err != nil || ok {
+		t.Fatalf("SessionAnswered = (%v, %v), want false: no model answered for the session", ok, err)
+	}
+}
+
+// Every session pushes its brief, empty when no check-in decided one: the
+// worker holds the conversation's start for it, and a push that never
+// lands would stall the session for the whole wait.
+func TestRunSessionPushesAnEmptyBriefWithoutACheckin(t *testing.T) {
+	runner, _, worker, _, _ := checkinRig(t, "")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if !slices.Equal(worker.texts, []string{"POST /brief "}) {
+		t.Fatalf("worker got %q, want the empty brief before the conversation", worker.texts)
 	}
 }

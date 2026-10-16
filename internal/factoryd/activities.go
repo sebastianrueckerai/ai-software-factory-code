@@ -630,7 +630,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt}
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
@@ -852,12 +852,24 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
-	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush}
+	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
 		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(thenAnswer), true
 		return res
+	}
+	// the check-in at the session's start stopped it: no conversation ran,
+	// so no adapter verdict or trip can apply
+	if out.checkIn != nil {
+		switch out.checkIn.Decision {
+		case CheckHuman:
+			res.Outcome, res.Summary, res.Reason = OutcomeCheckinHuman, out.checkIn.Reason, out.checkIn.Reason
+			return res
+		case CheckDroppedAll:
+			res.Outcome, res.Summary = OutcomeCheckinDropped, "the check-in dropped every finding"
+			return res
+		}
 	}
 	// a session that finished and pushed goes to verification, even when a
 	// stop raced its finish
