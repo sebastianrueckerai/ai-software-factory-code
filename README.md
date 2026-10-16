@@ -1683,6 +1683,23 @@ edge gateway listeners and Certificates for the infra commit (ruling 155). The c
 project read-only with its file's settings, the envelope with its use and
 the standing monthly line, and a link to the file.
 
+Its inverse is `factoryd remove-project <name>` (roadmap 272), run as a one-off
+Job with its own ServiceAccount (`k8s/remove-project.yaml`, not in
+kustomization.yaml): `--dry-run` lists every step's target and acts on nothing.
+It refuses while `projects/<name>.yaml` is still in the configuration in force
+(the hourly reconcile would register the project again) and while a card of the
+project is open. Each step is idempotent, so a failed step stops the run and a
+second run finishes the rest. Runbook, `--dry-run` first:
+
+```
+kubectl apply -f k8s/remove-project.yaml
+kubectl -n factory delete job/factoryd-remove-project 2>/dev/null || true
+kubectl -n factory create job factoryd-remove-project \
+  --image="$(kgp -n factory -l app=factoryd -o jsonpath='{.items[0].spec.containers[0].image}')" \
+  -- /factoryd remove-project <name> --dry-run   # then without --dry-run
+kubectl -n factory logs job/factoryd-remove-project -f
+```
+
 The console's New project (`/projects/new`, filed by approvers only) is the
 same path without a shell (stage11-design.md section 5). Its form (name,
 process, template, merge rule) writes the file with one staging namespace
