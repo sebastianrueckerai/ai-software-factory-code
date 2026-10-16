@@ -2133,24 +2133,91 @@ func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 	}
 }
 
-// Once only: with the retry already taken and the whole of it used
-// (20m cap + 10m retry - 30m used = 0), the card fails as before.
-func TestPlanLoopSecondTimeLimitFails(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
-		t.Fatalf("final %q, finals %v, plans %q, want the old fail with no session", final, h.finals, h.plans)
+// Once only: a planner out of time with no automatic session to come asks
+// a human, its retry used (20m cap + 10m retry - 30m used = 0 left) or its
+// cap too short for one (half of 8m, 4m, is under the 5m a session needs).
+// The answer buys what an answer leaves a session, 5m (a quarter of 20m;
+// for 8m the 5m minimum), and starts a session with them (5m + 2m grace)
+// and the answer. A run from before the gate fails at once.
+func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
+	retryUsed := TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}
+	shortCap := TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}
+	for _, tc := range []struct {
+		name     string
+		cap      time.Duration
+		usage    TaskUsage
+		version  workflow.Version
+		question string // "" for the old fail
+	}{
+		{"retry used", 0, retryUsed, versionPlannerRetry,
+			"the planner used its agent time and its automatic second session without filing a plan: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"},
+		{"cap too short", 8 * time.Minute, shortCap, versionPlannerRetry,
+			"the planner used its agent time without filing a plan, and its 8-minute cap is too short for an automatic second session: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"},
+		{"retry used, before planner-retry", 0, retryUsed, workflow.DefaultVersion, ""},
+		{"cap too short, before planner-retry", 8 * time.Minute, shortCap, workflow.DefaultVersion, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			if tc.cap != 0 {
+				h.taskConfig.AgentTime = tc.cap
+			}
+			h.state = RunState{Status: "running", Usage: tc.usage}
+			h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(tc.version)
+			var budgets []time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityRunPlan {
+					budgets = append(budgets, info.StartToCloseTimeout)
+				}
+			})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
+			h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+			final := h.run(t)
+			if tc.question == "" {
+				if final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 || len(h.escalated) != 0 || len(h.usage) != 0 {
+					t.Fatalf("final %q, finals %v, plans %q, escalated %q, usage %+v, want the old fail", final, h.finals, h.plans, h.escalated, h.usage)
+				}
+				return
+			}
+			if final != "done" || !slices.Equal(h.escalated, []string{tc.question}) || escalationSource(tc.question) != "cap" {
+				t.Fatalf("final %q, finals %v, escalated %q, want done after the question", final, h.finals, h.escalated)
+			}
+			if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||
+				!slices.Equal(budgets, []time.Duration{7 * time.Minute}) {
+				t.Fatalf("plans %q, budgets %v, want one session of 7m with the answer", h.plans, budgets)
+			}
+			want := tc.usage
+			want.ExtraTime = 5 * time.Minute
+			if len(h.usage) == 0 || h.usage[0] != want {
+				t.Fatalf("usage %+v, want the answer's grant %+v first", h.usage, want)
+			}
+		})
 	}
 }
 
-// An 8m cap: half of it, 4m, is under the 5m a session needs, so the card
-// fails at the limit as before and records no retry.
-func TestPlanLoopShortCapFailsWithoutARetry(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
-	h.taskConfig.AgentTime = 8 * time.Minute
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}}
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 || len(h.usage) != 0 {
-		t.Fatalf("final %q, finals %v, plans %q, usage %+v, want the old fail with no session and no grant", final, h.finals, h.plans, h.usage)
+// An answer to the planner's own question that finds its time used, the
+// retry with it, buys agent time and asks nothing more: 25m used of the
+// 20m cap + 10m retry leaves 5m, a session (5m + 2m grace) that asks and
+// uses them; the answer buys 5m for the next (7m again).
+func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Escalate: "which login do accounts use?"}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 25 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "magic links", Comment: 801})
+	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{"which login do accounts use?"}) {
+		t.Fatalf("final %q, finals %v, escalated %q, want done after the planner's own question alone", final, h.finals, h.escalated)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: magic links"}) ||
+		!slices.Equal(budgets, []time.Duration{7 * time.Minute, 7 * time.Minute}) {
+		t.Fatalf("plans %q, budgets %v", h.plans, budgets)
+	}
+	if want := (TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
+		t.Fatalf("usage %+v, want the answer's grant %+v second", h.usage, want)
 	}
 }
 

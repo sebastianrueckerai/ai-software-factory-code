@@ -1072,19 +1072,28 @@ func (t *taskRun) planLoop() (string, error) {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
-			// a writer's comment at the cap buys a session, the day's turn none
+			// an answer at the session cap buys a session, one to a planner
+			// out of time agent time (versionPlannerRetry), the day's turn
+			// nothing
 			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts && !day.over() {
 				t.grant(&u)
+			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !day.over() {
+				t.grantTime(&u)
 			}
 			day = nil
 			continue
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
-		least, half := min(minSession, t.cfg.WallClockCap), t.cfg.WallClockCap/2
-		if t.plannerRetry >= versionPlannerRetry && u.RetryTime == 0 && remaining < least && half >= least {
-			u.RetryTime = half - remaining
-			t.recordUsage(u)
-			remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+		if t.plannerRetry >= versionPlannerRetry {
+			switch short, retry := t.plannerTime(u); {
+			case short && retry:
+				u.RetryTime = t.cfg.WallClockCap/2 - remaining
+				t.recordUsage(u)
+				remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+			case short:
+				ask = t.plannerTimeCard(u)
+				continue
+			}
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -1188,6 +1197,30 @@ func (t *taskRun) planLoop() (string, error) {
 		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for an approver", ref.Revision)
 	}
+}
+
+// plannerTime tells a plan card's agent time (versionPlannerRetry): short
+// when less is left than a session needs, retry when its one automatic
+// top-up to half the cap is still to come and half the cap is enough for a
+// session.
+func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
+	least := min(minSession, t.cfg.WallClockCap)
+	return t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least, u.RetryTime == 0 && t.cfg.WallClockCap/2 >= least
+}
+
+// plannerOutOfTime opens the question of a plan card whose planner is out
+// of time with no automatic session to come.
+const plannerOutOfTime = "the planner used its agent time"
+
+// plannerTimeCard is that question: the automatic session used, or the cap
+// too short for one, and what an answer buys.
+func (t *taskRun) plannerTimeCard(u TaskUsage) string {
+	what := " and its automatic second session without filing a plan"
+	if u.RetryTime == 0 {
+		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
+	}
+	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
+		plannerOutOfTime, what, t.answerTime().Minutes())
 }
 
 // planRejected takes a Reject sent while a session ran: the task ends

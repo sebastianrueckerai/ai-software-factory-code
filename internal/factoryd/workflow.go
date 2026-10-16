@@ -969,9 +969,10 @@ const (
 	// less than min(minSession, cap) of its agent time left gets one fresh
 	// planner session with its findings, topped up to half the cap by
 	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
-	// whose half is under that minimum gets none. Once RetryTime is set the
-	// card fails at the limit. A run from before the change fails there at
-	// once.
+	// whose half is under that minimum gets none. Out of time with no such
+	// session to come, the planner asks a human (plannerTimeCard), and an
+	// answer to any wait then buys agent time (grantTime). A run from
+	// before the change fails at the limit at once.
 	versionPlannerRetry workflow.Version = 1
 )
 
@@ -1161,7 +1162,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		findings, own, reason = v.findings, nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
 			capAnswer()
 			return true
 		}
@@ -1472,12 +1473,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		if t.keepWork >= versionKeepWork && remaining < least {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
-			remaining = t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+			remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -1911,23 +1912,27 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
-// grantTime is an answer's agent time: when less than the slice of agent
-// time is left, the difference, so the attempt is not born at the cap. The
-// slice is a quarter of the resolved agent time, never under the 5 minutes
-// a session needs to start (versionAnswerSlice); a run from before the
-// change id keeps WorkflowConfig.AnswerSlice instead.
+// grantTime is an answer's agent time: when less than answerTime of agent
+// time is left, the difference, so the attempt is not born at the cap.
 func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.v5 < versionPersistUsage {
 		return
 	}
-	slice := min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
-	if t.answerSlice >= versionAnswerSlice {
-		slice = max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
-	}
-	if left := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime; left < slice {
+	if left, slice := t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime, t.answerTime(); left < slice {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)
+}
+
+// answerTime is the agent time an answer leaves the next session: a
+// quarter of the resolved agent time, never under the 5 minutes a session
+// needs to start (versionAnswerSlice); a run from before the change id
+// keeps WorkflowConfig.AnswerSlice instead.
+func (t *taskRun) answerTime() time.Duration {
+	if t.answerSlice >= versionAnswerSlice {
+		return max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
+	}
+	return min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
 }
 
 // grantPoster is grant for an answer to an information request, up to
