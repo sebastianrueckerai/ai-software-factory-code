@@ -62,16 +62,24 @@ func TestWaitSaysWhenThePidIsNoJob(t *testing.T) {
 	}
 }
 
+// fixtureStat replaces the stat atomically and reports errors with t.Error, so
+// it is safe from a goroutine and a reader never sees a half-written file.
 func fixtureStat(t *testing.T, root, state, start string) {
 	t.Helper()
 	dir := filepath.Join(root, "7")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+		t.Error(err)
+		return
 	}
 	// fields 3..22: state, then 18 numbers, then starttime (field 22)
 	stat := "7 (a b) " + state + strings.Repeat(" 0", 18) + " " + start + " 0 0\n"
-	if err := os.WriteFile(filepath.Join(dir, "stat"), []byte(stat), 0o644); err != nil {
-		t.Fatal(err)
+	tmp := filepath.Join(root, "stat.tmp")
+	if err := os.WriteFile(tmp, []byte(stat), 0o644); err != nil {
+		t.Error(err)
+		return
+	}
+	if err := os.Rename(tmp, filepath.Join(dir, "stat")); err != nil {
+		t.Error(err)
 	}
 }
 
