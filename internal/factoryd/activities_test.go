@@ -701,8 +701,9 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 // HeadChecks reads the head's combined status once, without the checks
 // wait's polling: green passes, a failure answers its failing check as
 // WaitChecks reports it, and a head whose checks have not settled — some
-// still running, or none reported yet — answers the pending (or absent)
-// checks as the findings, which the approval sends back to the agent.
+// still running, or none reported yet — answers pending with those
+// checks as the findings, which the approval stage waits out
+// (versionApprovalPending).
 func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	fj := &prForgejo{
 		statusesBySHA: map[string][]string{
@@ -732,13 +733,13 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 		res.Findings[0] != `check "pr / vet-and-format": failure — go vet failed (https://git.example.org/sf/repo/actions/runs/7/jobs/0)` {
 		t.Fatalf("m1 = %+v, want the failing check as the checks wait reports it", res)
 	}
-	if res := head(t, "p1"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+	if res := head(t, "p1"); res.State != ChecksPending || len(res.Findings) != 1 ||
 		res.Findings[0] != `check "pr / test" is still pending on p1 (running)` {
-		t.Fatalf("p1 = %+v, want the pending check named", res)
+		t.Fatalf("p1 = %+v, want pending with the pending check named", res)
 	}
-	if res := head(t, "n0"); res.State != ChecksFailure || len(res.Findings) != 1 ||
+	if res := head(t, "n0"); res.State != ChecksPending || len(res.Findings) != 1 ||
 		res.Findings[0] != "no check has reported on n0 yet" {
-		t.Fatalf("n0 = %+v, want the absent checks named", res)
+		t.Fatalf("n0 = %+v, want pending with the absent checks named", res)
 	}
 	if fj.polls != 1 || fj.pollsBySHA["c1"]+fj.pollsBySHA["m1"]+fj.pollsBySHA["p1"] != 3 {
 		t.Fatalf("polls = %d %+v: each head read once, no polling", fj.polls, fj.pollsBySHA)
@@ -1031,21 +1032,30 @@ func testWaitChecksRecordsTheHeadsJobs(t *testing.T, factory bool) {
 	}
 }
 
+// The wait the approval stage runs on a pending head (versionApprovalPending)
+// keeps the real activity's bound: a head whose checks never settle — some
+// still running, or none reported yet, the read a request opened before its
+// run started answers — ends in the checks timeout, not a red read.
 func TestWaitChecksTimesOutWhilePending(t *testing.T) {
-	fj := &prForgejo{statuses: []string{statusBody("pending", [4]string{"pending", "pr / image-build", "", ""})}}
-	r, _, objects := newActivityRunner(t, prTask, fj)
-	r.cfg.ChecksTimeout = 50 * time.Millisecond
+	for name, body := range map[string]string{
+		"a check is still running": statusBody("pending", [4]string{"pending", "pr / image-build", "", ""}),
+		"no check has reported":    statusBody(""),
+	} {
+		fj := &prForgejo{statuses: []string{body}}
+		r, _, objects := newActivityRunner(t, prTask, fj)
+		r.cfg.ChecksTimeout = 50 * time.Millisecond
 
-	var res ChecksResult
-	from := time.Now()
-	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
-	if err != nil || val.Get(&res) != nil || res.State != ChecksTimeout {
-		t.Fatalf("result = (%+v, %v), want timeout", res, err)
+		var res ChecksResult
+		from := time.Now()
+		val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+		if err != nil || val.Get(&res) != nil || res.State != ChecksTimeout {
+			t.Fatalf("%s: result = (%+v, %v), want timeout", name, res, err)
+		}
+		if fj.polls < 2 {
+			t.Fatalf("%s: polls = %d, want it to keep polling until the timeout", name, fj.polls)
+		}
+		startedWithin(t, objects, "checks", from)
 	}
-	if fj.polls < 2 {
-		t.Fatalf("polls = %d, want it to keep polling until the timeout", fj.polls)
-	}
-	startedWithin(t, objects, "checks", from)
 }
 
 func TestSetStateMovesTaskAndMirrorsLabel(t *testing.T) {

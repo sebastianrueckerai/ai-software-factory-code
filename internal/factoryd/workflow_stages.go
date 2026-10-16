@@ -879,12 +879,16 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // any request it reads the staged head's combined status once — the read
 // the approver does by hand, the checks wait's without its wait, so a
 // moved head (the queue's sync re-ran only the checks) is read as it now
-// is. Success leaves the request to approve as before; a red or pending
-// head goes back through the checks stage's on_findings with the failing
-// or pending checks named, so no approval request exists while the head
-// is not green; red says the findings went onto the card instead (a cap,
-// no agent). After the cheap turn it reads the checked head, whose checks
-// hold for the synced one (versionCheckedHead).
+// is. Success leaves the request to approve as before; a red head goes
+// back through the checks stage's on_findings with the failing checks
+// named, so no approval request exists while the head is not green; red
+// says the findings went onto the card instead (a cap, no agent). A
+// pending head (versionApprovalPending) is not red: the wait the checks
+// stage runs answers it, within the task's checks timeout, so its
+// conclusion alone proceeds — green to the request, red back as above,
+// none the checks stage's timeout. After the cheap turn it reads the
+// checked head, whose checks hold for the synced one
+// (versionCheckedHead).
 func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red bool) {
 	if t.approvalGreen < versionApprovalGreen {
 		return verdict{}, false, false
@@ -899,9 +903,28 @@ func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red
 	if final, why, ok := t.decided(); ok {
 		return verdict{final: final, reason: why}, true, false
 	}
-	if checks.State == ChecksSuccess {
-		return verdict{}, false, false
+	if checks.State == ChecksPending && t.approvalPending >= versionApprovalPending {
+		v, decided, err := t.gateActivity(true, t.checksOptions(), &checks, ActivityWaitChecks, t.taskID, commit)
+		if decided {
+			return v, true, false
+		}
+		if err != nil {
+			return verdict{final: "failed", reason: "wait for checks: " + errMessage(err)}, true, false
+		}
+		if final, why, ok := t.decided(); ok {
+			return verdict{final: final, reason: why}, true, false
+		}
 	}
+	switch checks.State {
+	case ChecksSuccess:
+		return verdict{}, false, false
+	case ChecksTimeout:
+		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}, true, false
+	}
+	// ChecksFailure lands here, and ChecksPending with it on a run from
+	// before versionApprovalPending, whose guard sent the pending checks
+	// back as findings too; a current run's pending the wait above has
+	// answered already, so this is a concluded red.
 	findings := checks.Findings
 	if len(findings) == 0 {
 		findings = []string{"the checks are not green on " + commit}
@@ -930,13 +953,13 @@ func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red
 // approve is the approval stage: the merge rule auto when no stage left
 // findings for a human, else the card with why, and the wait for a
 // human's approval; the merge stage follows in either. The head must be
-// green first: headGreen sends a red or pending one back to the agent
-// before any request (versionApprovalGreen). covered: the review findings
-// the card shows, which an approval over it adjudicates
-// (versionAdjudicated). A factory pull request's red checks run again at
-// a human's word (versionFactoryPRActions): an empty commit on its head
-// (RerunChecks), the checks stage waits for them, and the new head comes
-// back here.
+// green first: headGreen sends a red one back to the agent and waits a
+// pending one out before any request (versionApprovalGreen). covered:
+// the review findings the card shows, which an approval over it
+// adjudicates (versionAdjudicated). A factory pull request's red checks
+// run again at a human's word (versionFactoryPRActions): an empty commit
+// on its head (RerunChecks), the checks stage waits for them, and the new
+// head comes back here.
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	v, stop, red := t.headGreen(commit, &card)
 	if stop {

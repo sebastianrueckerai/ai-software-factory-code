@@ -489,9 +489,9 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 // The queue's sync only re-runs the checks on the head it made; the
 // approval stage reads that new head itself before its request
 // (versionApprovalGreen), so the request a human sees names a head whose
-// combined status was green at its creation. A pending read sends the
-// card back to the agent with the queue prefix, and the request exists
-// only from the next head's green read.
+// combined status was green at its creation. A pending read is not red:
+// the approval waits the conclusion out (versionApprovalPending) and
+// asks on the green one, without a pass through the agent.
 func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 	q := newQueueHarness(t, policy.QueueProject, green)
 	q.sync = func(from string) SyncResult {
@@ -502,31 +502,28 @@ func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 	}
 	q.headAnswers = func(sha string) ChecksResult {
 		if sha == "m1" {
-			return ChecksResult{State: ChecksFailure, Findings: []string{`check "test" is still pending on m1 (running)`}}
+			return ChecksResult{State: ChecksPending, Findings: []string{`check "test" is still pending on m1 (running)`}}
 		}
 		return ChecksResult{State: ChecksSuccess}
 	}
-	q.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	q.onSessions(pushed("s1", "c1"))
 	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	if final := q.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if !slices.Equal(q.headChecks, []string{"m1", "c2"}) {
-		t.Fatalf("the approval read %v, want the synced head m1 and then c2", q.headChecks)
+	if !slices.Equal(q.headChecks, []string{"m1"}) {
+		t.Fatalf("the approval read %v, want the synced head m1", q.headChecks)
 	}
-	if want := []string{"after main was merged in: " + `check "test" is still pending on m1 (running)`}; len(q.sessions) != 2 || !slices.Equal(q.sessions[1].Findings, want) {
-		t.Fatalf("sessions %d, second's findings %q, want %q", len(q.sessions), q.sessions[1].Findings, want)
+	if !slices.Equal(q.checks, []string{"c1", "m1", "m1"}) {
+		t.Fatalf("checks ran on %v, want c1, the sync's m1 and the approval's wait of it", q.checks)
 	}
-	if len(q.approvals) != 1 || q.approvals[0].Commit != "c2" || !q.approvals[0].Gates.ChecksPassed {
-		t.Fatalf("approvals = %+v, want one request, for c2 on green checks", q.approvals)
+	if len(q.approvals) != 1 || q.approvals[0].Commit != "m1" || q.approvals[0].RedChecks || !q.approvals[0].Gates.ChecksPassed {
+		t.Fatalf("approvals = %+v, want one request on m1, green, no red checks", q.approvals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "sync c1", "leave", "policy", "repro c2", "review c2", "sync c2", "approval c2", "merge", "leave"}; !slices.Equal(q.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 		t.Fatalf("steps = %v, want %v", q.steps, want)
 	}
-	if len(q.leaves) != 2 || q.leaves[0] != "checks findings went back to the agent" {
-		t.Fatalf("leaves = %q", q.leaves)
-	}
-	if !slices.Equal(q.merges, []string{"9 c2 sebastian"}) {
+	if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) {
 		t.Fatalf("merges = %v", q.merges)
 	}
 }

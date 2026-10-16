@@ -1712,8 +1712,8 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 // one the approval stage asks before its request (versionApprovalGreen). A
 // red head answers its failing checks as WaitChecks reports them; one
 // whose checks are still running, or that no check has reported on yet,
-// answers the pending checks as the findings, and the approval sends them
-// back to the agent, which waits in the checks stage.
+// answers pending with those checks as the findings, which the approval
+// stage waits out within its bound (versionApprovalPending).
 func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1729,7 +1729,7 @@ func (r *Runner) HeadChecks(ctx context.Context, taskID, sha string) (ChecksResu
 		r.annotateMainFailures(ctx, repo, &res)
 	case ChecksSuccess:
 	default:
-		res = ChecksResult{State: ChecksFailure, Findings: pendingCheckFindings(sha, cs)}
+		res = ChecksResult{State: ChecksPending, Findings: pendingCheckFindings(sha, cs)}
 	}
 	return res, nil
 }
