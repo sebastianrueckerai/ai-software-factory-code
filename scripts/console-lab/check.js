@@ -420,6 +420,83 @@ async function text(page) {
         await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-slow?on=0");
         const after = await p.page.evaluate(async (u) => (await (await fetch(u)).json()).filter((e) => e.kind === "doc_written").length, base + "/projects/ai-software-factory-code/events");
         if (after !== count + 2) fails.push("editor: three Ctrl+S in a slow save left " + (after - count) + " commits, want 2");
+        // the outside change over the stream (items 5+6): the read view's
+        // note names who and when with a reload that reads master's new
+        // text; the editor's note says the save will merge and offers
+        // theirs — over other lines it lands naming whose change it
+        // merged, over the same lines it refuses with the reason alone in
+        // the refusal colour, theirs shown beside the editor, and
+        // load-theirs asking before master's text loads
+        const outside = (q) => p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/docs-change" + (q || ""));
+        const noteReads = async (want, why) => {
+          const t = ((await note.innerText().catch(() => "")).replace(/\s+/g, " ")).trim();
+          if (!new RegExp(want).test(t)) fails.push("outside: " + why + ' ("' + t + '")');
+          return !!new RegExp(want).test(t);
+        };
+        await outside("?line=3&text=" + encodeURIComponent("The factory builds itself in rounds; the read check's outside change landed."));
+        await p.page.waitForFunction(() => { const n = document.getElementById("doc-note"); return n && !n.hidden && /changed by Sebastian \d\d:\d\d/.test(n.innerText); }, null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the read view notes no change"));
+        if (await noteReads("^changed by Sebastian \\d\\d:\\d\\d · reload$", "the read note carries no reload"))
+          await p.page.locator('#doc-note [data-act="reload"]').click();
+        await p.page.waitForFunction(() => (document.getElementById("doc-article").innerText || "").includes("the read check's outside change"), null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the reload reads no new text"));
+        // other lines: the note says the save will merge, and it does
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
+        await p.page.keyboard.type("The merge check wrote this. ");
+        await outside("?line=3");
+        await p.page.waitForFunction(() => { const n = document.getElementById("doc-note"); return n && !n.hidden && /your save will merge/.test(n.innerText); }, null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the editor notes no change to merge"));
+        await noteReads("^changed by Sebastian \\d\\d:\\d\\d · your save will merge · load theirs$", "the editor's note does not say the save will merge");
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => { const f = document.querySelector("#doc-facts"); return f && /Saved: \S{7} on master · \d\d:\d\d · merged with Sebastian's change/.test(f.textContent); }, null, { timeout: 8000 })
+          .catch(() => fails.push("outside: the save over other lines lands no merged commit"));
+        await p.page.waitForFunction(() => (document.getElementById("doc-article").innerText || "").includes("The merge check wrote this."), null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the merged save renders no text"));
+        // the same lines: the save refuses, theirs shows master's text
+        // with the clash marked, and load-theirs asks before it loads
+        const clashFrom = p.errors.length;
+        await p.page.locator("#doc-mode-edit").click();
+        await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && !e.value.startsWith("Reading "); }, null, { timeout: 5000 });
+        await p.page.keyboard.type("The clash check wrote this. ");
+        await outside();
+        await p.page.waitForFunction(() => { const n = document.getElementById("doc-note"); return n && !n.hidden && /your save will merge/.test(n.innerText); }, null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the editor notes no change on its own lines"));
+        await p.page.keyboard.press("Control+S");
+        await p.page.waitForFunction(() => document.querySelector("#doc-facts .doc-refused"), null, { timeout: 5000 })
+          .catch(() => fails.push("outside: the save over the same lines refuses nothing"));
+        const clash = (await p.page.locator("#doc-facts .doc-refused").innerText().catch(() => "")).trim();
+        if (clash !== "not saved: Sebastian changed the same lines (14:08)") fails.push('outside: the refusal reads "' + clash + '"');
+        const clashRow = (await p.page.locator("#doc-facts").innerText()).replace(/\s+/g, " ");
+        for (const w of ["show theirs", "load theirs"]) if (!clashRow.includes(w)) fails.push('outside: the refused row lacks "' + w + '" (' + clashRow + ")");
+        // a clash met the door's judgement: no retry, it would refuse again
+        if (clashRow.includes("retry")) fails.push('outside: the refused clash carries a retry (' + clashRow + ")");
+        const theirs = p.page.locator("#doc-theirs-slot");
+        await p.page.locator('#doc-facts [data-act="theirs"]').click();
+        await p.page.waitForTimeout(300);
+        if (!(await theirs.isVisible())) fails.push("outside: show theirs opens no view");
+        else {
+          const tt = await theirs.innerText();
+          if (!tt.includes("Changed outside the console.") || !tt.includes("read-only")) fails.push('outside: theirs is not master\'s text read-only ("' + tt.replace(/\s+/g, " ").slice(0, 80) + '…")');
+          if (!(await theirs.locator(".doc-clash").count())) fails.push("outside: theirs marks no clashing line");
+        }
+        await p.page.locator('#doc-facts [data-act="load-theirs"]').click();
+        await p.page.waitForTimeout(300);
+        const loadAsk = p.page.locator("#doc-view .doc-confirm").first();
+        // the question's own element, not the group: the buttons are not part of the ask
+        const askText = (await loadAsk.count()) ? (await loadAsk.locator(".doc-confirm-q").innerText()).replace(/\s+/g, " ") : "";
+        if (!/^Discard your changes and load the version of \d\d:\d\d\?$/.test(askText)) fails.push("outside: load theirs asks \"" + askText + "\"");
+        else {
+          if (!(await loadAsk.getByRole("button", { name: "Load", exact: true }).count())) fails.push("outside: the ask has no Load");
+          if (!(await loadAsk.getByRole("button", { name: "Keep mine", exact: true }).count())) fails.push("outside: the ask has no Keep mine");
+          await p.page.locator('[data-act="load-theirs-yes"]').click();
+          await p.page.waitForFunction(() => { const e = document.getElementById("doc-editor"); return e && e.value.includes("Changed outside the console."); }, null, { timeout: 5000 })
+            .catch(() => fails.push("outside: load theirs loads no master text"));
+          if (await p.page.locator("#doc-dot").isVisible()) fails.push("outside: the dot stays after load theirs");
+        }
+        const clashes = p.errors.splice(clashFrom);
+        if (!clashes.some((e) => e.endsWith("/docs/docs/roadmap.md 409"))) fails.push("outside: the refused save answered no 409");
+        p.errors.push(...clashes.filter((e) => !e.endsWith("/docs/docs/roadmap.md 409")));
       }
     }
     if (sc === "busy") {

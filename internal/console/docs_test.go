@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -29,11 +30,37 @@ type docsFake struct {
 	commits []map[string]any
 	tokens  []string // each commit's Authorization, in order
 	slow    time.Duration
+	// versions[v] is the repository's head as of version v — the files,
+	// the head commit's author and its time — starting at the seeded 0;
+	// a read at ref=<sha> answers the version whose sha it names, the
+	// base the door's merge reads (the 2026-10-15 plan, item 5).
+	versions []docVersion
 	// failCommits, when set, is Forgejo refusing every commit: a save's 502.
 	failCommits bool
 	// failReads, when set, is Forgejo refusing the file's head-commit
 	// read: a save whose commit landed whose facts then do not read.
 	failReads bool
+}
+
+// docVersion is the fake's head as of one version. The author is the
+// name the head-commit read answers for the merge and the clash.
+type docVersion struct {
+	files  map[string]string
+	author string
+	at     string
+}
+
+// versionSHA is version v's commit sha, the fake's "c0ffee" row.
+func versionSHA(v int) string { return "c0ffee" + strings.Repeat("0", v) }
+
+// outside lands an outside change of path to text as author at: master
+// moves as if committed over the head, the webhook's way (item 6).
+func (f *docsFake) outside(path, text, author, at string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.files[path] = text
+	f.version++
+	f.versions = append(f.versions, docVersion{files: maps.Clone(f.files), author: author, at: at})
 }
 
 // docsOver is the document repository sf/docs on the Forgejo at next: a
@@ -42,7 +69,7 @@ type docsFake struct {
 // write answered 201.
 func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *httptest.Server) {
 	t.Helper()
-	f := &docsFake{files: files}
+	f := &docsFake{files: files, versions: []docVersion{{files: maps.Clone(files), at: "2026-10-15T14:00:00Z"}}}
 	up, err := url.Parse(next)
 	if err != nil {
 		t.Fatal(err)
@@ -52,9 +79,24 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		head := f.versions[min(f.version, len(f.versions)-1)]
 		switch {
-		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, base+"/") && req.URL.Query().Get("ref") == "master":
-			text, ok := f.files[strings.TrimPrefix(req.URL.Path, base+"/")]
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, base+"/"):
+			at := f.files
+			if ref := req.URL.Query().Get("ref"); ref != "master" {
+				at = nil
+				for i := len(f.versions) - 1; i >= 0; i-- {
+					if ref == versionSHA(i) {
+						at = f.versions[i].files
+						break
+					}
+				}
+				if at == nil {
+					http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
+					return
+				}
+			}
+			text, ok := at[strings.TrimPrefix(req.URL.Path, base+"/")]
 			if !ok {
 				http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
 				return
@@ -67,8 +109,9 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 				return
 			}
 			// the file's head commit: the fake's version as its sha
-			json.NewEncoder(w).Encode([]map[string]any{{"sha": "c0ffee" + strings.Repeat("0", f.version),
-				"commit": map[string]any{"committer": map[string]any{"date": "2026-10-15T14:00:00Z"}}}})
+			json.NewEncoder(w).Encode([]map[string]any{{"sha": versionSHA(f.version),
+				"commit": map[string]any{"author": map[string]any{"name": head.author},
+					"committer": map[string]any{"date": head.at}}}})
 		case req.Method == http.MethodPost && req.URL.Path == base:
 			var body map[string]any
 			json.NewDecoder(req.Body).Decode(&body)
@@ -93,11 +136,12 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 			raw, _ := base64.StdEncoding.DecodeString(change["content"].(string))
 			f.files[path] = string(raw)
 			f.version++
+			f.versions = append(f.versions, docVersion{files: maps.Clone(f.files), author: "sebastian", at: "2026-10-15T14:00:00Z"})
 			f.commits = append(f.commits, body)
 			f.tokens = append(f.tokens, req.Header.Get("Authorization"))
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{
-				"sha": "c0ffee" + strings.Repeat("0", f.version), "created": "2026-10-15T15:00:00Z"}})
+				"sha": versionSHA(f.version), "created": "2026-10-15T15:00:00Z"}})
 		default:
 			proxy.ServeHTTP(w, req)
 		}
@@ -323,9 +367,14 @@ func TestDocsReadWithoutRepo(t *testing.T) {
 // saveDoc posts the editor's save of path as the member of ck and answers
 // the status with the answer's JSON.
 func saveDoc(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, save docSave) (int, struct {
-	Reason  string `json:"reason"`
-	SHA256  string `json:"sha256"`
-	Current string `json:"current"`
+	Reason  string   `json:"reason"`
+	SHA256  string   `json:"sha256"`
+	Current string   `json:"current"`
+	Who     string   `json:"who"`
+	At      string   `json:"at"`
+	Lines   [][2]int `json:"lines"`
+	Merged  string   `json:"merged"`
+	Text    string   `json:"text"`
 }) {
 	t.Helper()
 	body, err := json.Marshal(save)
@@ -337,9 +386,14 @@ func saveDoc(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, sav
 	req.Header.Set("X-CSRF-Token", s.csrf)
 	rec := r.do(req, ck)
 	var ans struct {
-		Reason  string `json:"reason"`
-		SHA256  string `json:"sha256"`
-		Current string `json:"current"`
+		Reason  string   `json:"reason"`
+		SHA256  string   `json:"sha256"`
+		Current string   `json:"current"`
+		Who     string   `json:"who"`
+		At      string   `json:"at"`
+		Lines   [][2]int `json:"lines"`
+		Merged  string   `json:"merged"`
+		Text    string   `json:"text"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &ans); err != nil && rec.Code == http.StatusOK {
 		t.Fatalf("the answer %d decodes: %v (%s)", rec.Code, err, rec.Body.String())
@@ -386,6 +440,63 @@ func TestDocsSaveCommitsAsMember(t *testing.T) {
 		rows[0].Detail["hash"], rows[0].Detail["commit"]},
 		[]any{"sf/code", factoryd.EventDocWritten, "sebastian", factoryd.ViaConsole, "docs/plans/cache.md",
 			factoryd.ContentHash(edited), "c0ffee0"})
+}
+
+// A save on a stale base hash whose change master also took on other
+// lines does not refuse: the door merges the two (the 2026-10-15 plan,
+// item 5) — base at the commit the save names, the member's text,
+// master's current one — commits the merged text as the member, and
+// answers "merged with <who>'s change" with the merged text, whose
+// doc_written event follows like any save's.
+func TestDocsSaveMergesStaleBase(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	ck, s := r.loggedIn(t)
+	// the member read the plan (base c0ffee), then Sebastian changed
+	// another passage outside the door at 14:08
+	outside := strings.Replace(docsPlan, "# The cache plan", "# The cache plan of October", 1)
+	f.outside("docs/plans/cache.md", outside, "Sebastian", "2026-10-15T14:08:00Z")
+	before := r.events.count()
+	merged := strings.Replace(outside, "one week", "two weeks", 1)
+	code, ans := saveDoc(t, r, ck, s, "docs/plans/cache.md",
+		docSave{Text: strings.Replace(docsPlan, "one week", "two weeks", 1),
+			Base: factoryd.ContentHash(docsPlan), Commit: versionSHA(0)})
+	equal(t, "the status", code, http.StatusOK)
+	equal(t, "the merged answer", []any{ans.SHA256, ans.Merged, ans.Text},
+		[]any{factoryd.ContentHash(merged), "merged with Sebastian's change", merged})
+	equal(t, "the file", f.files["docs/plans/cache.md"], merged)
+	equal(t, "the commit's message", f.commits[0]["message"], "docs/plans/cache.md: edited in the console\n\nFactory-Role: console\nRequested-by: sebastian\n")
+	equal(t, "the member's token", f.tokens, []string{"Bearer access-1"})
+	rows := r.events.all()[before:]
+	equal(t, "the event rows", len(rows), 1)
+	equal(t, "the doc_written event", []any{rows[0].Repository, rows[0].Kind, rows[0].Actor, rows[0].Via, rows[0].Detail["path"],
+		rows[0].Detail["hash"], rows[0].Detail["commit"]},
+		[]any{"sf/code", factoryd.EventDocWritten, "sebastian", factoryd.ViaConsole, "docs/plans/cache.md",
+			factoryd.ContentHash(merged), versionSHA(2)})
+}
+
+// A save on a stale base whose change met the same lines refuses
+// (the 2026-10-15 plan, item 5): the head commit's author and time and
+// the clashing lines' ranges in the current text follow, and nothing
+// commits and no event follows.
+func TestDocsSaveRefusesConflict(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	ck, s := r.loggedIn(t)
+	// Sebastian changed the very line the member's save changes
+	outside := strings.Replace(docsPlan, "one week", "two weeks", 1)
+	f.outside("docs/plans/cache.md", outside, "Sebastian", "2026-10-15T14:08:00Z")
+	before := r.events.count()
+	code, ans := saveDoc(t, r, ck, s, "docs/plans/cache.md",
+		docSave{Text: strings.Replace(docsPlan, "one week", "three weeks", 1),
+			Base: factoryd.ContentHash(docsPlan), Commit: versionSHA(0)})
+	equal(t, "the status", code, http.StatusConflict)
+	equal(t, "the clash answer", []any{ans.Reason, ans.Who, ans.At, ans.Lines},
+		[]any{"Sebastian changed the same lines (14:08)", "Sebastian", "2026-10-15T14:08:00Z", [][2]int{{4, 4}}})
+	equal(t, "the current text", []any{ans.SHA256, ans.Current}, []any{factoryd.ContentHash(outside), outside})
+	equal(t, "the clash committed nothing", []any{len(f.commits), r.events.count()}, []any{0, before})
 }
 
 // A save whose commit lands but whose facts then do not read — Forgejo
@@ -440,9 +551,14 @@ func TestDocsSaveRefusals(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	save := func(path string, body docSave) (int, struct {
-		Reason  string `json:"reason"`
-		SHA256  string `json:"sha256"`
-		Current string `json:"current"`
+		Reason  string   `json:"reason"`
+		SHA256  string   `json:"sha256"`
+		Current string   `json:"current"`
+		Who     string   `json:"who"`
+		At      string   `json:"at"`
+		Lines   [][2]int `json:"lines"`
+		Merged  string   `json:"merged"`
+		Text    string   `json:"text"`
 	}) {
 		return saveDoc(t, r, ck, s, path, body)
 	}

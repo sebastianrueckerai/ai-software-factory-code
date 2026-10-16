@@ -543,6 +543,13 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 	return nil
 }
 
+// Record is the Timeline's sink: rows land newest last, as the webhook's
+// doc_written rows are read back.
+func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
+	s.events = append(s.events, e)
+	return int64(len(s.events)), nil
+}
+
 func (s *fakeStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
 	s.pruned = append(s.pruned, age)
 	return nil
