@@ -68,7 +68,10 @@ func (c *CIConfig) setDefaults() {
 		c.PollInterval = 10 * time.Second
 	}
 	if c.JobTimeout <= 0 {
-		c.JobTimeout = 45 * time.Minute
+		// 60 minutes: a cold compile of the three images outran the old
+		// 45-minute deadline (run 2376 cancelled at 44m26s) while each
+		// buildctl still had budget of its own (roadmap 203, step 3).
+		c.JobTimeout = 60 * time.Minute
 	}
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 8

@@ -215,7 +215,11 @@ func main() {
 	}
 	ciCollector := &cloudres.Collector{Project: "ci", Registry: cloudRegistry, Provider: hetznerCI,
 		OwnerDone: factoryd.CIOwnerDone(kube), NodeIPs: nodeIPs, ReleaseAttempts: 1}
-	const ciJobTimeout = 45 * time.Minute
+	// 60 minutes: a cold compile of the three images outran the old
+	// 45-minute deadline (run 2376 cancelled at 44m26s) while each
+	// buildctl still had budget of its own — pr.yml gives it 2700 s
+	// (roadmap 203, step 3). The lease below keeps its margin on top.
+	const ciJobTimeout = 60 * time.Minute
 	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
 		Max:            envInt("CI_BUILD_VMS_MAX", 2),
 		ServerType:     env("CI_BUILD_VM_TYPE", "cx23"),
