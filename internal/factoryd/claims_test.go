@@ -60,6 +60,14 @@ func TestContradiction(t *testing.T) {
 		"a call at head":                    {uncalled, []grepHit{hit("head", "\tif !docRootOK(p) {")}, false, "internal/s.go:12 at head: \tif !docRootOK"},
 		"only the declaration":              {uncalled, []grepHit{hit("head", "func docRootOK(p string) bool {")}, false, ""},
 		"only a comment":                    {uncalled, []grepHit{hit("head", "// docRootOK checks the root")}, false, ""},
+		"mention only in a mid-line comment": {
+			uncalled, []grepHit{hit("head", "\tx := 1 /* docRootOK guards it */")}, false, ""},
+		"a call before a trailing comment": {
+			uncalled, []grepHit{hit("head", "docRootOK(p) /* fast */")}, false, "internal/s.go:12 at head: docRootOK(p) /* fast */"},
+		"code after a leading comment": {
+			uncalled, []grepHit{hit("head", "/* shared */ docRootOK(p)")}, false, "internal/s.go:12 at head: /* shared */ docRootOK(p)"},
+		"declaration after a leading comment": {
+			undefined, []grepHit{hit("head", "/* moved */ func TasksByPR() {}")}, false, "internal/s.go:12 at head: /* moved */ func TasksByPR() {}"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got, ok := contradiction(tc.claim, tc.hits, tc.removed)
@@ -77,6 +85,23 @@ func TestRemovesSymbol(t *testing.T) {
 	}
 	if removesSymbol("--- a/TasksByPR.go\n+++ b/TasksByPR.go\n@@ -1 +1 @@\n+TasksByPR()\n", "TasksByPR") {
 		t.Fatal("a file header and an added line remove nothing")
+	}
+	callDiff := "diff --git a/s.go b/s.go\n--- a/s.go\n+++ b/s.go\n@@ -1,3 +1,2 @@\n func helper() {}\n-\thelper()\n context\n"
+	if removesSymbol(callDiff, "helper") {
+		t.Fatal("a removed call is not a removed declaration")
+	}
+	declDiff := "diff --git a/s.go b/s.go\n--- a/s.go\n+++ b/s.go\n@@ -1,2 +1,1 @@\n-func (s *PG) helper() {}\n context\n"
+	if !removesSymbol(declDiff, "helper") {
+		t.Fatal("a removed method declaration removes the symbol")
+	}
+}
+
+func TestContradictionCountsMainWhenTheDiffRemovesOnlyACall(t *testing.T) {
+	diff := "diff --git a/s.go b/s.go\n--- a/s.go\n+++ b/s.go\n@@ -1,2 +1,1 @@\n-\thelper()\n context\n"
+	rv := Review{Verdict: "concerns", Findings: []string{"helper is uncalled"}, Claims: []Claim{{0, ClaimUncalled, "helper"}}}
+	got := applyClaims(rv, diff, func(string) ([]grepHit, error) { return mainHit("s.go", 2, "\thelper()"), nil })
+	if len(got.Findings) != 0 || len(got.Dropped) != 1 || got.Dropped[0].Evidence != "s.go:2 at main: \thelper()" {
+		t.Fatalf("review = %+v, want the finding refuted by main's call", got)
 	}
 }
 
@@ -129,7 +154,7 @@ func TestContradictionIgnoresMainWhenTheDiffRemovesTheSymbol(t *testing.T) {
 }
 
 // gitFixture is a repository whose main defines Sym at a.go:3 and whose
-// branch head adds a call at b.go:2.
+// branch head adds a call at b.go:2 and onlyHead's declaration at b.go:3.
 func gitFixture(t *testing.T) string {
 	t.Helper()
 	ctx := context.Background()
@@ -150,7 +175,7 @@ func gitFixture(t *testing.T) string {
 	run("add", ".")
 	run("commit", "-q", "-m", "main")
 	run("checkout", "-q", "-b", "head")
-	write("b.go", "package a\nvar _ = Sym\n")
+	write("b.go", "package a\nvar _ = Sym\nvar onlyHead = 0\n")
 	run("add", ".")
 	run("commit", "-q", "-m", "head")
 	return dir
@@ -166,8 +191,15 @@ func TestGitGrepFindsTheSymbolAtEachRef(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("hits = %+v, want %+v", got, want)
 	}
-	if none, err := gitGrep(context.Background(), dir, []namedRef{{"head", "head"}}, "Absent"); err != nil || len(none) != 0 {
-		t.Fatalf("no match = %+v, %v, want no hits and no error", none, err)
+	if none, err := gitGrep(context.Background(), dir, []namedRef{{"head", "head"}}, "Absent"); !errors.Is(err, errNoMatch) || len(none) != 0 {
+		t.Fatalf("no match = %+v, %v, want no hits and the no-match answer", none, err)
+	}
+	mixed, err := gitGrep(context.Background(), dir, []namedRef{{"main", "main"}, {"head", "head"}}, "onlyHead")
+	if err != nil || !slices.Equal(mixed, []grepHit{{"head", "b.go", 3, "var onlyHead = 0"}}) {
+		t.Fatalf("a head-only symbol = %+v, %v, want the head hit and no error", mixed, err)
+	}
+	if _, err := gitGrep(context.Background(), dir, []namedRef{{"head", "nosuchref"}}, "Sym"); err == nil || errors.Is(err, errNoMatch) {
+		t.Fatalf("a broken ref = %v, want an execution error", err)
 	}
 }
 
