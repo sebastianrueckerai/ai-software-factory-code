@@ -72,7 +72,7 @@ func waitFor(pid int, limit time.Duration, procRoot string, out io.Writer, poll 
 // a later process that took its pid. A zombie, which the worker as init has
 // not reaped yet, is an ended job.
 func procStart(pid int, procRoot string) (string, bool) {
-	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat")) // #nosec G304 -- /proc/<int>/stat
+	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "stat")) // #nosec G304 G703 -- /proc/<int>/stat under a test fixture root
 	if err != nil {
 		return "", false
 	}
