@@ -98,13 +98,20 @@ func TestBuildVMUserData(t *testing.T) {
 		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
+		// the VM's own rules deny every upstream the store fronts
+		// (roadmap 203, step 3), by name in the connection's first
+		// bytes: buildkitd and its RUN containers share this network
+		// namespace, so OUTPUT covers every fetch a build makes
+		"for host in " + strings.Join(buildVMUpstreamHosts, " ") + "; do",
+		"-m connbytes --connbytes 0:2048 --connbytes-mode bytes --connbytes-dir both",
+		`-m string --string "$host" --algo bm -j REJECT --reject-with tcp-reset`,
 		strings.TrimSpace(string(p.CACert)), strings.TrimSpace(string(p.ServerCert)), strings.TrimSpace(string(p.ServerKey)),
 	} {
 		if !strings.Contains(ud, want) {
 			t.Errorf("user data lacks %q", want)
 		}
 	}
-	if strings.Contains(ud, "github.com") {
+	if strings.Contains(ud, "https://github.com/") {
 		t.Error("user data reaches an upstream for the buildkit tarball")
 	}
 	if strings.Contains(ud, strings.TrimSpace(string(p.ClientKey))) || strings.Contains(ud, strings.TrimSpace(string(p.ClientCert))) {

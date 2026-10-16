@@ -111,7 +111,19 @@ func testCIConfig() CIConfig {
 		PullSecret:       "forgejo-registry",
 		GitBaseURL:       "http://forgejo-http.forgejo.svc.cluster.local:3000",
 		PollInterval:     time.Millisecond,
-		JobTimeout:       45 * time.Minute,
+		JobTimeout:       60 * time.Minute,
+	}
+}
+
+// The default job deadline leaves a cold three-image compile its room:
+// run 2376 outran the old 45-minute activeDeadlineSeconds at 44m26s
+// while each buildctl still had its own 2700-second budget (roadmap
+// 203, step 3).
+func TestCIConfigDefaultJobTimeoutIsAnHour(t *testing.T) {
+	var c CIConfig
+	c.setDefaults()
+	if c.JobTimeout != 60*time.Minute {
+		t.Errorf("JobTimeout = %v, want 60m", c.JobTimeout)
 	}
 }
 
@@ -178,8 +190,8 @@ func TestCISpawnerSpawnsRunnerForWaitingJob(t *testing.T) {
 	if spec["restartPolicy"] != "Never" {
 		t.Fatalf("restartPolicy = %v, want Never", spec["restartPolicy"])
 	}
-	if secs, ok := spec["activeDeadlineSeconds"].(int64); !ok || secs != 45*60 {
-		t.Fatalf("activeDeadlineSeconds = %v, want 2700", spec["activeDeadlineSeconds"])
+	if secs, ok := spec["activeDeadlineSeconds"].(int64); !ok || secs != 60*60 {
+		t.Fatalf("activeDeadlineSeconds = %v, want 3600", spec["activeDeadlineSeconds"])
 	}
 	container := spec["containers"].([]any)[0].(map[string]any)
 	args := fmt.Sprint(container["args"])
