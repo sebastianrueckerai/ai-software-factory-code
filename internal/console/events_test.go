@@ -1421,7 +1421,8 @@ console.log(JSON.stringify(out));
 // entry's q in the box without running the find; an entry that differs
 // from the board's query only by doc= or the fields' order reads nothing.
 // The find's box takes the event's q when the read goes out, held or not,
-// without an input event, and a query without q clears it. An event whose
+// without an input event, and a query without q clears it; one Back
+// supersedes, for the box waits for the query it names. An event whose
 // query the board already stands on — a card, a tab, the panel or the
 // theme alone — pushes no entry, the drawer's hash a card click leaves.
 func TestConsoleViewEvent(t *testing.T) {
@@ -1576,6 +1577,16 @@ Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
 requests = [];
 winListeners.popstate.forEach(function (fn) { fn({}); });
 out.popOrder = [byID.board.dataset.query, requests.length];
+// a held view read whose q Back has replaced leaves the box the entry's:
+// the sync waits for the query it names
+requests = [];
+fire("view", {query: "?project=code&q=lock"});
+fire("view", {query: "?project=code&q=new"});
+Object.assign(sandbox.location, {search: "?project=code&q=old"});
+winListeners.popstate.forEach(function (fn) { fn({}); });
+await settle();
+await settle();
+out.backBox = [box.value, requests.slice()];
 // two card+tab events before any settle arm one shot, not two: the
 // latest tab alone is clicked, once
 var chatTab = el({clicks: 0, click: function () { this.clicks++; }}), actTab = el({clicks: 0, click: function () { this.clicks++; }});
@@ -1603,7 +1614,8 @@ console.log(JSON.stringify(out));
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
 		`"panel":true,"theme":1,"flatPanel":[0,true,["GET /board?project=code"]],` +
 		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
-		`"popOrder":["?project=code&q=exp&view=wide",0],"twoShots":[0,1],"streams":1}`
+		`"popOrder":["?project=code&q=exp&view=wide",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
+		`"twoShots":[0,1],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

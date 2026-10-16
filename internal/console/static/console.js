@@ -253,10 +253,12 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     }
     // a view change's read carries its own q for the find's box, which the
     // swap would else leave holding the member's words: it goes in here,
-    // where no find is in flight, at once or when a held read finally runs
+    // where no find is in flight, at once or when a held read finally
+    // runs, and only while it still names the query the board stands
+    // under, for Back or a find may have taken both since
     if (viewQ !== null) {
-      var i = document.getElementById("q");
-      if (i && i.value !== viewQ) i.value = viewQ;
+      var i = document.getElementById("q"), q = new URLSearchParams(b.dataset.query).get("q") || "";
+      if (i && viewQ === q && i.value !== q) i.value = q;
       viewQ = null;
     }
     reading = true;
