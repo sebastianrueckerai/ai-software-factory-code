@@ -723,6 +723,54 @@ func TestModelReviewBeyondItsReachIsNotReviewed(t *testing.T) {
 	}
 }
 
+// A diff that fits the pinned review_diff_kib reads in one call, with no
+// part label, however many files it holds; beyond it, parts of that size.
+func TestModelReviewReadsAFittingDiffWhole(t *testing.T) {
+	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10) + diffFile("c.go", 30<<10)
+	for name, tc := range map[string]struct {
+		kib   int
+		calls int
+	}{"default 48": {0, 3}, "256": {256, 1}} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: diff}
+			r, _, _ := newGateRunner(t, gateTask, fj)
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			pinned := testPolicyVersion()
+			pinned.Document.Limits.ReviewDiffKiB = tc.kib
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7, Policy: PolicyGate{Class: "normal"}})
+			if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || len(ll.chats) != tc.calls {
+				t.Fatalf("review = %+v after %d calls, want %d", rv, len(ll.chats), tc.calls)
+			}
+			if tc.calls == 1 && (strings.Contains(userMessage(ll.chats[0]), `"part"`) || strings.Contains(userMessage(ll.chats[0]), "names_in_other_parts")) {
+				t.Fatalf("a whole-diff call carries no part or names: %s", userMessage(ll.chats[0])[:200])
+			}
+		})
+	}
+}
+
+// A later part's call reads the names every other part adds.
+func TestModelReviewPartsReadTheOtherPartsNames(t *testing.T) {
+	diff := diffFile("a.go", 30<<10, "func (s *Store) TasksByPR(ctx int) {}") + diffFile("b.go", 30<<10, "func useIt() {")
+	fj := &gateForgejo{diff: diff}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(ll.chats) != 2 {
+		t.Fatalf("calls = %d, want 2", len(ll.chats))
+	}
+	if first := userMessage(ll.chats[0]); !strings.Contains(first, `"names_in_other_parts":"functions: useIt"`) {
+		t.Fatalf("part 1 lacks part 2's names: %s", first[:min(len(first), 600)])
+	}
+	if second := userMessage(ll.chats[1]); !strings.Contains(second, `"names_in_other_parts":"functions: TasksByPR"`) {
+		t.Fatalf("part 2 lacks part 1's names: %s", second[:min(len(second), 600)])
+	}
+}
+
 func TestCombineReviews(t *testing.T) {
 	yes, no := true, false
 	for name, tc := range map[string]struct {

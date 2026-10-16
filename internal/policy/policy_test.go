@@ -1020,16 +1020,28 @@ func TestTimeValidation(t *testing.T) {
 		limits Limits
 		ok     bool
 	}{
-		"valid":            {base, true},
-		"agent_time 72h1m": {func() Limits { l := base; l.AgentTime = 72*time.Hour + time.Minute; return l }(), false},
-		"check_in 0":       {func() Limits { l := base; l.CheckIn = 0; return l }(), true},
-		"check_in 5m":      {func() Limits { l := base; l.CheckIn = 5 * time.Minute; return l }(), false},
+		"valid":                {base, true},
+		"agent_time 72h1m":     {func() Limits { l := base; l.AgentTime = 72*time.Hour + time.Minute; return l }(), false},
+		"check_in 0":           {func() Limits { l := base; l.CheckIn = 0; return l }(), true},
+		"check_in 5m":          {func() Limits { l := base; l.CheckIn = 5 * time.Minute; return l }(), false},
+		"review_diff_kib 0":    {func() Limits { l := base; l.ReviewDiffKiB = 0; return l }(), true},
+		"review_diff_kib 47":   {func() Limits { l := base; l.ReviewDiffKiB = 47; return l }(), false},
+		"review_diff_kib 1025": {func() Limits { l := base; l.ReviewDiffKiB = 1025; return l }(), false},
 	} {
 		t.Run("limits "+name, func(t *testing.T) {
 			if err := tc.limits.validate(); tc.ok != (err == nil) {
 				t.Fatalf("validate() = %v, want ok=%v", err, tc.ok)
 			}
 		})
+	}
+}
+
+func TestReviewDiffBytes(t *testing.T) {
+	if got := (Limits{}).ReviewDiffBytes(); got != 48<<10 {
+		t.Fatalf("absent = %d, want 49152", got)
+	}
+	if got := (Limits{ReviewDiffKiB: 256}).ReviewDiffBytes(); got != 256<<10 {
+		t.Fatalf("256 KiB = %d, want 262144", got)
 	}
 }
 

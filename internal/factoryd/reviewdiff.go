@@ -92,13 +92,13 @@ func packFiles(files []fileDiff, limit int) (chunks [][]fileDiff, tooBig []fileD
 	return chunks, tooBig
 }
 
-// diffParts packs diff's files into at most reviewChunks parts of
-// reviewDiffMax, one model call each, at least one part. why says why the
-// model cannot read the whole diff so ("" when it can); reader names the
-// gate in it.
-func diffParts(diff, reader string) (files []fileDiff, parts [][]fileDiff, why string) {
+// diffParts packs diff's files into parts of at most max bytes, at most
+// reviewChunks of them, one model call each, at least one part: a diff
+// within max is one part. why says why the model cannot read the whole
+// diff so ("" when it can); reader names the gate in it.
+func diffParts(diff, reader string, max int) (files []fileDiff, parts [][]fileDiff, why string) {
 	files = splitDiff(diff)
-	parts, tooBig := packFiles(files, reviewDiffMax)
+	parts, tooBig := packFiles(files, max)
 	size := fmt.Sprintf("%s, %d KiB", textutil.Plural(len(files), "file", "files"), kib(len(diff)))
 	var reason string
 	switch {
@@ -113,10 +113,59 @@ func diffParts(diff, reader string) (files []fileDiff, parts [][]fileDiff, why s
 	default:
 		return files, parts, ""
 	}
-	return files, nil, fmt.Sprintf("%s; the %s reads at most %d parts of %d KiB (%s)", size, reader, reviewChunks, reviewDiffMax>>10, reason)
+	return files, nil, fmt.Sprintf("%s; the %s reads at most %d parts of %d KiB (%s)", size, reader, reviewChunks, max>>10, reason)
 }
 
 func kib(n int) int { return (n + 1023) >> 10 }
+
+var nameShapes = []struct {
+	kind string
+	re   *regexp.Regexp
+}{
+	{"functions", regexp.MustCompile(`^\s*(?:export\s+|async\s+|pub\s+)*(?:function\s+|func(?:\s+|\s*\([^)]*\)\s*)|def\s+|fn\s+)([\p{L}_][\p{L}\p{N}_]*)`)},
+	{"types", regexp.MustCompile(`^\s*(?:export\s+|pub\s+)*(?:type\s+|class\s+|interface\s+|struct\s+|enum\s+|trait\s+)([\p{L}_][\p{L}\p{N}_]*)`)},
+	{"routes", regexp.MustCompile(`\b(?:Handle|HandleFunc|Get|Post|Put|Patch|Delete|Route)\(\s*"(?:[A-Z]+ )?(/[^"\s]*)"`)},
+	{"selectors", regexp.MustCompile(`^\s*([.#][\w-]+)[^{]*\{\s*$`)},
+}
+
+const maxListedNames = 300
+
+// othersOf lists the functions, types, routes and selectors the added
+// lines of every part but part i define, one line a kind, so the call on
+// part i knows a name it does not see is defined elsewhere in the diff.
+func othersOf(parts [][]fileDiff, i int) string {
+	byKind := map[string][]string{}
+	seen := map[string]bool{}
+	for k, part := range parts {
+		if k == i {
+			continue
+		}
+		for _, f := range part {
+			redact.Added(f.Text, func(_ string, _ int, text string) {
+				for _, s := range nameShapes {
+					if m := s.re.FindStringSubmatch(text); m != nil && !seen[s.kind+m[1]] {
+						seen[s.kind+m[1]] = true
+						byKind[s.kind] = append(byKind[s.kind], m[1])
+					}
+				}
+			})
+		}
+	}
+	var lines []string
+	for _, s := range nameShapes {
+		list := byKind[s.kind]
+		if len(list) == 0 {
+			continue
+		}
+		slices.Sort(list)
+		more := ""
+		if len(list) > maxListedNames {
+			more, list = fmt.Sprintf(", ... and %d more", len(list)-maxListedNames), list[:maxListedNames]
+		}
+		lines = append(lines, s.kind+": "+strings.Join(list, ", ")+more)
+	}
+	return strings.Join(lines, "\n")
+}
 
 // partLabel names part i of parts and its files among all.
 func partLabel(parts [][]fileDiff, i, all int) string {
