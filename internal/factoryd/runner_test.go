@@ -3135,7 +3135,8 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	v := runner.cfg.Policy()
 	v.Document.Limits.NoPushSpend = 99 // the spend detector is task 4's
 	runner.cfg.Policy = func() policy.Version { return v }
-	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second // the tick every second
+	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	runner.tick = 50 * time.Millisecond
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3146,7 +3147,7 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 			n := len(worker.texts)
 			worker.mu.Unlock()
 			if n > 0 {
-				time.Sleep(1500 * time.Millisecond) // a further tick, before the no-progress trip: no second warning
+				time.Sleep(500 * time.Millisecond) // ten further ticks: no second warning
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -3172,7 +3173,8 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	v := runner.cfg.Policy()
 	v.Document.Limits.NoPushSpend = 99
 	runner.cfg.Policy = func() policy.Version { return v }
-	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second
+	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	runner.tick = 50 * time.Millisecond
 	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable}
 	worker.start(t, runner)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3182,7 +3184,7 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 			worker.mu.Lock()
 			n := len(worker.texts)
 			worker.mu.Unlock()
-			if n >= 2 {
+			if n >= 4 {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
@@ -3193,7 +3195,11 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	worker.mu.Lock()
 	n := len(worker.texts)
 	worker.mu.Unlock()
-	if n < 2 {
-		t.Fatalf("worker got %d warnings, want the refused one again", n)
+	if n < 4 {
+		t.Fatalf("worker got %d warnings, want the refused one again each tick", n)
+	}
+	timeline, _ := runner.objects.Get(context.Background(), "sessions/t2/timeline.jsonl")
+	if steps := strings.Count(string(timeline), `"step":"message"`); steps != 1 {
+		t.Fatalf("%d message steps recorded, want only the first failure:\n%s", steps, timeline)
 	}
 }

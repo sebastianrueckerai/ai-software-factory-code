@@ -124,6 +124,7 @@ type Runner struct {
 	supervisor *SupervisorModel
 	stopWait   time.Duration
 	cheapCap   time.Duration // cheapAttemptCap; a test shortens it
+	tick       time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
 	// a test shortens both
@@ -1394,6 +1395,9 @@ func (r *Runner) repoURL(repo Repo) string {
 }
 
 func (r *Runner) supervisionTick() time.Duration {
+	if r.tick > 0 {
+		return r.tick
+	}
 	t := r.cfg.Supervisor.NoProgressAfter / 3
 	if t < time.Second {
 		t = time.Second
@@ -2012,15 +2016,28 @@ func (k *InClusterKube) Namespace() string {
 }
 
 // watchLimits reads the card's spend once per tick and sends the agent the
-// warning it is due; a warning the pod did not take stays due.
+// warning it is due; a warning the pod did not take stays due, and only its
+// first failure is recorded on the timeline.
 func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch) *Trip {
 	cur, ok, err := r.store.Task(ctx, t.ID)
-	if err != nil || !ok {
+	if err != nil {
 		log.Printf("task %s: read the card's spend: %v", t.ID, err)
 		return nil
 	}
+	if !ok {
+		return nil
+	}
 	for _, wn := range w.due(cur.SpentEUR, cur.BudgetEUR, time.Now()) {
-		if err := r.message(ctx, t, s, ns, pod, wn.text); err != nil {
+		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
+		if err == nil || !w.failed[wn.kind] {
+			detail := map[string]any{"session": s.id}
+			if err != nil {
+				detail["error"] = err.Error()
+			}
+			r.record(ctx, t.ID, "message", detail)
+		}
+		if err != nil {
+			w.failed[wn.kind] = true
 			log.Printf("task %s: send the %s warning: %v", t.ID, wn.kind, err)
 			continue
 		}

@@ -29,10 +29,12 @@ type limitWatch struct {
 	started time.Time
 	span    time.Duration
 	done    map[string]bool
+	// failed holds the kinds whose send failed at least once
+	failed map[string]bool
 }
 
 func newLimitWatch(l policy.Limits, planner bool, started time.Time, span time.Duration) *limitWatch {
-	w := &limitWatch{share: l.WarnShare(), wrapUp: codingWrapUp, started: started, span: span, done: map[string]bool{}}
+	w := &limitWatch{share: l.WarnShare(), wrapUp: codingWrapUp, started: started, span: span, done: map[string]bool{}, failed: map[string]bool{}}
 	if planner {
 		w.share, w.wrapUp = l.PlanWarnShare(), planWrapUp
 	}
@@ -45,6 +47,7 @@ func (w *limitWatch) due(spent, budget float64, now time.Time) []warning {
 		out = append(out, warning{warnBudget, fmt.Sprintf("factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left. %s",
 			100*spent/budget, max(budget-spent, 0), budget, w.wrapUp)})
 	}
+	// the share applies to the span left when the pod is ready, not to the card's whole cap
 	if elapsed := now.Sub(w.started); !w.done[warnTime] && w.span > 0 && float64(elapsed) >= w.share*float64(w.span) {
 		out = append(out, warning{warnTime, fmt.Sprintf("factoryd: %d minutes of agent time are left. %s", int((w.span-elapsed)/time.Minute), w.wrapUp)})
 	}
