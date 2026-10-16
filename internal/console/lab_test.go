@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -104,6 +105,40 @@ func TestLab(t *testing.T) {
 		docsFake.mu.Lock()
 		docsFake.slow = slow
 		docsFake.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	// an outside change of a document (items 5+6): master moves as if
+	// committed by ?by at 14:08 — ?line names the line it changes, from
+	// 1, else the file's last said one; ?text replaces that line, else it
+	// appends to it — and the project's stream carries the doc_written
+	// row the webhook intake raises for it, via webhook
+	mux.HandleFunc("POST /lab/docs-change", func(w http.ResponseWriter, req *http.Request) {
+		q := req.URL.Query()
+		path := cmp.Or(q.Get("path"), "docs/roadmap.md")
+		docsFake.mu.Lock()
+		text, ok := docsFake.files[path]
+		docsFake.mu.Unlock()
+		if !ok {
+			http.Error(w, "no such document: "+path, http.StatusNotFound)
+			return
+		}
+		lines := strings.Split(text, "\n")
+		n, _ := strconv.Atoi(cmp.Or(q.Get("line"), "0"))
+		if n < 1 || n > len(lines) {
+			for n = len(lines); n > 0 && strings.TrimSpace(lines[n-1]) == ""; n-- {
+			}
+		}
+		if n < 1 {
+			n = 1
+		}
+		lines[n-1] = cmp.Or(q.Get("text"), lines[n-1]+" Changed outside the console.")
+		docsFake.outside(path, strings.Join(lines, "\n"), cmp.Or(q.Get("by"), "Sebastian"), "2026-10-15T14:08:00Z")
+		docsFake.mu.Lock()
+		head := versionSHA(docsFake.version)
+		docsFake.mu.Unlock()
+		r.events.Record(req.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventDocWritten,
+			Actor: cmp.Or(q.Get("by"), "Sebastian"), Via: factoryd.ViaWebhook,
+			Detail: map[string]any{"path": path, "commit": head}})
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /lab/scenario/{name}", func(w http.ResponseWriter, req *http.Request) {

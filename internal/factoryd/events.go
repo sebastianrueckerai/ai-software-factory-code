@@ -87,6 +87,19 @@ func (tl *Timeline) RecordRow(ctx context.Context, taskID, event, actor, via str
 	}
 }
 
+// RecordProjectRow writes e as a project's own events row, which no task
+// carries — an outside push to a document repository (the 2026-10-15
+// plan, item 6). e's repository, actor and via stand as given; a Timeline
+// with no recorder writes none (a failure is logged).
+func (tl *Timeline) RecordProjectRow(ctx context.Context, e Event) {
+	if tl == nil || tl.Events == nil {
+		return
+	}
+	if _, err := tl.Events.Record(ctx, e); err != nil {
+		log.Printf("event %s: the row: %v", e.Kind, err)
+	}
+}
+
 // enterLane records card t's entry into its lane by user by and starts
 // what the lane starts: a queued card's workflow, or a backlog card's
 // write-up (writeUp, nil where the caller opens none). A task with no lane

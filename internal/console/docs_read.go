@@ -9,6 +9,7 @@ package console
 // writers, Forgejo's readers of its repository.
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -124,6 +125,34 @@ func (c *Console) docCommit(ctx context.Context, repo factoryd.Repo, docPath str
 		return "", time.Time{}, nil
 	}
 	return rows[0].SHA, rows[0].Commit.Committer.Date, nil
+}
+
+// docAuthor is path's head commit's author and that commit's time: who
+// changed the document last and when, the stale save's merge and clash
+// facts (the 2026-10-15 plan, item 5). The author is the commit's Forgejo
+// account, else the name git recorded.
+func (c *Console) docAuthor(ctx context.Context, repo factoryd.Repo, docPath string) (string, time.Time, error) {
+	var rows []struct {
+		Author struct {
+			Login string `json:"login"`
+		} `json:"author"`
+		Commit struct {
+			Author struct {
+				Name string `json:"name"`
+			} `json:"author"`
+			Committer struct {
+				Date time.Time `json:"date"`
+			} `json:"committer"`
+		} `json:"commit"`
+	}
+	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet,
+		docAPI(repo)+"/commits?sha=master&path="+url.QueryEscape(docPath)+"&limit=1", nil, http.StatusOK, &rows); err != nil {
+		return "", time.Time{}, &forgejoRefusal{"read the document's commit", err}
+	}
+	if len(rows) == 0 {
+		return "", time.Time{}, nil
+	}
+	return cmp.Or(rows[0].Author.Login, rows[0].Commit.Author.Name), rows[0].Commit.Committer.Date, nil
 }
 
 // The peek's and the title's shapes, the engine's rules (docs.js: plain,
