@@ -1019,14 +1019,14 @@ func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
 		t.Fatalf("the branch's diff against main %q, want only the pinned files", got)
 	}
 	// the update changes no digest: the branch pins exactly what each
-	// request recorded, the rebase and the fresh write between them
-	imageRepo := map[string]string{"factoryd": "factory-gateway", "gateway": "factory-gateway", "worker": "opencode-worker"}
+	// request recorded, each in the manifest its target pins, the rebase
+	// and the fresh write between them
 	for _, r := range store.rolls {
-		for image, digest := range r.Changes {
-			ref := registryHost + imageRepo[image] + "@" + digest
-			joined := f.files[forkRepo+"@factory/t-roll"]["k8s/factoryd.yaml"] + f.files[forkRepo+"@factory/t-roll"]["k8s/deployment.yaml"]
-			if !strings.Contains(joined, ref) {
-				t.Fatalf("the branch does not pin %s at %s, the digest run %d rolled", image, digest, r.RunID)
+		for name, digest := range r.Changes {
+			target, _ := rollTarget(name)
+			ref := registryHost + target.Image + "@" + digest
+			if content := f.files[forkRepo+"@factory/t-roll"][target.File]; !strings.Contains(content, ref) {
+				t.Fatalf("the branch does not pin %s at %s, the digest run %d rolled", name, digest, r.RunID)
 			}
 		}
 	}
