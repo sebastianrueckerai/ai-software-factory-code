@@ -315,6 +315,9 @@ type Store interface {
 	// none. A tool call's worst case is refused while smaller model calls
 	// still fit, so it stops no session.
 	CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error)
+	// BudgetRefused reports whether a model call of the task's agent since
+	// was refused at the task's own budget (refused_budget).
+	BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error)
 	// ProviderRefusal is the reason of the task's agent's first model call
 	// since since when the gateway audited it error_upstream and no model
 	// call of the agent since was allowed; ok false otherwise.
@@ -828,6 +831,14 @@ func (s *PGStore) CapRefusal(ctx context.Context, taskID string, since time.Time
 		return nil, err
 	}
 	return &r, nil
+}
+
+func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	var refused bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM audit WHERE task_id = $1 AND kind = $2 AND tool = '' AND decision = $3 AND ts >= $4)`,
+		taskID, gateway.AuditKindAgent, policy.RefusedBudget, since).Scan(&refused)
+	return refused, err
 }
 
 func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {

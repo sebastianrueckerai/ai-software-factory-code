@@ -745,6 +745,18 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	res := sessionResult(s, out)
 	res.Model, res.Started = s.model, startedAt
+	if res.Outcome == OutcomeNoPush && out.commit != "" {
+		// the card's budget stopped the session after its worker pushed the
+		// work in progress: the branch goes to verification, no later
+		// session of the card could pick the work up
+		refused, err := r.store.BudgetRefused(ctx, t.ID, startedAt)
+		if err != nil {
+			return SessionResult{}, err
+		}
+		if refused {
+			res.Outcome, res.Commit = OutcomePushed, out.commit
+		}
+	}
 	if res.Outcome == OutcomePushed {
 		r.timeline.recordEvent(ctx, t.ID, EventSessionPushed, map[string]any{"session": s.id, "model": aliasOf(s.model), "attempt": in.Attempt,
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})

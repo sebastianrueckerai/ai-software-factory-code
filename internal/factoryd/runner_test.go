@@ -765,13 +765,18 @@ func runSessionIn(t *testing.T, r *Runner, in SessionInput, bodies []string, set
 		}
 	}()
 	kube := r.kube.(*fakeKube)
+	// pods of sessions this runner already ran are not this call's: a
+	// second session on the same runner scripts its own pods only
+	kube.mu.Lock()
+	base := len(kube.podOrder)
+	kube.mu.Unlock()
 	assigned := 0
 	for assigned < len(bodies) {
 		kube.mu.Lock()
-		created := len(kube.podOrder)
+		created := len(kube.podOrder) - base
 		kube.mu.Unlock()
 		if created > assigned {
-			kube.scriptPods(assigned, bodies[assigned:created]...)
+			kube.scriptPods(base+assigned, bodies[assigned:created]...)
 			assigned = created
 		}
 		select {
@@ -3249,5 +3254,35 @@ func TestRunSessionPassesTheContextCap(t *testing.T) {
 	}
 	if got := podEnv(kube.podAt(0))["CONTEXT_TOKENS"]; got != "100000" {
 		t.Fatalf("CONTEXT_TOKENS = %q, want the default 100000", got)
+	}
+}
+
+// The gateway refused a call for the card's budget and the worker pushed
+// the work in progress: the session is pushed, with that commit.
+func TestRunSessionBudgetRefusalAfterAPushIsPushed(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	store.budgetRefused = map[string]bool{"t3": true}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c-wip")+"\n"+resultLine(false, "free headroom 0.07 EUR fits 0 output tokens (status 402); work in progress pushed to factory/t3 at c-wip"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want pushed at c-wip", res, err)
+	}
+}
+
+// A failure that pushed but met no budget refusal stays no_push, and a
+// refusal with nothing pushed has no commit to call pushed.
+func TestRunSessionOnlyABudgetRefusalAfterAPushIsPushed(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c-wip")+"\n"+resultLine(false, "model refused"))
+	if err != nil || res.Outcome != OutcomeNoPush {
+		t.Fatalf("no refusal: (%+v, %v), want no_push", res, err)
+	}
+	store.budgetRefused = map[string]bool{"t3": true}
+	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(false, "free headroom 0 EUR"))
+	if err != nil || res.Outcome != OutcomeNoPush {
+		t.Fatalf("refusal without a push: (%+v, %v), want no_push", res, err)
 	}
 }

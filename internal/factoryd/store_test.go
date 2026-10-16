@@ -58,11 +58,13 @@ type fakeStore struct {
 	rolls        []RollRequest
 	liveSessions map[string]LiveSession
 	pauses       map[string]QueuePause
-	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task;
-	// DayFree answers the day's cap less daySpent
-	monthSpend  MonthSpend
-	capRefusals map[string]CapRefusal
-	daySpent    float64
+	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
+	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
+	// less daySpent
+	monthSpend    MonthSpend
+	capRefusals   map[string]CapRefusal
+	budgetRefused map[string]bool
+	daySpent      float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
@@ -778,6 +780,10 @@ func (s *fakeStore) CapRefusal(ctx context.Context, taskID string, since time.Ti
 		return &r, nil
 	}
 	return nil, nil
+}
+
+func (s *fakeStore) BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error) {
+	return s.budgetRefused[taskID], nil
 }
 
 func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
@@ -2499,4 +2505,30 @@ func (s *fakeStore) OverHoldCall(ctx context.Context, taskID string, since time.
 		return &c, nil
 	}
 	return nil, nil
+}
+
+// BudgetRefused on a real Postgres: only an agent's model call refused at
+// the task's own budget since since counts — not one before it, not one a
+// tool's worst case caused, not one the supervisor got.
+func TestPGStoreBudgetRefused(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, kind, decision, reason, tool, ts) VALUES
+			('a', 'agent', 'refused_budget', 'before the session', '', '2026-10-15 10:00:00Z'),
+			('b', 'agent', 'refused_budget', 'a tool', 'web_scrape', '2026-10-15 11:30:00Z'),
+			('c', 'supervisor', 'refused_budget', 'factoryd call', '', '2026-10-15 11:30:00Z'),
+			('d', 'agent', 'refused_budget', 'in the session', '', '2026-10-15 11:30:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	since := time.Date(2026, 10, 15, 11, 0, 0, 0, time.UTC)
+	for task, want := range map[string]bool{"a": false, "b": false, "c": false, "d": true, "none": false} {
+		if got, err := s.BudgetRefused(ctx, task, since); err != nil || got != want {
+			t.Errorf("BudgetRefused(%s) = (%v, %v), want %v", task, got, err, want)
+		}
+	}
 }
