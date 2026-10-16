@@ -1080,7 +1080,9 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 // board that left the page is not swapped, another's through it is;
 // the find's good answer writes its URL in place, with the open
 // document, the drawer's hash and the entry's state, a failed one none;
-// and Back to an entry with another q puts it in the box and runs the find.
+// and Back and Forward put the entry's q in the box without a run of the
+// find, the board reading under the entry's query when it differs from
+// the one it stands on.
 func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1103,7 +1105,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], timers = 0, sources = [], locked = false, queued = [];
+	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], pushed = [], timers = 0, sources = [], locked = false, queued = [];
 function swapped() { locked = false; queued = []; }
 function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
@@ -1116,6 +1118,7 @@ var counts = [el(), el(), el()], log = el({dataset: {task: "t-run", session: "s-
 log.querySelector = function (sel) {
   return log.children.some(function (c) { return sel === "[data-key=\"" + c.dataset.key + "\"]"; }) ? {} : null;
 };
+var themeLight = el({dataset: {themeSet: "light"}});
 var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
   drawer: el({hidden: true}), "session-log": log, "steer-input": el({value: "half a steer"})};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
@@ -1123,7 +1126,8 @@ EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = f
 EventSource.prototype.close = function () { this.closed = true; };
 EventSource.CLOSED = 2;
 var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }}, location: {hash: ""},
-  history: {state: null, replaceState: function (state, title, path) { replaced.push([state, path]); }},
+  history: {state: null, replaceState: function (state, title, path) { replaced.push([state, path]); },
+    pushState: function (state, title, path) { pushed.push(path); }},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
@@ -1147,6 +1151,8 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return byID[id] || null; },
     querySelectorAll: function (sel) { return sel === "#board .count" ? counts : []; },
+    querySelector: function (sel) { return sel === 'button[data-theme-set="light"]' ? themeLight : null; },
+    removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
     createElement: function () { return el(); },
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
     dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
@@ -1363,16 +1369,21 @@ Object.assign(sandbox.location, {href: "http://lab/?project=code", search: "?pro
 sandbox.history.state = null;
 fire("htmx:afterRequest", {elt: {id: "find"}, successful: true, pathInfo: {finalRequestPath: "/?project=code&q=exp"}});
 out.replaced = replaced;
-// Back to an entry whose q is not the box's puts it in the box and runs
-// the find as typing does; an entry with the box's q runs none
+// Back and Forward follow the URL's query: the find's box takes the
+// entry's q without a run of the find, and the board reads under the
+// entry's query when it differs from the one it stands on; an entry with
+// the board's own query reads nothing
 var typed = [];
 q.dispatchEvent = function (ev) { typed.push("[" + q.value + "] " + ev.type); };
-q.value = "exp";
-winListeners.popstate.forEach(function (fn) { fn({}); });
+requests = [];
 Object.assign(sandbox.location, {search: "?project=code&q=exp"});
+q.value = "other";
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popped = [typed.slice(), q.value, requests.slice()];
+Object.assign(sandbox.location, {search: "?project=code"});
 q.value = "exp";
 winListeners.popstate.forEach(function (fn) { fn({}); });
-out.popped = typed;
+out.popped.push(typed.slice(), q.value, requests.slice());
 await settle();
 console.log(JSON.stringify(out));
 })();`
@@ -1392,7 +1403,219 @@ console.log(JSON.stringify(out));
 		`"guard":[1,false,true,0,false,0,0,0],"dropped":[true,["GET /board?project=code","GET /board?project=code"]],` +
 		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
 		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +
-		`"replaced":[[{"doc":"docs/a.md"},"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1"],[null,"/?project=code&q=exp"]],"popped":["[] input"]}`
+		`"replaced":[[{"doc":"docs/a.md"},"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1"],[null,"/?project=code&q=exp"]],"popped":[[],"exp",[],[],"",["GET /board?project=code"]]}`
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// TestConsoleViewEvent: the agent's view change (282) holds for the page
+// as a click does. The event's query pushes the URL beside the open
+// doc= and the drawer's hash and reads the board under it; with no board
+// on the page it touches nothing. The card opens the drawer as its link
+// does and the tab is clicked once the drawer's settle is in, a settle
+// that never comes leaving the listener armed for the next one, a second
+// event before it replacing the shot. Card ""
+// closes the drawer. The panel works the fold and the theme the theme's
+// own button. Back reads the board under the entry's query and puts the
+// entry's q in the box without running the find; an entry that differs
+// from the board's query only by doc= or the fields' order reads nothing.
+// The find's box takes the event's q when the read goes out, held or not,
+// without an input event, and a query without q clears it; one Back
+// supersedes, for the box waits for the query it names. An event whose
+// query the board already stands on — a card, a tab, the panel or the
+// theme alone — pushes no entry, the drawer's hash a card click leaves.
+func TestConsoleViewEvent(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], replaced = [], pushed = [], sources = [], locked = false, queued = [];
+function swapped() { locked = false; queued = []; }
+function el(props) {
+  var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
+    getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {},
+    appendChild: function (c) { this.children.push(c); return c; }};
+  return Object.assign(e, props);
+}
+var tabBtn = el({clicks: 0, click: function () { this.clicks++; }});
+var drawer = el({id: "drawer", hidden: true});
+drawer.querySelector = function (sel) { return sel === 'button[hx-get*="tab=chat"]' ? tabBtn : null; };
+var themeLight = el({dataset: {themeSet: "light"}, click: function () { this.clicks = (this.clicks || 0) + 1; }});
+var themeSwitch = el({id: "theme-switch"});
+themeSwitch.querySelectorAll = function () { return [themeLight]; };
+var box = el({id: "q", value: ""}), typed = [];
+box.dispatchEvent = function (ev) { typed.push(ev.type); };
+var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), drawer: drawer,
+  "status-panel": el(), "theme-switch": themeSwitch, live: el(), q: box};
+function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
+EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
+EventSource.prototype.close = function () { this.closed = true; };
+EventSource.CLOSED = 2;
+// place moves the page's URL as the history calls do in a browser
+function place(path) {
+  var u = new URL(path, sandbox.location.href);
+  sandbox.location.href = u.href;
+  sandbox.location.pathname = u.pathname;
+  sandbox.location.search = u.search;
+  sandbox.location.hash = u.hash;
+}
+var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }},
+  location: {href: "http://lab/?project=code&doc=docs/a.md", pathname: "/", search: "?project=code&doc=docs/a.md", hash: ""},
+  history: {state: null,
+    replaceState: function (state, title, path) { replaced.push([state, path]); place(path); },
+    pushState: function (state, title, path) { pushed.push(path); place(path); }},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  setTimeout: function () {}, setInterval: function () {}, clearTimeout: function () {},
+  Event: function (type) { this.type = type; },
+  fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
+  htmx: {ajax: function (verb, url) {
+    if (url.indexOf("/board") === 0 && locked) {
+      queued.push(verb + " " + url);
+      return Promise.resolve();
+    }
+    requests.push(verb + " " + url);
+    if (url.indexOf("/drawer") > 0) byID["steer-input"] = el({value: ""});
+    if (url.indexOf("/board") !== 0) return new Promise(function (ok) { pending.push(ok); });
+    locked = true;
+    return new Promise(function (ok) { pending.push(function () { swapped(); ok(); }); });
+  }, swap: function () {}, process: function () {}},
+  window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }},
+  document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
+    getElementById: function (id) { return byID[id] || null; },
+    querySelectorAll: function () { return []; },
+    querySelector: function (sel) { return sel === 'button[data-theme-set="light"]' ? themeLight : null; },
+    removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
+    createElement: function () { return el(); },
+    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
+require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+listeners.DOMContentLoaded.forEach(function (fn) { fn(); });
+function settle() {
+  pending.splice(0).forEach(function (ok) { ok(); });
+  return new Promise(function (done) { setImmediate(done); });
+}
+// fire reaches the document's listeners as htmx does: the element a swap
+// landed in is the event's target and detail.target both
+function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, target: detail && detail.target, detail: detail}); }); }
+(async function () {
+var out = {};
+box.value = "old";
+fire("view", {query: "?project=code&q=exp"});
+out.pushed = pushed.slice();
+out.box = box.value;
+out.query = [byID.board.dataset.query, requests.slice()];
+// a read in flight holds the next: it goes out once the first settles
+fire("view", {query: "?project=code"});
+await settle();
+await settle();
+out.queued = requests.slice();
+out.queuedBox = box.value;
+// the card opens the drawer as its link does, the tab once its swap is in
+requests = [];
+fire("view", {card: "t-9", tab: "chat"});
+out.card = [sandbox.location.hash, byID.drawer.hidden];
+winListeners.hashchange.forEach(function (fn) { fn({}); });
+out.opened = [byID.drawer.hidden, requests.slice()];
+// the tab waits for the drawer's settle, not its swap: a click inside the
+// swap reaches no htmx event, so nothing is clicked yet
+fire("htmx:afterSwap", {target: byID.drawer});
+out.tabBeforeSettle = tabBtn.clicks;
+fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer});
+out.tab = tabBtn.clicks;
+fire("view", {card: ""});
+out.closed = [byID.drawer.hidden, sandbox.location.hash, replaced.slice()];
+fire("view", {panel: "closed"});
+out.panel = byID["status-panel"].hidden;
+fire("view", {theme: "light"});
+out.theme = themeLight.clicks;
+// a card, the panel or the theme alone, the event's query the board
+// already stands on, pushes no entry: the drawer's hash is the one a
+// card click leaves, and the panel and the theme push none at all
+var entries = pushed.length, tabsBefore = tabBtn.clicks;
+requests = [];
+fire("view", {query: "?project=code", panel: "closed"});
+out.flatPanel = [pushed.length - entries, byID["status-panel"].hidden, requests.slice()];
+fire("view", {query: "?project=code", theme: "light"});
+out.flatTheme = [pushed.length - entries, themeLight.clicks];
+fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
+winListeners.hashchange.forEach(function (fn) { fn({}); });
+out.flatCard = [pushed.length - entries, byID.drawer.hidden];
+await settle();
+await settle();
+fire("htmx:afterSettle", {target: byID.drawer});
+out.flatTab = tabBtn.clicks - tabsBefore;
+// a page without a board: nothing pushed, nothing read, no throw
+requests = [];
+delete byID.board;
+fire("view", {query: "?project=code"});
+out.noboard = [pushed.length, requests.length];
+// Back reads the board under the entry's query and puts the entry's q in
+// the box without an input event
+byID.board = el({id: "board", dataset: {project: "code", query: "?project=code&q=exp"}});
+Object.assign(sandbox.location, {search: "?project=code"});
+box.value = "exp";
+requests = [];
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popped = [typed.slice(), box.value, requests.slice()];
+await settle();
+await settle();
+// an entry that differs from the board's query only by doc= or the
+// fields' order names the same board: Back reads nothing, the box still
+// takes the entry's q
+Object.assign(sandbox.location, {search: "?doc=docs%2Fa.md&project=code"});
+box.value = "left";
+requests = [];
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popDoc = [box.value, requests.length, byID.board.dataset.query];
+await settle();
+await settle();
+byID.board.dataset.query = "?project=code&q=exp&view=wide";
+Object.assign(sandbox.location, {search: "?project=code&view=wide&q=exp"});
+requests = [];
+winListeners.popstate.forEach(function (fn) { fn({}); });
+out.popOrder = [byID.board.dataset.query, requests.length];
+// a held view read whose q Back has replaced leaves the box the entry's:
+// the sync waits for the query it names
+requests = [];
+fire("view", {query: "?project=code&q=lock"});
+fire("view", {query: "?project=code&q=new"});
+Object.assign(sandbox.location, {search: "?project=code&q=old"});
+winListeners.popstate.forEach(function (fn) { fn({}); });
+await settle();
+await settle();
+out.backBox = [box.value, requests.slice()];
+// two card+tab events before any settle arm one shot, not two: the
+// latest tab alone is clicked, once
+var chatTab = el({clicks: 0, click: function () { this.clicks++; }}), actTab = el({clicks: 0, click: function () { this.clicks++; }});
+drawer.querySelector = function (sel) {
+  if (sel === 'button[hx-get*="tab=chat"]') return chatTab;
+  if (sel === 'button[hx-get*="tab=activity"]') return actTab;
+  return null;
+};
+fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
+fire("view", {query: "?project=code", card: "t-9", tab: "activity"});
+fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer});
+out.twoShots = [chatTab.clicks, actTab.clicks];
+out.streams = sources.length;
+await settle();
+console.log(JSON.stringify(out));
+})();`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
+	got, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"box":"exp","query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
+		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"queuedBox":"","card":["#card=t-9",true],` +
+		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
+		`"panel":true,"theme":1,"flatPanel":[0,true,["GET /board?project=code"]],` +
+		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
+		`"popOrder":["?project=code&q=exp&view=wide",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
+		`"twoShots":[0,1],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

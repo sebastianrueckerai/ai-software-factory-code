@@ -130,9 +130,11 @@ func pemBlock(typ string, der []byte) []byte {
 }
 
 // buildVMUserData is the VM's cloud-init script: the CA (to verify
-// clients), the server pair, the checksum-pinned buildkitd release with its
-// own runc, and a systemd unit serving mTLS on buildVMPort. It carries no
-// secret beyond the VM's own server key.
+// clients), the server pair, the checksum-pinned buildkitd tarball from
+// the factory's store (its upstream-files.txt line, roadmap 203, step 2,
+// so the VM reaches no upstream) with its own runc, and a systemd unit
+// serving mTLS on buildVMPort. It carries no secret beyond the VM's own
+// server key.
 func buildVMUserData(p buildPKI) (string, error) {
 	var b bytes.Buffer
 	err := userDataTmpl.Execute(&b, map[string]any{
@@ -158,7 +160,7 @@ EOF
 EOF
 )
 cd /root
-curl -fsSL --retry 5 -o buildkit.tar.gz https://github.com/moby/buildkit/releases/download/{{.Version}}/buildkit-{{.Version}}.linux-amd64.tar.gz
+curl -fsSL --retry 5 -o buildkit.tar.gz https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/{{.Version}}/buildkit-{{.Version}}.linux-amd64.tar.gz
 echo "{{.SHA256}}  buildkit.tar.gz" | sha256sum -c -
 tar -C /usr/local -xzf buildkit.tar.gz bin/buildkitd bin/buildctl bin/buildkit-runc
 ln -sf /usr/local/bin/buildkit-runc /usr/local/bin/runc
@@ -182,8 +184,8 @@ systemctl enable --now buildkitd
 `))
 
 // buildVMFirewallRules: buildkitd reachable only from the cluster's public
-// egress IPs; outbound only DNS, HTTP and HTTPS (the builds' base images,
-// module proxies, apt and release downloads).
+// egress IPs; outbound only DNS, HTTP and HTTPS (the builds' base images
+// and inputs: the store, Debian's dated snapshot and PGDG's archive).
 func buildVMFirewallRules(sources []string) []hcloud.FirewallRule {
 	anywhere := []string{"0.0.0.0/0"}
 	return []hcloud.FirewallRule{
@@ -414,8 +416,8 @@ func (b *BuildVMs) Provision(ctx context.Context, jobID int64) (vm BuildVM, err 
 		Name: srvRow.Name, ServerType: b.cfg.ServerType, Location: b.cfg.Location, Image: b.cfg.Image,
 		UserData: userData, Labels: srvRow.Labels,
 		Firewalls: []hcloud.FirewallRef{{Firewall: fw.ID}},
-		// IPv4 only: GitHub release downloads have no IPv6, and each
-		// primary IP counts against the project's quota.
+		// IPv4 only: the store's release downloads have no IPv6, and
+		// each primary IP counts against the project's quota.
 		PublicNet: &hcloud.PublicNet{EnableIPv4: true},
 	})
 	if hcloud.IsCode(err, "resource_limit_exceeded") {

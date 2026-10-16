@@ -128,11 +128,9 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // place when it comes, which a stream swap may have replaced since it
 // asked, and its good answer writes its query into the URL in place of the
 // current entry, the open drawer's hash and the open document's doc= kept,
-// so typing adds no history entry. Back or Forward to an entry whose q is
-// not the box's puts that q in the box and runs the find as typing does.
-// A browser without moveBefore (Safari) takes the form out and puts it
-// back at each swap of the board, which drops the box's focus: the swap
-// gives it back with the caret.
+// so typing adds no history entry. A browser without moveBefore (Safari)
+// takes the form out and puts it back at each swap of the board, which
+// drops the box's focus: the swap gives it back with the caret.
 (function () {
   var caret = null;
   function keep(target) {
@@ -158,12 +156,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     if (doc !== null) u.searchParams.set("doc", doc);
     history.replaceState(history.state, "", u.pathname + u.search + location.hash);
   });
-  window.addEventListener("popstate", function () {
-    var q = document.getElementById("q"), want = new URLSearchParams(location.search).get("q") || "";
-    if (!q || q.value === want) return;
-    q.value = want;
-    q.dispatchEvent(new Event("input", { bubbles: true }));
-  });
 })();
 
 // Theme selector (C15): the moon sets dark, the default, the sun sets
@@ -185,6 +177,13 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     localStorage.setItem("theme", theme);
     mark(theme);
   });
+  // the agent's view change sets the theme as its button does (282)
+  document.addEventListener("view", function (e) {
+    var d = e.detail || {};
+    if (d.theme !== "dark" && d.theme !== "light") return;
+    var b = document.querySelector('button[data-theme-set="' + d.theme + '"]');
+    if (b) b.click();
+  });
 })();
 
 // The board follows its project's event stream under the board's query,
@@ -205,7 +204,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down.
 (function () {
-  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "";
+  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null;
   function board() { return document.getElementById("board"); }
   function retry() {
     var ids = Object.keys(missed);
@@ -252,6 +251,16 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       missed[""] = true;
       return;
     }
+    // a view change's read carries its own q for the find's box, which the
+    // swap would else leave holding the member's words: it goes in here,
+    // where no find is in flight, at once or when a held read finally
+    // runs, and only while it still names the query the board stands
+    // under, for Back or a find may have taken both since
+    if (viewQ !== null) {
+      var i = document.getElementById("q"), q = new URLSearchParams(b.dataset.query).get("q") || "";
+      if (i && viewQ === q && i.value !== q) i.value = q;
+      viewQ = null;
+    }
     reading = true;
     var done = function () {
       reading = false;
@@ -259,6 +268,49 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     };
     htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"}).then(done, done);
   }
+  // the agent's view change (282): the merged query holds for this page
+  // as a click's does, nothing stored, so it pushes the URL beside the
+  // open document's doc= and the drawer's hash — only when the board's
+  // query changes, for a card, a tab, the panel or the theme alone push
+  // no entry a click would not — then reads the board under it, the
+  // guards of a read holding as ever, and the find's box takes the
+  // query's q as Back hands it the entry's
+  document.addEventListener("view", function (e) {
+    var d = e.detail || {}, b = board();
+    if (typeof d.query !== "string" || !b) return;
+    viewQ = new URLSearchParams(d.query).get("q") || "";
+    if (d.query !== b.dataset.query) {
+      var u = new URL(location.href);
+      u.search = d.query;
+      var doc = new URLSearchParams(location.search).get("doc");
+      if (doc !== null) u.searchParams.set("doc", doc);
+      history.pushState(history.state, "", u.pathname + u.search + location.hash);
+    }
+    b.dataset.query = d.query;
+    swapBoard();
+  });
+  // boardQuery is a URL's query in the form the board's own data-query
+  // holds: doc= aside, the fields sorted, so two entries that differ only
+  // in the docked document or the fields' order name the same board (282)
+  function boardQuery(s) {
+    var p = new URLSearchParams(s);
+    p.delete("doc");
+    p.sort();
+    var out = p.toString();
+    return out ? "?" + out : "";
+  }
+  // Back and Forward follow the URL's query: the find's box takes the
+  // entry's q without a run of the find, and the board reads the entry's
+  // query when it differs, in that form, from the one it stands on
+  window.addEventListener("popstate", function () {
+    var q = new URLSearchParams(location.search).get("q") || "", i = document.getElementById("q");
+    if (i && i.value !== q) i.value = q;
+    var b = board(), entry = boardQuery(location.search);
+    if (b && boardQuery(b.dataset.query) !== entry) {
+      b.dataset.query = entry;
+      swapBoard();
+    }
+  });
   function swapCard(id) {
     if (finding) {
       missed[id] = true;
@@ -408,6 +460,11 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       if (t) t.focus();
     }
   });
+  // the agent's view change folds or unfolds the status panel (282)
+  document.addEventListener("view", function (e) {
+    var d = e.detail || {};
+    if (d.panel === "open" || d.panel === "closed") toggleStatus(d.panel === "open");
+  });
   function pulse(e) {
     var el = document.getElementById("pulse"), d = e.detail;
     pulseBusy = e.kind === "pulse_computing";
@@ -556,6 +613,30 @@ document.addEventListener("htmx:afterSwap", function (e) {
   var from = e.detail.requestConfig.elt, steer = document.getElementById("steer-input");
   if (from.getAttribute("role") === "tab") t.querySelector("[role=tab][aria-selected=true]").focus();
   else if (from.id === "steer-form" && steer) steer.focus();
+});
+
+// the agent's view change opens the drawer's card as its link does, the
+// tab clicked once the drawer's own settle is in (a click inside the
+// swap reaches no htmx event), a second event before that settle
+// replacing the shot, and card "" closes it (282)
+var pendingTabShot;
+document.addEventListener("view", function (e) {
+  var d = e.detail || {};
+  if (d.card === "") return closeDrawer();
+  if (typeof d.card !== "string") return;
+  var want = "#card=" + encodeURIComponent(d.card);
+  if (location.hash === want) showDrawer();
+  else location.hash = want;
+  if (!d.tab || d.tab === "overview") return;
+  if (pendingTabShot) document.removeEventListener("htmx:afterSettle", pendingTabShot);
+  pendingTabShot = function (ev) {
+    if (!ev.target || ev.target.id !== "drawer") return;
+    document.removeEventListener("htmx:afterSettle", pendingTabShot);
+    pendingTabShot = null;
+    var b = ev.target.querySelector('button[hx-get*="tab=' + d.tab + '"]');
+    if (b) b.click();
+  };
+  document.addEventListener("htmx:afterSettle", pendingTabShot);
 });
 
 // The board's keys, listed by ? : w switches the view, Escape closes the

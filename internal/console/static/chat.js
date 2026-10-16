@@ -423,6 +423,7 @@ var chatView = (function () {
       if (ev.event === "tool") add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result));
       else if (ev.event === "proposal") add(into, chatView.proposalHTML(d));
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));
+      else if (ev.event === "view") document.dispatchEvent(new CustomEvent("view", {detail: d}));
       else if (ev.event === "error") add(into, "<p class=\"chat-error\">" + chatView.esc(d.message) + "</p>");
       ended = ended || ev.event === "done" || ev.event === "error";
     }
@@ -477,6 +478,13 @@ var chatView = (function () {
     input.value = "";
     queueOf(open).add(text);
   }
+  // pageQuery is the view the page stands on (282): the board's query the
+  // chat's POST carries, so the agent's view tools work the page the
+  // member looks at, not a page of their own
+  function pageQuery() {
+    var b = document.getElementById("board");
+    return b && b.dataset.query ? b.dataset.query : "";
+  }
   function turn(n, text) {
     var shown = n === open, command = text === "/compact";
     if (shown) {
@@ -490,7 +498,7 @@ var chatView = (function () {
       scrollEnd(true);
       into = log.lastElementChild;
     }
-    run(n, base, new URLSearchParams({message: text, conversation: n}).toString(), into).then(function () {
+    run(n, base, new URLSearchParams({message: text, conversation: n, view: pageQuery()}).toString(), into).then(function () {
       if (command && n === open) return load(n);
     }).then(function () {
       if (document.activeElement === document.body) input.focus();

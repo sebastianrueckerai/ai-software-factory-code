@@ -169,7 +169,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
-	files, parts, why := diffParts(diff, "audit")
+	files, parts, why := diffParts(diff, "audit", reviewDiffMax)
 	if why != "" {
 		res.Findings = append(res.Findings, AuditFinding{Item: "not audited in full", Why: why})
 		stopBeats()

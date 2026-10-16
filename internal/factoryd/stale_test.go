@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -54,7 +55,7 @@ func newStaleRig(t *testing.T, ages map[string]time.Duration) *staleRig {
 	store := newFakeStore()
 	for id, age := range ages {
 		status := map[string]string{"t-run": "running", "t-wait": "waiting-poster", "t-fresh": "running",
-			"t-chat": "running", "t-queued": "queued"}[id]
+			"t-deps": "waiting-deps", "t-chat": "running", "t-queued": "queued"}[id]
 		if status == "" {
 			t.Fatalf("unknown stale rig card %s", id)
 		}
@@ -86,21 +87,21 @@ func TestStaleSweepNudgesAQuietCardOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	nudged := map[string]time.Time{}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, nil, nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
 	if want := []string{"t-run stale_nudge factoryd #0: quiet for 45 min while running"}; !slices.Equal(rig.wf.signals, want) {
 		t.Fatalf("signals = %q, want the quiet running card nudged alone", rig.wf.signals)
 	}
 	if n, ok := nudged["t-run"]; !ok || time.Since(n) > time.Minute {
 		t.Fatalf("nudged = %v, want t-run remembered at now", nudged)
 	}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, nil, nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
 	if len(rig.wf.signals) != 1 {
 		t.Fatalf("signals = %q, want no second nudge within the grace", rig.wf.signals)
 	}
 }
 
-// A card still quiet a window after its nudge, with no activity of its
-// workflow running in this process, is escalated like any escalation:
+// A card still quiet a window after its nudge, whose workflow is dead,
+// is escalated like any escalation:
 // waiting-human mirrored on the issue, the reason a comment whose first
 // line is the question, an intake event, a question_asked row, an alert,
 // and the timeline's escalated step carrying the sweep's own words. The
@@ -109,7 +110,7 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-wait": 70 * time.Minute})
 	nudged := map[string]time.Time{"t-run": time.Now().Add(-StaleWindow - time.Minute),
 		"t-wait": time.Now().Add(-StaleWindow - time.Minute)}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, nil, nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
 	ctx := context.Background()
 	for id, want := range map[string]string{
 		"t-run":  "The card was quiet for 1 h 10 min while running: is its run gone?",
@@ -188,29 +189,60 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 	}
 	// waiting-human is no longer swept: another pass records nothing new
 	before := len(rig.store.intakeEvents)
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, nil, nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
 	if len(rig.store.intakeEvents) != before || len(rig.wf.signals) != 0 {
 		t.Fatalf("the second pass acted again: %d intake events, %q signals", len(rig.store.intakeEvents), rig.wf.signals)
 	}
 }
 
-// A card whose workflow runs an activity in this process is left alone:
-// its quiet is sparse steps, not a dead run — the liveness the gates
-// read.
-func TestStaleSweepLeavesALiveSessionAlone(t *testing.T) {
-	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute})
-	nudged := map[string]time.Time{"t-run": time.Now().Add(-StaleWindow - time.Minute)}
-	gates := &GateWatch{}
-	run := &watchedRun{activity: ActivityRunSession, attempt: 1, bound: time.Hour,
-		timer: time.NewTimer(time.Hour), raise: func(time.Duration, bool) {}, cancel: func(error) {}}
-	gates.mu.Lock()
-	gates.runs = map[string]*watchedRun{runKey(WorkflowID("t-run"), "7"): run}
-	gates.mu.Unlock()
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, gates, nudged)
-	if task, _, _ := rig.store.Task(context.Background(), "t-run"); task.Status != "running" {
-		t.Fatalf("the card = %s, want running: a live session is never escalated", task.Status)
+// workflowsRunning is the sweep's Temporal read with only ids running.
+func workflowsRunning(ids ...string) func(context.Context, string) (bool, error) {
+	return func(_ context.Context, id string) (bool, error) { return slices.Contains(ids, id), nil }
+}
+
+// A card whose workflow runs is left alone in any state, however quiet:
+// a wait on a dependency, a human or a timer is by design. Its nudge
+// memory clears. A Temporal error escalates nobody.
+func TestStaleSweepLeavesALiveWorkflowAlone(t *testing.T) {
+	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-deps": 5 * time.Hour, "t-wait": 70 * time.Minute})
+	old := time.Now().Add(-StaleWindow - time.Minute)
+	nudged := map[string]time.Time{"t-run": old, "t-deps": old}
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning("t-run", "t-deps", "t-wait"), nudged)
+	for _, id := range []string{"t-run", "t-deps"} {
+		if task, _, _ := rig.store.Task(context.Background(), id); task.Status == "waiting-human" {
+			t.Fatalf("%s was escalated while its workflow runs", id)
+		}
+		if _, ok := nudged[id]; ok {
+			t.Fatalf("%s still in nudged: a running workflow clears the memory", id)
+		}
 	}
-	if len(rig.store.intakeEvents) != 0 || len(rig.store.alerts) != 0 || len(*rig.comments) != 0 {
-		t.Fatalf("the sweep escalated a live session: %+v %v", rig.store.intakeEvents, *rig.comments)
+	if len(rig.store.intakeEvents) != 0 || len(rig.store.alerts) != 0 || len(*rig.comments) != 0 || len(rig.wf.signals) != 0 {
+		t.Fatalf("the sweep acted on live workflows: %+v %v %q", rig.store.intakeEvents, *rig.comments, rig.wf.signals)
+	}
+
+	down := func(context.Context, string) (bool, error) { return false, errors.New("temporal down") }
+	nudged = map[string]time.Time{"t-wait": old}
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, down, nudged)
+	if task, _, _ := rig.store.Task(context.Background(), "t-wait"); task.Status != "waiting-poster" || len(rig.wf.signals) != 0 {
+		t.Fatalf("t-wait = %s after %q: an unreadable Temporal must skip the card", task.Status, rig.wf.signals)
+	}
+	if _, ok := nudged["t-wait"]; !ok {
+		t.Fatalf("nudge memory was cleared on a Temporal error")
+	}
+}
+
+// A dead workflow keeps the ladder: a waiting-deps card is nudged once,
+// and escalated when it is still dead a window later.
+func TestStaleSweepEscalatesADeadWaitingDepsCard(t *testing.T) {
+	rig := newStaleRig(t, map[string]time.Duration{"t-deps": 5 * time.Hour})
+	nudged := map[string]time.Time{}
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
+	if len(rig.wf.signals) != 1 || !strings.Contains(rig.wf.signals[0], "while waiting on its dependencies") {
+		t.Fatalf("signals = %q, want one nudge", rig.wf.signals)
+	}
+	nudged["t-deps"] = time.Now().Add(-StaleWindow - time.Minute)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
+	if task, _, _ := rig.store.Task(context.Background(), "t-deps"); task.Status != "waiting-human" {
+		t.Fatalf("t-deps = %s, want waiting-human", task.Status)
 	}
 }

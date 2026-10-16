@@ -7,32 +7,59 @@ ARG NODE_VERSION=24.21.0
 # their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
 
-# The archives the image unpacks, each checked against its sha256 before
-# a layer holds it. The image's steps mount this stage, so no layer of the
-# image keeps an archive. opencode's release asset arch is "x64", not
-# "amd64"; Node's sum is the tarball's line in nodejs.org's signed
-# SHASUMS256.txt for its version.
+# The archives the image unpacks, each read from the factory's store
+# (roadmap 203, step 2): the generic package its line of
+# upstream-files.txt fills, at the sha256 the line pins — no build
+# reaches the line's upstream. The image's steps mount this stage, so no
+# layer of the image keeps an archive. opencode's release asset arch is
+# "x64", not "amd64".
 FROM scratch AS downloads
 ARG OPENCODE_VERSION
 ARG NODE_VERSION
-ADD --checksum=sha256:3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b https://github.com/anomalyco/opencode/releases/download/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
-ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
+ADD --checksum=sha256:3046e0404fdc60fb80307e7a47824ba07477364178a4d09baa8548496dd6d43b https://git.aisoftwarefactory.world/api/packages/upstream/generic/opencode/${OPENCODE_VERSION}/opencode-linux-x64.tar.gz /opencode.tar.gz
+ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
 
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
-# builds the same digest at any wall-clock time.
+# builds the same digest at any wall-clock time. The stage builds offline
+# (roadmap 203, step 2): its module cache is the store's go-modules
+# tarball of this go.sum, restored below in the GOPROXY file layout
+# scripts/upstream-files uploads; GOPROXY=off leaves no fallback, so a
+# missing or wrong store copy fails the build and go.sum stays the
+# content pin, and GOFLAGS=-mod=mod keeps the download a read of the
+# cache, not a rewrite of go.mod.
 ARG SOURCE_DATE_EPOCH
-ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH
+ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
+    GOPROXY=off \
+    GOFLAGS=-mod=mod
 WORKDIR /src
 COPY go.mod go.sum ./
 # Go telemetry off before the first go call: its counter files carry the
 # build's date, and `go telemetry off` would date its mode file too; an
 # undated "off" is the same mode.
-RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && go mod download
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" \
+      && sum=$(sha256sum go.sum | awk '{print $1}') \
+      && wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && mkdir -p "$(go env GOMODCACHE)/cache/download" \
+      && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
+      && rm /tmp/go-modules.tar.gz \
+      && go mod download
 COPY cmd/ cmd/
 COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/agent-worker ./cmd/agent-worker
+
+# The store's npm cache of the opencode plugin lockfile (roadmap 203,
+# step 2): package npm-cache, version the lockfile's sha256, its _cacache
+# the tarball holds — what scripts/upstream-files uploaded. The node base
+# image below ships no downloader, so the store's golang copy fetches it
+# with busybox wget; a 404 fails the build, no upstream answers.
+FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS npm-cache
+COPY opencode-plugin/package-lock.json /tmp/package-lock.json
+RUN sum=$(sha256sum /tmp/package-lock.json | awk '{print $1}') \
+      && wget -O /tmp/npm-cache.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/npm-cache/$sum/npm-cache.tar.gz" \
+      && mkdir -p /npm-cache \
+      && tar -C /npm-cache -xzf /tmp/npm-cache.tar.gz
 
 # opencode's first run npm-installs @opencode-ai/plugin (pinned to its own
 # version) into $HOME/.config/opencode if that directory is empty -- proven
@@ -43,12 +70,15 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ag
 # below fills the directory first, so it never does. package.json and
 # package-lock.json here are opencode's own self-installed lockfile, copied
 # verbatim, so `npm ci` reproduces byte-for-byte what opencode would install
-# itself, pinned at build time rather than resolved by a session.
+# itself, pinned at build time rather than resolved by a session. The cache
+# comes from the store, and npm ci runs --offline against it (roadmap 203,
+# step 2): a missing or wrong store copy fails the install.
 FROM ${UPSTREAM}docker.io/library/node:22-bookworm-slim@sha256:25330af3531fb5e23318554a0aa911125b6e91b1b777edf7655501d207c067a2 AS opencode-plugin
 ARG OPENCODE_VERSION
 WORKDIR /opencode-home/.config/opencode
 COPY opencode-plugin/package.json opencode-plugin/package-lock.json ./
-RUN npm ci \
+COPY --from=npm-cache /npm-cache /npm-cache
+RUN npm ci --offline --cache /npm-cache --no-audit --no-fund \
       && test "$(node -p "require('./node_modules/@opencode-ai/plugin/package.json').version")" = "${OPENCODE_VERSION#v}"
 
 FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
@@ -68,7 +98,9 @@ ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
 # alternatives logs carry the build's time.
-ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://www.postgresql.org/media/keys/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
+# The PGDG signing key, the store's copy of its line of
+# upstream-files.txt (roadmap 203, step 2) at the line's sha256.
+ADD --checksum=sha256:0144068502a1eddd2a0280ede10ef607d1ec592ce819940991203941564e8e76 https://git.aisoftwarefactory.world/api/packages/upstream/generic/pgdg-key/ACCC4CF8/ACCC4CF8.asc /etc/apt/keyrings/pgdg.asc
 RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && printf '%s\n' 'Acquire::Retries "8";' 'Acquire::http::Timeout "60";' 'Acquire::https::Timeout "60";' 'Acquire::Check-Valid-Until "false";' \
            > /etc/apt/apt.conf.d/80snapshot \

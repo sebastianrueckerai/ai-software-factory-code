@@ -6,7 +6,6 @@ import (
 	"log"
 	"math"
 	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -236,25 +235,6 @@ func (g *GateWatch) Running(workflowID, activityID string, attempt int32) bool {
 	defer g.mu.Unlock()
 	_, ok := g.run(workflowID, activityID, attempt)
 	return ok
-}
-
-// RunningActivity is the activity workflowID runs here, "" when none
-// does: liveness the way the gates read it, so a caller that watches a
-// workflow (the stale sweep) does not act on a live one whose steps are
-// merely sparse.
-func (g *GateWatch) RunningActivity(workflowID string) (string, bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	name, running := "", false
-	for key, run := range g.runs {
-		if id, _, found := strings.Cut(key, "/"); !found || id != workflowID {
-			continue
-		}
-		if !running || run.activity < name {
-			name, running = run.activity, true
-		}
-	}
-	return name, running
 }
 
 // Wait extends the attempt's bound once by its own length; false when it

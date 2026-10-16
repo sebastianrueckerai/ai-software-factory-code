@@ -308,3 +308,40 @@ func TestSplitDiffPathWithASpace(t *testing.T) {
 		t.Fatalf("sites = %+v", sites)
 	}
 }
+
+func TestDiffPartsBoundary(t *testing.T) {
+	for name, tc := range map[string]struct {
+		max, second, parts int
+	}{
+		"exactly the limit":    {48 << 10, 18 << 10, 1},
+		"one byte past":        {48 << 10, 18<<10 + 1, 2},
+		"a larger limit holds": {256 << 10, 18<<10 + 1, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, parts, why := diffParts(diffFile("a.go", 30<<10)+diffFile("b.go", tc.second), "review", tc.max)
+			if why != "" || len(parts) != tc.parts {
+				t.Fatalf("parts = %d, why = %q, want %d parts", len(parts), why, tc.parts)
+			}
+		})
+	}
+	_, parts, why := diffParts(diffFile("a.go", 300<<10), "review", 256<<10)
+	if parts != nil || !strings.Contains(why, "the review reads at most 3 parts of 256 KiB (a.go alone is 300 KiB)") {
+		t.Fatalf("parts = %v, why = %q", parts, why)
+	}
+}
+
+func TestOthersOfNamesWhatTheOtherPartsAdd(t *testing.T) {
+	a := splitDiff("diff --git a/store.go b/store.go\n--- a/store.go\n+++ b/store.go\n@@ -1,2 +1,5 @@\n context\n-func Old() {}\n+func (s *Store) TasksByPR(ctx int) {}\n+type Server struct {\n+\tmux.HandleFunc(\"GET /api/tasks\", h)\n")
+	b := splitDiff("diff --git a/ui.css b/ui.css\n--- a/ui.css\n+++ b/ui.css\n@@ -1,1 +1,3 @@\n+.card-title {\n+  color: red;\n")
+	c := splitDiff("diff --git a/c.go b/c.go\n--- /dev/null\n+++ b/c.go\n@@ -0,0 +1,2 @@\n+func Own() {}\n+go func() {\n")
+	parts := [][]fileDiff{a, b, c}
+	if got, want := othersOf(parts, 1), "functions: Own, TasksByPR\ntypes: Server\nroutes: /api/tasks"; got != want {
+		t.Fatalf("others of part 2 = %q, want %q", got, want)
+	}
+	if got, want := othersOf(parts, 0), "functions: Own\nselectors: .card-title"; got != want {
+		t.Fatalf("others of part 1 = %q, want %q", got, want)
+	}
+	if got := othersOf([][]fileDiff{a}, 0); got != "" {
+		t.Fatalf("one part has no others, got %q", got)
+	}
+}
