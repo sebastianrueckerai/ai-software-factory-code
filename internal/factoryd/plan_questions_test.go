@@ -129,9 +129,10 @@ func must[T any](v T, err error) T {
 
 // RequestPlan of a revision with two questions lists them in the plan
 // comment after the table, stores them sanitised as the comment is (a
-// clicked choice is posted as the member's) and records one
-// question_asked row each, once however often it runs; the approval
-// request waits.
+// clicked choice is posted as the member's), records one question_asked
+// row each and writes them to the recording rule's ledger as the
+// planner's catches, once however often it runs; the approval request
+// waits.
 func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	p := questionPlan()
 	p.Questions[1].Choices[1] = "30 days, see https://evil.example"
@@ -143,7 +144,7 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "| 4 | integration | integration | Integration: acceptance tests | medium | foundation, links-api, redirects |  |\n\nQuestions:\n" +
+	want := "| 3 | all_green | invariant | go test ./... passes | foundation, integration |\n\nQuestions:\n" +
 		"1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)\n" +
 		"2. How long are the results kept? (choices: 7 days / 30 days, see hxxps://evil[.]example)\n\n<details>"
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {
@@ -161,6 +162,10 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	}
 	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 2 || qs[1].Choices[1] != "30 days, see hxxps://evil[.]example" {
 		t.Fatalf("stored questions %+v", qs)
+	}
+	if got := store.catches["t-plan 1 "+CatchQuestion+" "+FinderPlanner]; !slices.Equal(got,
+		[]string{"How often does the checker probe a site?", "How long are the results kept?"}) {
+		t.Fatalf("the recording rule's catches %q", got)
 	}
 	if len(store.approvals) != 1 || store.approvals[0].Kind != ApprovalPlan || store.approvals[0].Status != "pending" {
 		t.Fatalf("approvals %+v", store.approvals)

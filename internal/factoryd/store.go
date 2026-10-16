@@ -474,6 +474,10 @@ type Store interface {
 	AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error
 	// OpenPlanQuestions is how many of revision's questions have no answer.
 	OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error)
+	// PutPlanCatches stores revision's caught holes of one kind and finder,
+	// the recording rule's ledger, unless it has them already, and reports
+	// whether it did.
+	PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its
 	// key, and returns the plan's card of that key.
 	CreatePlanCard(ctx context.Context, t Task) (Task, error)

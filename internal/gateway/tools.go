@@ -260,7 +260,7 @@ type RequestInfoIn struct {
 }
 
 type FilePlanIn struct {
-	Plan string `json:"plan" jsonschema:"the complete plan json: one object with summary and cards"`
+	Plan string `json:"plan" jsonschema:"the complete plan json: one object with summary, criteria and cards"`
 }
 
 // escalateSchema is EscalateIn's input schema with choices a plain array:
