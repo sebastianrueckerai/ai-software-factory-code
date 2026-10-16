@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -3091,5 +3092,19 @@ func TestRunSessionResultNamesTheModelItEndedOn(t *testing.T) {
 	}
 	if res.Model != "factory/coding-frontier" || res.Outcome != OutcomePushed {
 		t.Fatalf("result = %+v, want the model it ended on", res)
+	}
+}
+
+func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	got := podEnv(kube.podAt(0))["FACTS"]
+	if !regexp.MustCompile(`^factoryd's facts for this session: budget 3\.20 of 5\.00 EUR left; \d+ minutes of agent time left; this is session 1 of the 4 `).MatchString(got) {
+		t.Fatalf("FACTS = %q", got)
 	}
 }

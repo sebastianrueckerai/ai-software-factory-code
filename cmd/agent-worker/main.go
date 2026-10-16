@@ -258,6 +258,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		Spec:           s.env.spec,
 		CardRole:       s.env.cardRole,
 		LeftOut:        s.env.leftOut,
+		Facts:          s.env.facts,
 	}
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
@@ -452,6 +453,8 @@ type workerEnv struct {
 	// leftOut are factoryd's notes on what the env could not carry
 	// (LEFT_OUT), for the brief
 	leftOut []string
+	// facts (FACTS) is factoryd's line for the brief
+	facts string
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
@@ -491,6 +494,7 @@ func loadEnv() (workerEnv, error) {
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
 	e.docsDir = str("DOCS_DIR")
+	e.facts = str("FACTS")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,

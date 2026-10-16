@@ -1127,3 +1127,13 @@ func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
 		t.Fatalf("guide names the rule without the tool: %s", g)
 	}
 }
+
+func TestBriefStatesTheSessionsFacts(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", Facts: "FACTS LINE"}, "T")
+	if !strings.Contains(got, "FACTS LINE\n") {
+		t.Fatalf("brief lacks the facts line:\n%s", got)
+	}
+	if got := briefText(harness.TaskBrief{Objective: "o"}, "T"); strings.Contains(got, "factoryd's facts") {
+		t.Fatal("a brief without facts must not mention them")
+	}
+}

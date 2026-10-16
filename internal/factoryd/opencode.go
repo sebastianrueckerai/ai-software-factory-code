@@ -657,6 +657,9 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		}
 		b.WriteString("\n")
 	}
+	if brief.Facts != "" {
+		b.WriteString(brief.Facts + "\n")
+	}
 	switch {
 	case brief.Docs:
 		b.WriteString("The project's document repository (the roadmap, the plans, the architecture, the design rounds and their prototypes) is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n")

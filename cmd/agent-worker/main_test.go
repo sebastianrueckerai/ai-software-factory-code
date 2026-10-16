@@ -1725,3 +1725,12 @@ func TestNoPushTokenNoPush(t *testing.T) {
 		t.Fatalf("fork branch = %s, want nothing pushed", out)
 	}
 }
+
+func TestLoadEnvReadsTheFacts(t *testing.T) {
+	setRequiredEnv(t)
+	t.Setenv("FACTS", "factoryd's facts for this session: budget 3.20 of 5.00 EUR left")
+	e, err := loadEnv()
+	if err != nil || e.facts != "factoryd's facts for this session: budget 3.20 of 5.00 EUR left" {
+		t.Fatalf("facts = %q, %v", e.facts, err)
+	}
+}

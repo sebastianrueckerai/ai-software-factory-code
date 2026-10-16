@@ -408,6 +408,11 @@ type sessionSpec struct {
 	policy policy.Document
 	// attempt is the session's attempt number (1 for the first)
 	attempt int
+	// sessions is the cap the attempt number counts against: the policy's
+	// session limit and the attempts a human answer granted
+	sessions int
+	// facts is factoryd's FACTS line for the brief
+	facts string
 	// agentTime and checkIn are the task's resolved values (policy.Time,
 	// via TaskConfig for every session kind, RunSession's and
 	// reportSession's alike): supervisorConfig's WallClockCap and
@@ -511,6 +516,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 	} else {
 		s.messageToken = rand.Text()
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, TimeLeft: time.Until(deadline),
+			Attempt: s.attempt, Sessions: s.sessions}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -1510,6 +1517,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
+	}
+	if s.facts != "" {
+		env = append(env, map[string]any{"name": "FACTS", "value": s.facts})
 	}
 	if s.spec != "" {
 		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})

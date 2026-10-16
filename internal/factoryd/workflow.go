@@ -251,8 +251,11 @@ type SessionAnswerInput struct {
 // SessionInput is one attempt: StartRef is the commit the worker starts
 // from (empty = the task's base SHA).
 type SessionInput struct {
-	TaskID   string
-	Attempt  int
+	TaskID  string
+	Attempt int
+	// Sessions is the cap Attempt counts against: the session limit and
+	// the attempts human answers granted
+	Sessions int
 	Model    string
 	Findings []string
 	// Answers are every human answer to the task's escalations, newest
@@ -1481,7 +1484,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res SessionResult
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
-			TaskID: t.taskID, Attempt: attempt, Model: model,
+			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		})
