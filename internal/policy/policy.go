@@ -297,6 +297,20 @@ type Limits struct {
 	// NudgeAfter: a repetition gets its nudges first. Absent:
 	// DefaultSameCall.
 	SameCall int `yaml:"same_call,omitempty" json:"same_call"`
+	// WarnAt is the percent of a card's budget, or of a session's agent
+	// time, spent when factoryd tells the running agent to wrap up and
+	// push, 1 to 99. Absent: DefaultWarnAt.
+	WarnAt int `yaml:"warn_at,omitempty" json:"warn_at"`
+	// PlanWarnAt is WarnAt for a planner session. Absent: DefaultPlanWarnAt.
+	PlanWarnAt int `yaml:"plan_warn_at,omitempty" json:"plan_warn_at"`
+	// NoPushSpend is the percent of a card's budget spent with nothing
+	// pushed at which the session supervisor is called, 1 to 99. Absent:
+	// DefaultNoPushSpend.
+	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
+	// ContextTokens is the context size at which opencode compacts a
+	// session's conversation, MinContextTokens to ModelContext. Absent:
+	// DefaultContextTokens.
+	ContextTokens int `yaml:"context_tokens,omitempty" json:"context_tokens"`
 }
 
 // DefaultSameCall is the same_call detector's threshold of a policy
@@ -305,6 +319,31 @@ const DefaultSameCall = 4
 
 // SameCallAfter is SameCall, or DefaultSameCall when unset.
 func (l Limits) SameCallAfter() int { return cmp.Or(l.SameCall, DefaultSameCall) }
+
+// The wrap-up warning, the spend-without-push line and the compaction
+// threshold of a policy without the keys, and of a version pinned before
+// they existed. ModelContext is the context window the factory declares
+// for its models in opencode's config.
+const (
+	DefaultWarnAt        = 80
+	DefaultPlanWarnAt    = 67
+	DefaultNoPushSpend   = 60
+	DefaultContextTokens = 100000
+	MinContextTokens     = 20000
+	ModelContext         = 200000
+)
+
+// WarnShare, PlanWarnShare and NoPushShare are the percents as shares of 1.
+func (l Limits) WarnShare() float64 { return float64(cmp.Or(l.WarnAt, DefaultWarnAt)) / 100 }
+func (l Limits) PlanWarnShare() float64 {
+	return float64(cmp.Or(l.PlanWarnAt, DefaultPlanWarnAt)) / 100
+}
+func (l Limits) NoPushShare() float64 {
+	return float64(cmp.Or(l.NoPushSpend, DefaultNoPushSpend)) / 100
+}
+
+// ContextCap is ContextTokens, or DefaultContextTokens when unset.
+func (l Limits) ContextCap() int { return cmp.Or(l.ContextTokens, DefaultContextTokens) }
 
 // The loop nudge of a policy without the keys, and of a version pinned
 // before they existed (queue item C).
@@ -344,10 +383,14 @@ type limitsJSON struct {
 	NudgeAfter        int    `json:"nudge_after"`
 	Nudges            int    `json:"nudges"`
 	SameCall          int    `json:"same_call"`
+	WarnAt            int    `json:"warn_at,omitempty"`
+	PlanWarnAt        int    `json:"plan_warn_at,omitempty"`
+	NoPushSpend       int    `json:"no_push_spend,omitempty"`
+	ContextTokens     int    `json:"context_tokens,omitempty"`
 }
 
 func (l Limits) MarshalJSON() ([]byte, error) {
-	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall})
+	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
 }
 
 func (l *Limits) UnmarshalJSON(b []byte) error {
@@ -356,7 +399,8 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
-		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall}
+		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt,
+		NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -411,6 +455,14 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.nudges must not be negative, is %d", l.Nudges)
 	case l.SameCall < 0:
 		return fmt.Errorf("policy: limits.same_call must not be negative, is %d", l.SameCall)
+	case l.WarnAt < 0 || l.WarnAt > 99:
+		return fmt.Errorf("policy: limits.warn_at must lie between 1 and 99 percent, is %d", l.WarnAt)
+	case l.PlanWarnAt < 0 || l.PlanWarnAt > 99:
+		return fmt.Errorf("policy: limits.plan_warn_at must lie between 1 and 99 percent, is %d", l.PlanWarnAt)
+	case l.NoPushSpend < 0 || l.NoPushSpend > 99:
+		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent, is %d", l.NoPushSpend)
+	case l.ContextTokens != 0 && (l.ContextTokens < MinContextTokens || l.ContextTokens > ModelContext):
+		return fmt.Errorf("policy: limits.context_tokens must be 0 or lie between %d and %d, is %d", MinContextTokens, ModelContext, l.ContextTokens)
 	}
 	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())

@@ -1032,3 +1032,65 @@ func TestTimeValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestLimitsStopValues(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := d.Limits
+	if l.WarnShare() != 0.80 || l.PlanWarnShare() != 0.67 || l.NoPushShare() != 0.60 || l.ContextCap() != 100000 {
+		t.Errorf("defaults = %v %v %v %d, want 0.8 0.67 0.6 100000", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare(), l.ContextCap())
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, warn_at: 75, plan_warn_at: 50, no_push_spend: 40, context_tokens: 90000}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	l = d.Limits
+	if l.WarnShare() != 0.75 || l.PlanWarnShare() != 0.50 || l.NoPushShare() != 0.40 || l.ContextCap() != 90000 {
+		t.Errorf("set = %v %v %v %d, want 0.75 0.5 0.4 90000", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare(), l.ContextCap())
+	}
+	b, err := json.Marshal(l)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back Limits
+	if err := json.Unmarshal(b, &back); err != nil || back != l {
+		t.Errorf("json round trip = (%+v, %v), want %+v", back, err, l)
+	}
+	var pinned Limits
+	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":200}`), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if pinned.WarnShare() != 0.80 || pinned.ContextCap() != 100000 {
+		t.Errorf("pinned version without the keys: %v, %d, want the defaults", pinned.WarnShare(), pinned.ContextCap())
+	}
+}
+
+func TestLimitsStopValuesAreBounded(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		mutate func(*Limits)
+		want   string
+	}{
+		"warn_at 100":         {func(l *Limits) { l.WarnAt = 100 }, "limits.warn_at must lie between 1 and 99 percent, is 100"},
+		"plan_warn_at -1":     {func(l *Limits) { l.PlanWarnAt = -1 }, "limits.plan_warn_at must lie between 1 and 99 percent, is -1"},
+		"no_push_spend 100":   {func(l *Limits) { l.NoPushSpend = 100 }, "limits.no_push_spend must lie between 1 and 99 percent, is 100"},
+		"context_tokens 1000": {func(l *Limits) { l.ContextTokens = 1000 }, "limits.context_tokens must be 0 or lie between 20000 and 200000, is 1000"},
+		"context past window": {func(l *Limits) { l.ContextTokens = 200001 }, "limits.context_tokens must be 0 or lie between 20000 and 200000, is 200001"},
+	} {
+		l := d.Limits
+		tc.mutate(&l)
+		if err := l.validate(); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: validate = %v, want %q", name, err, tc.want)
+		}
+	}
+	for _, doc := range []string{"warn_at: 0", "context_tokens: 1000", "no_push_spend: 100"} {
+		if _, err := Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, "+doc+"}", 1))); err == nil {
+			t.Errorf("%s: parsed, want the schema's refusal", doc)
+		}
+	}
+}
