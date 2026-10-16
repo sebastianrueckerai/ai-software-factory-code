@@ -90,7 +90,7 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 			http.Error(w, err.Error(), status)
 			return
 		}
-		json.NewEncoder(w).Encode(struct {
+		json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 			Output string `json:"output"`
 			Cut    bool   `json:"cut"`
 		}{out, cut})

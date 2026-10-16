@@ -745,7 +745,9 @@ func (b *capBuffer) ReadFrom(r io.Reader) (int64, error) {
 		k, err := r.Read(p)
 		if k > 0 {
 			n += int64(k)
-			b.Write(p[:k])
+			if _, werr := b.Write(p[:k]); werr != nil {
+				return n, werr
+			}
 		}
 		if err == io.EOF {
 			return n, nil
