@@ -456,13 +456,13 @@ func (l Limits) validate() error {
 	case l.SameCall < 0:
 		return fmt.Errorf("policy: limits.same_call must not be negative, is %d", l.SameCall)
 	case l.WarnAt < 0 || l.WarnAt > 99:
-		return fmt.Errorf("policy: limits.warn_at must lie between 1 and 99 percent, is %d", l.WarnAt)
+		return fmt.Errorf("policy: limits.warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.WarnAt)
 	case l.PlanWarnAt < 0 || l.PlanWarnAt > 99:
-		return fmt.Errorf("policy: limits.plan_warn_at must lie between 1 and 99 percent, is %d", l.PlanWarnAt)
+		return fmt.Errorf("policy: limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.PlanWarnAt)
 	case l.NoPushSpend < 0 || l.NoPushSpend > 99:
-		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent, is %d", l.NoPushSpend)
+		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.NoPushSpend)
 	case l.ContextTokens != 0 && (l.ContextTokens < MinContextTokens || l.ContextTokens > ModelContext):
-		return fmt.Errorf("policy: limits.context_tokens must be 0 or lie between %d and %d, is %d", MinContextTokens, ModelContext, l.ContextTokens)
+		return fmt.Errorf("policy: limits.context_tokens must lie between %d and %d when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", MinContextTokens, ModelContext, l.ContextTokens)
 	}
 	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())
