@@ -768,7 +768,7 @@ func TestLoaderRefusesRemovedLaneWithOpenCards(t *testing.T) {
 		files[file] = []byte(strings.Replace(string(files[file]), old, new, 1))
 		return files
 	}
-	noPlan := edit("processes/spec.yaml", "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, foundation: true, integration: true}\n", "")
+	noPlan := edit("processes/spec.yaml", "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}\n", "")
 	noPlan["processes/spec.yaml"] = []byte(strings.Replace(string(noPlan["processes/spec.yaml"]), "dependencies: {wait_until: done, on_failed: human}\n", "", 1))
 	for name, tc := range map[string]struct {
 		head map[string][]byte

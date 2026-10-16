@@ -66,7 +66,7 @@ func TestValidTreePasses(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 	spec := tree.Processes["spec"]
-	if len(spec.Lanes) != 3 || spec.Lanes[1].Plan == nil || *spec.Lanes[1].Plan != (PlanShape{MaxCards: 12, Foundation: true, Integration: true}) ||
+	if len(spec.Lanes) != 3 || spec.Lanes[1].Plan == nil || *spec.Lanes[1].Plan != (PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}) ||
 		spec.Dependencies == nil || *spec.Dependencies != (Dependencies{WaitUntil: "done", OnFailed: "human"}) || spec.Merge.Queue != QueueProject || len(spec.Stages) != 9 {
 		t.Fatalf("spec = %+v", spec)
 	}

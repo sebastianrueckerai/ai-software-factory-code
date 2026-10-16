@@ -271,8 +271,8 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 	}
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
-	if n := len(p.Cards); n < 2 || n > shape.MaxCards {
-		add("%d cards; this process allows 2 to %d", n, shape.MaxCards)
+	if n := len(p.Cards); n < shape.Minimum() || n > shape.MaxCards {
+		add("%d cards; this process allows %d to %d", n, shape.Minimum(), shape.MaxCards)
 	}
 	keys := map[string]int{}
 	for i, c := range p.Cards {
@@ -289,7 +289,7 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 		}
 	}
 	foundation, integration := cardsOf(p, RoleFoundation), cardsOf(p, RoleIntegration)
-	if shape.Foundation && len(foundation) != 1 {
+	if shape.Foundation && len(p.Cards) > 1 && len(foundation) != 1 {
 		add("%d cards with role foundation; the process wants exactly one", len(foundation))
 	}
 	if shape.Integration && len(integration) != 1 {
@@ -900,6 +900,9 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	if shape.Integration {
 		g += "The integration card turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. " +
 			"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim. "
+	}
+	if shape.Minimum() == 1 {
+		g += "A change that fits one card answers one card, its own integration, citing every criterion. "
 	}
 	if shape.Foundation || shape.Integration {
 		g += "factoryd adds the foundation and integration edges itself: " +

@@ -155,7 +155,7 @@ func (b *builder) planPath(plan Lane) {
 	if plan.Plan != nil {
 		bounds = *plan.Plan
 	}
-	shape := fmt.Sprintf("answers a plan of 2 to %d cards", bounds.MaxCards)
+	shape := fmt.Sprintf("answers a plan of %d to %d cards", bounds.Minimum(), bounds.MaxCards)
 	if bounds.Foundation {
 		shape += ", one foundation first"
 	}

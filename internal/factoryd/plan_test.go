@@ -238,6 +238,42 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	}
 }
 
+// The one-card minimum (roadmap 286): under min_cards 1 a plan of the
+// integration card alone holds, the foundation rule waived because a
+// single card is its own integration; a shape without min_cards keeps the
+// two-card floor, and the one card still has to be the integration.
+func TestValidatePlanOneCard(t *testing.T) {
+	one := func(role string) Plan {
+		p := testPlan()
+		card := p.Cards[3]
+		card.Role = role
+		p.Cards = []PlanCard{card}
+		return p
+	}
+	min1 := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits, 400); len(got) != 0 {
+		t.Fatalf("ValidatePlan = %q, want no findings", got)
+	}
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits, 400); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
+		t.Fatalf("ValidatePlan = %q, want the two-card floor", got)
+	}
+	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, 400); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
+		t.Fatalf("ValidatePlan = %q, want the integration role finding", got)
+	}
+}
+
+// The guide tells the planner a change that fits one card answers one
+// card when the process allows it, and stays quiet when it does not.
+func TestPlanGuideOneCard(t *testing.T) {
+	want := "A change that fits one card answers one card, its own integration, citing every criterion."
+	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits); !strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+	}
+	if got := planGuide(testShape, testLimits); strings.Contains(got, want) {
+		t.Fatalf("planGuide = %q, want no one-card sentence under a two-card minimum", got)
+	}
+}
+
 // stage12-design 5.2: a card is bounded by shape, not a session's time or
 // step budget (ruling 221: the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {

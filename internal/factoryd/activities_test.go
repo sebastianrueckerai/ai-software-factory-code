@@ -1914,7 +1914,7 @@ func TestTaskConfigFromProcess(t *testing.T) {
 	pinned := fixtureVersion(t)
 	current := pinned
 	current.ID, current.Processes = 8, nil
-	shape := policy.PlanShape{MaxCards: 12, Foundation: true, Integration: true}
+	shape := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
 	for name, tc := range map[string]struct {
 		task Task
 		want TaskConfig

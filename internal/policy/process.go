@@ -56,6 +56,9 @@ type Lane struct {
 
 // PlanShape bounds a plan.
 type PlanShape struct {
+	// MinCards is the least cards a plan may hold, 1 to 20 and at most
+	// MaxCards.
+	MinCards int `yaml:"min_cards" json:"min_cards"`
 	// MaxCards is the most cards a plan may hold, 2 to 20.
 	MaxCards int `yaml:"max_cards" json:"max_cards"`
 	// Foundation: exactly one card of role foundation, which every other
@@ -64,6 +67,19 @@ type PlanShape struct {
 	// Integration: exactly one card of role integration, which depends on
 	// every other card.
 	Integration bool `yaml:"integration" json:"integration"`
+}
+
+// DefaultMinCards is the plan minimum of a version stored before
+// min_cards existed.
+const DefaultMinCards = 2
+
+// Minimum is the least cards a plan of this shape may hold: a MinCards of
+// 0, from such a stored version, keeps the two-card minimum.
+func (s PlanShape) Minimum() int {
+	if s.MinCards == 0 {
+		return DefaultMinCards
+	}
+	return s.MinCards
 }
 
 // Dependencies is how a card waits for the cards it depends on.
@@ -252,6 +268,10 @@ func (p Process) Validate() error {
 			bad(block, "plan is required: it bounds the plan the planner answers")
 		case l.Plan != nil && (l.Plan.MaxCards < 2 || l.Plan.MaxCards > 20):
 			bad(block, "plan.max_cards %d: want 2 to 20", l.Plan.MaxCards)
+		case l.Plan != nil && (l.Plan.MinCards < 1 || l.Plan.MinCards > 20):
+			bad(block, "plan.min_cards %d: want 1 to 20", l.Plan.MinCards)
+		case l.Plan != nil && l.Plan.MinCards > l.Plan.MaxCards:
+			bad(block, "plan.min_cards %d: above plan.max_cards %d", l.Plan.MinCards, l.Plan.MaxCards)
 		}
 	}
 	if !slices.Contains(seen, LaneBacklog) {

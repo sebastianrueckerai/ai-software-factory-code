@@ -435,6 +435,9 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	if mc := proc.Properties["lanes"].Items.Properties["plan"].Properties["max_cards"]; mc.Minimum == nil || *mc.Minimum != 2 || mc.Maximum == nil || *mc.Maximum != 20 {
 		t.Errorf("max_cards = %v to %v, want 2 to 20", mc.Minimum, mc.Maximum)
 	}
+	if mc := proc.Properties["lanes"].Items.Properties["plan"].Properties["min_cards"]; mc.Minimum == nil || *mc.Minimum != 1 || mc.Maximum == nil || *mc.Maximum != 20 {
+		t.Errorf("min_cards = %v to %v, want 1 to 20", mc.Minimum, mc.Maximum)
+	}
 	if got := proc.Properties["merge"].Properties["queue"].Enum; !reflect.DeepEqual(got, []any{"none", "project"}) {
 		t.Errorf("merge queue enum = %v", got)
 	}

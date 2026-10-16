@@ -944,7 +944,7 @@ tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forge
 `),
 		policy.ProcessFile("maintenance"): []byte(policy.Header(policy.ProcessFile("maintenance")) + "\n" + `lanes:
   - {name: backlog}
-  - {name: plan, class: planner, moved_by: writers, plan: {max_cards: 8, foundation: true, integration: true}}
+  - {name: plan, class: planner, moved_by: writers, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
   - {name: ready, class: coder, moved_by: writers}
 dependencies: {wait_until: done, on_failed: human}
 merge: {queue: none}

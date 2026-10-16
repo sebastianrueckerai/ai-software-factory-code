@@ -8,7 +8,7 @@ lanes:
   - name: plan
     class: planner
     moved_by: writers
-    plan: {max_cards: 12, foundation: true, integration: true}
+    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}
   - {name: ready, class: coder, moved_by: writers}
 dependencies: {wait_until: done, on_failed: human}
 stages:
