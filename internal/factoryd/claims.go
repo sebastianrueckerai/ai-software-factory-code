@@ -2,9 +2,11 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -52,28 +54,37 @@ var declaration = func(symbol string) *regexp.Regexp {
 	return regexp.MustCompile(`^\s*(?:export\s+|pub\s+|async\s+|static\s+)*(?:func(?:\s+|\s*\([^)]*\)\s*)|type\s+|var\s+|const\s+|def\s+|class\s+|function\s+|fn\s+|interface\s+|enum\s+|struct\s+|trait\s+|let\s+)` + regexp.QuoteMeta(symbol) + `\b`)
 }
 
+var blockSpan = regexp.MustCompile(`/\*.*?\*/`)
+
 func comment(text string) bool {
-	t := strings.TrimSpace(text)
-	return strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "/*")
+	t := strings.TrimSpace(blockSpan.ReplaceAllString(text, ""))
+	return t == "" || strings.HasPrefix(t, "//") || strings.HasPrefix(t, "#") || strings.HasPrefix(t, "*") || strings.HasPrefix(t, "/*")
 }
 
-// removesSymbol: the diff removes a line that names symbol.
+// removesSymbol: the diff removes a declaration of symbol.
 func removesSymbol(diff, symbol string) bool {
-	return regexp.MustCompile(`(?m)^-[^-\n].*\b` + regexp.QuoteMeta(symbol) + `\b`).MatchString(diff)
+	decl := declaration(symbol)
+	for _, l := range strings.Split(diff, "\n") {
+		if len(l) > 1 && l[0] == '-' && l[1] != '-' && decl.MatchString(l[1:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // contradiction is the first hit that refutes claim: a declaration of the
 // symbol (undefined) or a use that is neither declaration nor comment
-// (uncalled), at the head, or at main unless the diff removes the symbol
-// (removed): the head then lacks it on purpose.
+// (uncalled), at the head, or at main unless the diff removes the symbol's
+// declaration (removed): the head then lacks it on purpose.
 func contradiction(c Claim, hits []grepHit, removed bool) (evidence string, ok bool) {
-	decl := declaration(c.Symbol)
+	decl, word := declaration(c.Symbol), regexp.MustCompile(`\b`+regexp.QuoteMeta(c.Symbol)+`\b`)
 	for _, h := range hits {
 		if h.Ref == "main" && removed {
 			continue
 		}
-		isDecl := decl.MatchString(h.Text)
-		if c.Kind == ClaimUndefined && isDecl || c.Kind == ClaimUncalled && !isDecl && !comment(h.Text) {
+		code := blockSpan.ReplaceAllString(h.Text, "")
+		isDecl := decl.MatchString(code)
+		if c.Kind == ClaimUndefined && isDecl || c.Kind == ClaimUncalled && !isDecl && !comment(code) && word.MatchString(code) {
 			return fmt.Sprintf("%s:%d at %s: %s", h.Path, h.Line, h.Ref, h.Text), true
 		}
 	}
@@ -110,15 +121,20 @@ func applyClaims(rv Review, diff string, grep func(symbol string) ([]grepHit, er
 	return rv
 }
 
+// errNoMatch is git grep's exit status 1: no line names the symbol.
+var errNoMatch = errors.New("git grep: no matches")
+
 // gitGrep lists the whole-word uses of symbol in each ref's tree, at most
-// maxHits a ref; a ref without a match has none.
+// maxHits a ref; a ref without a match has none, and no match in any ref
+// answers errNoMatch.
 func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([]grepHit, error) {
 	const maxHits = 200
 	var hits []grepHit
 	for _, ref := range refs {
 		out, err := git(ctx, dir, "", "grep", "-n", "-w", "-F", "-I", "--no-color", "-e", symbol, ref.Rev, "--")
 		if err != nil {
-			if out == "" && strings.Contains(err.Error(), "exit status 1") {
+			var exit *exec.ExitError
+			if errors.As(err, &exit) && exit.ExitCode() == 1 {
 				continue
 			}
 			return nil, err
@@ -135,6 +151,9 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 			}
 			hits = append(hits, grepHit{ref.Name, path, n, text})
 		}
+	}
+	if len(hits) == 0 {
+		return nil, errNoMatch
 	}
 	return hits, nil
 }
@@ -181,5 +200,11 @@ func (r *Runner) dropContradicted(ctx context.Context, repo Repo, pr int64, comm
 		return rv
 	}
 	defer cleanup()
-	return applyClaims(rv, diff, func(symbol string) ([]grepHit, error) { return gitGrep(ctx, dir, refs, symbol) })
+	return applyClaims(rv, diff, func(symbol string) ([]grepHit, error) {
+		hits, err := gitGrep(ctx, dir, refs, symbol)
+		if errors.Is(err, errNoMatch) {
+			return nil, nil
+		}
+		return hits, err
+	})
 }
