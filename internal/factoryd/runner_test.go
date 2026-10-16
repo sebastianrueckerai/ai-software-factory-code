@@ -941,6 +941,10 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			t.Fatalf("timeline lacks %s:\n%s", step, timeline)
 		}
 	}
+	// session_started is SessionAnswered's to write, never the pod's start's
+	if strings.Contains(string(timeline), `"event":"session_started"`) {
+		t.Fatalf("timeline holds a session_started no answered call wrote:\n%s", timeline)
+	}
 	// the attempt runs from its session_start to its session_end
 	start, end := timelineStep(t, objects, "t1", "session_start"), timelineStep(t, objects, "t1", "session_end")
 	began, _ := time.Parse(time.RFC3339, fmt.Sprint(start["time"]))
@@ -1195,7 +1199,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	kube.pods["factory-agents-t1/worker-s-dead"] = &fakePod{ns: "factory-agents-t1", name: "worker-s-dead", phase: "Running", term: make(chan struct{})}
 	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}, {ID: 51, Name: "task-t1-base"}}
 
-	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7, Findings: []string{"changed a.go"}}
+	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
 		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
@@ -1222,14 +1226,14 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
 		t.Fatal(err)
 	}
-	if len(findings) != 3 || findings[0] != "earlier note" || findings[1] != "changed a.go" || !strings.Contains(findings[2], "s-dead stopped after 7 events") {
-		t.Fatalf("findings = %q, want the input, the dead session's findings, the interruption", findings)
+	if len(findings) != 2 || findings[0] != "earlier note" || !strings.Contains(findings[1], "s-dead stopped after 7 events") {
+		t.Fatalf("findings = %q, want the input and the interruption, no command line of the dead session", findings)
 	}
 	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
 		t.Fatalf("session row = %+v, want parent s-dead", sess)
 	}
 	timeline, _ := runner.objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
-	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","changed a.go","session s-dead stopped after 7 events`) {
+	if !strings.Contains(string(timeline), `"parent":"s-dead"`) || !strings.Contains(string(timeline), `"findings":["earlier note","session s-dead stopped after 7 events`) {
 		t.Fatalf("timeline = %s, want the session start with its parent and findings", timeline)
 	}
 }
@@ -1351,8 +1355,9 @@ func TestRunSessionTripAsksTheSupervisorAndStopsGracefully(t *testing.T) {
 	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" || !strings.HasPrefix(res.Reason, "the check needs a file the agent never created") {
 		t.Fatalf("result = %+v, want escalate with the reason and the work in progress", res)
 	}
-	if joined := strings.Join(res.Findings, "\n"); !strings.Contains(joined, "c-wip") {
-		t.Fatalf("findings = %v, want the pushed work", res.Findings)
+	// the commit reaches the next session once, by handoverLines
+	if len(res.Findings) != 0 {
+		t.Fatalf("findings = %q, want none: the pushed work is the result's commit", res.Findings)
 	}
 	if len(f.chats) != 1 || f.chats[0]["model"] != "supervisor" || f.tasks[0] != "t2" || f.purposes[0] != "supervisor" {
 		t.Fatalf("calls = %d, tasks %v, purposes %v; want one supervisor call through the gateway on t2", len(f.chats), f.tasks, f.purposes)
@@ -1509,16 +1514,62 @@ func TestRunSessionCapCutsOffASlowSupervisor(t *testing.T) {
 	}
 }
 
-// What a session that ended without a push did reaches its result.
-func TestRunSessionResultCarriesFindings(t *testing.T) {
+// SessionAnswered writes the session_started record of a session that got a
+// model answer, and none for one that did not.
+func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	in := SessionAnswerInput{TaskID: "t2", SessionID: "s1", Model: "factory/coding-cheap", Attempt: 2, Since: time.Now().Add(-time.Minute)}
+
+	runner.record(t.Context(), "t2", "session_start", map[string]any{"session": "s1", "attempt": 2})
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || ok {
+		t.Fatalf("starved session = (%v, %v), want false", ok, err)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	if !strings.Contains(string(tl), `"step":"session_start"`) || strings.Contains(string(tl), `"event":"session_started"`) {
+		t.Fatalf("timeline = %s, want the pod's session_start and no session_started for a starved session", tl)
+	}
+	store.answered = map[string]bool{"t2": true}
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("answered session = (%v, %v), want true", ok, err)
+	}
+	tl, _ = objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	for _, want := range []string{`"event":"session_started"`, `"session":"s1"`, `"model":"coding-cheap"`, `"attempt":2`} {
+		if !strings.Contains(string(tl), want) {
+			t.Errorf("timeline lacks %s:\n%s", want, tl)
+		}
+	}
+	// a session whose activity failed has no id: it counts, and no record
+	// names a session ""
+	in.SessionID = ""
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("answered session without an id = (%v, %v), want true", ok, err)
+	}
+	if tl, _ = objects.Get(t.Context(), "sessions/t2/timeline.jsonl"); strings.Count(string(tl), `"event":"session_started"`) != 1 {
+		t.Fatalf("timeline = %s, want the one session_started of s1", tl)
+	}
+}
+
+// What a session that ended without a push did does not reach its result as
+// lines: its commands are in its record, and the next session gets the stop
+// reason, the branch and the agent's last message instead.
+func TestRunSessionResultCarriesNoCommandLines(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "go test ./...", "exit": 1}}) + "\n" + resultLine(false, "gave up")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Contains(res.Findings, "ran `go test ./...` (exit 1)") {
-		t.Fatalf("result = %+v, want the command in the findings", res)
+	if !slices.Equal(res.Findings, []string{"previous session ended without a pushed commit: gave up"}) {
+		t.Fatalf("findings = %q, want the stop line alone", res.Findings)
+	}
+}
+
+func TestSessionResultCarriesTheBranchAndTheAgentsLastMessage(t *testing.T) {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: "the worker exited without a result", commit: "c-wip", agentText: "I ran out of budget"})
+	if res.Commit != "c-wip" || res.LastMessage != "I ran out of budget" ||
+		!slices.Equal(res.Findings, []string{"previous session ended unfinished: the worker exited without a result"}) {
+		t.Fatalf("result = %+v, want the branch's commit, the last message and the stop line", res)
 	}
 }
 
@@ -1969,25 +2020,34 @@ func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
 // A stopped worker that exits without a result says how, through the
 // same reading of the pod as a worker that dies unstopped: the wall-clock
 // cap stops the session, and the worker, killed for its memory, reports
-// nothing.
+// nothing. One that pushed its work in progress first states the stop
+// alone: the branch holds the commit.
 func TestStoppedWorkerNamesHowItEndedWithoutAResult(t *testing.T) {
-	task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo"}
-	kube := newFakeKube()
-	kube.keepDeleted = true
-	kube.onCreatePod = func() {
-		kube.podOrder[len(kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
-			{Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
-	}
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	// the log's follower reads a pod that exited once more, a second on
-	runner.stopWait = 5 * time.Second
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
-	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5o", Attempt: 1, Model: "m"}, nil,
-		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs)
-	want := "work in progress not pushed: the stopped worker exited without a result: container worker terminated with OOMKilled (exit code 137)"
-	if err != nil || res.Outcome != OutcomeWallClock || !slices.Contains(res.Findings, want) {
-		t.Fatalf("result = (%+v, %v), want wall_clock with %q", res, err, want)
+	const ended = "the stopped worker exited without a result: container worker terminated with OOMKilled (exit code 137)"
+	for name, tc := range map[string]struct {
+		after, commit string
+		findings      []string
+	}{
+		"nothing pushed":         {"", "", []string{"work in progress not pushed: " + ended}},
+		"pushed, then no report": {pushedLine("c-wip") + "\n", "c-wip", []string{ended}},
+	} {
+		task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo"}
+		kube := newFakeKube()
+		kube.keepDeleted = true
+		kube.onCreatePod = func() {
+			kube.podOrder[len(kube.podOrder)-1].containers = []ContainerState{{Name: "clone", State: "terminated", Reason: "Completed"},
+				{Name: "worker", State: "terminated", Reason: "OOMKilled", ExitCode: 137}}
+		}
+		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+		// the log's follower reads a pod that exited once more, a second on
+		runner.stopWait = 5 * time.Second
+		runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+		setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5o", Attempt: 1, Model: "m"}, nil,
+			envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+tc.after)
+		if err != nil || res.Outcome != OutcomeWallClock || res.Commit != tc.commit || !slices.Equal(res.Findings, tc.findings) {
+			t.Fatalf("%s: result = (%+v, %v), want wall_clock at %q with %q", name, res, err, tc.commit, tc.findings)
+		}
 	}
 }
 
@@ -2183,8 +2243,8 @@ func TestRunSessionReattachesToTheLivePod(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID {
-		t.Fatalf("result = %+v, want the live session's push as its own", res)
+	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID || !res.Started.Equal(first.StartedAt) {
+		t.Fatalf("result = %+v, want the live session's push as its own, started when its pod did (%v)", res, first.StartedAt)
 	}
 	if len(kube.podOrder) != 1 {
 		t.Fatalf("pods created %d, want the one the first factoryd made", len(kube.podOrder))
@@ -2214,13 +2274,15 @@ func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4}}
+	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4,
+		StartedAt: time.Now().Add(-time.Hour)}}
+	before := time.Now()
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomePushed || res.SessionID == "s-gone" || len(kube.podOrder) != 1 {
-		t.Fatalf("result = %+v, pods %d; want a fresh session in a new pod", res, len(kube.podOrder))
+	if res.Outcome != OutcomePushed || res.SessionID == "s-gone" || len(kube.podOrder) != 1 || res.Started.Before(before) {
+		t.Fatalf("result = %+v, pods %d; want a fresh session in a new pod, started after %v", res, len(kube.podOrder), before)
 	}
 	if _, ok := store.liveSessions["t1"]; ok {
 		t.Fatal("a live row survived the fresh session's end")
@@ -2405,6 +2467,36 @@ func TestSessionResultKeepsWhatAStoppedWorkerReported(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c1" {
 		t.Fatalf("pushed during the call: %+v, want verification of c1", res)
 	}
+	// work in progress on the branch is the result's commit, which
+	// handoverLines states with the last message: no report repeats it
+	res = sessionResult(s, sessionOutcome{trip: trip, decision: redirect, commit: "c-wip", agentText: "tests still fail",
+		result: &harness.Result{Summary: "stopped; work in progress pushed to factory/t1 at c-wip"}})
+	if res.Outcome != OutcomeRedirect || res.Commit != "c-wip" || res.LastMessage != "tests still fail" ||
+		!slices.Equal(res.Findings, []string{"supervisor guidance: g"}) {
+		t.Fatalf("stop with work in progress: %+v, want the commit, the last message and the guidance alone", res)
+	}
+}
+
+// The stuck rule's line is the first finding, before the stopped worker's
+// report.
+func TestSessionResultPutsTheStuckLineFirst(t *testing.T) {
+	stuck := "stuck after the supervisor's message: same_failure: x"
+	trip := &Trip{Kind: TripSameFailure, Detail: "x", Findings: []string{"ran y", stuck}, Stuck: stuck}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{trip: trip, decision: &Decision{Action: ActionRetryStronger, Reason: stuck},
+		result: &harness.Result{Summary: "push failed: refusing to push: .forgejo/x changes .forgejo/"}})
+	want := []string{stuck, "the stopped worker reported: push failed: refusing to push: .forgejo/x changes .forgejo/"}
+	if res.Outcome != OutcomeRetryStronger || !slices.Equal(res.Findings, want) {
+		t.Fatalf("result = %+v, want findings %q", res, want)
+	}
+}
+
+// The agent's last message reaches the next session cut at
+// maxHandoverMessage bytes, marked.
+func TestSessionResultCutsTheLastMessage(t *testing.T) {
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{noResult: "x", agentText: strings.Repeat("a", maxHandoverMessage) + "bc"})
+	if want := strings.Repeat("a", maxHandoverMessage) + "…"; res.LastMessage != want {
+		t.Fatalf("last message of %d bytes, want %d a's and the mark", len(res.LastMessage), maxHandoverMessage)
+	}
 }
 
 // The log stream breaks while the worker still runs (here during the
@@ -2424,9 +2516,8 @@ func TestRunSessionStopSurvivesABrokenLogStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" ||
-		!slices.Contains(res.Findings, "the stopped worker reported: stopped; work in progress pushed to factory/t2 at c-wip") {
-		t.Fatalf("result = %+v, want the escalation with the pushed work in progress", res)
+	if res.Outcome != OutcomeEscalate || res.Commit != "c-wip" || len(res.Findings) != 0 {
+		t.Fatalf("result = %+v, want the escalation with the pushed work in progress as its commit alone", res)
 	}
 	record := strings.TrimSpace(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")))
 	if n := strings.Count(record, `"kind":"command"`); n != 3 || strings.Count(record, `"kind":"pushed"`) != 1 {

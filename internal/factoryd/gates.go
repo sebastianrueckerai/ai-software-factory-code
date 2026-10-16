@@ -1372,7 +1372,7 @@ func CloseFactoryPR(ctx context.Context, store Store, wf Workflows, taskID strin
 	if err != nil {
 		return err
 	}
-	return decideAndSignal(ctx, store, wf, q, "denied", by, "closed: "+words, SignalChangesRequested, TaskSignal{Author: by, Body: words, PR: pr})
+	return decideAndSignal(ctx, store, wf, q, "denied", by, "closed: "+words, SignalChangesRequested, TaskSignal{Author: by, Body: words, PR: pr, At: time.Now().UTC()})
 }
 
 // pendingMerge is task taskID's pending merge request for pull request pr.

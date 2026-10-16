@@ -1030,12 +1030,35 @@ func TestApprovalsFollowTheTask(t *testing.T) {
 type recordedSignals struct {
 	Workflows
 	sent []string
+	last TaskSignal
 	err  error // Signal's answer
 }
 
 func (w *recordedSignals) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
 	w.sent = append(w.sent, fmt.Sprintf("%s %s %s %d", taskID, name, sig.Author, sig.PR))
+	w.last = sig
 	return w.err
+}
+
+// The console's close of a factory pull request signals the change request
+// with the time of the request, so its finding is dated.
+func TestCloseFactoryPRSignalsItsTime(t *testing.T) {
+	store := newFakeStore()
+	wf := &recordedSignals{}
+	ctx := context.Background()
+	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	before := time.Now()
+	if err := CloseFactoryPR(ctx, store, wf, "t1", 9, "sebastian", "rename it"); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	at := wf.last.At
+	if at.IsZero() || at.Before(before) || at.After(after) || at.Location() != time.UTC {
+		t.Fatalf("At = %v, want a UTC time between %v and %v", at, before, after)
+	}
+	if got, want := changeRequested(wf.last.Author, wf.last.Body, at), "reviewer sebastian requested changes ("+at.Format("2006-01-02")+"): rename it"; got != want {
+		t.Fatalf("finding = %q, want %q", got, want)
+	}
 }
 
 // The console's approve decides only a pending merge request of that task

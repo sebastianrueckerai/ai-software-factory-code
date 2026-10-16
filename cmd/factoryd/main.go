@@ -47,6 +47,9 @@ func main() {
 		case "register-project":
 			registerMain(os.Args[2:])
 			return
+		case "remove-project":
+			removeProjectMain(os.Args[2:])
+			return
 		case "schema", "config":
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		}
@@ -500,7 +503,6 @@ func main() {
 		Kustomization:  kube.KustomizationState,
 		Metrics:        metrics,
 		Steer:          runner.MessageSession,
-		AttemptFunded:  runner.AttemptFunded,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		Notes:          store,

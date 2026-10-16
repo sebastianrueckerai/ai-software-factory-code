@@ -70,6 +70,17 @@ func TestParseValid(t *testing.T) {
 	}
 }
 
+func TestParseSessionFloors(t *testing.T) {
+	doc := strings.Replace(valid, "month_eur: 50", "month_eur: 50\n  session_floor_cheap_eur: 0.3\n  session_floor_frontier_eur: 0.6", 1)
+	d, err := Parse([]byte(doc))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Budget.SessionFloorCheapEUR != 0.3 || d.Budget.SessionFloorFrontierEUR != 0.6 {
+		t.Fatalf("budget = %+v", d.Budget)
+	}
+}
+
 func TestParseRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ doc, want string }{
 		"empty":           {"", "empty document"},
@@ -88,6 +99,10 @@ func TestParseRejects(t *testing.T) {
 		"negative day cap":    {strings.Replace(valid, "day_eur: 20", "day_eur: -1", 1), "must not be negative"},
 		"zero task max":       {strings.Replace(valid, "task_max_eur: 5", "task_max_eur: 0", 1), "must be positive"},
 		"default above max":   {strings.Replace(valid, "task_default_eur: 2", "task_default_eur: 6", 1), "exceeds task_max_eur"},
+		"negative session floor": {strings.Replace(valid, "month_eur: 50", "month_eur: 50\n  session_floor_cheap_eur: -1", 1),
+			"session_floor_cheap_eur and session_floor_frontier_eur must not be negative"},
+		"session floor above the card maximum": {strings.Replace(valid, "month_eur: 50", "month_eur: 50\n  session_floor_frontier_eur: 6", 1),
+			"exceeds budget.task_max_eur"},
 		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1, month_eur: 1}\nlimits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}\n", "no capability classes"},
 		"class no models":     {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
 		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
@@ -720,9 +735,47 @@ func TestCardBudget(t *testing.T) {
 		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, nil, "", 0, 4},
 		{Budget{TaskDefaultEUR: 5, TaskMaxEUR: 4}, &ProjectBudget{TaskMaxEUR: 15}, "", 0, 4},
 	} {
-		if got := CardBudget(tc.b, tc.p, tc.size, tc.requested); got != tc.want {
+		if got := CardBudget(tc.b, tc.p, tc.size, false, tc.requested); got != tc.want {
 			t.Errorf("CardBudget(%+v, %+v, %q, %g) = %g, want %g", tc.b, tc.p, tc.size, tc.requested, got, tc.want)
 		}
+	}
+}
+
+// A card filed on the strong rung gets at least the medium budget, whatever
+// its size or the default; an asked budget stays the filer's, and the
+// project's card maximum still bounds it.
+func TestCardBudgetOfAStrongCard(t *testing.T) {
+	b := Budget{TaskDefaultEUR: 2, TaskMaxEUR: 15}
+	for _, tc := range []struct {
+		p         *ProjectBudget
+		size      string
+		requested float64
+		want      float64
+	}{
+		{nil, "small", 0, 5},
+		{nil, "medium", 0, 5},
+		{nil, "large", 0, 10},
+		{nil, "", 0, 5},
+		{nil, "small", 1, 1},
+		{&ProjectBudget{TaskMaxEUR: 3}, "small", 0, 3},
+		{&ProjectBudget{TaskMaxEUR: 3}, "", 0, 3},
+	} {
+		if got := CardBudget(b, tc.p, tc.size, true, tc.requested); got != tc.want {
+			t.Errorf("CardBudget(strong, %+v, %q, %g) = %g, want %g", tc.p, tc.size, tc.requested, got, tc.want)
+		}
+	}
+	if got := CardBudget(b, nil, "small", false, 0); got != 2 {
+		t.Errorf("CardBudget(cheap, small) = %g, want 2", got)
+	}
+}
+
+func TestSessionFloorByRung(t *testing.T) {
+	b := Budget{SessionFloorCheapEUR: 0.3, SessionFloorFrontierEUR: 0.6}
+	if b.SessionFloor(false) != 0.3 || b.SessionFloor(true) != 0.6 {
+		t.Fatalf("floors = %g, %g, want 0.3 on cheap and 0.6 on frontier", b.SessionFloor(false), b.SessionFloor(true))
+	}
+	if (Budget{}).SessionFloor(true) != 0 {
+		t.Fatal("an absent floor asks nothing")
 	}
 }
 

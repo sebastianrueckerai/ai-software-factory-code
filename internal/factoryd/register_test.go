@@ -66,6 +66,16 @@ type forgejoState struct {
 	source        []string      // the migrated repository's paths; none: it is empty
 	sourceBranch  string        // and its default branch
 	defaultBranch string
+
+	// what removal deletes (roadmap 272): the repository's push mirrors
+	// (the GitHub export), the organisation's packages, the two forks and
+	// the CI user.
+	mirrors    []map[string]any    // the repository's push mirrors
+	packages   []map[string]string // type/name/version of the org's
+	forks      map[string]bool     // owner -> its fork of demo-app exists
+	ciUserGone bool                // the CI user is deleted
+	orgGone    bool                // the organisation is deleted
+	failDelete string              // a delete whose path holds it answers 500; "": none
 }
 
 // seedCommit is one contents call: its branch, message, credential and
@@ -97,6 +107,20 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		}
 		var body map[string]any
 		json.NewDecoder(r.Body).Decode(&body)
+		// refuseDelete answers 500 for every delete whose path holds
+		// s.failDelete, whichever of the removal's objects it names —
+		// a push mirror or a token like a fork — the partial-failure
+		// rehearsal.
+		refuseDelete := func() bool {
+			if r.Method == http.MethodDelete && s.failDelete != "" && strings.Contains(r.URL.Path, s.failDelete) {
+				w.WriteHeader(http.StatusInternalServerError)
+				return true
+			}
+			return false
+		}
+		if refuseDelete() {
+			return
+		}
 		list := func(v any) {
 			if p := r.URL.Query().Get("page"); p != "" && p != "1" {
 				io.WriteString(w, "[]")
@@ -135,9 +159,6 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprintf(w, `{"empty":%t,"created_at":%q}`, len(s.branches) == 0, s.created.UTC().Format(time.RFC3339))
-		case admin && r.Method == http.MethodDelete && p == repo:
-			s.repo, s.created = false, time.Time{}
-			w.WriteHeader(http.StatusNoContent)
 		case admin && r.Method == http.MethodPost && p == "/api/v1/orgs/demo-app/repos":
 			if body["name"] != "demo-app" || body["private"] != true || body["default_branch"] != "main" || body["auto_init"] != nil {
 				t.Errorf("create repo %v", body)
@@ -410,6 +431,53 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, repo+"/actions/secrets/") && r.Method == http.MethodPut:
 			s.secrets[strings.TrimPrefix(p, repo+"/actions/secrets/")] = body["data"].(string)
 			w.WriteHeader(http.StatusCreated)
+		// what removal deletes (roadmap 272)
+		case p == repo+"/push_mirrors" && r.Method == http.MethodGet:
+			list(nonNil(s.mirrors))
+		case strings.HasPrefix(p, repo+"/push_mirrors/") && r.Method == http.MethodDelete:
+			name := strings.TrimPrefix(p, repo+"/push_mirrors/")
+			s.mirrors = slices.DeleteFunc(s.mirrors, func(m map[string]any) bool { return m["remote_name"] == name })
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodGet && p == "/api/v1/packages/demo-app":
+			list(nonNil(s.packages))
+		case admin && r.Method == http.MethodDelete && strings.HasPrefix(p, "/api/v1/packages/demo-app/"):
+			parts := strings.Split(strings.TrimPrefix(p, "/api/v1/packages/demo-app/"), "/")
+			s.packages = slices.DeleteFunc(s.packages, func(m map[string]string) bool {
+				return m["type"] == parts[0] && m["name"] == parts[1] && m["version"] == parts[2]
+			})
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodDelete && p == repo:
+			if !s.repo {
+				http.NotFound(w, r)
+				return
+			}
+			s.repo, s.created = false, time.Time{}
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodDelete && (p == "/api/v1/repos/factory-agent/demo-app" || p == "/api/v1/repos/factory-projects/demo-app"):
+			owner := strings.Split(p, "/")[4]
+			if !s.forks[owner] {
+				http.NotFound(w, r)
+				return
+			}
+			s.forks[owner] = false
+			if owner == "factory-agent" {
+				s.fork = nil
+			}
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodDelete && p == "/api/v1/orgs/demo-app":
+			if !s.org || s.orgGone {
+				http.NotFound(w, r)
+				return
+			}
+			s.orgGone = true
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodDelete && p == "/api/v1/admin/users/ci-demo-app":
+			if !s.users["ci-demo-app"] || s.ciUserGone {
+				http.NotFound(w, r)
+				return
+			}
+			s.ciUserGone = true
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected %s %s by %s", r.Method, r.URL, by)
 			w.WriteHeader(http.StatusTeapot)
@@ -429,6 +497,7 @@ type fakeProjectKube struct {
 	meta    map[string]secretMeta
 	deploys map[string][]DeploymentState
 	changes []string
+	deletes []string
 	fail    string // an apply whose path holds it fails
 }
 
@@ -534,6 +603,46 @@ func (k *fakeProjectKube) Deployments(_ context.Context, ns string) ([]Deploymen
 	return k.deploys[ns], nil
 }
 
+// Delete removes the object at path and reports whether it was there, as
+// remove-project does (roadmap 272); an object already gone is no error.
+// A namespace's delete drops its label, so a second run lists it no more.
+func (k *fakeProjectKube) Delete(_ context.Context, path string) (bool, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.fail != "" && strings.Contains(path, k.fail) {
+		return false, errors.New("the API server refused")
+	}
+	if _, ok := k.objects[path]; !ok {
+		return false, nil
+	}
+	k.deletes = append(k.deletes, path)
+	delete(k.objects, path)
+	if strings.Contains(path, "/secrets/") {
+		key := strings.SplitN(strings.TrimPrefix(path, "/api/v1/namespaces/"), "/", 2)
+		delete(k.secrets, key[0]+"/"+key[1])
+		delete(k.meta, key[0]+"/"+key[1])
+	}
+	if strings.Count(path, "/") == 4 && strings.HasPrefix(path, "/api/v1/namespaces/") {
+		delete(k.labels, path[strings.LastIndex(path, "/")+1:])
+	}
+	return true, nil
+}
+
+// NamespacesByLabel lists the namespaces whose labels carry key: value,
+// sorted, as remove-project reads the project's (roadmap 272).
+func (k *fakeProjectKube) NamespacesByLabel(_ context.Context, key, value string) ([]string, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	var out []string
+	for name, labels := range k.labels {
+		if labels[key] == value {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (k *fakeProjectKube) object(t *testing.T, path string) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -546,9 +655,14 @@ func (k *fakeProjectKube) object(t *testing.T, path string) map[string]any {
 // memProjects holds the joined projects by name (as their files say) and
 // which of them have a row.
 type memProjects struct {
-	mu   sync.Mutex
-	m    map[string]Project
-	rows map[string]bool
+	mu      sync.Mutex
+	m       map[string]Project
+	rows    map[string]bool
+	mirrors map[string]bool // projects with mirror rows
+	// the history a removal keeps (roadmap 272): the project's tasks and
+	// its events, ledger, audit and chat rows.
+	tasks   []Task
+	history map[string]int // table -> its rows
 }
 
 func (s *memProjects) Projects(context.Context) ([]Project, error) {
@@ -630,6 +744,40 @@ func (s *memProjects) ForgetReadToken(_ context.Context, name, hash string) erro
 		s.m[name] = p
 	}
 	return nil
+}
+
+// ProjectTasks are every card of repository, oldest first, as the store's
+// does (roadmap 272).
+func (s *memProjects) ProjectTasks(_ context.Context, repository string) ([]Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+// DeleteProject drops project's row only: its tasks and history stay.
+func (s *memProjects) DeleteProject(_ context.Context, name string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, name)
+	delete(s.rows, name)
+	return nil
+}
+
+// DeleteProjectMirrors drops project's mirror rows and says how many.
+func (s *memProjects) DeleteProjectMirrors(_ context.Context, project string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.mirrors == nil || !s.mirrors[project] {
+		return 0, nil
+	}
+	delete(s.mirrors, project)
+	return 1, nil
 }
 
 // fakeKV is OpenBao's kv-v2 as the Registrar reads it.

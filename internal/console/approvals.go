@@ -57,6 +57,12 @@ func (k approvalCard) Rerun() bool {
 	return k.Kind == factoryd.ApprovalMerge && k.Merge.Factory && k.Merge.RedChecks
 }
 
+// Returns: the card is an agent's merge request on red checks, which cannot
+// merge: it offers the return to the agent and the close, not Approve.
+func (k approvalCard) Returns() bool {
+	return k.Kind == factoryd.ApprovalMerge && !k.Merge.Factory && k.Merge.RedChecks
+}
+
 // planQuestion is a plan's question as its card shows it, numbered from 1.
 type planQuestion struct {
 	Index int

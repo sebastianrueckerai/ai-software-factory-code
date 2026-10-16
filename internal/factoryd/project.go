@@ -226,6 +226,33 @@ type ProjectStore interface {
 	SetProjectReady(ctx context.Context, name string) error
 }
 
+// RemovalStore's halves (roadmap 272): the cards a removal reads and the
+// rows it deletes.
+
+// ProjectTasks are every card of repository, open and ended, oldest
+// first: remove-project refuses while one is open and names their tasks'
+// LiteLLM keys.
+func (s *PGStore) ProjectTasks(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 ORDER BY created_at, id`, repository)
+}
+
+// DeleteProject removes project's row, its minted tokens with it. Its
+// tasks, events, ledger, audit and chat rows stay as history.
+func (s *PGStore) DeleteProject(ctx context.Context, name string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM projects WHERE name = $1`, name)
+	return err
+}
+
+// DeleteProjectMirrors removes project's project_mirrors rows, their
+// sealed tokens with them, and says how many went (0: none were left).
+func (s *PGStore) DeleteProjectMirrors(ctx context.Context, project string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM project_mirrors WHERE project = $1`, project)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // ProjectTokens: an empty field leaves the stored one.
 type ProjectTokens struct {
 	ReadTokenHash, HookSecretHash, HostKeyHash, StagingHash, PullToken, GitToken, MergeToken string

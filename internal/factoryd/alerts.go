@@ -52,7 +52,9 @@ type Alert struct {
 	// project_cap, day_cap, split_cap (a split's session at a cap),
 	// provider, budget (the task's budget cannot fund a call), queue (a
 	// red head left the merge queue), start (a sandbox that cannot
-	// start), content_filter, or factoryd (the stale sweep's).
+	// start), capacity (pods that never started), no_answer (sessions
+	// that got no model answer), content_filter, or factoryd (the stale
+	// sweep's).
 	Source     string
 	TaskID     string
 	RaisedAt   time.Time
@@ -101,6 +103,8 @@ func escalationSource(reason string) string {
 		return "start"
 	case strings.HasPrefix(reason, podNeverStarted):
 		return "capacity"
+	case strings.HasPrefix(reason, noModelAnswer):
+		return "no_answer"
 	case strings.HasPrefix(reason, contentFilterRefusal):
 		return "content_filter"
 	}
