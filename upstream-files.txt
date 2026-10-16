@@ -10,11 +10,7 @@
 # (internal/factoryd/buildvm.go); since roadmap 203's step 2 the builds
 # read the store's copy at that path with the line's sha256, so the URL
 # names only where the copy job takes the bytes from, and a pull
-# request's build reads only what main CI already copied. The store
-# answers these paths only to a signed-in account, so every read
-# carries one: BuildKit's ADD takes the HTTP_AUTH_HEADER build secret
-# by the URL's host, the RUN fetches mount it, and the build VM's
-# setup script curls with the store's read:package login. Go's module
+# request's build reads only what main CI already copied. Go's module
 # cache and the npm cache of the sandbox image's opencode plugin lockfile
 # ride the same registry as the go-modules and npm-cache tarballs
 # scripts/upstream-files makes of them: the module tarball keeps the

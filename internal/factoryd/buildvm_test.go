@@ -87,7 +87,7 @@ func TestBuildVMUserData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ud, err := buildVMUserData(p, "factory-registry-read:read-tok")
+	ud, err := buildVMUserData(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,11 +96,6 @@ func TestBuildVMUserData(t *testing.T) {
 		// the store's copy of the buildkit release, not its upstream
 		// (roadmap 203, step 2)
 		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
-		// the store reads only with a login (roadmap 203, step 2): the
-		// read:package one rides the curl
-		"-u 'factory-registry-read:read-tok'",
-		// cloud-init keeps a copy of the script; the scrub removes it
-		"rm -rf /var/lib/cloud/instance /var/lib/cloud/instances",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
 		strings.TrimSpace(string(p.CACert)), strings.TrimSpace(string(p.ServerCert)), strings.TrimSpace(string(p.ServerKey)),
@@ -307,8 +302,7 @@ func newTestBuildVMs(t *testing.T, max int) (*BuildVMs, *fakeHetzner, *cloudres.
 	t.Helper()
 	hz, reg := newFakeHetzner(), cloudres.NewMemory()
 	col := &cloudres.Collector{Project: "ci", Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}}
-	b, err := NewBuildVMs(BuildVMConfig{Max: max, AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"},
-		StoreLogin: "factory-registry-read:read-tok", Lease: time.Hour}, hz, reg, col)
+	b, err := NewBuildVMs(BuildVMConfig{Max: max, AllowedSources: []string{"198.51.100.1", "198.51.100.2/32"}, Lease: time.Hour}, hz, reg, col)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -329,12 +323,8 @@ func TestNewBuildVMsValidatesSources(t *testing.T) {
 	if _, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{"198.51.100.1"}}, nil, nil, nil); err == nil {
 		t.Error("a zero lease was accepted")
 	}
-	if _, err := NewBuildVMs(BuildVMConfig{AllowedSources: []string{"198.51.100.1"}, Lease: time.Hour}, nil, nil, nil); err == nil {
-		t.Error("an empty store login was accepted")
-	}
 	// CI_BUILD_VM_SOURCES is a comma-separated list, spaces allowed
-	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: strings.Split("198.51.100.1, 198.51.100.2/32", ","),
-		StoreLogin: "factory-registry-read:read-tok", Lease: time.Hour}, nil, nil, nil)
+	b, err := NewBuildVMs(BuildVMConfig{AllowedSources: strings.Split("198.51.100.1, 198.51.100.2/32", ","), Lease: time.Hour}, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

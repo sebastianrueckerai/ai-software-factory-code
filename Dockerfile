@@ -12,12 +12,7 @@ FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f
 # scripts/upstream-files uploads; GOPROXY=off leaves no fallback, so a
 # missing or wrong store copy fails the build and go.sum stays the
 # content pin, and GOFLAGS=-mod=mod keeps the download a read of the
-# cache, not a rewrite of go.mod. Nothing in the store reads without a
-# login, so the restore runs --mount=type=secret on the build secret
-# every builder passes --secret id=HTTP_AUTH_HEADER_<store host>, whose
-# file holds the whole Authorization header (the same id BuildKit's ADD
-# looks up by the URL's host): without it the read fails and the build
-# with it — no anonymous fallback anywhere.
+# cache, not a rewrite of go.mod.
 ARG SOURCE_DATE_EPOCH
 ENV SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH \
     GOPROXY=off \
@@ -27,11 +22,9 @@ COPY go.mod go.sum ./
 # Go telemetry off before the first go call: its counter files carry the
 # build's date, and `go telemetry off` would date its mode file too; an
 # undated "off" is the same mode.
-RUN --mount=type=secret,id=HTTP_AUTH_HEADER_git.aisoftwarefactory.world \
-      mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" \
+RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" \
       && sum=$(sha256sum go.sum | awk '{print $1}') \
-      && wget --header="Authorization: $(cat /run/secrets/HTTP_AUTH_HEADER_git.aisoftwarefactory.world)" \
-            -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
       && mkdir -p "$(go env GOMODCACHE)/cache/download" \
       && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
       && rm /tmp/go-modules.tar.gz \

@@ -213,15 +213,10 @@ func main() {
 	ciCollector := &cloudres.Collector{Project: "ci", Registry: cloudRegistry, Provider: hetznerCI,
 		OwnerDone: factoryd.CIOwnerDone(kube), NodeIPs: nodeIPs, ReleaseAttempts: 1}
 	const ciJobTimeout = 45 * time.Minute
-	// the VM's setup script reads the store's buildkitd tarball with the
-	// read:package login (it can read every package and overwrite
-	// nothing), the same one the roller's registry client uses
-	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
 	buildVMs, err := factoryd.NewBuildVMs(factoryd.BuildVMConfig{
 		Max:            envInt("CI_BUILD_VMS_MAX", 2),
 		ServerType:     env("CI_BUILD_VM_TYPE", "cx23"),
 		AllowedSources: nodeIPs,
-		StoreLogin:     mustEnv("REGISTRY_READ_USER") + ":" + registryReadToken,
 		Lease:          ciJobTimeout + 15*time.Minute,
 		Metrics:        metrics,
 	}, hetznerCI, cloudRegistry, ciCollector)
@@ -269,6 +264,7 @@ func main() {
 	// the mirror tokens are sealed under the session key, as the console's
 	// OAuth tokens are (roadmap 273)
 	store.SetSealKey([]byte(consoleSessionKey))
+	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
 	scrub := redact.New(bootSecrets...)
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))

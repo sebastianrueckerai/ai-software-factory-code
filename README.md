@@ -1947,30 +1947,22 @@ tags it with its upstream tag as well, and every Dockerfile, workflow and
 infra manifest names the copy. The nodes' registry mirror (infra
 `talos/patches.yaml`) serves the lines marked bootstrap, Talos's own
 images and Cilium's from the store too, by digest or by that tag, and
-  falls back to their upstreams while the store does not answer. The
-  Dockerfiles take their bases from the store through `ARG UPSTREAM` (a
-  local build without a login sets it empty for the same digests at their
-  upstreams). The file inputs come from the store too (roadmap 203,
-  step 2): every `ADD` download and the build VM's buildkit tarball read
-  the store's copy of an `upstream-files.txt` line at the line's sha256
-  (`scripts/upstream-files` fills them), each Go build — the CI test job,
-  the images' builder stages, the build VM's — restores the store's
-  `go-modules` tarball of its `go.sum` and runs with `GOPROXY=off
-  GOFLAGS=-mod=mod`, and the sandbox image's `npm ci` runs `--offline`
-  against the store's `npm-cache` tarball of the plugin lockfile, so no
-  build reaches an upstream; a missing or wrong store copy fails it.
-  Nothing in the store reads without a login, so every builder passes
-  its store reads the same secret,
-  `HTTP_AUTH_HEADER_git.aisoftwarefactory.world`, whose file holds the
-  whole `Authorization` header: the `ADD` URLs pick it up by their host
-  (BuildKit does the lookup), the fetching RUNs mount it, and the build
-  VM's setup script curls with the store's read:package login — a local
-  build passes the secret its own login. A
-  pull request's image build pulls from the store too:
-  `pr.yml` writes the job token as buildctl's login and the build
-  secret, and the build runner's
-  egress policy admits the edge gateway (entity `ingress`, 443), where
-  buildctl fetches the VM's registry tokens. Debian
+ falls back to their upstreams while the store does not answer. The
+ Dockerfiles take their bases from the store through `ARG UPSTREAM` (a
+ local build without a login sets it empty for the same digests at their
+ upstreams). The file inputs come from the store too (roadmap 203,
+ step 2): every `ADD` download and the build VM's buildkit tarball read
+ the store's copy of an `upstream-files.txt` line at the line's sha256
+ (`scripts/upstream-files` fills them), each Go build — the CI test job,
+ the images' builder stages, the build VM's — restores the store's
+ `go-modules` tarball of its `go.sum` and runs with `GOPROXY=off
+ GOFLAGS=-mod=mod`, and the sandbox image's `npm ci` runs `--offline`
+ against the store's `npm-cache` tarball of the plugin lockfile, so no
+ build reaches an upstream; a missing or wrong store copy fails it. A
+ pull request's image build pulls from the store too:
+`pr.yml` writes the job token as buildctl's login, and the build runner's
+egress policy admits the edge gateway (entity `ingress`, 443), where
+buildctl fetches the VM's registry tokens. Debian
 packages come from snapshot.debian.org at one `DEBIAN_SNAPSHOT` and
 PostgreSQL's from apt-archive.postgresql.org at exact versions. Nothing
 moves on its own: the code project's routine `weekly-bump` files a
