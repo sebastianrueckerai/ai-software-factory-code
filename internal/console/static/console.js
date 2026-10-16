@@ -82,7 +82,7 @@ document.addEventListener("dragstart", function (e) {
 function moveForm(e) {
   var column = e.target.closest && e.target.closest("[data-lane]");
   if (!column) return null;
-  var card = document.querySelector("[data-card=\"" + CSS.escape(e.dataTransfer.getData("text/plain")) + "\"]");
+  var card = document.querySelector("[data-card=\"" + CSS.escape(e.dataTransfer.getData("text/plain")) + "\"][data-place]");
   return card && card.querySelector("form[data-move=\"" + CSS.escape(column.dataset.lane) + "\"]");
 }
 document.addEventListener("dragover", function (e) {
@@ -316,7 +316,13 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       missed[id] = true;
       return;
     }
-    var cards = document.querySelectorAll("[data-card=\"" + CSS.escape(id) + "\"]");
+    // a task waiting on an approval shares its data-card with the
+    // approval's card, which holds no place of its own: the face's
+    // fragment replaces no approval (a board swap refreshes those)
+    var all = document.querySelectorAll("[data-card=\"" + CSS.escape(id) + "\"]"), cards = [];
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].hasAttribute("data-place")) cards.push(all[i]);
+    }
     if (!cards.length) return swapBoard();
     for (var i = 0; i < cards.length; i++) {
       if (busy(cards[i])) {

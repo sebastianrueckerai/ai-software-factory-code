@@ -25,10 +25,8 @@ type approvalCard struct {
 	Monthly  float64
 	Merge    factoryd.MergeSpec
 	Resource cloudres.ResourceSpec
-	// a plan: its revision, the spec's first lines, the summary and the
-	// cards in filing order
+	// a plan: its revision, the summary and the cards in filing order
 	PlanSpec    factoryd.PlanSpec
-	SpecLines   string
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
 	Questions   []planQuestion
@@ -39,6 +37,9 @@ type approvalCard struct {
 	Filter   boardFilter
 	CSRF     string
 	Approver bool
+	// Writer: the viewer writes the project, so the card's title opens
+	// its task's drawer, which holds the card's facts in full
+	Writer bool
 }
 
 // Waiting is how long the request has waited for a member, in minutes
@@ -69,9 +70,6 @@ type planQuestion struct {
 	factoryd.PlanQuestion
 }
 
-// specLines are the plan card's first lines of a spec.
-const specLines = 5
-
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
@@ -90,11 +88,6 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
-		if lines := strings.Split(t.Objective, "\n"); len(lines) > specLines {
-			k.SpecLines = strings.Join(append(lines[:specLines], "…"), "\n")
-		} else {
-			k.SpecLines = t.Objective
-		}
 		if err = c.planOf(ctx, &k); err != nil {
 			k.Problem = "the plan could not be read; see the factoryd log"
 		}
