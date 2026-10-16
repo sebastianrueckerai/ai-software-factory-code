@@ -3123,3 +3123,77 @@ func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
 		t.Fatalf("FACTS = %q", got)
 	}
 }
+
+// Near the budget the running agent is told to wrap up and push: the warning
+// reaches the worker's message endpoint once.
+func TestRunSessionWarnsNearTheBudget(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 4.5
+	store.tasks["t2"] = tk
+	v := runner.cfg.Policy()
+	v.Document.Limits.NoPushSpend = 99 // the spend detector is task 4's
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second // the tick every second
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			n := len(worker.texts)
+			worker.mu.Unlock()
+			if n > 0 {
+				time.Sleep(1500 * time.Millisecond) // a further tick, before the no-progress trip: no second warning
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left.") {
+		t.Fatalf("worker got %q, want one budget warning", texts)
+	}
+}
+
+// A warning the worker did not take comes again on the next tick.
+func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 4.5
+	store.tasks["t2"] = tk
+	v := runner.cfg.Policy()
+	v.Document.Limits.NoPushSpend = 99
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second
+	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable}
+	worker.start(t, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(6 * time.Second)
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			n := len(worker.texts)
+			worker.mu.Unlock()
+			if n >= 2 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	worker.mu.Lock()
+	n := len(worker.texts)
+	worker.mu.Unlock()
+	if n < 2 {
+		t.Fatalf("worker got %d warnings, want the refused one again", n)
+	}
+}

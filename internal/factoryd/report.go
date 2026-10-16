@@ -68,7 +68,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	text := t.AgentSummary
 	if text == "" {
 		began := time.Now()
-		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), pin, r.reportGuide(t.Source), nil, nil)
+		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, r.reportGuide(t.Source), nil, nil)
 		if err != nil {
 			return ReportResult{}, err
 		}
@@ -137,9 +137,9 @@ type reportEnd struct {
 // a human's answers, in the task's own sandbox: the read token on the
 // repository and the project's document repository, no push token, no
 // fork.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, pin int64, guide string, findings, answers []string) (end reportEnd, err error) {
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber}
+	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, pull: t.PRNumber, planner: planner}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
 	}

@@ -160,7 +160,7 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 			r.record(context.WithoutCancel(ctx), taskID, "split_state", map[string]any{"error": err.Error()})
 		}
 	}()
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), false, pin, splitGuide(t.PRNumber, files, bound, v.Document.Limits), findings, nil)
 	if err != nil {
 		return PlanResult{}, err
 	}

@@ -411,6 +411,8 @@ type sessionSpec struct {
 	// sessions is the cap the attempt number counts against: the policy's
 	// session limit and the attempts a human answer granted
 	sessions int
+	// planner marks a plan card's session: its warning says file the plan
+	planner bool
 	// facts is factoryd's FACTS line for the brief
 	facts string
 	// agentTime and checkIn are the task's resolved values (policy.Time,
@@ -572,6 +574,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return out, err
 	}
 	defer func() { out.model = s.model }()
+	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried;
 	// briefed: a supervisor call of this session read the whole brief
@@ -825,7 +828,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopAt = time.Now()
 			return out, shutdown()
 		case <-tick.C:
-			if trip := sup.Tick(time.Now()); trip != nil {
+			trip := sup.Tick(time.Now())
+			if trip == nil {
+				trip = r.watchLimits(ctx, t, s, ns, podName, watch)
+			}
+			if trip != nil {
 				if end, err := onTrip(trip); end {
 					return out, err
 				}
@@ -2002,4 +2009,22 @@ func (k *InClusterKube) Namespace() string {
 		return ""
 	}
 	return string(bytes.TrimSpace(b))
+}
+
+// watchLimits reads the card's spend once per tick and sends the agent the
+// warning it is due; a warning the pod did not take stays due.
+func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch) *Trip {
+	cur, ok, err := r.store.Task(ctx, t.ID)
+	if err != nil || !ok {
+		log.Printf("task %s: read the card's spend: %v", t.ID, err)
+		return nil
+	}
+	for _, wn := range w.due(cur.SpentEUR, cur.BudgetEUR, time.Now()) {
+		if err := r.message(ctx, t, s, ns, pod, wn.text); err != nil {
+			log.Printf("task %s: send the %s warning: %v", t.ID, wn.kind, err)
+			continue
+		}
+		w.sent(wn.kind)
+	}
+	return nil
 }
