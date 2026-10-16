@@ -131,6 +131,7 @@ type reportEnd struct {
 	start                 *startFailure
 	pending               *podPending
 	capped                *CapRefusal
+	reads                 []string
 }
 
 // reportSession runs one worker in report mode, with guide, findings and
@@ -179,6 +180,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 			"summary": err.Error(), "started": began})
 		return reportEnd{}, err
 	}
+	end.reads = out.reads
 	switch {
 	case out.result != nil && out.result.Success:
 		end.report = out.result.Summary

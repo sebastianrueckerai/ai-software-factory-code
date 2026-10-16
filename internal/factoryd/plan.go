@@ -1080,6 +1080,11 @@ func (t *taskRun) planLoop() (string, error) {
 			continue
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		if t.plannerRetry >= versionPlannerRetry && u.ExtraTime == 0 && remaining < min(minSession, t.cfg.WallClockCap) {
+			u.ExtraTime = t.cfg.WallClockCap / 2
+			t.recordUsage(u)
+			remaining += u.ExtraTime
+		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
@@ -1480,12 +1485,21 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	} else {
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
+	if len(end.reads) > 0 {
+		found = append(found, readsFinding(end.reads))
+	}
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
 	res := PlanResult{Findings: found, Capped: end.capped}
 	if end.pending != nil {
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// readsFinding tells the next planner session what the last one read.
+func readsFinding(paths []string) string {
+	return fmt.Sprintf("the planner session read %d files before it ended: %s. File the plan from what they hold; read a file again only where the plan needs a detail.",
+		len(paths), textutil.Truncate(strings.Join(paths, ", "), maxPlanEcho))
 }
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of

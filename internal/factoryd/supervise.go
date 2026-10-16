@@ -140,6 +140,8 @@ type Supervisor struct {
 	pushed  bool
 
 	spendTripped bool
+
+	reads []string // a report session's distinct read paths, in order
 }
 
 // NewSupervisor starts watching a session at now; taskStarted anchors the
@@ -183,6 +185,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	s.lastSeen = at
 	s.noteFinding(ev)
+	s.noteRead(ev)
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
 	}
@@ -442,6 +445,25 @@ func (s *Supervisor) noteFinding(ev harness.Event) {
 		s.findings = append(s.findings[:0], s.findings[len(s.findings)-20:]...)
 	}
 }
+
+// maxReads bounds the paths a report session keeps.
+const maxReads = 100
+
+// noteRead keeps the paths a report session read, for the next planner
+// session when this one ends without its plan.
+func (s *Supervisor) noteRead(ev harness.Event) {
+	if !s.cfg.ReadOnly || ev.Kind != harness.EventToolCall || detailString(ev, "tool") != "read" || detailString(ev, "status") != "completed" {
+		return
+	}
+	args, _ := ev.Detail["args"].(map[string]any)
+	path, _ := args["filePath"].(string)
+	if path == "" || slices.Contains(s.reads, path) || len(s.reads) >= maxReads {
+		return
+	}
+	s.reads = append(s.reads, path)
+}
+
+func (s *Supervisor) Reads() []string { return slices.Clone(s.reads) }
 
 // Trace detectors (architecture 6.6): cheap checks over the event stream
 // for the trace a circling agent leaves. A trip of any of them, like a

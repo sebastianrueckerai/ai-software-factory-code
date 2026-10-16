@@ -1416,8 +1416,8 @@ func TestPGStorePlans(t *testing.T) {
 }
 
 // A planner session that ends without filing a plan says so, with its
-// last message beside the finding; a filing an earlier session left is
-// stale, not this session's answer.
+// last message and the files it read beside the finding; a filing an
+// earlier session left is stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -1438,11 +1438,12 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
-	kube.scriptPods(0, resultLine(true, said))
+	kube.scriptPods(0, envLine(readEvent("/workspace/repo/go.mod"))+"\n"+resultLine(true, said))
 	if err := <-done; err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said}
+	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said,
+		"the planner session read 1 files before it ended: /workspace/repo/go.mod. File the plan from what they hold; read a file again only where the plan needs a detail."}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
@@ -2090,5 +2091,52 @@ func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	}
 	if got := briefObjective(objective, false); !strings.Contains(got, "Directories (guidance, not a boundary): internal/links\nDepends on") || strings.Contains(got, "Size") || strings.Contains(got, "Rung") {
 		t.Fatalf("brief objective without a map =\n%s", got)
+	}
+}
+
+func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
+	got := readsFinding([]string{"/workspace/repo/a.go", "/workspace/docs/b.md"})
+	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. File the plan from what they hold; read a file again only where the plan needs a detail."
+	if got != want {
+		t.Fatalf("readsFinding = %q, want %q", got, want)
+	}
+}
+
+// A planner that used its time gets one fresh session with its findings
+// instead of a fail: 18 of 20 minutes used leaves 2, under the 5 a session
+// needs, so half the cap (10 minutes) is added.
+func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
+	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. File the plan from what they hold; read a file again only where the plan needs a detail."}
+	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 18 * time.Minute, Attempts: 1}}
+	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final %q, finals %v, want done after a second planner", final, h.finals)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], found) {
+		t.Fatalf("plans %q, want a second session with the first's findings", h.plans)
+	}
+	if u := h.usage[0]; u.ExtraTime != 10*time.Minute {
+		t.Fatalf("first usage %+v, want 10 minutes of extra time", u)
+	}
+}
+
+// Once only: with extra time already granted and the whole of it used
+// (20m cap + 10m extra - 30m used = 0), the card fails as before.
+func TestPlanLoopSecondTimeLimitFails(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 10 * time.Minute, Attempts: 1}}
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
+		t.Fatalf("final %q, finals %v, plans %q, want the old fail with no session", final, h.finals, h.plans)
+	}
+}
+
+// A run from before the change fails at the limit (20m cap, 20m used).
+func TestPlanLoopBeforePlannerRetryFailsAtTheLimit(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(workflow.DefaultVersion)
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
+		t.Fatalf("final %q, finals %v, plans %q", final, h.finals, h.plans)
 	}
 }

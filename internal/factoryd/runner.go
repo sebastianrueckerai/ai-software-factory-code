@@ -455,6 +455,7 @@ type sessionOutcome struct {
 	pending   *podPending   // its pod never left Pending: no session ran
 	model     string        // the model the session ended on
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
+	reads     []string      // the paths a report session read
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -575,7 +576,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.model = s.model }()
+	defer func() { out.model, out.reads = s.model, sup.Reads() }()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried;

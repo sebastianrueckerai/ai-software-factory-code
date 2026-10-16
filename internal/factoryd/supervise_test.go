@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1443,5 +1444,25 @@ func TestSpendNoPushShareMustBeBelowOne(t *testing.T) {
 	cfg := SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, MaxCalls: 3, NoPushSpend: 1}
 	if _, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0)); err == nil {
 		t.Fatal("a share of 1 accepted")
+	}
+}
+
+func TestReportSessionRemembersWhatItRead(t *testing.T) {
+	s := spendSupervisor(t, func(c *SupervisorConfig) { c.ReadOnly = true })
+	for _, p := range []string{"/w/a.go", "/w/b.go", "/w/a.go"} {
+		s.Event(readEvent(p), time.Unix(1, 0))
+	}
+	s.Event(harness.Event{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "grep", "args": map[string]any{"pattern": "x"}}}, time.Unix(2, 0))
+	s.Event(harness.Event{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "read", "status": "error", "args": map[string]any{"filePath": "/w/gone.go"}}}, time.Unix(3, 0))
+	if got := s.Reads(); !slices.Equal(got, []string{"/w/a.go", "/w/b.go"}) {
+		t.Fatalf("Reads = %v, want the two distinct paths in order", got)
+	}
+}
+
+func TestCodingSessionKeepsNoReads(t *testing.T) {
+	s := spendSupervisor(t, nil)
+	s.Event(readEvent("/w/a.go"), time.Unix(1, 0))
+	if got := s.Reads(); len(got) != 0 {
+		t.Fatalf("Reads = %v, want none for a coding session", got)
 	}
 }
