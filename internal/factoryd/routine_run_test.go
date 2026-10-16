@@ -194,7 +194,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Errorf("body:\n%s", body)
 	}
 	for _, want := range []string{"upstream-images.txt", "DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION",
-		"apt-archive.postgresql.org", "go.mod's `toolchain`", "ADD --checksum", "buildkitSHA256", "scripts/upstream-images-test/test.sh",
+		"apt-archive.postgresql.org", "go.mod's `toolchain`", "ADD --checksum", "buildkitSHA256", "upstream-files.txt", "scripts/upstream-images-test/test.sh",
 		"chart", "index.yaml", "ts-go template", "Talos", "Cilium"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card names no %s:\n%s", want, body)
