@@ -383,6 +383,9 @@ type RunState struct {
 	History []string
 	Reviews []Review
 	Round   int
+	// CheckinVerdicts: every check-in's verdicts in timeline order (plan
+	// D), the priors its guards read, rebuilt as the reviews' are.
+	CheckinVerdicts []map[string]CheckVerdict
 	// Roll: a roll task (ruling 178), whose commit RollCommit writes.
 	Roll bool
 	// FactoryPR: the task's card of a pull request factoryd opened outside
@@ -1315,6 +1318,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
+			t.checkinVerdicts = st.CheckinVerdicts
 		}
 		if t.waitsForDependencies(st, u) {
 			final, why, answer := t.awaitDependencies(st)

@@ -1582,10 +1582,12 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 }
 
 // Reconcile merges a check-in step's verdicts onto the review of its
-// round, so a restart between the drop and the re-review still hands the
-// re-review the drop record; the drop itself was consumed before the
-// restart, so gateFindings is not rebuilt (the workflow degrades to
-// today's round, pinned by its own test).
+// round and rebuilds the priors list the guards read, so a restart
+// between the drop and the re-review still hands the re-review the drop
+// record and the next check-in its priors ("two loops must be
+// impossible"); the drop itself was consumed before the restart, so
+// gateFindings is not rebuilt (the workflow degrades to today's round,
+// pinned by its own test).
 func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
 	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
@@ -1601,6 +1603,9 @@ func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
 	want := map[string]CheckVerdict{"a.go: x is missing": {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
 	if len(st.Reviews) != 2 || !maps.Equal(st.Reviews[0].Verdicts, want) || len(st.Reviews[1].Verdicts) != 0 {
 		t.Fatalf("reviews = %+v, want the verdicts on round 1's review alone", st.Reviews)
+	}
+	if len(st.CheckinVerdicts) != 1 || !maps.Equal(st.CheckinVerdicts[0], want) {
+		t.Fatalf("checkin verdicts = %+v, want the priors rebuilt from the checkin step", st.CheckinVerdicts)
 	}
 }
 

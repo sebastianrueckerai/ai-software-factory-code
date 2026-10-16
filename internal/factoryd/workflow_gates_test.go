@@ -1015,6 +1015,38 @@ func TestWorkflowConfirmedTwiceGoesToTheHuman(t *testing.T) {
 	}
 }
 
+// A restart keeps the check-in's priors: the verdicts the timeline holds
+// come back as the priors the next check-in's ask counts, so a finding
+// confirmed before the restart cannot be confirmed again unnoticed. The
+// resume's own verification of the pushed head raises the finding, and
+// the session it sends back counts the confirmation the earlier run's
+// check-in left.
+func TestWorkflowRestartKeepsCheckinPriors(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}}}
+	})
+	g.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1",
+		CheckinVerdicts: []map[string]CheckVerdict{{finding: {State: CheckConfirmed, Round: 1}}}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "confirmed 2 times: " + finding}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(g.sessions) != 2 || g.sessions[0].CheckInAsk == nil {
+		t.Fatalf("sessions = %+v, want the resume's round to arm the check-in", g.sessions)
+	}
+	ask := g.sessions[0].CheckInAsk
+	if len(ask.Findings) != 1 || ask.Findings[0] != (CheckFinding{Text: finding, Source: "review", PriorConfirmed: 1}) {
+		t.Fatalf("the ask = %+v, want the finding counting the pre-restart confirmation", ask.Findings)
+	}
+}
+
 // A checks finding the check-in dropped ends on the card when the checks
 // re-raise it: the third pod's ask names the finding from the review with
 // the drop as a prior, and no coding session ran on the dropped round.
