@@ -148,7 +148,7 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 	if err != nil {
 		return "", nil, nil, err
 	}
-	cleanup = func() { os.RemoveAll(tmp) }
+	cleanup = func() { os.RemoveAll(tmp) } // #nosec G104 -- best-effort cleanup of a temporary directory
 	login, src := basicLogin(f.BotUser, f.BotPassword), filepath.Join(tmp, "src")
 	if _, err = git(ctx, tmp, login, "clone", "-q", "--depth=1", "--no-checkout", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src); err == nil {
 		_, err = git(ctx, src, login, "fetch", "-q", "--depth=1", "origin", fmt.Sprintf("refs/pull/%d/head:refs/factory/head", pr))
