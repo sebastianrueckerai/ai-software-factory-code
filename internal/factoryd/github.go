@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -138,8 +139,8 @@ func git(ctx context.Context, dir, login string, args ...string) (string, error)
 		key, value, _ := strings.Cut(c, "=")
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, value))
 	}
-	ownProcessGroup(cmd)
-	cmd.Cancel = func() error { return killProcessGroup(cmd) }
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL) }
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	if err != nil {
