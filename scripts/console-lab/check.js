@@ -165,7 +165,7 @@ async function viewChange(p, query, fails) {
     {detail: {query: "?project=ai-software-factory-code&queued=oldest&q=export"}})));
   await page.waitForTimeout(900);
   const at = new URL(page.url()).searchParams;
-  if (at.get("q") !== "export" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
+  if (at.get("q") !== "export" || at.get("queued") !== "oldest" || !at.get("project")) fails.push(label + ": the URL holds " + page.url());
   if ((await page.evaluate(() => history.length)) !== before + 1) fails.push(label + ": the change leaves no history entry");
   const shown = await page.locator(cards).allInnerTexts();
   if (!shown.length || shown.some((t) => !t.toLowerCase().includes("export"))) fails.push(label + ": the board shows " + shown.length + " cards that do not say export");
@@ -175,6 +175,7 @@ async function viewChange(p, query, fails) {
   if ((await page.locator(cards).count()) < shown.length + 1) fails.push(label + ": Back does not read the entry's board");
   await page.locator("#status-toggle").click();
   await page.waitForTimeout(200);
+  if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the toggle does not open the panel");
   await page.evaluate((card) => document.dispatchEvent(new CustomEvent("view",
     {detail: {query: "?project=ai-software-factory-code", card: card, tab: "chat", panel: "closed", theme: "light"}})), labID(616));
   await page.waitForTimeout(900);
