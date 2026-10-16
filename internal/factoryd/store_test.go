@@ -1896,13 +1896,17 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
 	for _, e := range []IntakeEvent{
 		{TaskID: "t-wd", Kind: IntakeEscalation, Author: FactoryDecider, Body: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs", CommentID: 601},
-		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true, CreatedAt: time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)},
+		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "gateway restarted", CommentID: 650, Trusted: true},
 		withdrawal, withdrawal,
 		{TaskID: "t-wd", Kind: "issue_comment", Author: "sebastian", Body: "by the way", CommentID: 750, Trusted: true},
 	} {
 		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// the row's time is the database's: the answer's date is set, not today's
+	if _, err := s.db.ExecContext(ctx, `UPDATE intake_events SET created_at = '2026-10-15T13:30:00Z' WHERE comment_id = 650`); err != nil {
+		t.Fatal(err)
 	}
 	events, err := s.IntakeEvents(ctx, "t-wd")
 	if err != nil {

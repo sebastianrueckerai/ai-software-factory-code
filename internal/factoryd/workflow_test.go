@@ -1527,18 +1527,21 @@ func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing
 // answer by the rule of the loop's (versionSessionLadder): the row says
 // whether the last session took a number. After one that took none the
 // answer buys the 5 minute slice alone, after one that took one it buys an
-// attempt with it, and an answer to a floor's refusal buys nothing, as the
-// live wait's answer does. The session after it is attempt 2, a minute
-// long. A run from before the gate bought an attempt with any answer.
+// attempt with it, and an answer to a wait the live loop answers with the
+// next session alone buys nothing: a floor's refusal (the budget's, or a
+// model it cannot price), pods that never started, the provider's refusals.
+// The session after it is attempt 2, a minute long. A run from before the
+// gate bought an attempt with any answer.
 func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	const pod = "the pod could not start: image pull refused"
 	floor := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
-	for name, tc := range map[string]struct {
+	type row struct {
 		pinned   bool
 		question string
 		used     TaskUsage
 		usage    []TaskUsage
-	}{
+	}
+	rows := map[string]row{
 		"uncounted": {question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
 			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, LastUncounted: true},
 			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute}}},
@@ -1548,12 +1551,21 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 		"uncounted, before the gate": {pinned: true, question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
 			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1, LastUncounted: true},
 			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
-		"a floor's refusal": {question: floor, used: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}, usage: []TaskUsage{
-			{AgentTime: 6 * time.Minute, Attempts: 2}}},
-		"a floor's refusal, before the gate": {pinned: true, question: floor, used: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}, usage: []TaskUsage{
-			{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1},
-			{AgentTime: 6 * time.Minute, Attempts: 2, ExtraAttempts: 1}}},
+	}
+	five := TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}
+	for kind, question := range map[string]string{
+		"the budget's floor":        floor,
+		"an unpriced model's floor": "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model",
+		"pods that never started": "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
+			"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: Pending",
+		"the provider's refusals": "the model provider refused the first call of 6 sessions in a row (status 429): rate limited",
 	} {
+		rows[kind] = row{question: question, used: five, usage: []TaskUsage{{AgentTime: 6 * time.Minute, Attempts: 2}}}
+		rows[kind+", before the gate"] = row{pinned: true, question: question, used: five, usage: []TaskUsage{
+			{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1},
+			{AgentTime: 6 * time.Minute, Attempts: 2, ExtraAttempts: 1}}}
+	}
+	for name, tc := range rows {
 		h := newWorkflowHarness(t)
 		if tc.pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
@@ -1571,7 +1583,7 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 			t.Fatalf("%s: sessions = %+v, want one, attempt 2", name, h.sessions)
 		}
 		if !slices.Equal(h.usage, tc.usage) {
-			t.Fatalf("%s: usage = %+v, want %+v", name, h.usage, tc.usage)
+			t.Errorf("%s: usage = %+v, want %+v", name, h.usage, tc.usage)
 		}
 	}
 }

@@ -942,13 +942,14 @@ const (
 	// answer after a session that took none buys agent time but no attempt,
 	// in a restarted run too (TaskUsage.LastUncounted), and the
 	// unansweredSessions-th such session in a row asks a human; a restarted
-	// run's answer to a floor's refusal buys nothing, as the live wait's
-	// does; an answer at a cap (a change request, the cap card, the cap
-	// question after a restart) buys an attempt only at the session cap,
-	// whatever the last session counted, else the agent time alone; the
-	// check before a session is SessionFunded (the opening calls and the
-	// floor of the rung); every wait for a human adds the change requests
-	// that answered it to the next session's findings. A run from before
+	// run's answer to a floor's refusal, to pods that never started or to
+	// the provider's refusals buys nothing, as the live wait's does; an
+	// answer at a cap (a change request, the cap card, the cap question
+	// after a restart) buys an attempt only at the session cap, whatever
+	// the last session counted, else the agent time alone; the check before
+	// a session is SessionFunded (the opening calls and the floor of the
+	// rung); every wait for a human adds the change requests that answered
+	// it to the next session's findings. A run from before
 	// counts every session that ran and every attempt the budget refused,
 	// buys an attempt with every answer at a cap or after a restart, funds
 	// on AttemptFunded and drops the budget wait's change requests.
@@ -1331,9 +1332,10 @@ func (t *taskRun) lifecycle() (string, error) {
 				capAnswer()
 			case t.sessionLadder < versionSessionLadder:
 				t.grant(&u)
-			case floorRefused(st.Question):
-				// the floor's wait buys nothing: the next session's
-				// floor decides
+			case floorRefused(st.Question), strings.HasPrefix(st.Question, floorUnread),
+				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
+				// the live loop answers these waits with the next
+				// session alone
 			default:
 				buy()
 			}

@@ -404,6 +404,9 @@ var capRefusals = map[string]string{
 // and the console takes an answer.
 func DayCapped(why string) bool { return strings.HasPrefix(why, capRefusals[policy.RefusedDayCap]) }
 
+// floorUnread opens the floor's refusal of a model it cannot price.
+const floorUnread = "the attempt's floor on "
+
 // floorRefused reports whether reason is an attempt floor's refusal for
 // money: the budget's or a cap's.
 func floorRefused(reason string) bool {
@@ -482,7 +485,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if err != nil {
 		// a model nobody can price is a hold nobody can bound: the
 		// attempt is refused (roadmap 222, item 5)
-		return fmt.Sprintf("the attempt's floor on %s cannot be read: %v", alias, err), nil
+		return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
 	}
 	v := r.cfg.Policy()
 	project, projectEUR := v.ProjectCap(t.Repository)
@@ -503,7 +506,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		measure = "no session's opening is recorded: " + measure
 		eur, calls, err := o.Hold(req, func(ref string) (policy.Price, error) { return r.price(ctx, ref) })
 		if err != nil {
-			return fmt.Sprintf("the attempt's floor on %s cannot be read: %v", alias, err), nil
+			return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
 		}
 		if calls != nil {
 			on := "it"
