@@ -302,7 +302,7 @@ func staleNames(status string) (state, action string) {
 	case "waiting-poster":
 		return "waiting on the issue's author", "the issue's author answers on the issue, or close it to end the wait"
 	}
-	return "running", "answer on the issue to start a new attempt with your comment as guidance, or close the issue to fail the card"
+	return "running", "answer on the issue to start a new attempt with your comment as guidance, or close the issue to end the card"
 }
 
 // staleDuration is a quiet span in the ring's words.
@@ -342,7 +342,7 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 		forgejo, timeline = in.Forgejo, in.Timeline
 	}
 	mirrorTaskState(ctx, forgejo, t, "waiting-human")
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to fail the task."
+	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	var comment int64
 	if forgejo != nil && t.IssueNumber != 0 {
 		if repo, err := SplitRepo(t.Repository); err != nil {

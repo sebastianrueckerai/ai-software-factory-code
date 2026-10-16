@@ -66,6 +66,7 @@ type Opencode struct {
 	Stronger, Cheap string
 	Budget          TokenBudget
 	Steps           int // the agent's step cap, policy limits.steps
+	ContextTokens   int // compaction threshold, policy limits.context_tokens; 0 = opencode's own
 	HTTP            *http.Client
 
 	mu        sync.Mutex
@@ -165,7 +166,7 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if p, id := splitModel(o.Cheap); o.Cheap != "" && p == provider {
 		subagent = p + "/" + id
 	}
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, subagent, more...)
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, o.ContextTokens, subagent, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -657,6 +658,10 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		}
 		b.WriteString("\n")
 	}
+	if brief.Facts != "" {
+		b.WriteString(brief.Facts + "\n")
+	}
+	b.WriteString(SandboxFacts() + "\n")
 	switch {
 	case brief.Docs:
 		b.WriteString("The project's document repository (the roadmap, the plans, the architecture, the design rounds and their prototypes) is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n")
@@ -784,7 +789,8 @@ const downARung = "Routine, well-specified work goes down a rung: in this sessio
 const guideEnd = "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
 	"no further tests, re-runs or reading of library sources to confirm. " +
 	"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
-	"The sandbox has Go, Node, gcc and make, and reaches only the Go module proxy and the npm registry: install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms. " +
+	"Install what the checks need with go install, go run or npm; the caches under /cache persist for this project. Give a command that may run over two minutes a timeout of up to 600000 ms. " +
+	"To wait for a background job (start it with its output in a file and note $!), run agent-worker wait <pid> [seconds up to 590] with a timeout of 600000 ms: one call blocks until the process ends, where a sleep loop costs a model call per poll. " +
 	"End with a short last message: what you changed, and whether you recommend merging it and why."
 
 // featureGuide ends the brief of a plan's card of role instead of
@@ -823,7 +829,10 @@ const mcpTimeoutMS = 150000
 // subagent, when set, is the model (provider/id) the general and explore
 // agents run on: the cheap rung under a frontier session (roadmap 222,
 // item 6); more lists further model ids to declare.
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, subagent string, more ...string) ([]byte, error) {
+// contextTokens, when positive, is the size at which opencode compacts:
+// limit.input with compaction.reserved 0 makes it the overflow line
+// (overflow.ts at v1.18.32).
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps, contextTokens int, subagent string, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
@@ -838,16 +847,17 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 		if id == "" {
 			continue
 		}
+		limit := map[string]any{"context": policy.ModelContext, "output": outputLimit}
+		if contextTokens > 0 {
+			limit["input"] = contextTokens
+		}
 		models[id] = map[string]any{
 			"name":      "Factory model",
 			"reasoning": true,
 			"interleaved": map[string]any{
 				"field": "reasoning_content",
 			},
-			"limit": map[string]any{
-				"context": 200000,
-				"output":  outputLimit,
-			},
+			"limit": limit,
 		}
 	}
 	cfg := map[string]any{
@@ -871,6 +881,9 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps 
 				"models": models,
 			},
 		},
+	}
+	if contextTokens > 0 {
+		cfg["compaction"] = map[string]any{"auto": true, "reserved": 0}
 	}
 	return json.Marshal(cfg)
 }

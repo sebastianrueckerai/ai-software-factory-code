@@ -121,7 +121,8 @@ func TestModelReviewCountsEachAnswer(t *testing.T) {
 
 // A human's answer that raised the task's agent time counts one
 // extra_time intervention; the same usage recorded again (a retried
-// activity) and usage that only grew by the agent's own work count none.
+// activity), usage that only grew by the agent's own work and a planner's
+// retry time count none.
 func TestRecordUsageCountsATimeGrant(t *testing.T) {
 	task := prTask
 	task.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 3}
@@ -133,6 +134,7 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
 		{AgentTime: 19 * time.Minute, Attempts: 3, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
 		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute},
+		{AgentTime: 25 * time.Minute, Attempts: 4, ExtraAttempts: 1, ExtraTime: 9 * time.Minute, RetryTime: 10 * time.Minute},
 	} {
 		if _, err := execActivity(t, r, ActivityRecordUsage, "t1", u); err != nil {
 			t.Fatal(err)

@@ -38,6 +38,9 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "wait" {
+		os.Exit(runWait(os.Args[2:], os.Stdout, time.Second))
+	}
 	log := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "agent-worker: "+format+"\n", args...)
 	}
@@ -258,6 +261,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		Spec:           s.env.spec,
 		CardRole:       s.env.cardRole,
 		LeftOut:        s.env.leftOut,
+		Facts:          s.env.facts,
 	}
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
@@ -267,14 +271,15 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		log("repository map: %d directories, %d bytes", len(s.env.directories), len(s.brief.Map))
 	}
 	s.oc = &factoryd.Opencode{
-		WorkDir:    s.repoDir,
-		GatewayURL: s.env.gatewayURL,
-		TokenFile:  s.env.tokenFile,
-		Model:      s.env.model,
-		Stronger:   s.env.strongerModel,
-		Cheap:      s.env.cheapModel,
-		Budget:     factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
-		Steps:      s.env.steps,
+		WorkDir:       s.repoDir,
+		GatewayURL:    s.env.gatewayURL,
+		TokenFile:     s.env.tokenFile,
+		Model:         s.env.model,
+		Stronger:      s.env.strongerModel,
+		Cheap:         s.env.cheapModel,
+		Budget:        factoryd.TokenBudget{AnswerTokens: s.env.answerTokens, HeadroomTokens: s.env.headroomTokens},
+		Steps:         s.env.steps,
+		ContextTokens: s.env.contextTokens,
 	}
 	if err := s.oc.Prepare(ctx, harness.SandboxEnv{}, s.brief); err != nil {
 		return s, startError{"prepare brief", err}
@@ -433,6 +438,7 @@ type workerEnv struct {
 	cheapModel                                                string
 	answerTokens, headroomTokens                              int
 	steps                                                     int
+	contextTokens                                             int
 	findings, answers, posterInfo, tools                      []string
 	author, authorStanding                                    string
 	home                                                      string
@@ -452,6 +458,8 @@ type workerEnv struct {
 	// leftOut are factoryd's notes on what the env could not carry
 	// (LEFT_OUT), for the brief
 	leftOut []string
+	// facts (FACTS) is factoryd's line for the brief
+	facts string
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
@@ -491,6 +499,7 @@ func loadEnv() (workerEnv, error) {
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
 	e.docsDir = str("DOCS_DIR")
+	e.facts = str("FACTS")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
 		"TASK_ID": e.taskID, "OBJECTIVE": e.objective, "REPOSITORY": e.repository,
@@ -526,6 +535,11 @@ func loadEnv() (workerEnv, error) {
 	}
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
+	}
+	if raw := str("CONTEXT_TOKENS"); raw != "" {
+		if e.contextTokens, err = strconv.Atoi(raw); err != nil || e.contextTokens < 0 {
+			return e, fmt.Errorf("CONTEXT_TOKENS must be a token count, is %q", raw)
+		}
 	}
 	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES, MIGRATION_GLOBS and LEFT_OUT arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,

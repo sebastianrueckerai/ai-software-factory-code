@@ -1046,6 +1046,14 @@ func (t *taskRun) planLoop() (string, error) {
 	refusals := 0 // refused sessions in a row (versionSessionRefusals)
 	// day is the wait on the day cap the next ask holds (versionDayCap)
 	var day *dayWait
+	// a healed run with no plan pending whose planner is out of time with
+	// no retry due re-asks as healedReason, so no second alert posts; the
+	// answer buys the time at the wait's branch below
+	if healed && !wait && t.plannerRetry >= versionPlannerRetry {
+		if short, retry := t.plannerTime(u); short && !retry {
+			ask = healedReason
+		}
+	}
 	if healed && t.dayCap >= versionDayCap && st.DayCap != "" && workflow.Now(t.ctx).Before(st.DayCapUntil) {
 		ask, day = st.DayCap, &dayWait{until: st.DayCapUntil, model: t.cfg.Models.Stronger}
 	}
@@ -1072,14 +1080,30 @@ func (t *taskRun) planLoop() (string, error) {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
-			// a writer's comment at the cap buys a session, the day's turn none
+			// an answer at the session cap buys a session; one to a planner
+			// out of time, its automatic session used or the cap too short
+			// for one, buys agent time (versionPlannerRetry); an answer on
+			// the day's turn buys nothing
 			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts && !day.over() {
 				t.grant(&u)
+			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !day.over() {
+				t.grantTime(&u)
 			}
 			day = nil
 			continue
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
+		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+		if t.plannerRetry >= versionPlannerRetry {
+			switch short, retry := t.plannerTime(u); {
+			case short && retry:
+				u.RetryTime = t.cfg.WallClockCap/2 - remaining
+				t.recordUsage(u)
+				remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+			case short:
+				ask = t.plannerTimeCard(u)
+				continue
+			}
+		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
@@ -1182,6 +1206,30 @@ func (t *taskRun) planLoop() (string, error) {
 		t.approvalRequested = workflow.Now(t.ctx)
 		reason = fmt.Sprintf("plan revision %d waits for an approver", ref.Revision)
 	}
+}
+
+// plannerTime tells a plan card's agent time (versionPlannerRetry): short
+// when less is left than a session needs, retry when its one automatic
+// top-up to half the cap is still to come and half the cap is enough for a
+// session.
+func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
+	least := min(minSession, t.cfg.WallClockCap)
+	return t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least, u.RetryTime == 0 && t.cfg.WallClockCap/2 >= least
+}
+
+// plannerOutOfTime opens the question of a plan card whose planner is out
+// of time with no automatic session to come.
+const plannerOutOfTime = "the planner used its agent time"
+
+// plannerTimeCard is that question: the automatic session used, or the cap
+// too short for one, and what an answer buys.
+func (t *taskRun) plannerTimeCard(u TaskUsage) string {
+	what := " and its automatic second session without filing a plan"
+	if u.RetryTime == 0 {
+		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
+	}
+	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
+		plannerOutOfTime, what, t.answerTime().Minutes())
 }
 
 // planRejected takes a Reject sent while a session ran: the task ends
@@ -1452,7 +1500,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), pin, planGuide(shape, v.Document.Limits), findings, answers)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -1480,12 +1528,21 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	} else {
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
+	if len(end.reads) > 0 {
+		found = append(found, readsFinding(end.reads))
+	}
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
 	res := PlanResult{Findings: found, Capped: end.capped}
 	if end.pending != nil {
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// readsFinding tells the next planner session what the last one read.
+func readsFinding(paths []string) string {
+	return fmt.Sprintf("the planner session read %d files before it ended: %s. File the plan from what they hold; read a file again only where the plan needs a detail.",
+		len(paths), textutil.Truncate(strings.Join(paths, ", "), maxPlanEcho))
 }
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of

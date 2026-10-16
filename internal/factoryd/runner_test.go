@@ -15,6 +15,7 @@ import (
 	"os"
 	"path"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -764,13 +765,18 @@ func runSessionIn(t *testing.T, r *Runner, in SessionInput, bodies []string, set
 		}
 	}()
 	kube := r.kube.(*fakeKube)
+	// pods of sessions this runner already ran are not this call's: a
+	// second session on the same runner scripts its own pods only
+	kube.mu.Lock()
+	base := len(kube.podOrder)
+	kube.mu.Unlock()
 	assigned := 0
 	for assigned < len(bodies) {
 		kube.mu.Lock()
-		created := len(kube.podOrder)
+		created := len(kube.podOrder) - base
 		kube.mu.Unlock()
 		if created > assigned {
-			kube.scriptPods(assigned, bodies[assigned:created]...)
+			kube.scriptPods(base+assigned, bodies[assigned:created]...)
 			assigned = created
 		}
 		select {
@@ -3091,5 +3097,192 @@ func TestRunSessionResultNamesTheModelItEndedOn(t *testing.T) {
 	}
 	if res.Model != "factory/coding-frontier" || res.Outcome != OutcomePushed {
 		t.Fatalf("result = %+v, want the model it ended on", res)
+	}
+}
+
+func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	got := podEnv(kube.podAt(0))["FACTS"]
+	if !regexp.MustCompile(`^factoryd's facts for this session: budget 3\.20 of 5\.00 EUR left; \d+ minutes of agent time left; this is session 1 of the 4 `).MatchString(got) {
+		t.Fatalf("FACTS = %q", got)
+	}
+}
+
+func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	// testPolicyYAML sets limits.sessions to 3
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 3, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	got := podEnv(kube.podAt(0))["FACTS"]
+	if !strings.Contains(got, "this is session 3 of the 3 the policy allows before a human is asked. It is the last one") {
+		t.Fatalf("FACTS = %q", got)
+	}
+}
+
+// Near the budget the running agent is told to wrap up and push: the warning
+// reaches the worker's message endpoint once.
+func TestRunSessionWarnsNearTheBudget(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 4.5
+	store.tasks["t2"] = tk
+	v := runner.cfg.Policy()
+	v.Document.Limits.NoPushSpend = 99 // the spend detector is task 4's
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	runner.tick = 50 * time.Millisecond
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			n := len(worker.texts)
+			worker.mu.Unlock()
+			if n > 0 {
+				time.Sleep(500 * time.Millisecond) // ten further ticks: no second warning
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left.") {
+		t.Fatalf("worker got %q, want one budget warning", texts)
+	}
+}
+
+// A warning the worker did not take comes again on the next tick.
+func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 4.5
+	store.tasks["t2"] = tk
+	v := runner.cfg.Policy()
+	v.Document.Limits.NoPushSpend = 99
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	runner.tick = 50 * time.Millisecond
+	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable}
+	worker.start(t, runner)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(6 * time.Second)
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			n := len(worker.texts)
+			worker.mu.Unlock()
+			if n >= 4 {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	worker.mu.Lock()
+	n := len(worker.texts)
+	worker.mu.Unlock()
+	if n < 4 {
+		t.Fatalf("worker got %d warnings, want the refused one again each tick", n)
+	}
+	timeline, _ := runner.objects.Get(context.Background(), "sessions/t2/timeline.jsonl")
+	if steps := strings.Count(string(timeline), `"step":"message"`); steps != 1 {
+		t.Fatalf("%d message steps recorded, want only the first failure:\n%s", steps, timeline)
+	}
+}
+
+// A card past its budget share with nothing pushed asks the supervisor.
+func TestRunSessionSpendWithoutPushAsksTheSupervisor(t *testing.T) {
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
+	store.tasks["t2"] = tk
+	f := &fakeLiteLLM{content: `{"action":"continue","reason":"it is making progress"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.cfg.Supervisor.NoProgressAfter = time.Hour
+	runner.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			hub.mu.Lock()
+			found := slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "spend_no_push") })
+			hub.mu.Unlock()
+			if found {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if !slices.ContainsFunc(hub.comments, func(c string) bool {
+		return strings.Contains(c, "spend_no_push") && strings.Contains(c, "**continue**")
+	}) {
+		t.Fatalf("comments = %q, want the supervisor's continue on spend_no_push", hub.comments)
+	}
+}
+
+func TestRunSessionPassesTheContextCap(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["CONTEXT_TOKENS"]; got != "100000" {
+		t.Fatalf("CONTEXT_TOKENS = %q, want the default 100000", got)
+	}
+}
+
+// The gateway refused a call for the card's budget and the worker pushed
+// the work in progress: the session is pushed, with that commit.
+func TestRunSessionBudgetRefusalAfterAPushIsPushed(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	store.budgetRefused = map[string]bool{"t3": true}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c-wip")+"\n"+resultLine(false, "free headroom 0.07 EUR fits 0 output tokens (status 402); work in progress pushed to factory/t3 at c-wip"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want pushed at c-wip", res, err)
+	}
+}
+
+// A failure that pushed but met no budget refusal stays no_push, and a
+// refusal with nothing pushed has no commit to call pushed.
+func TestRunSessionOnlyABudgetRefusalAfterAPushIsPushed(t *testing.T) {
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
+		pushedLine("c-wip")+"\n"+resultLine(false, "model refused"))
+	if err != nil || res.Outcome != OutcomeNoPush {
+		t.Fatalf("no refusal: (%+v, %v), want no_push", res, err)
+	}
+	store.budgetRefused = map[string]bool{"t3": true}
+	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(false, "free headroom 0 EUR"))
+	if err != nil || res.Outcome != OutcomeNoPush {
+		t.Fatalf("refusal without a push: (%+v, %v), want no_push", res, err)
 	}
 }

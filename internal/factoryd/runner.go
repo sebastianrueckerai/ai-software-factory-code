@@ -124,6 +124,7 @@ type Runner struct {
 	supervisor *SupervisorModel
 	stopWait   time.Duration
 	cheapCap   time.Duration // cheapAttemptCap; a test shortens it
+	tick       time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
 	// container may wait with a configuration error (configErrorGrace);
 	// a test shortens both
@@ -408,6 +409,13 @@ type sessionSpec struct {
 	policy policy.Document
 	// attempt is the session's attempt number (1 for the first)
 	attempt int
+	// sessions is the cap the attempt number counts against: the policy's
+	// session limit and the attempts a human answer granted
+	sessions int
+	// planner marks a plan card's session: its warning says file the plan
+	planner bool
+	// facts is factoryd's FACTS line for the brief
+	facts string
 	// agentTime and checkIn are the task's resolved values (policy.Time,
 	// via TaskConfig for every session kind, RunSession's and
 	// reportSession's alike): supervisorConfig's WallClockCap and
@@ -447,6 +455,7 @@ type sessionOutcome struct {
 	pending   *podPending   // its pod never left Pending: no session ran
 	model     string        // the model the session ended on
 	overHold  *OverHoldCall // the session's newest call booked beyond its hold
+	reads     []string      // the paths a report session read
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -511,6 +520,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 	} else {
 		s.messageToken = rand.Text()
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, TimeLeft: time.Until(deadline),
+			Attempt: s.attempt, Sessions: s.sessions}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -557,6 +568,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
+	supCfg.PriorPush = s.startRef != s.base
 	if s.attempt == 1 && r.canClimb(s) {
 		supCfg.CheapCap = r.cheapCap
 	}
@@ -564,7 +576,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.model = s.model }()
+	defer func() { out.model, out.reads = s.model, sup.Reads() }()
+	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried;
 	// briefed: a supervisor call of this session read the whole brief
@@ -818,7 +831,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopAt = time.Now()
 			return out, shutdown()
 		case <-tick.C:
-			if trip := sup.Tick(time.Now()); trip != nil {
+			trip := sup.Tick(time.Now())
+			if trip == nil {
+				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup)
+			}
+			if trip != nil {
 				if end, err := onTrip(trip); end {
 					return out, err
 				}
@@ -906,6 +923,7 @@ func (r *Runner) supervisorConfig(d policy.Document, agentTime, checkIn time.Dur
 	c.CheckIn = checkIn
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
 	c.SameCall = d.Limits.SameCallAfter()
+	c.NoPushSpend = d.Limits.NoPushShare()
 	return c
 }
 
@@ -1380,6 +1398,9 @@ func (r *Runner) repoURL(repo Repo) string {
 }
 
 func (r *Runner) supervisionTick() time.Duration {
+	if r.tick > 0 {
+		return r.tick
+	}
 	t := r.cfg.Supervisor.NoProgressAfter / 3
 	if t < time.Second {
 		t = time.Second
@@ -1475,6 +1496,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
+		{"name": "CONTEXT_TOKENS", "value": strconv.Itoa(s.policy.Limits.ContextCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
 		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, maxCarriedFindings, true, "oldest", "findings")},
 		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, maxCarriedAnswers, false, "oldest", "answers to the escalations")},
@@ -1510,6 +1532,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})
+	}
+	if s.facts != "" {
+		env = append(env, map[string]any{"name": "FACTS", "value": s.facts})
 	}
 	if s.spec != "" {
 		env = append(env, map[string]any{"name": "SPEC", "value": fit.text("SPEC", s.spec, "the spec and the plan")}, map[string]any{"name": "CARD_ROLE", "value": s.cardRole})
@@ -1992,4 +2017,35 @@ func (k *InClusterKube) Namespace() string {
 		return ""
 	}
 	return string(bytes.TrimSpace(b))
+}
+
+// watchLimits reads the card's spend once per tick and sends the agent the
+// warning it is due; a warning the pod did not take stays due, and only its
+// first failure is recorded on the timeline.
+func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod string, w *limitWatch, sup *Supervisor) *Trip {
+	cur, ok, err := r.store.Task(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the card's spend: %v", t.ID, err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	for _, wn := range w.due(cur.SpentEUR, cur.BudgetEUR, time.Now()) {
+		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
+		if err == nil || !w.failed[wn.kind] {
+			detail := map[string]any{"session": s.id}
+			if err != nil {
+				detail["error"] = err.Error()
+			}
+			r.record(ctx, t.ID, "message", detail)
+		}
+		if err != nil {
+			w.failed[wn.kind] = true
+			log.Printf("task %s: send the %s warning: %v", t.ID, wn.kind, err)
+			continue
+		}
+		w.sent(wn.kind)
+	}
+	return sup.Spent(cur.SpentEUR, cur.BudgetEUR)
 }
