@@ -268,18 +268,22 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   }
   // the agent's view change (282): the merged query holds for this page
   // as a click's does, nothing stored, so it pushes the URL beside the
-  // open document's doc= and the drawer's hash, then reads the board
-  // under it, the guards of a read holding as ever, and the find's box
-  // takes the query's q as Back hands it the entry's
+  // open document's doc= and the drawer's hash — only when the board's
+  // query changes, for a card, a tab, the panel or the theme alone push
+  // no entry a click would not — then reads the board under it, the
+  // guards of a read holding as ever, and the find's box takes the
+  // query's q as Back hands it the entry's
   document.addEventListener("view", function (e) {
     var d = e.detail || {}, b = board();
     if (typeof d.query !== "string" || !b) return;
     viewQ = new URLSearchParams(d.query).get("q") || "";
-    var u = new URL(location.href);
-    u.search = d.query;
-    var doc = new URLSearchParams(location.search).get("doc");
-    if (doc !== null) u.searchParams.set("doc", doc);
-    history.pushState(history.state, "", u.pathname + u.search + location.hash);
+    if (d.query !== b.dataset.query) {
+      var u = new URL(location.href);
+      u.search = d.query;
+      var doc = new URLSearchParams(location.search).get("doc");
+      if (doc !== null) u.searchParams.set("doc", doc);
+      history.pushState(history.state, "", u.pathname + u.search + location.hash);
+    }
     b.dataset.query = d.query;
     swapBoard();
   });

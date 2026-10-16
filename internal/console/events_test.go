@@ -1420,7 +1420,9 @@ console.log(JSON.stringify(out));
 // entry's q in the box without running the find; an entry that differs
 // from the board's query only by doc= or the fields' order reads nothing.
 // The find's box takes the event's q when the read goes out, held or not,
-// without an input event, and a query without q clears it..
+// without an input event, and a query without q clears it. An event whose
+// query the board already stands on — a card, a tab, the panel or the
+// theme alone — pushes no entry, the drawer's hash a card click leaves.
 func TestConsoleViewEvent(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1527,6 +1529,22 @@ fire("view", {panel: "closed"});
 out.panel = byID["status-panel"].hidden;
 fire("view", {theme: "light"});
 out.theme = themeLight.clicks;
+// a card, the panel or the theme alone, the event's query the board
+// already stands on, pushes no entry: the drawer's hash is the one a
+// card click leaves, and the panel and the theme push none at all
+var entries = pushed.length, tabsBefore = tabBtn.clicks;
+requests = [];
+fire("view", {query: "?project=code", panel: "closed"});
+out.flatPanel = [pushed.length - entries, byID["status-panel"].hidden, requests.slice()];
+fire("view", {query: "?project=code", theme: "light"});
+out.flatTheme = [pushed.length - entries, themeLight.clicks];
+fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
+winListeners.hashchange.forEach(function (fn) { fn({}); });
+out.flatCard = [pushed.length - entries, byID.drawer.hidden];
+await settle();
+await settle();
+fire("htmx:afterSettle", {target: byID.drawer});
+out.flatTab = tabBtn.clicks - tabsBefore;
 // a page without a board: nothing pushed, nothing read, no throw
 requests = [];
 delete byID.board;
@@ -1569,7 +1587,8 @@ console.log(JSON.stringify(out));
 	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"box":"exp","query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
 		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"queuedBox":"","card":["#card=t-9",true],` +
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
-		`"panel":true,"theme":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
+		`"panel":true,"theme":1,"flatPanel":[0,true,["GET /board?project=code"]],` +
+		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
 		`"popOrder":["?project=code&q=exp&view=wide",0],"streams":1}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
