@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"sync"
@@ -848,5 +850,243 @@ func TestWorkflowDroppedFindingsStartNoSession(t *testing.T) {
 	}
 	if len(g.sessions) != 1 || len(g.approvals) != 1 || len(g.approvals[0].Review.Dropped) != 1 || g.approvals[0].Review.Verdict != "concerns" {
 		t.Fatalf("sessions %d, approvals %+v", len(g.sessions), g.approvals)
+	}
+}
+
+// A gate's findings meet the check-in before the next session is bought:
+// the review's finding reaches the ask with its source, the review and
+// the gates that raised it, and a check-in that needs a human ends the
+// round as the ask — no third session runs.
+func TestWorkflowGateFindingsRunTheCheckin(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}}}
+	})
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+			Reason: "the objective conflicts with the guardrails", Verdicts: drop}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(g.sessions) != 2 {
+		t.Fatalf("sessions = %d, want two: the push and the check-in's pod", len(g.sessions))
+	}
+	ask := g.sessions[1].CheckInAsk
+	if ask == nil || ask.Moment != CheckInGate || ask.ParentSession != "s1" || len(ask.Findings) != 1 ||
+		ask.Findings[0] != (CheckFinding{Text: finding, Source: "review"}) {
+		t.Fatalf("the ask = %+v, want the review's finding named from the review", ask)
+	}
+	if ask.Review == nil || ask.Review.Verdict != "concerns" || ask.Gates == nil || ask.Gates.Pin != 7 {
+		t.Fatalf("the ask = %+v, want the raising review and gates", ask)
+	}
+	if len(g.escalated) != 1 || g.escalated[0] != "check-in: goal_conflict: the objective conflicts with the guardrails" {
+		t.Fatalf("escalations = %q, want the check-in's ask", g.escalated)
+	}
+	var checkin *recordedStep
+	for i := range g.recorded {
+		if g.recorded[i].step == "checkin" {
+			checkin = &g.recorded[i]
+		}
+	}
+	// the activity boundary round-trips detail through JSON: numbers and
+	// verdict maps come back decoded
+	var verdicts map[string]CheckVerdict
+	if checkin != nil {
+		if b, err := json.Marshal(checkin.detail["verdicts"]); err != nil {
+			t.Fatal(err)
+		} else if err := json.Unmarshal(b, &verdicts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if checkin == nil || checkin.detail["round"] != float64(1) || checkin.detail["decision"] != CheckHuman || !maps.Equal(drop, verdicts) {
+		t.Fatalf("checkin steps = %+v, want round 1's decision with the verdicts", g.recorded)
+	}
+}
+
+// A round whose every finding the check-in dropped verifies the same head
+// again: the re-review reads the drop record as its earlier input, and
+// only its own approve merges — one approval, one merge, no session on
+// the dropped round.
+func TestWorkflowCheckinDroppedVerifiesAgain(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+			{Verdict: "approve", Summary: "the head answers the finding"},
+		}
+	})
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(g.earlier) != 2 || !slices.Equal(g.rounds, []int{1, 2}) || len(g.earlier[1]) != 1 || !maps.Equal(g.earlier[1][0].Verdicts, drop) {
+		t.Fatalf("review calls: rounds %v, earlier %+v; want the re-review reading the drop record", g.rounds, g.earlier)
+	}
+	if len(g.sessions) != 2 || len(g.approvals) != 1 || len(g.merges) != 1 {
+		t.Fatalf("sessions %d, approvals %d, merges %d; want no session on the dropped round, one approval, one merge",
+			len(g.sessions), len(g.approvals), len(g.merges))
+	}
+}
+
+// A finding the re-review raises again after a drop goes to the human
+// with both records: the ask carries the drop as a prior, and the
+// escalation names the finding and the evidence that dropped it.
+func TestWorkflowReraisedDropGoesToTheHuman(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+			{Verdict: "concerns", Summary: "the head still lacks it", Findings: []string{finding}},
+		}
+	})
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "re-raised after a drop: " + finding + " — the check-in dropped it on: the test never ran"}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(g.sessions) != 3 || g.sessions[2].CheckInAsk == nil || g.sessions[2].CheckInAsk.Findings[0].PriorDropped != 1 {
+		t.Fatalf("sessions = %+v, want the third pod's ask carrying the drop as a prior", g.sessions)
+	}
+	if len(g.escalated) != 1 {
+		t.Fatalf("escalations = %q", g.escalated)
+	}
+	for _, s := range []string{"re-raised after a drop", finding, "the test never ran"} {
+		if !strings.Contains(g.escalated[0], s) {
+			t.Errorf("the escalation lacks %q: %q", s, g.escalated[0])
+		}
+	}
+}
+
+// A finding the check-in confirmed as many times as checkin_sessions
+// grants sessions goes to the human: the ask counts the confirmations,
+// and an outcome with no reason kind falls back to the gate moment.
+func TestWorkflowConfirmedTwiceGoesToTheHuman(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+			{Verdict: "concerns", Summary: "the head still lacks it", Findings: []string{finding}},
+		}
+	})
+	g.onSessions(pushed("s1", "c1"),
+		checkinPushed("s2", "c2", &CheckInOutcome{Decision: CheckHandover, Handover: "the finding stands: fix a.go",
+			Verdicts: map[string]CheckVerdict{finding: {State: CheckConfirmed, Round: 1}}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "confirmed 1 times: " + finding}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(g.sessions) != 3 || g.sessions[2].CheckInAsk == nil || g.sessions[2].CheckInAsk.Findings[0].PriorConfirmed != 1 {
+		t.Fatalf("sessions = %+v, want the third pod's ask counting the confirmation", g.sessions)
+	}
+	if len(g.escalated) != 1 || g.escalated[0] != "check-in: gate: confirmed 1 times: "+finding {
+		t.Fatalf("escalations = %q, want the gate moment as the reason kind's fallback", g.escalated)
+	}
+	var handover *recordedStep
+	for i := range g.recorded {
+		if g.recorded[i].step == "handover" {
+			handover = &g.recorded[i]
+		}
+	}
+	if handover == nil || handover.detail["handover"] != "the finding stands: fix a.go" || handover.detail["session"] != "s2" {
+		t.Fatalf("handover steps = %+v, want s2's note", g.recorded)
+	}
+}
+
+// A checks finding the check-in dropped ends on the card when the checks
+// re-raise it: the third pod's ask names the finding from the review with
+// the drop as a prior, and no coding session ran on the dropped round.
+func TestWorkflowChecksFindingsDroppedEndOnTheCard(t *testing.T) {
+	finding := "the build fails: red"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "approve", Summary: "clean"},
+			{Verdict: "concerns", Summary: "the drop did not hold", Findings: []string{finding}},
+		}
+	})
+	drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the flake is back: job 41", Round: 1}}
+	g.onSessions(pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "re-raised after a drop: " + finding + " — the check-in dropped it on: the flake is back: job 41"}))
+	// round 1's red checks raise the finding; the re-verification on the
+	// drop record finds them green and the re-review re-raises it instead
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{finding}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	if len(g.sessions) != 3 || g.sessions[2].CheckInAsk == nil {
+		t.Fatalf("sessions = %+v, want three pods", g.sessions)
+	}
+	f := g.sessions[2].CheckInAsk.Findings
+	if len(f) != 1 || f[0] != (CheckFinding{Text: finding, Source: "review", PriorDropped: 1}) {
+		t.Fatalf("the ask's findings = %+v, want the re-raised finding with the drop as a prior", f)
+	}
+	if !strings.Contains(g.escalated[0], "re-raised after a drop") {
+		t.Fatalf("escalations = %q, want the re-raise to reach a human", g.escalated)
+	}
+}
+
+// The check-in's handover replaces the stop lines: a no-push session that
+// ran a check-in hands the next session its own findings without the
+// branch line and the agent's last message, and the handover step records
+// the note; with no check-in coming, handoverLines stands (the existing
+// no-push tests pin that).
+func TestWorkflowHandoverReplacesHandoverLines(t *testing.T) {
+	finding := "a.go: x is missing"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.taskConfig = askTaskConfig()
+		g.reviews = []Review{
+			{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+			{Verdict: "approve", Summary: "fixed"},
+		}
+	})
+	g.onSessions(pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Findings: []string{"stopped: the model balked"},
+			LastMessage: "I could not finish", Commit: "c1",
+			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: "the finding stands: fix a.go",
+				Verdicts: map[string]CheckVerdict{finding: {State: CheckConfirmed, Round: 1}}}},
+		checkinStopped("s3", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll,
+			Verdicts: map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}}))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if g.sessions[1].CheckInAsk == nil {
+		t.Fatalf("the no-push session ran no check-in: %+v", g.sessions[1])
+	}
+	got := g.sessions[2].Findings
+	if !slices.Contains(got, finding) || !slices.Contains(got, "stopped: the model balked") ||
+		slices.ContainsFunc(got, func(l string) bool {
+			return strings.HasPrefix(l, lastMessageLine) || strings.Contains(l, "the branch holds")
+		}) {
+		t.Fatalf("the next session's findings = %q, want the finding and the stop line, no handover lines", got)
 	}
 }

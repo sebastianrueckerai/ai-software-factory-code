@@ -347,6 +347,27 @@ func pushed(session, commit string) SessionResult {
 	return SessionResult{Outcome: OutcomePushed, SessionID: session, Commit: commit, Summary: "pushed branch factory/t1 at " + commit}
 }
 
+// checkinPushed is a session whose check-in handed over and whose
+// conversation then pushed commit.
+func checkinPushed(session, commit string, ck *CheckInOutcome) SessionResult {
+	r := pushed(session, commit)
+	r.CheckIn = ck
+	return r
+}
+
+// checkinStopped is a session the check-in stopped before any conversation
+// ran: outcome is what its decision maps to.
+func checkinStopped(session string, outcome SessionOutcome, ck *CheckInOutcome) SessionResult {
+	return SessionResult{SessionID: session, Outcome: outcome, Reason: ck.Reason, CheckIn: ck}
+}
+
+// askTaskConfig is the harness's default TaskConfig with the check-in
+// bought on.
+func askTaskConfig() *TaskConfig {
+	return &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, CheckIn: time.Minute}
+}
+
 func TestWorkflowHappyPathToMerged(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(pushed("s1", "c1"))
@@ -945,6 +966,76 @@ func TestWorkflowSessionCapCardListsEachFindingOnce(t *testing.T) {
 	}
 	if len(h.sessions) != 3 || !slices.Equal(h.sessions[2].Findings, []string{"red", change}) {
 		t.Fatalf("sessions = %+v, want the third with the red checks and the change request", h.sessions)
+	}
+}
+
+// The granted session after a cap card runs a check-in when the round
+// left gate findings: the ask carries both the checks' finding (from the
+// verification) and the change request, each named by where it came from,
+// and a handover decision records the handover step.
+func TestWorkflowCapReturnCarriesCheckin(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			// Temporal retries a failed session: record each attempt once
+			if len(h.sessions) < in.Attempt {
+				h.sessions = append(h.sessions, in)
+			}
+			switch in.Attempt {
+			case 1:
+				return pushed("s1", "c1"), nil
+			case 3:
+				return checkinPushed("s3", "c3", &CheckInOutcome{Decision: CheckHandover, Handover: "the red test is next",
+					Verdicts: map[string]CheckVerdict{"red": {State: CheckConfirmed, Round: 1}}}), nil
+			}
+			return SessionResult{}, errors.New("pod lost")
+		})
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}})
+	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, want closed", final)
+	}
+	change := "reviewer sebastian requested changes: rename it"
+	if len(h.sessions) < 3 || h.sessions[2].CheckInAsk == nil {
+		t.Fatalf("sessions = %+v, want the granted session carrying an ask", h.sessions)
+	}
+	ask := h.sessions[2].CheckInAsk
+	if ask.Moment != CheckInGate || ask.ParentSession != "s1" ||
+		ask.Findings[0] != (CheckFinding{Text: "red", Source: "review"}) || ask.Findings[1] != (CheckFinding{Text: change, Source: "changes"}) {
+		t.Fatalf("the ask = %+v, want the red checks from the review and the change from the changes", ask)
+	}
+	var handover *recordedStep
+	for i := range h.recorded {
+		if h.recorded[i].step == "handover" {
+			handover = &h.recorded[i]
+		}
+	}
+	if handover == nil || handover.detail["handover"] != "the red test is next" || handover.detail["session"] != "s3" {
+		t.Fatalf("handover steps = %+v, want s3's note", h.recorded)
+	}
+}
+
+// A restart between the findings and the check-in is a stated degradation:
+// Reconcile rebuilds the reviews but not gateFindings, so the round runs
+// as it did before the check-in existed — the reviewer's findings reach
+// the session with no ask — and never skips a human.
+func TestWorkflowRestartBetweenFindingsAndCheckinRunsNoCheckin(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	change := "reviewer sebastian requested changes: rename it"
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Findings: []string{change}}
+	h.onSessions(pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].CheckInAsk != nil || !slices.Equal(h.sessions[0].Findings, []string{change}) {
+		t.Fatalf("sessions = %+v, want one on the change request with no check-in", h.sessions)
 	}
 }
 

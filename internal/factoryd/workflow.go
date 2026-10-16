@@ -1066,6 +1066,9 @@ type taskRun struct {
 	plan              workflow.Version
 	keepWork          workflow.Version
 	judged            []string // the heads a verification took up (versionKeepWork)
+	gateFindings      bool     // findings wait for the check-in of the next session (plan D); not rebuilt by Reconcile
+	lastGates         GateResults
+	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
 	answerScreening   workflow.Version
 	screened          int // how many of posterInfo the screening read (versionScreenAnswers)
 	answerSlice       workflow.Version
@@ -1166,8 +1169,17 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// findings come from outside the sessions (a verification, a human, the
 	// issue's author); own are the newest unpushed session's own lines,
-	// which replace an earlier session's
+	// which replace an earlier session's. sources names where each of
+	// findings came from — the verification, the changes a human or
+	// reviewer asked for — for the check-in's ask.
 	var findings, own []string
+	var sources []string
+	setFindings := func(fs []string, from string) {
+		findings, sources = fs, slices.Repeat([]string{from}, len(fs))
+	}
+	addFindings := func(fs []string, from string) {
+		findings, sources = append(findings, fs...), append(sources, slices.Repeat([]string{from}, len(fs))...)
+	}
 	startRef, parent := "", ""
 	var u TaskUsage
 	reason := "no session produced a result"
@@ -1190,7 +1202,15 @@ func (t *taskRun) lifecycle() (string, error) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
-		findings, own, reason = v.findings, nil, v.reason
+		from := "review"
+		if v.requested {
+			from = "changes"
+		}
+		setFindings(v.findings, from)
+		if len(v.findings) > 0 {
+			t.gateFindings = true
+		}
+		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
 			capAnswer()
@@ -1212,7 +1232,10 @@ func (t *taskRun) lifecycle() (string, error) {
 	// the next session's findings (the human's comments are in t.answers)
 	held := func(final, why string, answer []string) (string, string) {
 		if final == "" {
-			findings = append(findings, answer...)
+			addFindings(answer, "changes")
+			if len(answer) > 0 {
+				t.gateFindings = true
+			}
 		}
 		return final, why
 	}
@@ -1299,7 +1322,8 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			// the card starts: the first session's path below
-			findings, st.Status = answer, "queued"
+			setFindings(answer, "changes")
+			st.Status = "queued"
 		}
 		// alert-precheck (roadmap 181, Stage 18 item 3.12): an alert card
 		// whose alert no longer fires closes itself before its first model
@@ -1353,9 +1377,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = answer
+			setFindings(answer, "changes")
 			if st.WriteUp != "" && u.Attempts == 0 {
-				findings = append(findings, writeUpFinding(st.WriteUp))
+				addFindings([]string{writeUpFinding(st.WriteUp)}, "changes")
 			}
 		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.DayCap != "":
 			// the day cap's wait, its own end included
@@ -1364,14 +1388,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = answer
+			setFindings(answer, "changes")
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = answer
+			setFindings(answer, "changes")
 			switch {
 			case t.v5 < versionPersistUsage:
 			case AtSessionCap(st.Question):
@@ -1407,7 +1431,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				if final != "" {
 					return t.finish(final, why)
 				}
-				findings = answer
+				setFindings(answer, "changes")
 			}
 			t.grantPoster(&u)
 		case t.factoryPRCard >= versionFactoryPRCard && st.FactoryPR && st.PR.Number != 0:
@@ -1422,7 +1446,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one
-			t.pr, startRef, findings = st.PR, st.Head, st.Findings
+			t.pr, startRef = st.PR, st.Head
+			setFindings(st.Findings, "changes")
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
@@ -1434,13 +1459,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			apply(v)
 		case t.v16 >= versionStages && u.Attempts == 0:
 			if st.WriteUp != "" {
-				findings = append(findings, writeUpFinding(st.WriteUp))
+				addFindings([]string{writeUpFinding(st.WriteUp)}, "changes")
 			}
 			final, why, more := t.screen()
 			if final != "" {
 				return t.finish(final, why)
 			}
-			findings = append(findings, more...)
+			addFindings(more, "changes")
 		}
 	}
 	// taken is how many numbers the budget's refusals took since the last
@@ -1499,7 +1524,8 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			for _, f := range t.drainChanges() {
 				if t.v4 < versionReconcileFindings || !slices.Contains(findings, f) {
-					findings = append(findings, f)
+					addFindings([]string{f}, "changes")
+					t.gateFindings = true
 				}
 			}
 		}
@@ -1524,11 +1550,18 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
-		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, SessionInput{
+		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
-		})
+		}
+		checkinComing := t.gateFindings && t.cfg.Task.CheckIn > 0
+		if checkinComing {
+			in.CheckInAsk = t.checkinAsk(parent, slices.Concat(findings, own),
+				append(slices.Clone(sources), slices.Repeat([]string{"session"}, len(own))...), t.lastGates)
+		}
+		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, in)
+		t.gateFindings = false
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
@@ -1603,6 +1636,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			model = res.Model
 		}
 		reason = res.Summary
+		if res.CheckIn != nil {
+			t.recordCheckin(res)
+			if len(res.CheckIn.Verdicts) > 0 {
+				t.checkinVerdicts = append(t.checkinVerdicts, res.CheckIn.Verdicts)
+				if len(t.reviews) > 0 {
+					t.reviews[len(t.reviews)-1].Verdicts = res.CheckIn.Verdicts
+				}
+			}
+		}
 		if res.Acceptance != nil && res.Outcome != OutcomePushed {
 			// the session ran one of the plan's acceptance commands and it
 			// exited 0 (roadmap 208): the fact closes the card, no model
@@ -1617,7 +1659,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		// started has no lines of its own; a pushed one's commit goes to
 		// verification, whose apply drops them.
 		if !res.StartFailed {
-			own = slices.Concat(res.Findings, t.handoverLines(res))
+			own = res.Findings
+			if !checkinComing {
+				// the check-in's handover replaces these
+				own = slices.Concat(own, t.handoverLines(res))
+			}
 		}
 		if dayCapped {
 			// it made calls before the cap refused one: an attempt
@@ -1645,6 +1691,19 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			continue
+		case OutcomeCheckinHuman:
+			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, "gate")+": "+res.Reason, nil)); final != "" {
+				return t.finish(final, why)
+			}
+			buy()
+			continue
+		case OutcomeCheckinDropped:
+			// every finding dropped with evidence: the head verifies again
+			// below on the drop record, and only the re-review's own approve
+			// merges; a finding it re-raises comes back as checkin_human
+			// through the runner's re-raise guard. The check-in's pod pushed
+			// nothing: the head it judged is startRef.
+			res.Commit = startRef
 		case OutcomeNoPush, OutcomeRedirect, OutcomeProviderRefused, OutcomeDayCap, OutcomeNotStarted:
 			if t.v18 >= versionSessionCap {
 				if t.sessionReturn(res, attempt, last) {
@@ -1744,6 +1803,59 @@ func (t *taskRun) handoverLines(res SessionResult) []string {
 // lastMessageLine opens the handover line of the agent's last message,
 // which the brief fences as untrusted (briefText).
 const lastMessageLine = "the agent's last message: "
+
+// checkinAsk is what the next session's check-in answers (plan D): the
+// findings waiting on it, each with where it came from and the priors its
+// guards read, the last review's verdict, and the gates that raised them.
+// parent: the session whose work the findings judge.
+func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateResults) *CheckInAsk {
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: parent, Gates: &g}
+	for i, f := range findings {
+		c := CheckFinding{Text: f}
+		if i < len(sources) {
+			c.Source = sources[i]
+		}
+		for _, verdicts := range t.checkinVerdicts {
+			switch verdicts[f].State {
+			case CheckConfirmed:
+				c.PriorConfirmed++
+			case CheckDropped:
+				c.PriorDropped++
+			}
+		}
+		ask.Findings = append(ask.Findings, c)
+	}
+	if vs := lastVerdict(t.reviews); vs != nil {
+		ask.Review = &vs[0]
+	}
+	return ask
+}
+
+// recordCheckin keeps a check-in on the timeline beside the review it
+// judged, and its handover note as its own step: a new run rebuilds the
+// reviews' verdicts from the checkin steps (Reconcile).
+func (t *taskRun) recordCheckin(res SessionResult) {
+	ck := res.CheckIn
+	detail := map[string]any{
+		"round": len(t.reviews), "decision": ck.Decision, "reason_kind": ck.ReasonKind, "reason": ck.Reason,
+	}
+	if len(ck.Verdicts) > 0 {
+		detail["verdicts"] = ck.Verdicts
+	}
+	if ck.Record != nil {
+		detail["record"] = ck.Record
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "checkin", detail).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record check-in", "error", err)
+	}
+	if ck.Decision != CheckHandover {
+		return
+	}
+	handover := map[string]any{"handover": ck.Handover, "session": res.SessionID}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "handover", handover).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record handover", "error", err)
+	}
+}
 
 // notStarted takes a session whose pod never left Pending, why its
 // summary, which names what the pod waited on (versionPodWait): the next

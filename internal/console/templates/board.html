@@ -148,11 +148,13 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Split PR #{{.PRNumber}} of {{.TaskID}} into 2 or 3 cards">Split</button>
 </form>{{end}}{{end}}
 
+{{define "review-verdicts"}}{{range $f, $v := .}}{{if eq $v.State "dropped"}}<br>- dropped ({{$v.Evidence}}): {{$f}}{{else if eq $v.State "remark"}}<br>- remark: {{$f}}{{end}}{{end}}{{end}}
+
 {{define "merge-facts"}}<dl class="facts">
 <dt>Risk class</dt><dd>{{.Merge.RiskClass}}</dd>
 <dt>Migration</dt><dd>{{if .Merge.Migration}}yes, human review required: {{range $i, $m := .Merge.Migrations}}{{if $i}}, {{end}}<code>{{$m}}</code>{{end}}{{else}}no{{end}}</dd>
-<dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}{{range .Merge.Review.Findings}}<br>- {{.}}{{end}}</dd>
-{{range $i, $r := .Merge.EarlierReviews}}<dt>Earlier review {{inc $i}}</dt><dd>{{if $r.Verdict}}{{$r.Verdict}}: {{$r.Summary}}{{else}}{{$r.Note}}{{end}}{{range $r.Findings}}<br>- {{.}}{{end}}</dd>
+<dt>Model review</dt><dd>{{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}{{range .Merge.Review.Findings}}<br>- {{.}}{{end}}{{template "review-verdicts" .Merge.Review.Verdicts}}</dd>
+{{range $i, $r := .Merge.EarlierReviews}}<dt>Earlier review {{inc $i}}</dt><dd>{{if $r.Verdict}}{{$r.Verdict}}: {{$r.Summary}}{{else}}{{$r.Note}}{{end}}{{range $r.Findings}}<br>- {{.}}{{end}}{{template "review-verdicts" $r.Verdicts}}</dd>
 {{end}}
 {{with .Merge.Audit}}<dt>Security audit</dt><dd>{{.Verdict}}{{if .Model}} ({{.Model}}{{if .Deployment}}, {{.Deployment}}{{end}}){{end}}{{range .Findings}}<br>- {{.Item}}{{if .File}}: <code>{{.File}}{{if .Line}}:{{.Line}}{{end}}</code>{{end}}: {{.Why}}{{end}}</dd>
 {{end}}

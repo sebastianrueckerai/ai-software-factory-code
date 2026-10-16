@@ -1503,9 +1503,10 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 // stageMemory rebuilds what the stages remembered from the task's
 // timeline: the stage_findings steps (returns to the agent, the history),
 // a dependencies_started step (the card started despite a dependency),
-// the model_review steps (the reviews), the last round, and the
-// finding_adjudicated steps (the overrules an approval recorded on the
-// reviews' findings, versionAdjudicated).
+// the model_review steps (the reviews), the last round, the checkin steps
+// (the verdicts a check-in left on the reviews' findings, plan D), and
+// the finding_adjudicated steps (the overrules an approval recorded on
+// the reviews' findings, versionAdjudicated).
 func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) error {
 	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
@@ -1517,6 +1518,7 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 			By, Finding, Why                                string
 			Round, Attempt                                  int
 			Findings                                        []string
+			Verdicts                                        map[string]CheckVerdict
 			Time                                            time.Time
 		}
 		if json.Unmarshal([]byte(line), &step) != nil {
@@ -1540,6 +1542,10 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 		case "model_review":
 			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
 			st.Round = max(st.Round, step.Round)
+		case "checkin":
+			if step.Round >= 1 && step.Round <= len(st.Reviews) {
+				st.Reviews[step.Round-1].Verdicts = step.Verdicts
+			}
 		case stepAdjudicated:
 			for i := range st.Reviews {
 				if !slices.Contains(st.Reviews[i].Findings, step.Finding) {

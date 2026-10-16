@@ -1776,6 +1776,65 @@ func TestReviewAndAuditPromptsNameTheConcurrencySummary(t *testing.T) {
 	}
 }
 
+// lastVerdict hands the review the check-in judged onward whole: its
+// verdicts ride into the re-review's earlier input, where the drop
+// record lives.
+func TestLastVerdictCarriesVerdicts(t *testing.T) {
+	verdicts := map[string]CheckVerdict{"a.go: x is missing": {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+	got := lastVerdict([]Review{{Verdict: "concerns", Summary: "one", Verdicts: verdicts}, {Note: "model review failed"}})
+	if len(got) != 1 || !maps.Equal(got[0].Verdicts, verdicts) {
+		t.Errorf("lastVerdict = %+v, want the verdicts riding on the concerns", got)
+	}
+}
+
+// The re-review after a check-in reads the drop record: the repeat
+// instruction becomes the verdicts form, each dropped finding is named
+// with its evidence, and the prompt says a re-raise goes to a human; an
+// earlier review without verdicts keeps today's prompt, none of it.
+func TestReviewPromptNamesDrops(t *testing.T) {
+	last := Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x is missing"},
+		Verdicts: map[string]CheckVerdict{"a.go: x is missing": {State: CheckDropped, Evidence: "the test never ran", Round: 1}}}
+	for name, earlier := range map[string][]Review{
+		"with verdicts": {last},
+		"without them":  {{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x is missing"}}},
+	} {
+		fj := &gateForgejo{diff: diffFile("a.go", 200)}
+		r, _, _ := newGateRunner(t, gateTask, fj)
+		ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+		r.supervisor = testSupervisorModel(ll.srv(t).URL)
+		if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, earlier); err != nil {
+			t.Fatal(err)
+		}
+		prompt := systemMessage(ll.chats[0])
+		var in struct {
+			LastReview Review `json:"last_review"`
+		}
+		if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
+			t.Fatal("unreadable review input")
+		}
+		if name == "with verdicts" {
+			for _, s := range []string{"a.go: x is missing", "the test never ran", "for a re-raised drop goes to a human with both records"} {
+				if !strings.Contains(prompt, s) {
+					t.Errorf("the re-review prompt lacks %q:\n%s", s, prompt)
+				}
+			}
+			if strings.Contains(prompt, "agent: say in your summary") {
+				t.Error("the re-review prompt keeps the plain repeat instruction")
+			}
+			if !maps.Equal(in.LastReview.Verdicts, last.Verdicts) {
+				t.Errorf("last_review = %+v, want the verdicts in the input", in.LastReview)
+			}
+			continue
+		}
+		if !strings.Contains(prompt, reviewRepeat) || strings.Contains(prompt, "check-in dropped") || strings.Contains(prompt, "re-raised drop") {
+			t.Errorf("the prompt without verdicts is not today's:\n%s", prompt)
+		}
+		if len(in.LastReview.Verdicts) != 0 {
+			t.Errorf("last_review = %+v, want no verdicts", in.LastReview)
+		}
+	}
+}
+
 // A skipped reproduction is no finding: the checks run the tests in
 // parallel with the review (#287, roadmap 222 item b).
 func TestReviewPromptSkippedReproductionIsNoFinding(t *testing.T) {

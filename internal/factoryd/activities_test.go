@@ -13,6 +13,7 @@ import (
 	"go/token"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -1577,6 +1578,29 @@ func TestReconcileRebuildsTheStageMemory(t *testing.T) {
 	when := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	if !ok || adj.By != "sebastian" || adj.Why != "overruled: the check is advisory" || !adj.When.Equal(when) {
 		t.Fatalf("the review's adjudication = %+v (found %v)", adj, ok)
+	}
+}
+
+// Reconcile merges a check-in step's verdicts onto the review of its
+// round, so a restart between the drop and the re-review still hands the
+// re-review the drop record; the drop itself was consumed before the
+// restart, so gateFindings is not rebuilt (the workflow degrades to
+// today's round, pinned by its own test).
+func TestReconcileRebuildsCheckinVerdicts(t *testing.T) {
+	r, _, objects := newActivityRunner(t, withStatus(prTask, "in-review"), &prForgejo{})
+	objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(
+		`{"step":"model_review","verdict":"concerns","summary":"the file lacks the check","findings":["a.go: x is missing"],"round":1}`+"\n"+
+			`{"step":"stage_findings","stage":"review","round":1,"to":"agent","findings":["a.go: x is missing"]}`+"\n"+
+			`{"step":"checkin","round":1,"decision":"dropped_all","verdicts":{"a.go: x is missing":{"state":"dropped","evidence":"the test never ran","round":1}}}`+"\n"+
+			`{"step":"model_review","verdict":"approve","summary":"fixed","round":2}`+"\n"))
+	val, err := execActivity(t, r, ActivityReconcile, "t1")
+	var st RunState
+	if err != nil || val.Get(&st) != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	want := map[string]CheckVerdict{"a.go: x is missing": {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+	if len(st.Reviews) != 2 || !maps.Equal(st.Reviews[0].Verdicts, want) || len(st.Reviews[1].Verdicts) != 0 {
+		t.Fatalf("reviews = %+v, want the verdicts on round 1's review alone", st.Reviews)
 	}
 }
 

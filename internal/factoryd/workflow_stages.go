@@ -140,7 +140,7 @@ func (t *taskRun) runStages(commit string) verdict {
 			findings, v, stop := t.queueTurn(&commit, &g, &review)
 			if !stop && len(findings) > 0 {
 				i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
-				v, stop = t.onFindings(t.cfg.Stages[i], findings, &capped, &card)
+				v, stop = t.onFindings(t.cfg.Stages[i], g, findings, &capped, &card)
 			}
 			if !stop {
 				v = t.approval(commit, g, review, reviewed, capped, card, covered)
@@ -199,7 +199,7 @@ func (t *taskRun) runStages(commit string) verdict {
 				continue
 			}
 		}
-		if v, stop := t.onFindings(s, findings, &capped, &card); stop {
+		if v, stop := t.onFindings(s, g, findings, &capped, &card); stop {
 			if s.Name == policy.StageChecks && v.final == "" {
 				t.cancelBeside(checksFailed)
 			}
@@ -294,7 +294,8 @@ func (t *taskRun) adjudicate(covered []string, sig TaskSignal) {
 // onFindings sends stage s's findings where its on_findings says: stop
 // with the task's verdict (fail, or back to the agent), or onto the card,
 // capped when the agent may take no more or there is none (noAgent).
-func (t *taskRun) onFindings(s policy.Stage, findings []string, capped, card *[]string) (verdict, bool) {
+func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, capped, card *[]string) (verdict, bool) {
+	t.lastGates = g
 	switch s.OnFindings {
 	case policy.FindingsFail:
 		return verdict{final: "failed", reason: s.Name + ": " + strings.Join(findings, "; ")}, true
@@ -338,7 +339,7 @@ func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict,
 		return verdict{}, false
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
-	return t.onFindings(t.cfg.Stages[i], g.Policy.Cheats, capped, card)
+	return t.onFindings(t.cfg.Stages[i], g, g.Policy.Cheats, capped, card)
 }
 
 // recordFindings keeps findings meant for the agent on the timeline, sent
@@ -889,7 +890,7 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 // none the checks stage's timeout. After the cheap turn it reads the
 // checked head, whose checks hold for the synced one
 // (versionCheckedHead).
-func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red bool) {
+func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v verdict, stop, red bool) {
 	if t.approvalGreen < versionApprovalGreen {
 		return verdict{}, false, false
 	}
@@ -936,7 +937,7 @@ func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
 	var capped []string
-	if v, stop := t.onFindings(t.cfg.Stages[i], findings, &capped, card); stop {
+	if v, stop := t.onFindings(t.cfg.Stages[i], g, findings, &capped, card); stop {
 		return v, true, false
 	}
 	if len(capped) > 0 {
@@ -961,7 +962,7 @@ func (t *taskRun) headGreen(commit string, card *[]string) (v verdict, stop, red
 // on its head (RerunChecks), the checks stage waits for them, and the new
 // head comes back here.
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
-	v, stop, red := t.headGreen(commit, &card)
+	v, stop, red := t.headGreen(commit, g, &card)
 	if stop {
 		return v
 	}

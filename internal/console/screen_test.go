@@ -612,8 +612,8 @@ func TestDrawerOverview(t *testing.T) {
 
 	merge := drawer(t, r, ck, "t-m", "overview")
 	for _, want := range []string{`<h4>Reviews and audit of <a href="https://git.example/sf/code/pulls/9">PR #9</a></h4>`,
-		"<dd>approve: adds the column safely</dd>",
-		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default</dd>",
+		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
+		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
 		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
 		if !strings.Contains(merge, want) {
 			t.Errorf("t-m's overview lacks %s", want)

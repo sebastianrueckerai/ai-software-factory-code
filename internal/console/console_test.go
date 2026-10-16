@@ -827,9 +827,12 @@ func newRig(t *testing.T) *rig {
 					`"reservation_eur":0.072,"hourly_eur":0.0144,"beyond_envelope":["a lease of 300 minutes exceeds the envelope's 4 h"]}`)},
 			{ID: 4, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 9, Status: "pending",
 				Spec: json.RawMessage(`{"risk_class":"high","migration":true,"migrations":["internal/factoryd/migrations/0018_x.sql"],` +
-					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely"},"head_sha":"abc123",` +
+					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely",` +
+					`"verdicts":{"internal/api.go: the handler leaks the client":{"state":"dropped","evidence":"grep finds the client closed in handler.go:40","round":1},` +
+					`"a follow-up files the docs":{"state":"remark"}}},"head_sha":"abc123",` +
 					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
-					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"]}],` +
+					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"],` +
+					`"verdicts":{"0018_x.sql: add a default":{"state":"dropped","evidence":"main already held the default","round":1}}}],` +
 					`"audit":{"verdict":"findings","model":"coding-frontier","deployment":"zai/glm-5.3","findings":[` +
 					`{"item":"secret in the diff: private key","file":"internal/x/x_test.go","line":14,"why":"an added line has the shape of a private key (pre-check)"},` +
 					`{"item":"the audit gave no verdict","why":"the answer is not one JSON object: EOF"}]}}`)},
@@ -1749,12 +1752,13 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
 		// the merge request: the PR, the risk class, the migration, the review
 		`Merge <a href="https://git.example/sf/code/pulls/9">PR #9</a>`, "<dd>high</dd>",
-		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>", "<dd>approve: adds the column safely</dd>",
+		"yes, human review required: <code>internal/factoryd/migrations/0018_x.sql</code>",
+		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
 		// ruling 149: the agent's recommendation and why no auto merge
 		`<dt>Agent's recommendation</dt><dd class="reason">Adds the column; merge it.</dd>`,
 		"<dt>Why a human</dt><dd>the project&#39;s merge rule is human; risk class high is requires_approval</dd>",
 		// ruling 177: the reviews of earlier heads, oldest first, with their findings
-		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default</dd>",
+		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
 		// ruling 188: the security audit's own section, beside the review
 		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>: an added line has the shape of a private key (pre-check)" +
 			"<br>- the audit gave no verdict: the answer is not one JSON object: EOF</dd>",
