@@ -1593,7 +1593,8 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 // (versionSessionLadder): the head c2 goes through the review again and the
 // approval is asked again, no session starts and no attempt is bought. A
 // run from before the gate bought an attempt and started a session, whose
-// push c3 went through verification instead.
+// push c3 went through verification instead, and so does a gated run whose
+// Reconcile found no pull request: there is no head to verify.
 func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 	questions := map[string]string{
 		"the gate supervisor's": "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
@@ -1603,17 +1604,17 @@ func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 			"then answer to run the reproduction again, or close the card.",
 	}
 	for kind, question := range questions {
-		for _, pinned := range []bool{false, true} {
-			name := kind
-			if pinned {
-				name += ", before the gate"
-			}
+		for _, variant := range []string{"", ", before the gate", ", no pull request"} {
+			name := kind + variant
 			h := newWorkflowHarness(t)
-			if pinned {
+			if variant == ", before the gate" {
 				h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 			}
 			h.state = RunState{Status: "waiting-human", Question: question, PR: PullRequest{Number: 9}, Head: "c2",
 				Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+			if variant == ", no pull request" {
+				h.state.PR, h.state.Head = PullRequest{}, ""
+			}
 			var steps []string
 			h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
 			reviewed := []string{}
@@ -1634,7 +1635,7 @@ func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 				steps    []string
 				usage    []TaskUsage
 			}{0, []string{"c2"}, []string{"pr c2 after 1 cards", "approval c2"}, nil}
-			if pinned {
+			if variant != "" {
 				want.sessions, want.reviewed, want.steps = 1, []string{"c3"}, []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}
 				want.usage = []TaskUsage{{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1}, {AgentTime: 5 * time.Minute, Attempts: 2, ExtraAttempts: 1}}
 			}

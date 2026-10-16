@@ -1338,7 +1338,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
-			case atGateStop(st.Question), atQueueLeft(st.Question), atReproStart(st.Question):
+			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
 				// here from the first stage, change requests back to the agent
 				if len(answer) > 0 {
