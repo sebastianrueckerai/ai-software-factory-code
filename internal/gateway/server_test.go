@@ -14,6 +14,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2005,19 +2006,49 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 }
 
 // A caller that disconnects mid-call is not an upstream fault: the gateway
-// must answer 499 (not 502) and still book whatever hold the provider may
-// have earned, so an alert on 5xx never counts a client's own cancellation
+// must answer 499 (not 502) — so an alert on 5xx never counts a client's
+// own cancellation — and price the call from LiteLLM's spend log, whose
+// rows carry the hold id the gateway tags its upstream calls with
 // (debug-gateway-5xx.md).
 
-func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
+type fakeSpend struct {
+	mu      sync.Mutex
+	cost    float64
+	foundAt int // the Nth read finds the row; 0: never
+	err     error
+	holds   []int64
+}
+
+func (f *fakeSpend) CallSpend(_ context.Context, _ string, holdID int64, _ time.Time) (float64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holds = append(f.holds, holdID)
+	if f.err != nil {
+		return 0, false, f.err
+	}
+	return f.cost, f.foundAt > 0 && len(f.holds) >= f.foundAt, nil
+}
+
+// canceledCall sends a call whose caller leaves while the provider works
+// on it, settled through spend; stream sends it as a stream whose first
+// chunk arrived. It returns the store, the answer and the metadata header
+// the upstream saw.
+func canceledCall(t *testing.T, spend *fakeSpend, stream bool) (*memStore, *httptest.ResponseRecorder, string) {
+	t.Helper()
 	started := make(chan struct{})
+	var tag atomic.Value
 	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.ReadAll(r.Body) // #nosec G104 -- a real upstream reads the body too; net/http only notices a dropped connection once it does
+		tag.Store(r.Header.Get("X-Litellm-Spend-Logs-Metadata"))
+		if stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"a\"}}]}\n\n")
+			w.(http.Flusher).Flush()
+		}
 		close(started)
 		<-r.Context().Done() // the gateway drops the connection once its caller cancels
 	}))
-	defer up.Close()
-
+	t.Cleanup(up.Close)
 	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "running"})
 	s := NewServer(ServerOptions{
 		Auth:       fakeAuth{id: Identity{Subject: "system:serviceaccount:factory:task-42", Namespace: "factory", TaskID: "42", SAUID: "sa-uid-1"}},
@@ -2025,51 +2056,107 @@ func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
 		Minter:     &fakeMinter{},
 		LiteLLMURL: up.URL,
 		Prices:     testPrices,
+		Spend:      spend,
+		SettleWait: 200 * time.Millisecond, SettleEvery: time.Millisecond,
 	})
-
+	body := chatBody("coding-cheap")
+	if stream {
+		body = strings.Replace(body, `"model"`, `"stream":true,"model"`, 1)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
-	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("coding-cheap"))).WithContext(ctx)
+	r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)).WithContext(ctx)
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer forged-but-fakeAuth-ignores")
 	rr := httptest.NewRecorder()
-
 	done := make(chan struct{})
 	go func() {
 		s.Routes("test").ServeHTTP(rr, r)
 		close(done)
 	}()
-
 	select {
 	case <-started:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the fake litellm never received the call")
 	}
 	cancel()
-
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("the handler never returned after the client cancelled")
 	}
+	got, _ := tag.Load().(string)
+	return store, rr, got
+}
 
-	if rr.Code != 499 {
-		t.Fatalf("status = %d, want 499", rr.Code)
-	}
-	if got := rr.Header().Get(HeaderDecision); got != "client_canceled" {
-		t.Fatalf("decision header = %q, want client_canceled", got)
+func TestChatClientCanceledDuringUpstreamAnswers499(t *testing.T) {
+	store, rr, _ := canceledCall(t, &fakeSpend{}, false)
+	if rr.Code != 499 || rr.Header().Get(HeaderDecision) != "client_canceled" {
+		t.Fatalf("status %d, decision %q, want 499 client_canceled", rr.Code, rr.Header().Get(HeaderDecision))
 	}
 	audits := store.auditRows()
 	if last := audits[len(audits)-1]; last.Decision != "client_canceled" {
 		t.Fatalf("audit decision = %q, want client_canceled (all rows %+v)", last.Decision, audits)
 	}
-	// the provider may have run part of the call: the hold is booked exactly
-	// as a real upstream failure would, 132 input tokens at 1e-6 and 32768
-	// output tokens at 4e-6
-	if got, ok := store.spentOf("42"); !ok || got != 2.131204 {
-		t.Fatalf("spent = (%v, %v), want (2.131204, true)", got, ok)
-	}
 	if n := store.openHolds(); n != 0 {
 		t.Fatalf("%d holds left open, want every hold released", n)
+	}
+}
+
+// LiteLLM wrote a row for the cancelled call, a little late: the call is
+// booked at that spend, not at its hold, and the upstream saw the hold id.
+func TestCanceledCallIsPricedFromTheSpendLog(t *testing.T) {
+	for name, stream := range map[string]bool{"before any answer": false, "mid-stream": true} {
+		t.Run(name, func(t *testing.T) {
+			spend := &fakeSpend{cost: 0.05, foundAt: 3}
+			store, rr, tag := canceledCall(t, spend, stream)
+			if rr.Code != 499 && !stream {
+				t.Fatalf("status = %d, want 499", rr.Code)
+			}
+			if got, ok := store.spentOf("42"); !ok || got != 2.05 {
+				t.Fatalf("spent = (%v, %v), want (2.05, true)", got, ok)
+			}
+			if len(spend.holds) != 3 || tag != fmt.Sprintf(`{"hold_id":%d}`, spend.holds[0]) {
+				t.Fatalf("reads %v, upstream tag %q; want 3 reads of the tagged hold", spend.holds, tag)
+			}
+			audits := store.auditRows()
+			last := audits[len(audits)-1]
+			if last.Decision != "client_canceled" || last.Reason != "caller left; priced from LiteLLM's spend log: 0.050000 EUR" {
+				t.Fatalf("audit = %+v", last)
+			}
+			if n := store.openHolds(); n != 0 {
+				t.Fatalf("%d holds left open", n)
+			}
+		})
+	}
+}
+
+// No spend row after the wait: nothing was billed, so nothing is booked,
+// and the audit row says so.
+func TestCanceledCallWithNoSpendRecordBooksNothing(t *testing.T) {
+	store, _, _ := canceledCall(t, &fakeSpend{}, false)
+	if _, ok := store.spentOf("42"); ok {
+		t.Fatal("spent updated, want untouched")
+	}
+	audits := store.auditRows()
+	if last := audits[len(audits)-1]; last.Decision != "client_canceled" || last.Reason != "caller left; no spend record for the call: booked 0 EUR" {
+		t.Fatalf("audit = %+v", last)
+	}
+	if n := store.openHolds(); n != 0 {
+		t.Fatalf("%d holds left open, want the hold released", n)
+	}
+}
+
+// An unreadable spend log is no proof of no spend: the hold is booked in
+// full, as before.
+func TestCanceledCallWithAnUnreadableSpendLogBooksTheHold(t *testing.T) {
+	store, _, _ := canceledCall(t, &fakeSpend{err: errors.New("litellm down")}, false)
+	if got, ok := store.spentOf("42"); !ok || got != 2.131204 {
+		t.Fatalf("spent = (%v, %v), want (2.131204, true): the hold of 132 input tokens at 1e-6 and 32768 output tokens at 4e-6", got, ok)
+	}
+	audits := store.auditRows()
+	want := "caller left; spend log unreadable (litellm down): cost not reported, booked the hold 0.131204 EUR"
+	if last := audits[len(audits)-1]; last.Reason != want {
+		t.Fatalf("reason = %q, want %q", last.Reason, want)
 	}
 }
 

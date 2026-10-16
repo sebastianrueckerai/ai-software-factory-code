@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLiteLLMMint(t *testing.T) {
@@ -137,5 +140,53 @@ func TestLiteLLMBlock(t *testing.T) {
 	status = http.StatusNotFound
 	if err := l.Block(context.Background(), "sk-old"); err == nil {
 		t.Fatal("Block with a 404 succeeded")
+	}
+}
+
+// CallSpend sums the spend rows LiteLLM wrote for one hold's calls, found
+// by the hold id the gateway tags upstream calls with. The deployed
+// LiteLLM (controller probe, 2026-10-16) requires start_date and end_date
+// both, with the date's space as %20, and keys rows by the token's SHA-256.
+func TestLiteLLMCallSpendSumsTheRowsOfAHold(t *testing.T) {
+	var gotQuery, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery, gotAuth = r.URL.RawQuery, r.Header.Get("Authorization")
+		io.WriteString(w, `{"data":[
+			{"spend":0.01,"metadata":{"spend_logs_metadata":{"hold_id":7}}},
+			{"spend":0.02,"metadata":{"spend_logs_metadata":{"hold_id":7}}},
+			{"spend":0.5,"metadata":{"spend_logs_metadata":{"hold_id":8}}},
+			{"spend":0.7,"metadata":{}}]}`)
+	}))
+	defer srv.Close()
+	l := &LiteLLM{BaseURL: srv.URL, MasterKey: "master"}
+	since := time.Date(2026, 10, 15, 10, 0, 30, 0, time.UTC)
+	cost, found, err := l.CallSpend(context.Background(), "sk-task", 7, since)
+	if err != nil || !found || cost != 0.03 {
+		t.Fatalf("CallSpend = %v, %v, %v; want 0.03, true", cost, found, err)
+	}
+	sum := sha256.Sum256([]byte("sk-task"))
+	head, tail := "api_key="+hex.EncodeToString(sum[:])+"&end_date=", "&page_size=100&start_date=2026-10-15%2009:59:30"
+	if !strings.HasPrefix(gotQuery, head) || !strings.HasSuffix(gotQuery, tail) {
+		t.Fatalf("query = %q; want %s<end_date>%s", gotQuery, head, tail)
+	}
+	// end_date bounds the read at about now: a cancelled call's row lands
+	// after its start, and LiteLLM's clock may sit a little off the gateway's
+	end, err := time.Parse("2006-01-02 15:04:05", strings.Replace(strings.TrimSuffix(strings.TrimPrefix(gotQuery, head), tail), "%20", " ", 1))
+	if err != nil || time.Until(end) < -time.Minute || time.Until(end) > 5*time.Minute {
+		t.Fatalf("end_date = %q (%v); want now, within a few minutes", end, err)
+	}
+	if gotAuth != "Bearer master" {
+		t.Fatalf("auth = %q, want Bearer master", gotAuth)
+	}
+	if _, found, err := l.CallSpend(context.Background(), "sk-task", 99, since); err != nil || found {
+		t.Fatalf("an unknown hold = %v, %v; want not found", found, err)
+	}
+}
+
+func TestLiteLLMCallSpendErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	defer srv.Close()
+	if _, _, err := (&LiteLLM{BaseURL: srv.URL}).CallSpend(context.Background(), "k", 1, time.Now()); err == nil {
+		t.Fatal("a 502 must be an error")
 	}
 }

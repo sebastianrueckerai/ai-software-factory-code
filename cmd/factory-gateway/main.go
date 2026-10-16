@@ -88,6 +88,7 @@ func main() {
 		Auth:       auth,
 		Store:      store,
 		Minter:     lite,
+		Spend:      lite,
 		Prices:     &policy.PriceBook{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey},
 		LiteLLMURL: cfg.LiteLLMURL,
 		Firecrawl: &gateway.Firecrawl{BaseURL: "https://api.firecrawl.dev", Key: cfg.FirecrawlKey,

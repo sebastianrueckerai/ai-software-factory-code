@@ -3,12 +3,16 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // LiteLLM is the gateway's client to the LiteLLM proxy: it mints per-task
@@ -103,4 +107,63 @@ func (l *LiteLLM) client() *http.Client {
 		return l.HTTP
 	}
 	return &http.Client{Timeout: 15 * time.Second}
+}
+
+// SpendLog reads what LiteLLM booked for one call of a virtual key.
+type SpendLog interface {
+	// CallSpend sums the spend rows of key's calls tagged with holdID
+	// since since; found: at least one row exists.
+	CallSpend(ctx context.Context, key string, holdID int64, since time.Time) (cost float64, found bool, err error)
+}
+
+type spendLogs struct {
+	Data []struct {
+		Spend    float64 `json:"spend"`
+		Metadata struct {
+			Tag struct {
+				HoldID int64 `json:"hold_id"`
+			} `json:"spend_logs_metadata"`
+		} `json:"metadata"`
+	} `json:"data"`
+}
+
+// CallSpend reads /spend/logs/v2 for the key (LiteLLM keys its rows by the
+// token's SHA-256) from a minute before since to a minute past now. The
+// gateway tags every upstream call with {"hold_id": N} in
+// x-litellm-spend-logs-metadata; the deployed LiteLLM requires both dates,
+// with the date's space as %20 (controller probe, 2026-10-16).
+func (l *LiteLLM) CallSpend(ctx context.Context, key string, holdID int64, since time.Time) (float64, bool, error) {
+	sum := sha256.Sum256([]byte(key))
+	stamp := func(t time.Time) string { return strings.Replace(t.UTC().Format("2006-01-02 15:04:05"), " ", "%20", 1) }
+	query := fmt.Sprintf("api_key=%s&end_date=%s&page_size=100&start_date=%s",
+		hex.EncodeToString(sum[:]), stamp(time.Now().Add(time.Minute)), stamp(since.Add(-time.Minute)))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, l.BaseURL+"/spend/logs/v2?"+query, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	req.Header.Set("Authorization", "Bearer "+l.MasterKey)
+	res, err := l.client().Do(req)
+	if err != nil {
+		return 0, false, fmt.Errorf("spend logs: %w", err)
+	}
+	defer res.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(res.Body, 4<<20))
+	if err != nil {
+		return 0, false, fmt.Errorf("spend logs: %w", err)
+	}
+	if res.StatusCode != http.StatusOK {
+		return 0, false, fmt.Errorf("spend logs: status %d: %s", res.StatusCode, textutil.Truncate(string(body), 200))
+	}
+	var rows spendLogs
+	if err := json.Unmarshal(body, &rows); err != nil {
+		return 0, false, fmt.Errorf("spend logs: %w", err)
+	}
+	var cost float64
+	found := false
+	for _, r := range rows.Data {
+		if r.Metadata.Tag.HoldID == holdID {
+			cost, found = cost+r.Spend, true
+		}
+	}
+	return cost, found, nil
 }
