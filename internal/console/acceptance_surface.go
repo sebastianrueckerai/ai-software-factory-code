@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"slices"
 	"strings"
@@ -49,6 +51,10 @@ type AcceptanceRig struct {
 	challenge string // the PKCE challenge /login sent Forgejo
 	replies   [][]string
 	steered   []string // "task user: text" per SetSteer call
+	fgURL     string   // the rig's Forgejo URL, the documents fake's proxy target
+	chat      *policy.ChatConfig
+	// chat is the chat block the policy names once SetDocs seats the
+	// documents: the project's chat.doc_repo.
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -81,6 +87,7 @@ func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
 	}
 	fg := httptest.NewServer(http.HandlerFunc(a.serveForgejo))
 	t.Cleanup(fg.Close)
+	a.fgURL = fg.URL
 	gw := httptest.NewServer(http.HandlerFunc(a.serveGateway))
 	t.Cleanup(gw.Close)
 
@@ -165,6 +172,142 @@ func (a *AcceptanceRig) Steered() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Clone(a.steered)
+}
+
+// SetDocs seats the document repository fake (roadmap 277): sf/docs on a
+// Forgejo as its contents API answers, seeded with files, every landed
+// commit recorded; the policy names it the projects' chat.doc_repo, so
+// the console's document surface reads and writes it. It answers the
+// fake.
+func (a *AcceptanceRig) SetDocs(files map[string]string) *AccDocs {
+	a.t.Helper()
+	d := &AccDocs{t: a.t, files: files,
+		versions: []accVersion{{files: maps.Clone(files), author: "Sebastian", at: "2026-10-15T14:00:00Z"}}}
+	next, err := url.Parse(a.fgURL)
+	if err != nil {
+		a.t.Fatal(err)
+	}
+	proxy := httputil.NewSingleHostReverseProxy(next)
+	const base = "/api/v1/repos/sf/docs/contents"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		d.serve(w, req, proxy, base)
+	}))
+	a.t.Cleanup(srv.Close)
+	a.mu.Lock()
+	a.c.cfg.ForgejoURL, a.c.cfg.DocsToken = srv.URL, "docs-token"
+	a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+	a.mu.Unlock()
+	return d
+}
+
+// AccDocs is the document repository sf/docs on a Forgejo as its contents
+// API answers: master's files by path with a blob sha per version, the
+// head commit of a path with its author and time, a change of the files
+// as one commit answered 201. The versions keep the head as of each
+// commit — the base a stale save's three-way merge reads (the 2026-10-15
+// plan, item 5) — and every landed commit is recorded with the
+// Authorization that made it.
+type AccDocs struct {
+	t        *testing.T
+	mu       sync.Mutex
+	files    map[string]string
+	version  int
+	versions []accVersion
+	commits  []AccDocCommit
+}
+
+// accVersion is the fake's head as of one version: the files and the
+// head commit's author and its time.
+type accVersion struct {
+	files  map[string]string
+	author string
+	at     string
+}
+
+// AccDocCommit is one commit the fake landed: its message, the changed
+// path and the Authorization header that made it.
+type AccDocCommit struct {
+	Message, Path, Bearer string
+}
+
+// accDocSHA is version v's commit sha.
+func accDocSHA(v int) string { return "c0ffee" + strings.Repeat("0", v) }
+
+// Files answers a copy of master's files by path.
+func (d *AccDocs) Files() map[string]string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return maps.Clone(d.files)
+}
+
+// Commits answers the commits the fake landed, oldest first.
+func (d *AccDocs) Commits() []AccDocCommit {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return slices.Clone(d.commits)
+}
+
+// serve answers one call of sf/docs's API: a file's contents — master's,
+// or the version a commit names — a path's head commit, and a change of
+// the files as one commit; every other call goes through proxy to the
+// rig's Forgejo.
+func (d *AccDocs) serve(w http.ResponseWriter, req *http.Request, proxy *httputil.ReverseProxy, base string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	head := d.versions[min(d.version, len(d.versions)-1)]
+	switch {
+	case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, base+"/"):
+		at := d.files
+		if ref := req.URL.Query().Get("ref"); ref != "master" {
+			at = nil
+			for i := len(d.versions) - 1; i >= 0; i-- {
+				if ref == accDocSHA(i) {
+					at = d.versions[i].files
+					break
+				}
+			}
+			if at == nil {
+				http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
+				return
+			}
+		}
+		text, ok := at[strings.TrimPrefix(req.URL.Path, base+"/")]
+		if !ok {
+			http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": factoryd.ContentHash(text)[:12]})
+	case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/commits" && req.URL.Query().Get("path") != "" &&
+		req.URL.Query().Get("sha") == "master":
+		// the path's head commit: the fake's version as its sha
+		_ = json.NewEncoder(w).Encode([]map[string]any{{"sha": accDocSHA(d.version),
+			"commit": map[string]any{"author": map[string]any{"name": head.author},
+				"committer": map[string]any{"date": head.at}}}})
+	case req.Method == http.MethodPost && req.URL.Path == base:
+		var body map[string]any
+		_ = json.NewDecoder(req.Body).Decode(&body) // #nosec G104 -- test harness stub request
+		change := body["files"].([]any)[0].(map[string]any)
+		path, _ := change["path"].(string)
+		current, present := d.files[path]
+		switch {
+		case change["operation"] == "update" && (!present || change["sha"] != factoryd.ContentHash(current)[:12]):
+			http.Error(w, `{"message":"sha does not match"}`, http.StatusConflict)
+			return
+		case change["operation"] == "create" && present:
+			http.Error(w, `{"message":"file exists"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		raw, _ := base64.StdEncoding.DecodeString(change["content"].(string))
+		d.files[path] = string(raw)
+		d.version++
+		d.versions = append(d.versions, accVersion{files: maps.Clone(d.files), author: "sebastian", at: "2026-10-15T14:00:00Z"})
+		d.commits = append(d.commits, AccDocCommit{Message: body["message"].(string), Path: path, Bearer: req.Header.Get("Authorization")})
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{ // #nosec G104 -- test harness stub response
+			"sha": accDocSHA(d.version), "created": "2026-10-15T15:00:00Z"}})
+	default:
+		proxy.ServeHTTP(w, req)
+	}
 }
 
 // TellCard puts card taskID of issue of the code project in review at its
@@ -745,6 +888,9 @@ func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error
 // process, no ledger rows.
 
 func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	a.mu.Lock()
+	chat := a.chat
+	a.mu.Unlock()
 	stages := []policy.Stage{
 		{Name: "screening", OnFindings: "human", When: "outsider"},
 		{Name: "checks", OnFindings: "agent", Enabled: true},
@@ -756,7 +902,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 	}
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),
 			Tree: policy.Tree{
-				Document: policy.Document{Version: 1,
+				Document: policy.Document{Version: 1, Chat: chat,
 					Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
