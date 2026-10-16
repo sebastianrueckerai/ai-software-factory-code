@@ -935,8 +935,26 @@ type boardFilter struct {
 	Col   string
 	After factoryd.Cursor
 	// Routines is the routines control's choice (C16): "" shows every
-	// routine's ghost, week those within 7 days, none none.
+	// routine's ghost, within those whose next run is at most Within
+	// Unit away, none none. Within (1 to 999) and Unit (days or hours)
+	// are set with within alone.
 	Routines string
+	Within   int
+	Unit     string
+}
+
+// periodUnits are the units of the routines control's period.
+var periodUnits = map[string]time.Duration{"days": 24 * time.Hour, "hours": time.Hour}
+
+// period is the routines control's period as a duration.
+func (f boardFilter) period() time.Duration { return time.Duration(f.Within) * periodUnits[f.Unit] }
+
+// Period is the routines control's period in words: "1 day", "2 hours".
+func (f boardFilter) Period() string {
+	if f.Within == 1 {
+		return "1 " + strings.TrimSuffix(f.Unit, "s")
+	}
+	return strconv.Itoa(f.Within) + " " + f.Unit
 }
 
 // whole: the find or the Done column's show narrows the finished cards,
@@ -994,10 +1012,20 @@ func (f *boardFilter) setCol(name string, c colFilter) {
 
 // readCols reads the menus' choices and the routines control's with get,
 // a value the menu does not offer, and all, reading as the default, and
-// how many cards each column of finished cards shows.
+// how many cards each column of finished cards shows. A number the
+// routines control's period does not take reads as 1, a unit as days.
 func readCols(f *boardFilter, get func(string) string) {
-	if r := get("routines"); r == "week" || r == "none" {
-		f.Routines = r
+	switch get("routines") {
+	case "none":
+		f.Routines = "none"
+	case "within":
+		f.Routines, f.Within, f.Unit = "within", 1, "days"
+		if n, err := strconv.Atoi(get("within")); err == nil && n >= 1 && n <= 999 {
+			f.Within = n
+		}
+		if u := get("unit"); periodUnits[u] > 0 {
+			f.Unit = u
+		}
 	}
 	for _, key := range factoryd.FinalStatuses {
 		if n, err := strconv.Atoi(get(key + "-shown")); err == nil && n > 0 {
@@ -1028,7 +1056,8 @@ type hidden struct{ Name, Value string }
 
 // Hidden are the filter's fields with a value, as a form's hidden
 // inputs, but those named in except: the find's form leaves out q, a
-// menu's form its own column's two.
+// menu's form its own column's two, the routines control's form
+// routines with its period.
 func (f boardFilter) Hidden(except ...string) []hidden {
 	fields := []hidden{{"project", f.Project}, {"view", f.View}, {"q", f.Q}}
 	for _, m := range colMenus {
@@ -1036,6 +1065,9 @@ func (f boardFilter) Hidden(except ...string) []hidden {
 		fields = append(fields, hidden{m.Name, c.Order}, hidden{m.Name + "-only", c.Only})
 	}
 	fields = append(fields, hidden{"routines", f.Routines})
+	if f.Routines == "within" && !slices.Contains(except, "routines") {
+		fields = append(fields, hidden{"within", strconv.Itoa(f.Within)}, hidden{"unit", f.Unit})
+	}
 	var out []hidden
 	for _, h := range fields {
 		if h.Value != "" && !slices.Contains(except, h.Name) {
@@ -1084,6 +1116,10 @@ func (f boardFilter) query() string {
 	}
 	if f.Routines != "" {
 		q.Set("routines", f.Routines)
+	}
+	if f.Routines == "within" {
+		q.Set("within", strconv.Itoa(f.Within))
+		q.Set("unit", f.Unit)
 	}
 	if q.Encode() == "" {
 		return ""
@@ -2315,9 +2351,10 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 // placeGhosts stands each of the shown project's routines as a ghost at
 // the foot of its lane in the four columns (C16): the dated ones by their
 // next run, then the merge-counted ones by the merges they lack, then the
-// rest. The board's routines choice hides those more than 7 days away, or
-// all, and each lane counts what it hides. The strip's cell names the
-// first held run, else the soonest under an hour away, whatever the choice.
+// rest. The board's routines choice hides those whose next run is further
+// away than its period, or all, and each lane counts what it hides. The
+// strip's cell names the first held run, else the soonest under an hour
+// away, whatever the choice.
 func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	views, err := c.cfg.Routines.Views(ctx, d.Project)
 	if err != nil {
@@ -2359,7 +2396,7 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 		if rv.Lane == "needs-you" {
 			col = &d.Columns[colNeedsYou]
 		}
-		if d.Routines == "none" || d.Routines == "week" && rv.Next.Sub(now) > 7*24*time.Hour {
+		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
 			col.GhostsHidden++
 			continue
 		}

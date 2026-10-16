@@ -572,6 +572,23 @@ func TestChildrenBudgetBySize(t *testing.T) {
 	}
 }
 
+// A small card the plan files on the frontier rung gets a medium card's
+// budget, 5 under the test policy; a small cheap card keeps a small one's 2.
+func TestChildrenBudgetOfAFrontierCard(t *testing.T) {
+	p := testPlan()
+	p.Cards[1].Rung = RungFrontier
+	r, store, _, _ := newPlanRunner(t, p)
+	if res := createChildren(t, r); len(res.Refused) != 0 {
+		t.Fatalf("refused %q", res.Refused)
+	}
+	cards := cardsByKey(t, store)
+	for key, want := range map[string]float64{"links-api": 5, "redirects": 2} {
+		if got := cards[key].BudgetEUR; got != want {
+			t.Errorf("card %s budget %g, want %g", key, got, want)
+		}
+	}
+}
+
 // planSteps are the plan task's plan steps on its timeline.
 func planSteps(t *testing.T, objects *fakeObjectStore, id string) []string {
 	t.Helper()

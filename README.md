@@ -873,7 +873,8 @@ them.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
-all tasks) and `classes` (per capability
+all tasks, `session_floor_cheap_eur` for the least free budget a session on the cheap rung starts on,
+`session_floor_frontier_eur` for the same on the frontier rung, both 0 when absent) and `classes` (per capability
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
@@ -956,16 +957,17 @@ which the API server signs into the token; factoryd's calls and every
 other row have none. A model call's row also keeps when its hold was
 taken (`held_at`, its start) and the output it asked for (`want_out`).
 Two floors read this math before an attempt, at the free task, day,
-month and project headroom (ruling 322, roadmap 243). The answer path's
-(`AttemptFunded`: every attempt the workflow grants, the console's
-answer) needs a call of no prompt and 1024 output tokens. The fund's
-(`SessionFunded`: the console's Fund action) needs a session's opening:
+month and project headroom (ruling 322, roadmap 243). The attempt's
+(`AttemptFunded`: every attempt of a run from before the session ladder)
+needs a call of no prompt and 1024 output tokens. The session's
+(`SessionFunded`: every session's start, the console's answer and its Fund action) needs a session's opening:
 every call that started before its first one ended, each priced as the
 hold prices it for the task on its own alias with its asked output,
 summed, the largest of the newest 20 sessions' openings on the alias (on
 any alias when none is recorded on it, a call on its session's first
-call's alias read as on this one; the answer path's call on a ledger
-without one). A
+call's alias read as on this one; the attempt's call on a ledger
+without one), and at least the floor of its rung (`session_floor_cheap_eur`
+or `session_floor_frontier_eur`). A
 refusal names the budget or the cap that bounds it; only the budget's
 offers Fund. The day cap's refusal waits for no human, since the cap
 resets on its own: the console takes the answer, and the workflow's

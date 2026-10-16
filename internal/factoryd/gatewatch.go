@@ -84,7 +84,7 @@ var activityGates = map[string]string{
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
+	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed}
 
 // GateStore is what GateWatch writes.

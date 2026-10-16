@@ -210,14 +210,10 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
-	// AttemptFunded is the answer path's floor (ruling 322): "" when the
-	// task's remaining budget can fund a call on model, else the refusal
-	// the answer carries (factoryd's Runner.AttemptFunded); nil checks
-	// nothing.
-	AttemptFunded func(ctx context.Context, taskID, model string) (string, error)
-	// SessionFunded is the fund's floor (roadmap 243): "" when the task's
-	// free headroom can fund a session's opening calls on model, else the
-	// refusal (factoryd's Runner.SessionFunded); nil offers no fund.
+	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
+	// "" when the task's free headroom can fund a session's opening calls and
+	// its rung's floor on model, else the refusal (factoryd's
+	// Runner.SessionFunded); nil offers no fund and checks no answer.
 	SessionFunded func(ctx context.Context, taskID, model string) (string, error)
 	// Chat keeps the project agent's conversations and chat tasks, and
 	// Operator is its model; without either the chat answers 404.

@@ -132,7 +132,7 @@ func TestCommandLineIsCutWhereAModelReadsIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	sup.Event(cmdEvent(a, 1, "FAIL"), t0)
-	if f := sup.Findings(); len(f) != 1 || f[0] != "ran `"+line(a)+"` (exit 1)" {
+	if f := sup.findings; len(f) != 1 || f[0] != "ran `"+line(a)+"` (exit 1)" {
 		t.Fatalf("findings = %q", f)
 	}
 	r, err := NewSessionRecorder(context.Background(), newFakeStore(), &fakeObjectStore{}, "t1", "s1", "", "m")

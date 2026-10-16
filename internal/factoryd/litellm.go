@@ -110,6 +110,43 @@ func (l *LiteLLMAdmin) keysByTask(ctx context.Context) (map[string][]liteKey, er
 	}
 }
 
+// DeleteTaskKeys deletes every key of the task ids from LiteLLM and
+// returns how many (roadmap 272: a removed project's tasks' keys). A key
+// already gone is not an error: LiteLLM answers it among the deleted.
+func (l *LiteLLMAdmin) DeleteTaskKeys(ctx context.Context, taskIDs []string) (int, error) {
+	if len(taskIDs) == 0 {
+		return 0, nil
+	}
+	want := map[string]bool{}
+	for _, id := range taskIDs {
+		want[id] = true
+	}
+	keys, err := l.keysByTask(ctx)
+	if err != nil {
+		return 0, err
+	}
+	var hashes []string
+	for id, ks := range keys {
+		if !want[id] {
+			continue
+		}
+		for _, k := range ks {
+			hashes = append(hashes, k.Token)
+		}
+	}
+	if len(hashes) == 0 {
+		return 0, nil
+	}
+	payload, err := json.Marshal(map[string][]string{"keys": hashes})
+	if err != nil {
+		return 0, err
+	}
+	if _, err := l.call(ctx, http.MethodPost, "/key/delete", payload); err != nil {
+		return 0, err
+	}
+	return len(hashes), nil
+}
+
 func (l *LiteLLMAdmin) blockKey(ctx context.Context, hash string) error {
 	payload, err := json.Marshal(map[string]string{"key": hash})
 	if err != nil {

@@ -1,15 +1,18 @@
 // busy: a form in el is being filled in (a field focused, text typed, a
 // choice changed) or a fold or a disclosure in it is open, so a swap of el
 // would wipe or close it. The card drawer sits outside the board, so an
-// open drawer does not hold the board's swaps: the ages keep ticking.
+// open drawer does not hold the board's swaps: the ages keep ticking. The
+// find's box holds none, focused or holding text: its text applies as you
+// type, and its form outlives every swap of the board (hx-preserve).
 function busy(el) {
   if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
   if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
-  if (el.contains(document.activeElement) && document.activeElement.matches("input, textarea, select")) return true;
+  var a = document.activeElement;
+  if (a && a.id !== "q" && el.contains(a) && a.matches("input, textarea, select")) return true;
   var fields = el.querySelectorAll("input, textarea");
   for (var i = 0; i < fields.length; i++) {
     var f = fields[i];
-    if (f.type === "hidden") continue;
+    if (f.type === "hidden" || f.id === "q") continue;
     if ((f.type === "radio" || f.type === "checkbox") ? f.checked !== f.defaultChecked : f.value !== f.defaultValue) return true;
   }
   return false;
@@ -21,8 +24,10 @@ document.addEventListener("htmx:beforeRequest", function (e) {
 });
 // A board that loaded more finished cards keeps them: what answers the
 // board, a swap or an action, reads as many of each column's as it shows.
+// The find reads the board anew, as its Enter does, and its URL is the
+// one it puts in the address bar.
 document.addEventListener("htmx:configRequest", function (e) {
-  if (!e.detail.target || e.detail.target.id !== "board") return;
+  if (!e.detail.target || e.detail.target.id !== "board" || e.detail.elt.id === "find") return;
   document.querySelectorAll("#board [data-finished]").forEach(function (col) {
     e.detail.parameters[col.dataset.finished + "-shown"] = col.querySelectorAll("[data-card]").length;
   });
@@ -43,6 +48,24 @@ document.addEventListener("htmx:beforeSwap", function (e) {
     e.detail.shouldSwap = true;
     e.detail.isError = false;
   }
+});
+// An answer for a board that has left the page since it was asked for (a
+// find answered first) is not swapped: htmx would still run hx-preserve on
+// it and move the live find into the content it then throws away. Only the
+// swap is skipped: a refusal still flashes and a redirect still leads. The
+// guard sits on the targeted board, which htmx tells of the swap even once
+// it left the page, knows its answer by the request's xhr, and goes when
+// the xhr ends. The stream's reads and the cards' and the drawer's forms
+// aimed at the board pass here; the find lands on the board in place
+// instead.
+document.addEventListener("htmx:beforeRequest", function (e) {
+  var t = e.detail.target, xhr = e.detail.xhr;
+  if (e.defaultPrevented || !t || t.id !== "board" || e.detail.elt.id === "find") return;
+  function guard(ev) {
+    if (ev.detail.xhr === xhr && !t.isConnected) ev.detail.shouldSwap = false;
+  }
+  t.addEventListener("htmx:beforeSwap", guard);
+  xhr.addEventListener("loadend", function () { t.removeEventListener("htmx:beforeSwap", guard); });
 });
 document.addEventListener("htmx:beforeRequest", function (e) {
   var flash = document.getElementById("flash");
@@ -85,11 +108,63 @@ function offerLanes() {
 document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
   // a setting applies at once, with no button to press: the board's
-  // project, a column's order and show, a card's accent
+  // project, a column's order and show, the routines shown, a card's
+  // accent; a change of the routines' period chooses within, and the
+  // period goes with within alone (a disabled field is not sent, and the
+  // form's fields are read when it submits)
   var f = e.target.form;
-  if (f && f.classList.contains("auto-submit")) f.requestSubmit();
+  if (!f || !f.classList.contains("auto-submit")) return;
+  var el = f.elements;
+  if (!el.within || !el.unit) return f.requestSubmit();
+  if (e.target === el.within || e.target === el.unit) el.routines.value = "within";
+  el.within.disabled = el.unit.disabled = el.routines.value !== "within";
+  f.requestSubmit();
+  el.within.disabled = el.unit.disabled = false;
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
+
+// The find narrows the board as you type: its form swaps the board around
+// itself, which it outlives (hx-preserve). Its answer lands on the board in
+// place when it comes, which a stream swap may have replaced since it
+// asked, and its good answer writes its query into the URL in place of the
+// current entry, the open drawer's hash and the open document's doc= kept,
+// so typing adds no history entry. Back or Forward to an entry whose q is
+// not the box's puts that q in the box and runs the find as typing does.
+// A browser without moveBefore (Safari) takes the form out and puts it
+// back at each swap of the board, which drops the box's focus: the swap
+// gives it back with the caret.
+(function () {
+  var caret = null;
+  function keep(target) {
+    var a = document.activeElement;
+    caret = target && target.id === "board" && a && a.id === "q" ? [a.selectionStart, a.selectionEnd] : null;
+  }
+  document.addEventListener("htmx:beforeOnLoad", function (e) {
+    if (e.detail.elt.id !== "find") return;
+    e.detail.target = document.getElementById("board");
+    keep(e.detail.target);
+  });
+  document.addEventListener("htmx:beforeSwap", function (e) { keep(e.detail.target); });
+  document.addEventListener("htmx:afterSwap", function (e) {
+    var q = document.getElementById("q"), c = caret;
+    caret = null;
+    if (!c || !q || !e.detail.target || e.detail.target.id !== "board" || document.activeElement === q) return;
+    q.focus();
+    q.setSelectionRange(c[0], c[1]);
+  });
+  document.addEventListener("htmx:afterRequest", function (e) {
+    if (e.detail.elt.id !== "find" || !e.detail.successful) return;
+    var u = new URL(e.detail.pathInfo.finalRequestPath, location.href), doc = new URLSearchParams(location.search).get("doc");
+    if (doc !== null) u.searchParams.set("doc", doc);
+    history.replaceState(history.state, "", u.pathname + u.search + location.hash);
+  });
+  window.addEventListener("popstate", function () {
+    var q = document.getElementById("q"), want = new URLSearchParams(location.search).get("q") || "";
+    if (!q || q.value === want) return;
+    q.value = want;
+    q.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+})();
 
 // Theme selector (C15): the moon sets dark, the default, the sun sets
 // light; the choice is remembered in localStorage, which theme.js applies
@@ -112,18 +187,25 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
-// The board follows its project's event stream, and no timer runs: an
-// event swaps the cards it names from GET /cards/{id} at once, or the
-// whole board when the card is not on it or its place changed, and
-// card_filed, project_merged, event board (a face changed with time, or
-// events came to a member who only reads) and a reconnect swap the board,
-// whose answer carries the status line too. counters sets the status line
-// and the columns' counts the server read; the agent's text and the
-// steers reach the drawer's Chat. A swap a busy card or board would wipe
-// waits until the focus lands outside a field, a fold or the drawer
-// closes; the footer says when the stream is down.
+// The board follows its project's event stream under the board's query,
+// and no timer runs: an event swaps the cards it names from GET
+// /cards/{id} at once, or the whole board when the card is not on it or
+// its place changed, and card_filed, project_merged, event board (a face
+// changed with time, or events came to a member who only reads) and a
+// reconnect swap the board, whose answer carries the status line too.
+// counters sets the status line and the columns' counts the server read;
+// the agent's text and the steers reach the drawer's Chat. A swap a busy
+// card or board would wipe waits until the focus lands outside a field, a
+// fold or the drawer closes; the find's box, focused, holds none. A find
+// in flight holds them all until its answer is in, or its handling
+// failed, and a read of the board in flight holds the next, which runs
+// once it is in or its handling failed (htmx then never settles its
+// promise): htmx would queue it behind the first and drop it with the
+// board the first replaced. A find that changes the board's query moves
+// the stream to it, whose first open reads the board as a reconnect does.
+// The footer says when the stream is down.
 (function () {
-  var missed = {}, latest = {}, asked = 0;
+  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "";
   function board() { return document.getElementById("board"); }
   function retry() {
     var ids = Object.keys(missed);
@@ -140,15 +222,48 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
   document.addEventListener("toggle", retry, true);
   document.addEventListener("drawerclosed", retry);
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    if (e.detail.elt.id === "find") finding = true;
+  });
+  // a read whose handling failed is let go once htmx has let go of the
+  // board, after its error handler: a read asked for before would queue
+  // behind the failed one and settle at once while still in flight
+  function released(e) {
+    var id = e.detail.elt.id;
+    if (id === "find") {
+      finding = false;
+      retry();
+    } else if (id === "board" && e.type === "htmx:onLoadError") {
+      Promise.resolve().then(function () {
+        reading = false;
+        retry();
+      });
+    }
+  }
+  document.addEventListener("htmx:afterRequest", released);
+  document.addEventListener("htmx:onLoadError", released);
+  document.addEventListener("htmx:afterSwap", function () {
+    var b = board();
+    if (es && b && b.dataset.query !== following) follow(b.dataset.project, b.dataset.query);
+  });
   function swapBoard() {
     var b = board();
-    if (busy(b)) {
+    if (finding || reading || busy(b)) {
       missed[""] = true;
       return;
     }
-    htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"});
+    reading = true;
+    var done = function () {
+      reading = false;
+      retry();
+    };
+    htmx.ajax("GET", "/board" + b.dataset.query, {source: "#board", target: "#board", swap: "outerHTML"}).then(done, done);
   }
   function swapCard(id) {
+    if (finding) {
+      missed[id] = true;
+      return;
+    }
     var cards = document.querySelectorAll("[data-card=\"" + CSS.escape(id) + "\"]");
     if (!cards.length) return swapBoard();
     for (var i = 0; i < cards.length; i++) {
@@ -219,22 +334,26 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     if (end) box.scrollTop = box.scrollHeight;
   }
   function follow(project, query) {
-    var es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query), opened = false;
-    es.onopen = function () {
+    var opened = es !== null;
+    if (es) es.close();
+    following = query;
+    var s = es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query);
+    s.onopen = function () {
       document.getElementById("live").textContent = "";
-      // the replay after a reconnect holds at most the newest 500 events;
-      // the agent's text is never replayed, so the Chat is read again
+      // the replay after a reconnect holds at most the newest 500 events,
+      // a stream moved to a new query replays none, and the agent's text
+      // is never replayed: the board and the Chat are read again
       if (opened) {
         swapBoard();
         chat("");
       }
       opened = true;
     };
-    es.onerror = function () {
-      document.getElementById("live").textContent = es.readyState === EventSource.CLOSED ?
+    s.onerror = function () {
+      document.getElementById("live").textContent = s.readyState === EventSource.CLOSED ?
         "The live stream ended: reload the page to follow the board." : "The live stream is down; it reconnects by itself.";
     };
-    es.addEventListener("event", function (m) {
+    s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
       if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
       else if (e.kind === "session_said") said(e);
@@ -247,8 +366,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
         swapCard(e.task_id);
       }
     });
-    es.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
-    es.addEventListener("board", function () { swapBoard(); });
+    s.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
+    s.addEventListener("board", function () { swapBoard(); });
   }
   // The pulse band: pulse_computing shows its typing indicator, pulse
   // swaps its sentence and bullets in; the band's disclosure (the status

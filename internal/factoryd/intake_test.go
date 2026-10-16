@@ -1642,6 +1642,10 @@ func TestIntakeBudgetBySize(t *testing.T) {
 		{"Budget: abc\nBudget: 7", 0, 7},
 		{"Budget: 7\nBudget: abc", 0, 7},
 		{"The size: large is not a line of its own", 0, 5},
+		{"Size: small\nRung: frontier, the queue code is subtle", 0, 5},
+		{"Size: small\nRung: cheap, a rename", 0, 2},
+		{"Size: small\nFix internal/factoryd/rolltask.go", 0, 5},
+		{"Size: small\nRung: frontier, subtle\nBudget: 1", 0, 1},
 	} {
 		in, store, _ := newTestIntake(t)
 		in.Policy = func() policy.Tree {

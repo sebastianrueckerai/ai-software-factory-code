@@ -74,6 +74,9 @@ type capFacts struct {
 	// rerun: its merge request is a factory pull request's on red checks,
 	// which a re-run or a close decides (roadmap 264)
 	rerun bool
+	// returns: its merge request is an agent's on red checks, which a
+	// return to the agent or a close decides
+	returns bool
 }
 
 // capFactsOf reads t's facts, only for a card waiting on a human or in
@@ -113,6 +116,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		var spec factoryd.MergeSpec
 		if q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
 			f.rerun = spec.Factory && spec.RedChecks
+			f.returns = !spec.Factory && spec.RedChecks
 		}
 	}
 	f.capped = t.Status == "waiting-human" && !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
@@ -140,6 +144,10 @@ func splitRunning(t factoryd.Task, pr int64) error {
 // red checks (roadmap 264).
 const factoryRedFits = "rerun_checks runs its red checks again, or deny_merge closes it with your words"
 
+// agentRedFits is what decides an agent pull request's merge request on
+// red checks.
+const agentRedFits = "deny_merge with request_changes returns it to the agent, or with reject closes it"
+
 // fitting is the action that fits t's state.
 func fitting(t factoryd.Task, f capFacts) string {
 	switch t.Status {
@@ -153,6 +161,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "an answer with the findings grants one session (answer); close ends it"
 		case f.rerun:
 			return factoryRedFits
+		case f.returns:
+			return agentRedFits
 		case f.merge:
 			return "approve_merge or deny_merge decide its merge request"
 		case f.plan:
@@ -168,6 +178,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "in-review":
 		if f.rerun {
 			return factoryRedFits
+		}
+		if f.returns {
+			return agentRedFits
 		}
 		if f.merge {
 			return "approve_merge or deny_merge decide its merge request"
@@ -841,18 +854,27 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if why := c.unfundedAnswer(ctx, t); why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
+	if err := c.answerCard(ctx, a, t, text); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+}
+
+// answerCard posts text as the member's answer to card t's escalation; at the
+// session cap the answer is a grant, and its event session_granted.
+func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, text string) error {
 	kind := factoryd.EventQuestionAnswered
 	if c.capFactsOf(ctx, t).capped {
 		kind = factoryd.EventSessionGranted
 	}
 	var posted int64
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
-		return "", &forgejoRefusal{"post the answer", err}
+		return &forgejoRefusal{"post the answer", err}
 	}
 	c.answerWhole(ctx, a, t, posted)
 	log.Printf("console: %s answered the escalation of %s via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, commentDetail(posted))
-	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+	return nil
 }
 
 // doGrantSession grants card id, waiting at its session cap, one more
@@ -906,31 +928,27 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 	}
 }
 
-// unfundedAnswer is the answer path's floor (ruling 322): the refusal a
-// card's remaining budget owes an answer, "" when one can run. A card
-// with no session yet (no model to price) and a failed read answer as
-// before: the workflow's grant refuses the attempt anyway. An answer at
-// the day cap is taken: its attempt waits for the day on its own.
+// unfundedAnswer is the answer path's floor: the refusal a card's remaining
+// budget owes an answer, the session it would start being unfunded
+// (SessionFunded), "" when one can run. A card with no session yet (no model
+// to price) and a failed read answer as before: the workflow's floor refuses
+// the session anyway. An answer at the day cap is taken: its session waits
+// for the day on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
-	if why := c.unfunded(ctx, t, c.cfg.AttemptFunded); !factoryd.DayCapped(why) {
+	if why := c.unfundedSession(ctx, t); !factoryd.DayCapped(why) {
 		return why
 	}
 	return ""
 }
 
-// unfundedSession is the fund's floor (roadmap 243): the refusal a card's
-// remaining budget owes a session's opening calls, "" when they can run.
+// unfundedSession is the refusal a card's remaining budget owes a session's
+// opening calls (SessionFunded), "" when they can run or the card cannot be
+// judged.
 func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
-	return c.unfunded(ctx, t, c.cfg.SessionFunded)
-}
-
-// unfunded is floor's refusal of card t, "" when it funds the card or
-// cannot judge it.
-func (c *Console) unfunded(ctx context.Context, t factoryd.Task, floor func(ctx context.Context, taskID, model string) (string, error)) string {
-	if floor == nil || t.ModelAlias == "" {
+	if c.cfg.SessionFunded == nil || t.ModelAlias == "" {
 		return ""
 	}
-	why, err := floor(ctx, t.ID, t.ModelAlias)
+	why, err := c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
 	if err != nil {
 		log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		return ""
@@ -942,21 +960,25 @@ func (c *Console) unfunded(ctx context.Context, t factoryd.Task, floor func(ctx 
 // waiting on a human after a budget refusal (roadmap 210): one store
 // transaction raises budget_eur, and the event row is the raise's audit
 // trail — the actor, the card, the old and the new budget and the stated
-// reason. The card keeps waiting as it was; the next answer resumes it,
-// now with headroom (the answer box is unchanged).
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, reason string) (string, error) {
-	reason = strings.TrimSpace(reason)
+// reason. The note is the member's answer to the card's question, posted as
+// doAnswer posts it, so the raise resumes the card in one step. When the
+// floor still refuses a session after the raise, the raise and the note
+// stand and the response is a refusal naming the floor's reason, so the
+// member learns the amount now, not on the card's next question.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
+	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
 		return "", refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
-	case reason == "" || len(reason) > 64<<10:
-		return "", refuse(http.StatusBadRequest, "a reason of up to 64 KiB is required")
+	}
+	if err := answerFits(note); err != nil {
+		return "", err
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
-	if t.Kind != "agent" || t.Status != "waiting-human" {
+	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
 	}
 	switch why := c.unfundedSession(ctx, t); {
@@ -973,10 +995,18 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, r
 		log.Printf("console: %s funds %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
 	}
-	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, reason)
+	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded,
-		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": reason})
-	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f; it resumes on the next answer.", t.IssueNumber, eur, to), nil
+		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
+	short := c.unfundedSession(ctx, t)
+	if err := c.answerCard(ctx, a, t, note); err != nil {
+		log.Printf("console: %s funded %s, the answer failed: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f, but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, eur, to))
+	}
+	if short != "" {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer, but a session still cannot start: %s", t.IssueNumber, eur, to, short))
+	}
+	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer; the card resumes.", t.IssueNumber, eur, to), nil
 }
 
 // doClose closes card id's issue as the member, its note commented first
@@ -1484,9 +1514,12 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 		}
-		if spec.Factory && spec.RedChecks {
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are red, so it cannot merge: run them again "+
-				"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).", q.PRNumber))
+		if spec.RedChecks {
+			remedy := "return it to the agent with what to change (deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close)"
+			if spec.Factory {
+				remedy = "run them again (rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close)"
+			}
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
 		}
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the approving review", err}

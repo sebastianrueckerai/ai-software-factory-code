@@ -171,6 +171,27 @@ async function main() {
             await p.page.waitForTimeout(200);
           }, false);
         }
+        // the find as you type (2026-10-15): a word typed without Enter, the board
+        // narrowed under the box that keeps it; the routines control open at within
+        // 2 hours, the lane's hidden line under the ghosts, and so on the phone
+        const ctl = async (p) => {
+          await p.page.locator("#board .routines-ctl > summary").scrollIntoViewIfNeeded();
+          await p.page.locator("#board .routines-ctl > summary").click();
+          await p.page.waitForTimeout(200);
+        };
+        if (s === "busy") {
+          await shot("find-typed-1440.png", desk, "/", async (p) => {
+            await p.page.locator("#q").click();
+            await p.page.keyboard.type("export", { delay: 40 });
+            await p.page.waitForTimeout(400);
+            await p.idle();
+          }, false);
+          await shot("routines-within-1440.png", desk, "/?routines=within&within=2&unit=hours", async (p) => {
+            await feet(p);
+            await ctl(p);
+          }, false);
+        }
+        if (s === "busy" && theme === "dark") await shot("routines-within-390.png", phone, "/?routines=within&within=2&unit=hours", ctl, false);
         if (s === "fire" && theme === "dark") await shot("held-1440.png", desk, "/", feet, false);
         if (s !== "busy") continue;
         // the documents (roadmap 277): the roadmap read, a link into a

@@ -210,6 +210,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
 		ActivityAlertPreCheck:     func(ctx context.Context, taskID string) (bool, error) { return true, nil },
 		ActivityAttemptFunded:     func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
+		ActivitySessionFunded:     func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
+		ActivitySessionAnswered:   func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityDayResume:         func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
 		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
@@ -609,7 +611,7 @@ func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "waiting-human", Question: "which alias?"}
 	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(unfunded, nil)
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(unfunded, nil)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "again", Comment: 603})
 	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -636,7 +638,7 @@ func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
 	floors := 0
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) { floors++; return "", nil })
 	h.onSessions(pushed("s4", "c4"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -648,6 +650,268 @@ func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 4 || floors != 1 {
 		t.Fatalf("sessions = %+v, floor reads = %d, want the fourth attempt after one floor read", h.sessions, floors)
+	}
+}
+
+// refusedThenFunded answers the funding floor: the nth call (1-based) in
+// refusing is refused with a budget refusal whose remainder is n tenths of a
+// euro, the others funded. Both the floor of the new gate and the old one
+// answer it; the reads it returns count each one's calls.
+func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
+	reads, calls := map[string]int{}, 0
+	floor := func(activity string) func(ctx context.Context, taskID, model string) (string, error) {
+		return func(ctx context.Context, taskID, model string) (string, error) {
+			calls++
+			reads[activity]++
+			if slices.Contains(refusing, calls) {
+				return fmt.Sprintf("%s: Raise the budget (Fund on the board) and answer, or close the card.\n%.3f EUR of the 2.000 EUR budget remains, and a session on %s needs 0.300000 EUR",
+					budgetRefused, float64(calls)/10, model), nil
+			}
+			return "", nil
+		}
+	}
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivitySessionFunded))
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(floor(ActivityAttemptFunded))
+	return reads
+}
+
+// An answer to a session that took no number buys none: the start failure
+// is no session, so its answer buys only agent time, and the cap of 3 asks
+// after three answered sessions. Attempts 1 (the start failure), 1, 2 and 3
+// run, the cap question comes, and its answer buys attempt 4.
+func TestWorkflowAnswerToAnUncountedSessionBuysNoAttempt(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeEscalate, SessionID: "starved", StartFailed: true, Reason: "the pod could not start: image pull refused"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s4"}, pushed("s5", "c5"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the registry is back", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 603})
+	h.signalAfter(4*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 1, 2, 3, 4}) || len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[1], capReached) {
+		t.Fatalf("attempts = %v, escalations %q; want 1 1 2 3 4 and the cap question after the third answered session", attempts, h.escalated)
+	}
+	if u := h.usage[len(h.usage)-1]; u.Attempts != 4 || u.ExtraAttempts != 1 {
+		t.Fatalf("usage = %+v, want four sessions counted and the cap answer's one extra attempt", u)
+	}
+}
+
+// A session the gateway starved is no session: #839 ran attempts 1, 2, 3 and
+// 5 and #854 1, 2 and 4 because refused attempts took numbers. A session that
+// got no model answer counts none, whatever ended it, so the fourth run here
+// is the second session and the cap of 3 is never reached.
+func TestWorkflowStarvedSessionsTakeNoNumber(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "the gateway refused a call"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved", Summary: "the gateway refused a call"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved", Summary: "the gateway refused a call"},
+		pushed("s4", "c4"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 2, 2, 2}) || len(h.escalated) != 0 {
+		t.Fatalf("attempts = %v, escalations %q; want 1 2 2 2 and no cap question", attempts, h.escalated)
+	}
+	if u := h.usage[len(h.usage)-1]; u.Attempts != 2 {
+		t.Fatalf("usage = %+v, want two sessions counted", u)
+	}
+}
+
+// A run from before the gate counts every session that ran.
+func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"}, pushed("s4", "c4"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(6*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 4 || h.sessions[3].Attempt != 4 || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		t.Fatalf("final = %q, sessions %d, escalations %q; want the cap question after three counted sessions and the fourth as attempt 4", final, len(h.sessions), h.escalated)
+	}
+}
+
+// Three sessions in a row that got no model answer ask a human, naming the
+// last stop, and a session that got one starts the count again. Two starved
+// sessions, an answered one and three starved ones (the fifth climbing the
+// rung) run as attempts 1 1 1 2 2 2; the question comes after the sixth, and
+// its answer buys agent time but no attempt, so the seventh runs as attempt 2
+// on the stronger rung.
+func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
+	h := newWorkflowHarness(t)
+	starved := func(o SessionOutcome, stop string) SessionResult {
+		return SessionResult{Outcome: o, SessionID: "starved", Summary: stop}
+	}
+	h.onSessions(starved(OutcomeNoPush, "stop 1"), starved(OutcomeNoPush, "stop 2"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Summary: "no changes to push"},
+		starved(OutcomeNoPush, "stop 4"), starved(OutcomeRetryStronger, "stop 5"), starved(OutcomeNoPush, "stop 6"),
+		pushed("s7", "c7"))
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	var attempts []int
+	for _, in := range h.sessions {
+		attempts = append(attempts, in.Attempt)
+	}
+	if !slices.Equal(attempts, []int{1, 1, 1, 2, 2, 2, 2}) {
+		t.Fatalf("attempts = %v, want 1 1 1 2 2 2 2", attempts)
+	}
+	want := "No session got a model answer: 3 sessions in a row ended without one and took no number of the session cap. " +
+		"Find what kept the model from answering (the gateway, the provider or the session's pod), then answer to start the next session. The last stop: stop 6"
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "no_answer" {
+		t.Fatalf("escalations = %q, want %q from source no_answer", h.escalated, want)
+	}
+	if in := h.sessions[6]; in.Model != "factory/coding-frontier" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
+		t.Fatalf("seventh session = %+v, want the stronger rung with the answer", in)
+	}
+	if u := h.usage[len(h.usage)-1]; u != (TaskUsage{Attempts: 2}) {
+		t.Fatalf("usage = %+v, want two sessions counted and no attempt bought", u)
+	}
+}
+
+// The session_started record names the model the session started on; a
+// climb inside the session is model_switched's record (roadmap 222, item 5).
+func TestWorkflowSessionAnsweredNamesTheStartModel(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Model: "factory/coding-frontier", Summary: "no changes to push"}, pushed("s2", "c2"))
+	var models []string
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) {
+			models = append(models, in.Model)
+			return true, nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if want := []string{"factory/coding-cheap", "factory/coding-frontier"}; !slices.Equal(models, want) {
+		t.Fatalf("recorded models = %q, want %q: the first session started cheap and climbed, the second started where it ended", models, want)
+	}
+}
+
+// A session reattached after a restart began before this run: its own start
+// is the since of the answer read, so the calls it made before the restart
+// count. A fresh session carries no start and the read takes the run's.
+func TestWorkflowReattachedSessionIsReadSinceItsOwnStart(t *testing.T) {
+	h := newWorkflowHarness(t)
+	podStart := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	var ran []time.Time
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			ran = append(ran, h.env.Now())
+			if len(h.sessions) == 1 {
+				return SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push", Started: podStart}, nil
+			}
+			return pushed("s2", "c2"), nil
+		})
+	var since []time.Time
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) {
+			since = append(since, in.Since)
+			return true, nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(since) != 2 || !since[0].Equal(podStart) || !since[1].Equal(ran[1]) {
+		t.Fatalf("since = %v, want the reattached pod's start %v, then the second session's run %v", since, podStart, ran[1])
+	}
+}
+
+// The budget branch used to discard the change requests that answered it
+// and to count the refused attempt: session 1 pushes, the red checks go back,
+// the floor refuses session 2, a change request on the pull request answers
+// the wait, and session 2 starts as attempt 2 with both findings.
+func TestWorkflowFundRefusalKeepsTheAnswerAndTheNumber(t *testing.T) {
+	change := "reviewer sebastian requested changes: rename it"
+	run := func(t *testing.T, pinned bool) (*workflowHarness, map[string]int) {
+		h := newWorkflowHarness(t)
+		if pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		reads := h.refusedThenFunded(2)
+		h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+		h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}}, ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+		h.signalAfter(4*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+		if final := h.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, h.finals)
+		}
+		return h, reads
+	}
+	h, reads := run(t, false)
+	if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 || !slices.Equal(h.sessions[1].Findings, []string{"red", change}) {
+		t.Fatalf("sessions = %+v, want the second as attempt 2 with the red check and the change request", h.sessions)
+	}
+	if reads[ActivitySessionFunded] != 3 || reads[ActivityAttemptFunded] != 0 {
+		t.Fatalf("floor reads = %v, want three of SessionFunded and none of AttemptFunded", reads)
+	}
+	h, reads = run(t, true)
+	if len(h.sessions) != 2 || h.sessions[1].Attempt != 3 || !slices.Equal(h.sessions[1].Findings, []string{"red"}) {
+		t.Fatalf("pinned sessions = %+v, want the old run's attempt 3 and the dropped change request", h.sessions)
+	}
+	if reads[ActivityAttemptFunded] != 3 || reads[ActivitySessionFunded] != 0 {
+		t.Fatalf("pinned floor reads = %v, want three of AttemptFunded and none of SessionFunded", reads)
+	}
+}
+
+// A fund too small to clear the floor asks again, each time naming the
+// amount; the session starts once the floor is met.
+func TestWorkflowFundThatMissesTheFloorAsksAgain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	reads := h.refusedThenFunded(1, 2)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "funded 0.1", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "funded 1.0", Comment: 603})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[0], "0.100 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") ||
+		!strings.Contains(h.escalated[1], "0.200 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") || reads[ActivitySessionFunded] != 3 {
+		t.Fatalf("escalations %q after floor reads %v; want two questions, each naming its read's remainder and the amount, then the session", h.escalated, reads)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 || len(h.sessions[0].Answers) != 2 {
+		t.Fatalf("sessions = %+v, want one attempt-1 session with both answers", h.sessions)
 	}
 }
 
@@ -1011,12 +1275,15 @@ func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
 }
 
 // Ruling 225: a writer's change request on the merge card with no session
-// left is the human's answer. It buys the one extra session, which gets
-// the change request, and no cap card follows: at the last regular
-// attempt, at the session cap and with no agent time left.
+// left is the human's answer. It buys the next session, which gets the
+// change request, and no cap card follows: at the last regular attempt
+// and at the session cap an extra attempt, with no agent time left and
+// attempts to spare the time alone (versionSessionLadder); a run from
+// before the gate bought an attempt there too.
 func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 	change := "reviewer sebastian requested changes: keep the old flag"
 	for name, tc := range map[string]struct {
+		pinned  bool
 		state   RunState
 		head    string
 		results []SessionResult
@@ -1045,10 +1312,20 @@ func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 			state:   RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c3", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}},
 			results: []SessionResult{pushed("s2", "c4")},
 			want:    []string{"pr c3 after 0 cards", "approval c3", "session 2 after 0 cards", "pr c4 after 0 cards", "approval c4"},
+			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute},
+		},
+		"no agent time left, before the gate": {
+			pinned:  true,
+			state:   RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c3", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}},
+			results: []SessionResult{pushed("s2", "c4")},
+			want:    []string{"pr c3 after 0 cards", "approval c3", "session 2 after 0 cards", "pr c4 after 0 cards", "approval c4"},
 			usage:   TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
 		},
 	} {
 		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
 		h.state, h.branchHead = tc.state, tc.head
 		var steps []string
 		h.onVerify(&steps, tc.results)
@@ -1067,6 +1344,332 @@ func TestChangeRequestWithNoSessionLeftIsTheAnswer(t *testing.T) {
 		if !slices.Contains(h.usage, tc.usage) {
 			t.Fatalf("%s: usage = %+v, want %+v recorded", name, h.usage, tc.usage)
 		}
+	}
+}
+
+// timedSession is a RunSession answer that takes its agent time.
+type timedSession struct {
+	took time.Duration
+	res  SessionResult
+}
+
+// onTimedSessions answers RunSession attempts in order, each after its
+// time, recording each input; the last repeats.
+func (h *workflowHarness) onTimedSessions(sessions ...timedSession) {
+	for i, s := range sessions {
+		call := h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(s.took).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				return s.res, nil
+			})
+		if i < len(sessions)-1 {
+			call.Once()
+		}
+	}
+}
+
+// A change request that answers the agent-time cap buys an attempt only at
+// the session cap (versionSessionLadder): the starved first session took
+// no number and spent the 20 minutes, the request on its head c1 buys the
+// 5 minute slice alone, and the next session runs as attempt 1. A run from
+// before the gate counted the starved session and bought an attempt too:
+// the next session ran as attempt 2.
+func TestWorkflowChangeRequestAtTheTimeCapBuysTheTimeAlone(t *testing.T) {
+	change := "reviewer sebastian requested changes: rename it"
+	for name, tc := range map[string]struct {
+		pinned   bool
+		attempts []int
+		usage    []TaskUsage
+	}{
+		"gated": {false, []int{1, 1}, []TaskUsage{
+			{AgentTime: 20 * time.Minute, LastUncounted: true}, {AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, LastUncounted: true},
+			{AgentTime: 21 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute}}},
+		"before the gate": {true, []int{1, 2}, []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1}, {AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
+	} {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.branchHead = "c1"
+		var steps []string
+		h.onVerify(&steps, nil)
+		h.onTimedSessions(timedSession{20 * time.Minute, wallClock("starved", "c1")}, timedSession{time.Minute, pushed("s2", "c2")})
+		h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "starved", nil })
+		h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		var attempts []int
+		for _, in := range h.sessions {
+			attempts = append(attempts, in.Attempt)
+		}
+		if !slices.Equal(attempts, tc.attempts) || len(h.escalated) != 0 || !slices.Equal(h.sessions[1].Findings, []string{change}) {
+			t.Fatalf("%s: attempts = %v, escalations %q, second findings %q; want %v, no card and the change request",
+				name, attempts, h.escalated, h.sessions[1].Findings, tc.attempts)
+		}
+		if !slices.Equal(h.usage, tc.usage) {
+			t.Fatalf("%s: usage = %+v, want %+v", name, h.usage, tc.usage)
+		}
+	}
+}
+
+// The agent-time cap card's answer buys an attempt only at the session cap
+// (versionSessionLadder), whatever the last session counted: a restarted
+// run finds attempt 1 and the 20 minutes spent, and its cap card's answer
+// buys the 5 minute slice alone, and the next session runs as attempt 2. Attempt
+// 3 spending the last 5 minutes is at the cap: the answer buys attempt 4
+// with the slice. A run from before the gate bought an attempt with every
+// answer.
+func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned   bool
+		used     TaskUsage
+		sessions []timedSession
+		attempts []int
+		granted  TaskUsage // the usage the answer records
+	}{
+		"restarted": {
+			used:     TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1},
+			sessions: []timedSession{{time.Minute, pushed("s2", "c2")}},
+			attempts: []int{2},
+			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute},
+		},
+		"restarted, before the gate": {
+			pinned:   true,
+			used:     TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1},
+			sessions: []timedSession{{time.Minute, pushed("s2", "c2")}},
+			attempts: []int{2},
+			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
+		},
+		"at the session cap": {
+			used:     TaskUsage{AgentTime: 15 * time.Minute, Attempts: 2},
+			sessions: []timedSession{{5 * time.Minute, wallClock("s3", "c1")}, {time.Minute, pushed("s4", "c2")}},
+			attempts: []int{3, 4},
+			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 3, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
+		},
+	} {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.branchHead = "c1"
+		h.state = RunState{Status: "running", Usage: tc.used}
+		var steps []string
+		h.onVerify(&steps, nil, gosecRed, ChecksResult{State: ChecksSuccess})
+		h.onTimedSessions(tc.sessions...)
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		var attempts []int
+		for _, in := range h.sessions {
+			attempts = append(attempts, in.Attempt)
+		}
+		if !slices.Equal(attempts, tc.attempts) || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+			t.Fatalf("%s: attempts = %v, escalations %q; want %v after the one cap card", name, attempts, h.escalated, tc.attempts)
+		}
+		if i := slices.Index(h.usage, tc.granted); i < 0 || i != len(h.usage)-2 {
+			t.Fatalf("%s: usage = %+v, want %+v recorded by the answer, before the last session's", name, h.usage, tc.granted)
+		}
+	}
+}
+
+// A run restarted while the cap question waits takes its answer by the
+// same rule (versionSessionLadder): attempt 1 and a session that took no
+// number spent the 20 minutes, so the answer buys the 5 minute slice alone
+// and the next session runs as attempt 2; at the session cap it buys
+// attempt 4 with the slice. A run from before the gate bought an attempt
+// with the answer.
+func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned  bool
+		used    TaskUsage
+		attempt int
+		granted TaskUsage
+	}{
+		"time cap": {used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, attempt: 2,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute}},
+		"session cap": {used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 3}, attempt: 4,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 3, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}},
+		"time cap, before the gate": {pinned: true, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, attempt: 2,
+			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}},
+	} {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.state = RunState{Status: "waiting-human", Question: capReached, Usage: tc.used}
+		h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].Attempt != tc.attempt {
+			t.Fatalf("%s: sessions = %+v, want one, attempt %d", name, h.sessions, tc.attempt)
+		}
+		if len(h.usage) != 2 || h.usage[0] != tc.granted {
+			t.Fatalf("%s: usage = %+v, want %+v recorded by the answer, then the session's", name, h.usage, tc.granted)
+		}
+	}
+}
+
+// A run restarted while a question that is not the cap's waits takes its
+// answer by the rule of the loop's (versionSessionLadder): the row says
+// whether the last session took a number. After one that took none the
+// answer buys the 5 minute slice alone, after one that took one it buys an
+// attempt with it, and an answer to a wait the live loop answers with the
+// next session alone buys nothing: a floor's refusal (the budget's, or a
+// model it cannot price), pods that never started, the provider's refusals.
+// The session after it is attempt 2, a minute long. A run from before the
+// gate bought an attempt with any answer.
+func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
+	const pod = "the pod could not start: image pull refused"
+	floor := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+	type row struct {
+		pinned   bool
+		question string
+		used     TaskUsage
+		usage    []TaskUsage
+	}
+	rows := map[string]row{
+		"uncounted": {question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, LastUncounted: true},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute}}},
+		"counted": {question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
+		"uncounted, before the gate": {pinned: true, question: pod, used: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, LastUncounted: true}, usage: []TaskUsage{
+			{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1, LastUncounted: true},
+			{AgentTime: 21 * time.Minute, Attempts: 2, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}}},
+	}
+	five := TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}
+	for kind, question := range map[string]string{
+		"the budget's floor":        floor,
+		"an unpriced model's floor": "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model",
+		"pods that never started": "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
+			"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: Pending",
+		"the provider's refusals": "the model provider refused the first call of 6 sessions in a row (status 429): rate limited",
+	} {
+		rows[kind] = row{question: question, used: five, usage: []TaskUsage{{AgentTime: 6 * time.Minute, Attempts: 2}}}
+		rows[kind+", before the gate"] = row{pinned: true, question: question, used: five, usage: []TaskUsage{
+			{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1},
+			{AgentTime: 6 * time.Minute, Attempts: 2, ExtraAttempts: 1}}}
+	}
+	for name, tc := range rows {
+		h := newWorkflowHarness(t)
+		if tc.pinned {
+			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+		}
+		h.state = RunState{Status: "waiting-human", Question: tc.question, Usage: tc.used}
+		h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the registry is back", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+		}
+		if len(h.sessions) != 1 || h.sessions[0].Attempt != 2 {
+			t.Fatalf("%s: sessions = %+v, want one, attempt 2", name, h.sessions)
+		}
+		if !slices.Equal(h.usage, tc.usage) {
+			t.Errorf("%s: usage = %+v, want %+v", name, h.usage, tc.usage)
+		}
+	}
+}
+
+// A run restarted while a gate's escalation waits takes the answer as the
+// live gate does, by verifying again, here from the first stage
+// (versionSessionLadder): the head c2 goes through the review again and the
+// approval is asked again, no session starts and no attempt is bought. A
+// run from before the gate bought an attempt and started a session, whose
+// push c3 went through verification instead, and so does a gated run whose
+// Reconcile found no pull request: there is no head to verify.
+func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
+	questions := map[string]string{
+		"the gate supervisor's": "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+		"the merge queue's": "the checks are still red after the merge queue's turns: main moved on 1 of 3 turns, and the red checks ran again on 2, " +
+			"so the pull request left the queue until a human answers",
+		"the reproduction's start": "the sandbox cannot start at image pull, and no session can fix it: push the worker image or correct its reference, " +
+			"then answer to run the reproduction again, or close the card.",
+	}
+	for kind, question := range questions {
+		for _, variant := range []string{"", ", before the gate", ", no pull request"} {
+			name := kind + variant
+			h := newWorkflowHarness(t)
+			if variant == ", before the gate" {
+				h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
+			}
+			h.state = RunState{Status: "waiting-human", Question: question, PR: PullRequest{Number: 9}, Head: "c2",
+				Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+			if variant == ", no pull request" {
+				h.state.PR, h.state.Head = PullRequest{}, ""
+			}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+			reviewed := []string{}
+			h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+					reviewed = append(reviewed, commit)
+					return Review{}, nil
+				})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("%s: final = %q, finals = %v", name, final, h.finals)
+			}
+			want := struct {
+				sessions int
+				reviewed []string
+				steps    []string
+				usage    []TaskUsage
+			}{0, []string{"c2"}, []string{"pr c2 after 1 cards", "approval c2"}, nil}
+			if variant != "" {
+				want.sessions, want.reviewed, want.steps = 1, []string{"c3"}, []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}
+				want.usage = []TaskUsage{{AgentTime: 5 * time.Minute, Attempts: 1, ExtraAttempts: 1}, {AgentTime: 5 * time.Minute, Attempts: 2, ExtraAttempts: 1}}
+			}
+			if len(h.sessions) != want.sessions || !slices.Equal(reviewed, want.reviewed) || !slices.Equal(steps, want.steps) || !slices.Equal(h.usage, want.usage) {
+				t.Errorf("%s: sessions %d, reviewed %q, steps %q, usage %+v; want %d, %q, %q, %+v",
+					name, len(h.sessions), reviewed, steps, h.usage, want.sessions, want.reviewed, want.steps, want.usage)
+			}
+		}
+	}
+}
+
+// A change request answering a restarted gate's escalation goes back to the
+// agent, as the live gate's does: no verification of c2, the next session
+// is attempt 2 with the request, and nothing is bought below the cap.
+func TestWorkflowRestartedGateEscalationTakesAChangeRequestToTheAgent(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+	if f := h.sessions[0].Findings; len(f) != 1 || !strings.HasSuffix(f[0], "requested changes: rename it") {
+		t.Fatalf("findings = %q, want the change request", f)
+	}
+	if want := []TaskUsage{{AgentTime: 5 * time.Minute, Attempts: 2}}; !slices.Equal(h.usage, want) {
+		t.Fatalf("usage = %+v, want %+v", h.usage, want)
 	}
 }
 
@@ -1625,7 +2228,7 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/coding-cheap needs 0.015360 EUR " +
 		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
-	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
 			if h.env.Now().Before(oct(15, 0, 0)) {
 				return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" + state, nil
@@ -2113,8 +2716,8 @@ func TestWorkflowRedirectResumesOnTheSameRungWithGuidance(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	second := h.sessions[1]
-	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script"}) {
-		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance as findings", second)
+	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script", "the branch holds c-wip; the gates have not judged it"}) {
+		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance and the branch as findings", second)
 	}
 }
 
@@ -2625,5 +3228,138 @@ func TestAlertCardClosesItselfBeforeFirstModelCall(t *testing.T) {
 	}
 	if len(h2.sessions) != 1 {
 		t.Fatalf("firing: sessions = %d, want the card's session", len(h2.sessions))
+	}
+}
+
+func TestAnswersAndChangeRequestsCarryTheirDate(t *testing.T) {
+	at := time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)
+	if got, want := answerText("sebastian", "which file?", "docs/a.txt", at), `sebastian (2026-10-15), to "which file?": docs/a.txt`; got != want {
+		t.Errorf("answer = %q, want %q", got, want)
+	}
+	if got, want := answerText("sebastian", "which file?", "docs/a.txt", time.Time{}), `sebastian, to "which file?": docs/a.txt`; got != want {
+		t.Errorf("undated answer = %q, want %q", got, want)
+	}
+	if got, want := changeRequested("sebastian", "rename it", at), "reviewer sebastian requested changes (2026-10-15): rename it"; got != want {
+		t.Errorf("change request = %q, want %q", got, want)
+	}
+	late := time.Date(2026, 10, 16, 1, 30, 0, 0, time.FixedZone("CEST", 2*3600))
+	if got := changeRequested("a", "b", late); got != "reviewer a requested changes (2026-10-15): b" {
+		t.Errorf("a time in another zone = %q, want its UTC date, 2026-10-15", got)
+	}
+}
+
+// A live answer is tagged with its comment's date and the question it answered.
+func TestWorkflowAnswerReachesTheSessionDated(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.refusedThenFunded(1)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	at := time.Date(2026, 10, 15, 13, 30, 0, 0, time.UTC)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602, At: at})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.escalated) != 1 || len(h.sessions) != 1 {
+		t.Fatalf("final = %q, escalations %q, sessions %d", final, h.escalated, len(h.sessions))
+	}
+	want := fmt.Sprintf("sebastian (2026-10-15), to %q: go on", escalationQuestion(h.escalated[0]))
+	if !slices.Equal(h.sessions[0].Answers, []string{want}) {
+		t.Fatalf("answers = %q, want %q", h.sessions[0].Answers, want)
+	}
+}
+
+// A session that ended without a push hands on its stop line, the commit its
+// branch holds with the gates' judgment of it and the agent's last message.
+func TestWorkflowUnpushedSessionHandsOnTheBranchAndTheLastMessage(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped", Commit: "c-wip", LastMessage: "tests still fail",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	want := []string{"previous session ended unfinished: stopped", "the branch holds c-wip; the gates have not judged it", "the agent's last message: tests still fail"}
+	if !slices.Equal(h.sessions[1].Findings, want) {
+		t.Fatalf("second session's findings = %q, want %q", h.sessions[1].Findings, want)
+	}
+}
+
+// A pushed session hands on no branch line and no last message: its commit
+// goes to verification, and the next session gets the checks' findings
+// alone.
+func TestWorkflowPushedSessionHandsOnNoHandoverLines(t *testing.T) {
+	h := newWorkflowHarness(t)
+	first := pushed("s1", "c1")
+	first.LastMessage = "done"
+	h.onSessions(first, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{"red"}}, ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	if got := h.sessions[1].Findings; !slices.Equal(got, []string{"red"}) {
+		t.Fatalf("second session's findings = %q, want the checks finding alone", got)
+	}
+}
+
+func TestHandoverLinesNameTheJudgmentOfTheBranch(t *testing.T) {
+	run := taskRun{judged: []string{"c1"}}
+	want := []string{"the branch holds c1; the gates have judged it", "the agent's last message: done"}
+	if got := run.handoverLines(SessionResult{Commit: "c1", LastMessage: "done"}); !slices.Equal(got, want) {
+		t.Fatalf("lines = %q, want %q", got, want)
+	}
+	if got := run.handoverLines(SessionResult{}); len(got) != 0 {
+		t.Fatalf("lines = %q, want none for a session that left no branch and no message", got)
+	}
+}
+
+// #837: a review that answered concerns with no finding cost a session that
+// fixed nothing. It is a remark on the approval card: one session, one
+// request for approval, the remark among the reasons for a human.
+func TestWorkflowConcernsWithoutFindingsIsARemark(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		Review{Verdict: "concerns", Summary: "a human decides the merge"}, nil)
+	var asked []ApprovalInput
+	h.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			asked = append(asked, in)
+			return nil
+		})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(h.sessions) != 1 || len(asked) != 1 || !slices.Equal(asked[0].WhyHuman, []string{"review: remark, no finding: a human decides the merge"}) {
+		t.Fatalf("sessions %d, approvals %+v; want one session and the remark as the reason for a human", len(h.sessions), asked)
+	}
+}
+
+// A run from before the gate turns it into the finding "model review: ..." and
+// pays a session for it.
+func TestWorkflowBeforeReviewRemarkConcernsWithoutFindingsCostASession(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("review-remark", workflow.DefaultVersion, versionReviewRemark).Return(workflow.DefaultVersion)
+	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "a human decides the merge"}, nil
+			}
+			return Review{Verdict: "approve", Summary: "fine"}, nil
+		})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Findings, []string{"model review: a human decides the merge"}) {
+		t.Fatalf("final = %q, sessions = %+v; want the second session sent back with the summary as its finding", final, h.sessions)
 	}
 }
