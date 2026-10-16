@@ -26,3 +26,12 @@ func TestSessionFactsWithoutAnAttemptNamesNoSession(t *testing.T) {
 		t.Fatalf("Line = %q, want %q", got, want)
 	}
 }
+
+func TestSessionFactsWithoutABudgetShowsZero(t *testing.T) {
+	// no budget, nothing spent: 0.00 of 0.00 left; 5m is 5 minutes
+	f := SessionFacts{TimeLeft: 5 * time.Minute}
+	want := "factoryd's facts for this session: budget 0.00 of 0.00 EUR left; 5 minutes of agent time left."
+	if got := f.Line(); got != want {
+		t.Fatalf("Line = %q, want %q", got, want)
+	}
+}
