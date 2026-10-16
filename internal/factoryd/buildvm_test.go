@@ -98,14 +98,30 @@ func TestBuildVMUserData(t *testing.T) {
 		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
+		// the VM's own rules deny every upstream the store fronts
+		// (roadmap 203, step 3), by name in the connection's first
+		// bytes: buildkitd and its RUN containers share this network
+		// namespace, so OUTPUT covers every fetch a build makes
+		"for host in " + strings.Join(buildVMUpstreamHosts, " ") + "; do",
+		"-m connbytes --connbytes 0:2048 --connbytes-mode bytes --connbytes-dir both",
+		`-m string --string "$host" --algo bm -j REJECT --reject-with tcp-reset`,
+		// and in the DNS query before it, by the wire-format name
+		// (dnsWireName), so a fetcher whose TLS hides the SNI with an
+		// encrypted client hello finds nothing left to resolve;
+		// DNS-over-TLS is refused outright
+		"for name in " + dnsDenyNames() + "; do",
+		`-m string --hex-string "$name" --algo bm -j REJECT`,
+		"iptables -I OUTPUT 1 -p tcp --dport 853 -j REJECT",
 		strings.TrimSpace(string(p.CACert)), strings.TrimSpace(string(p.ServerCert)), strings.TrimSpace(string(p.ServerKey)),
 	} {
 		if !strings.Contains(ud, want) {
 			t.Errorf("user data lacks %q", want)
 		}
 	}
-	if strings.Contains(ud, "github.com") {
-		t.Error("user data reaches an upstream for the buildkit tarball")
+	for _, host := range buildVMUpstreamHosts {
+		if strings.Contains(ud, "https://"+host+"/") {
+			t.Errorf("user data reaches the upstream %s", host)
+		}
 	}
 	if strings.Contains(ud, strings.TrimSpace(string(p.ClientKey))) || strings.Contains(ud, strings.TrimSpace(string(p.ClientCert))) {
 		t.Error("user data carries the client pair")
@@ -118,6 +134,22 @@ func TestBuildVMUserData(t *testing.T) {
 		cmd.Stdin = strings.NewReader(ud)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("bash -n: %v: %s", err, out)
+		}
+	}
+}
+
+// The DNS rules deny a host by the exact bytes of its query, so no other
+// name trips them: hand-derived from the wire format, each label
+// length-prefixed and the root's zero byte after.
+func TestDNSWireName(t *testing.T) {
+	for host, want := range map[string]string{
+		"github.com":         "|0667697468756203636f6d00|",
+		"nodejs.org":         "|066e6f64656a73036f726700|",
+		"code.forgejo.org":   "|04636f646507666f7267656a6f036f726700|",
+		"www.postgresql.org": "|037777770a706f737467726573716c036f726700|",
+	} {
+		if got := dnsWireName(host); got != want {
+			t.Errorf("dnsWireName(%s) = %s, want %s", host, got, want)
 		}
 	}
 }
