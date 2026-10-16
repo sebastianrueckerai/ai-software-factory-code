@@ -2103,31 +2103,54 @@ func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
 }
 
 // A planner that used its time gets one fresh session with its findings
-// instead of a fail: 18 of 20 minutes used leaves 2, under the 5 a session
-// needs, so half the cap (10 minutes) is added.
+// instead of a fail. The cap is 20m and a human's answer granted 5m: 20m
+// used leaves 5m, the first session's whole time (5m + 2m grace), and it
+// uses all of it. 0 left is under the 5m a session needs, so 10m of retry
+// time top the next session up to half the cap (10m + 2m grace); the
+// human's 5m neither block that nor grow.
 func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. File the plan from what they hold; read a file again only where the plan needs a detail."}
 	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 18 * time.Minute, Attempts: 1}}
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, Attempts: 1}}
+	var budgets []time.Duration
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			budgets = append(budgets, info.StartToCloseTimeout)
+		}
+	})
 	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v, want done after a second planner", final, h.finals)
 	}
-	if len(h.plans) != 2 || !slices.Equal(h.plans[1], found) {
+	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], found) {
 		t.Fatalf("plans %q, want a second session with the first's findings", h.plans)
 	}
-	if u := h.usage[0]; u.ExtraTime != 10*time.Minute {
-		t.Fatalf("first usage %+v, want 10 minutes of extra time", u)
+	if !slices.Equal(budgets, []time.Duration{7 * time.Minute, 12 * time.Minute}) {
+		t.Fatalf("RunPlan budgets %v, want 7m and 12m", budgets)
+	}
+	if want := (TaskUsage{AgentTime: 25 * time.Minute, ExtraTime: 5 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 2}); len(h.usage) < 2 || h.usage[1] != want {
+		t.Fatalf("usage %+v, want the grant %+v second", h.usage, want)
 	}
 }
 
-// Once only: with extra time already granted and the whole of it used
-// (20m cap + 10m extra - 30m used = 0), the card fails as before.
+// Once only: with the retry already taken and the whole of it used
+// (20m cap + 10m retry - 30m used = 0), the card fails as before.
 func TestPlanLoopSecondTimeLimitFails(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
-	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, ExtraTime: 10 * time.Minute, Attempts: 1}}
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
 		t.Fatalf("final %q, finals %v, plans %q, want the old fail with no session", final, h.finals, h.plans)
+	}
+}
+
+// An 8m cap: half of it, 4m, is under the 5m a session needs, so the card
+// fails at the limit as before and records no retry.
+func TestPlanLoopShortCapFailsWithoutARetry(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: no plan"}})
+	h.taskConfig.AgentTime = 8 * time.Minute
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}}
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 || len(h.usage) != 0 {
+		t.Fatalf("final %q, finals %v, plans %q, usage %+v, want the old fail with no session and no grant", final, h.finals, h.plans, h.usage)
 	}
 }
 

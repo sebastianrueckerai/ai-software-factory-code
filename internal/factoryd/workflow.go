@@ -965,11 +965,13 @@ const (
 	// finding for the agent and not a session. A run from before turns it into
 	// the finding "model review: <summary>".
 	versionReviewRemark workflow.Version = 1
-	// versionPlannerRetry (change id "planner-retry"): a plan card whose
-	// agent time is used up, with no extra time yet granted, gets half the
-	// cap as a fresh planner session with its findings, instead of failing;
-	// the second exhaustion fails. A run from before the change fails at
-	// the first.
+	// versionPlannerRetry (change id "planner-retry"): a plan card with
+	// less than min(minSession, cap) of its agent time left gets one fresh
+	// planner session with its findings, topped up to half the cap by
+	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
+	// whose half is under that minimum gets none. Once RetryTime is set the
+	// card fails at the limit. A run from before the change fails there at
+	// once.
 	versionPlannerRetry workflow.Version = 1
 )
 
@@ -1922,7 +1924,7 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.answerSlice >= versionAnswerSlice {
 		slice = max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
 	}
-	if left := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime; left < slice {
+	if left := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime; left < slice {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)

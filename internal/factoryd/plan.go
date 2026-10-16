@@ -1079,11 +1079,12 @@ func (t *taskRun) planLoop() (string, error) {
 			day = nil
 			continue
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime - u.AgentTime
-		if t.plannerRetry >= versionPlannerRetry && u.ExtraTime == 0 && remaining < min(minSession, t.cfg.WallClockCap) {
-			u.ExtraTime = t.cfg.WallClockCap / 2
+		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+		least, half := min(minSession, t.cfg.WallClockCap), t.cfg.WallClockCap/2
+		if t.plannerRetry >= versionPlannerRetry && u.RetryTime == 0 && remaining < least && half >= least {
+			u.RetryTime = half - remaining
 			t.recordUsage(u)
-			remaining += u.ExtraTime
+			remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
