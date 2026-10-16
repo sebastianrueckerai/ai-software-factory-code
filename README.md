@@ -1679,9 +1679,7 @@ kubectl -n factory exec deploy/factoryd -- factoryd register-project --name demo
 once `projects/demo-app.yaml` is on the infra repository's main and loaded,
 reconciles the project (registering it when its row lacks a token, every
 token again with `--rotate`; a second run changes nothing) and prints the
-edge gateway listeners and Certificates for the infra commit (ruling 155). The console's `/projects` lists every
-project read-only with its file's settings, the envelope with its use and
-the standing monthly line, and a link to the file.
+edge gateway listeners and Certificates for the infra commit (ruling 155).
 
 Its inverse is `factoryd remove-project <name>` (roadmap 272), run as a one-off
 Job with its own ServiceAccount (`k8s/remove-project.yaml`, not in
@@ -1700,7 +1698,10 @@ kubectl -n factory create job factoryd-remove-project \
 kubectl -n factory logs job/factoryd-remove-project -f
 ```
 
-The console's New project (`/projects/new`, filed by approvers only) is the
+The console's `/projects` lists every project read-only with its file's
+settings, the envelope with its use and the standing monthly line, and a
+link to the file. The console's New project (`/projects/new`, filed by
+approvers only) is the
 same path without a shell (stage11-design.md section 5). Its form (name,
 process, template, merge rule) writes the file with one staging namespace
 deployed from `deploy/staging` and no hostname. factoryd judges the file with
