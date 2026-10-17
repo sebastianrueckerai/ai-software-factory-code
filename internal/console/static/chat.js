@@ -116,20 +116,28 @@ var chatView = (function () {
       (a.undo ? " <button type=\"button\" class=\"undo\" data-undo=\"" + esc(a.undo) + "\">Undo</button>" : "") + "</p>";
   }
   // historyHTML is the stored conversation, oldest first: each member's
-  // line, and the agent's rows between two of them as one message. A
-  // proposed call whose state in proposals is pending offers its Do it as
-  // the stream's does; a used or expired one says so under its block.
+  // line, and the agent's rows between two of them as one message. A wake
+  // the factory started itself is one row of its own, folded to its first
+  // line (the main agent concept). A proposed call whose state in
+  // proposals is pending offers its Do it as the stream's does; a used or
+  // expired one says so under its block.
   function historyHTML(msgs, login, proposals) {
     var states = {};
     (proposals || []).forEach(function (p) { states[p.token] = p.state; });
-    var out = [], parts = null, at;
+    var out = [], parts = null, at, wake = null;
     function close() {
+      if (wake) out.push(wakeHTML(wake));
+      wake = null;
       if (parts) out.push(agentHTML(at, parts.join("")));
       parts = null;
     }
     msgs.forEach(function (m) {
       if (m.role === "user") {
         close();
+        if (/^wake/.test(m.birth_kind || "")) {
+          wake = {text: m.content, at: m.at, parts: []};
+          return;
+        }
         out.push(userHTML(login, m.content, m.at, m.queued));
         return;
       }
@@ -138,24 +146,38 @@ var chatView = (function () {
         out.push(factoryHTML(m));
         return;
       }
-      if (!parts) {
-        parts = [];
+      var dst = wake ? wake.parts : parts;
+      if (!dst) {
+        parts = dst = [];
         at = m.at;
       }
-      if (m.content) parts.push(saidHTML(m.content));
+      if (m.content) dst.push(saidHTML(m.content));
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
         if (state === "pending") {
-          parts.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
+          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
-        parts.push(toolHTML(c.name, c.arguments, null, c.result));
-        if (state) parts.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
+        dst.push(toolHTML(c.name, c.arguments, null, c.result));
+        if (state) dst.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
     close();
     return out.join("");
+  }
+  // wakeHTML is one wake turn the factory started itself (the main agent
+  // concept): its rows fold to one line — wake, then the wake text's
+  // first line — and open on a click to the whole turn, the settled
+  // row's fold
+  function wakeHTML(w) {
+    var first = String(w.text || "").split("\n")[0];
+    return "<div class=\"msg agent wake\"><span class=\"av\" aria-hidden=\"true\"></span>" +
+      whoHTML("the factory", w.at) +
+      "<div class=\"wake-b\">" + saidHTML(w.text) + w.parts.join("") + "</div>" +
+      "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
+      "<span class=\"visually-hidden\">Wake: </span><span class=\"fw\">wake</span>" +
+      "<span class=\"ft\">" + esc(first) + "</span></p></div>";
   }
   // threadHTML is a thread's log: the rows Clear old swept from view name
   // their count in one line at the top; after a compaction its rows up to
@@ -805,9 +827,9 @@ var chatView = (function () {
       run(open, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
-  // a settled row's fold line opens the row it stands for, and closes it
+  // a settled row's or a wake row's fold line opens the row it stands for
   function toggleFold(el) {
-    var row = el.closest(".msg.settled");
+    var row = el.closest(".msg");
     var on = row.classList.toggle("expanded");
     el.setAttribute("aria-expanded", on);
   }

@@ -44,6 +44,7 @@ const mustHave = {
   poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
+  wake: ["wake", "#603: Which store keeps the nightly board snapshots?"],
   assisted: ["Inbox", "Board", "autonomy", "assisted", "Moved #8 to lane ready",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
@@ -955,6 +956,30 @@ async function text(page) {
         if (!(await line.count()) || !(await line.innerText()).includes("cleared: 4 older messages"))
           fails.push("poke: the cleared line does not count the four swept rows");
         if ((await p.page.locator("#chat-log .msg").count()) !== 1) fails.push("poke: the log kept old rows over the sweep");
+      }
+    }
+    if (sc === "wake") {
+      // one wake turn is one row (the main agent concept): it folds to the
+      // wake's first line, the turn's text sits behind the fold, a click
+      // opens the whole turn and the fold says which state it is in
+      const row = p.page.locator("#chat-log .msg.wake");
+      if ((await row.count()) !== 1) fails.push("wake: " + (await row.count()) + " wake rows, want 1");
+      else {
+        const fold = row.locator("[data-fold]");
+        if (!(await fold.count())) fails.push("wake: the row carries no fold");
+        else {
+          if (!(await row.locator(".wake-b").count())) fails.push("wake: the row carries no expandable body");
+          if ((await fold.innerText()).replace(/\s+/g, " ").indexOf("#603: Which store keeps the nightly board snapshots?") < 0)
+            fails.push("wake: the fold does not lead with the wake's first line");
+          if ((await row.innerText()).includes("Read each card")) fails.push("wake: the folded row shows the turn's text");
+          if ((await row.innerText()).includes("Both stores hold the snapshots")) fails.push("wake: the folded row shows the agent's answer");
+          if ((await fold.getAttribute("aria-expanded")) !== "false") fails.push("wake: the fold does not say closed");
+          await fold.click();
+          await p.page.waitForTimeout(150);
+          const open = await row.innerText();
+          for (const w of ["Read each card", "Both stores hold the snapshots", "card"]) if (!open.includes(w)) fails.push('wake: the opened row hides "' + w + '"');
+          if ((await fold.getAttribute("aria-expanded")) !== "true") fails.push("wake: the opened fold does not say open");
+        }
       }
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);

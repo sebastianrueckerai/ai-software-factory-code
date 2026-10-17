@@ -1081,6 +1081,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .msg.settled.expanded .said { display: block; }
 .msg.settled.expanded .settled-why { display: block; }
 .msg.settled.expanded .esc-b { display: block; }
+/* a wake turn is one row (the main agent concept): folded to its first line, opened on a click */
+.msg.wake .wake-b { display: none; }
+.msg.wake .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
+.msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
+.msg.wake .fold .fw { flex: none; color: var(--text-muted); }
+.msg.wake .fold .ft { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.msg.wake .fold .ft a { color: inherit; }
+.msg.wake.expanded .fold { display: none; }
+.msg.wake.expanded .wake-b { display: block; }
 .msg.sum .av { border-style: dashed; color: var(--text-faint); font: 12px/1 var(--font-mono); }
 .msg.sum .av::before { content: none; }
 .msg.sum .said { color: var(--text-muted); font-size: 13px; }
@@ -1153,7 +1162,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat.sw-collapsed .ttable { display: none; }
   .chat.sw-collapsed .sw-sum { display: flex; }
   .msg .choices button { width: 100%; height: 44px; }
-  .msg.settled .fold { min-height: 44px; align-items: center; }
+  .msg.settled .fold, .msg.wake .fold { min-height: 44px; align-items: center; }
   .cmd { min-height: 44px; }
   .thead .tacts button { height: 44px; }
   .answer button { width: 100%; height: 44px; }
