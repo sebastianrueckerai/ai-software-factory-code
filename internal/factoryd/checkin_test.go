@@ -152,8 +152,8 @@ func TestCheckinStatement(t *testing.T) {
 		"say it, block nothing",
 		"only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why",
 		"at most 2000 characters",
-		"TasksByPR is undefined",
-		"no test covers the handler",
+		"f1: TasksByPR is undefined (from review)",
+		"f2: no test covers the handler (from review)",
 		"confirmed once before",
 		"the handler grows a second cache layer without a test",
 		"concerns",
@@ -409,6 +409,57 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
 		if out.Decision != CheckHandover {
 			t.Fatalf("decision = %q, want handover: a set with a finding left standing verifies nothing", out.Decision)
+		}
+	})
+	t.Run("a paraphrased conflict verdict needs no repair round", func(t *testing.T) {
+		conflict := conflictVerdict("the branch conflicts with its base").findings[0]
+		ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: conflict, Source: "changes"}}}
+		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"id":"f1","text":"the PR stopped merging into main because main moved under it (Forgejo: the branch conflicts with its base). Merge origin/main into the branch, resolve every conflict keeping both main's changes and the task's, run the tests of the touched packages, and end the session. No rebase; leave .forgejo/ as the merge brings it.","verdict":"confirmed"}],"decision":"handover","handover":"merge main into the branch first"}`}}}
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		if out.Decision != CheckHandover || chat.calls != 1 {
+			t.Fatalf("outcome %q after %d calls, want the paraphrased verdict read on the first answer", out.Decision, chat.calls)
+		}
+		if v, ok := out.Verdicts[conflict]; !ok || v.State != CheckConfirmed {
+			t.Fatalf("verdicts = %v, want the conflict finding confirmed under its own text", out.Verdicts)
+		}
+	})
+}
+
+func TestParseCheckinAnswerNamesTheFinding(t *testing.T) {
+	conflict := conflictVerdict("the branch conflicts with its base").findings[0]
+	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: conflict, Source: "changes"}}}
+
+	t.Run("a verdict that paraphrases the conflict finding by its id parses", func(t *testing.T) {
+		a, err := parseCheckinAnswer(`{"findings":[{"id":"f1","text":"the pull request stopped merging: main moved under it; merge main in, resolve every conflict keeping both sides and end the session","verdict":"confirmed"}],"decision":"handover","handover":"merge main before anything else"}`, ask)
+		if err != nil {
+			t.Fatalf("the paraphrased verdict did not parse: %v", err)
+		}
+		if len(a.Findings) != 1 || a.Findings[0].Text != conflict {
+			t.Fatalf("findings = %+v, want the verdict keyed by the ask's own text", a.Findings)
+		}
+	})
+	t.Run("a verdict that re-punctuates the finding parses without its id", func(t *testing.T) {
+		repunctuated := strings.ReplaceAll(conflict, ": ", " — ")
+		repunctuated = strings.ReplaceAll(repunctuated, "`", "")
+		repunctuated = strings.ReplaceAll(repunctuated, ". ", "  ")
+		repunctuated = strings.ReplaceAll(repunctuated, ", ", " ; ")
+		repunctuated = "The" + repunctuated[3:]
+		a, err := parseCheckinAnswer(`{"findings":[{"text":"`+repunctuated+`","verdict":"confirmed"}],"decision":"handover","handover":"merge main"}`, ask)
+		if err != nil {
+			t.Fatalf("the re-punctuated verdict did not parse: %v", err)
+		}
+		if len(a.Findings) != 1 || a.Findings[0].Text != conflict {
+			t.Fatalf("findings = %+v, want the verdict keyed by the ask's own text", a.Findings)
+		}
+	})
+	t.Run("an answer naming a finding the ask never carried still fails", func(t *testing.T) {
+		for _, answer := range []string{
+			`{"findings":[{"id":"f2","verdict":"confirmed"}],"decision":"handover"}`,
+			`{"findings":[{"id":"f2","text":"a finding never raised","verdict":"confirmed"}],"decision":"handover"}`,
+		} {
+			if _, err := parseCheckinAnswer(answer, ask); err == nil || !strings.Contains(err.Error(), "unknown finding") {
+				t.Errorf("answer %s: err = %v, want the unknown finding", answer, err)
+			}
 		}
 	})
 }

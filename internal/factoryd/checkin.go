@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -54,7 +55,9 @@ const (
 
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
-// came from, and how many earlier check-ins confirmed or dropped it.
+// came from, and how many earlier check-ins confirmed or dropped it. Its
+// place in the ask is its stable short id (findingKey), which the statement
+// names beside the text and the answer echoes instead of the wording.
 type CheckFinding struct {
 	Text           string `json:"text"`
 	Source         string `json:"source"`
@@ -181,7 +184,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 
 	b.WriteString("Findings:\n")
 	for i, f := range ask.Findings {
-		fmt.Fprintf(&b, "%d. %s (from %s)\n", i+1, f.Text, f.Source)
+		fmt.Fprintf(&b, "%s: %s (from %s)\n", findingKey(i), f.Text, f.Source)
 		switch {
 		case f.PriorConfirmed == 1:
 			b.WriteString("   confirmed once before\n")
@@ -312,7 +315,9 @@ type CheckinTool = OperatorTool
 
 // checkinSystem is the check-in's persona. It carries the answer's shape —
 // the one thing no guard in code can carry — and no rule the guards do.
-const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"text":"...","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+// Findings are named by the id the statement listed them under, so a
+// verdict never turns on the wording of the finding it judges.
+const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
 // checkinTools is the tool list the statement names: the transcript and the
 // card factoryd answers, the workspace through the pod.
@@ -348,8 +353,10 @@ func toolSchema(props map[string]any, required ...string) map[string]any {
 	return s
 }
 
-// checkinAnswerFinding is one finding's verdict as the model answers it.
+// checkinAnswerFinding is one finding's verdict as the model answers it:
+// named by the finding's id when it echoes one, with the text beside it.
 type checkinAnswerFinding struct {
+	ID       string `json:"id"`
 	Text     string `json:"text"`
 	Verdict  string `json:"verdict"`
 	Evidence string `json:"evidence"`
@@ -364,9 +371,27 @@ type checkinAnswer struct {
 	Handover   string                 `json:"handover"`
 }
 
+// findingKey is one finding's stable short id: its place in the ask, f1 on
+// down. The statement names it beside the text and the answer echoes it, so
+// a verdict never turns on a long finding's wording.
+func findingKey(i int) string { return fmt.Sprintf("f%d", i+1) }
+
+// foldFindingText folds a finding's text for the parser's last resort: case
+// and every run of whitespace and punctuation become one space, so a
+// verdict that re-punctuates or re-spaces the finding still names it. A
+// reworded finding still needs its id.
+func foldFindingText(s string) string {
+	return strings.Join(strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}), " ")
+}
+
 // parseCheckinAnswer reads the model's final answer against the ask: a
-// verdict for every finding the ask named, none for a finding it did not,
-// and states and decision among the known ones.
+// verdict for every finding the ask named — by its id, by its text exactly,
+// or by its text with whitespace and punctuation folded — none for a
+// finding it did not, and states and decision among the known ones. Every
+// verdict lands keyed by the ask's own text, whatever wording the answer
+// carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
@@ -377,21 +402,41 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	default:
 		return a, fmt.Errorf("unknown decision %q", a.Decision)
 	}
-	known := make(map[string]bool, len(ask.Findings))
-	for _, f := range ask.Findings {
-		known[f.Text] = true
+	byID := make(map[string]string, len(ask.Findings))
+	byText := make(map[string]bool, len(ask.Findings))
+	byFold := make(map[string]string, len(ask.Findings))
+	for i, f := range ask.Findings {
+		byID[findingKey(i)] = f.Text
+		byText[f.Text] = true
+		folded := foldFindingText(f.Text)
+		if _, dup := byFold[folded]; !dup {
+			byFold[folded] = f.Text
+		}
 	}
 	seen := make(map[string]bool, len(a.Findings))
-	for _, f := range a.Findings {
-		if !known[f.Text] {
-			return a, fmt.Errorf("unknown finding %q", f.Text)
+	for i := range a.Findings {
+		answered := a.Findings[i]
+		canonical, known := byID[strings.ToLower(strings.TrimSpace(answered.ID))]
+		if !known && byText[answered.Text] {
+			canonical, known = answered.Text, true
 		}
-		switch f.Verdict {
+		if !known {
+			canonical, known = byFold[foldFindingText(answered.Text)]
+		}
+		if !known {
+			name := answered.Text
+			if name == "" {
+				name = answered.ID
+			}
+			return a, fmt.Errorf("unknown finding %q", name)
+		}
+		switch answered.Verdict {
 		case CheckConfirmed, CheckDropped, CheckRemark:
 		default:
-			return a, fmt.Errorf("unknown verdict %q", f.Verdict)
+			return a, fmt.Errorf("unknown verdict %q", answered.Verdict)
 		}
-		seen[f.Text] = true
+		a.Findings[i].Text = canonical
+		seen[canonical] = true
 	}
 	for _, f := range ask.Findings {
 		if !seen[f.Text] {
