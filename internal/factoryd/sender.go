@@ -89,23 +89,23 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 	if AskFamily(d.message()) != "" {
 		settled, err := s.settleState(ctx, d)
 		if err != nil {
-			s.Store.RetryDelivery(ctx, d.ID, sendBackoff[0], err.Error())
+			s.Store.RetryDelivery(ctx, d.ID, sendBackoff[0], err.Error()) // #nosec G104 -- the row stays due; the next sweep retries it
 			return
 		}
 		if !settled.Open {
-			s.Store.DropDelivery(ctx, d.ID)
+			s.Store.DropDelivery(ctx, d.ID) // #nosec G104 -- the row stays; the next sweep drops it again
 			return
 		}
 	}
 	writers, err := s.writers(ctx)
 	if err != nil {
-		s.Store.DeferDelivery(ctx, d.ID, 30*time.Second)
+		s.Store.DeferDelivery(ctx, d.ID, 30*time.Second) // #nosec G104 -- the row stays due; the next sweep defers it again
 		return
 	}
 	if !slices.Contains(writers[d.Repository], d.Login) {
 		log.Printf("messengers: %s writes %s no more; their level and row are gone", d.Login, d.Repository)
-		s.Store.DeleteNotifyLevel(ctx, d.Login, d.Repository)
-		s.Store.DropDelivery(ctx, d.ID)
+		s.Store.DeleteNotifyLevel(ctx, d.Login, d.Repository) // #nosec G104 -- the next sweep re-derives and re-deletes it
+		s.Store.DropDelivery(ctx, d.ID)                       // #nosec G104 -- the row stays; the next sweep drops it again
 		return
 	}
 	name := names[d.Repository]
@@ -118,17 +118,17 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 	switch d.Venue {
 	case VenueTelegram:
 		if s.Telegram == nil {
-			s.Store.DeferDelivery(ctx, d.ID, time.Minute)
+			s.Store.DeferDelivery(ctx, d.ID, time.Minute) // #nosec G104 -- the row stays due; the next sweep defers it again
 			return
 		}
 		if last, ok := s.last[d.Address]; ok && time.Since(last) < time.Second {
-			s.Store.DeferDelivery(ctx, d.ID, time.Second)
+			s.Store.DeferDelivery(ctx, d.ID, time.Second) // #nosec G104 -- the row stays due; the next sweep defers it again
 			return
 		}
 		ref, err = s.Telegram.Send(ctx, d.Address, text, cardURL)
 	case VenueDiscord:
 		if s.Discord == nil {
-			s.Store.DeferDelivery(ctx, d.ID, time.Minute)
+			s.Store.DeferDelivery(ctx, d.ID, time.Minute) // #nosec G104 -- the row stays due; the next sweep defers it again
 			return
 		}
 		ref, err = s.Discord.Send(ctx, d.Address, text, cardURL)
@@ -140,7 +140,7 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 			}
 			s.last[d.Address] = time.Now()
 		}
-		s.Store.RecordDeliverySent(ctx, d.ID, ref)
+		s.Store.RecordDeliverySent(ctx, d.ID, ref) // #nosec G104 -- a lost record at worst re-sends the notice
 		return
 	}
 	s.sendFailure(ctx, d, err)
@@ -161,19 +161,19 @@ func (s *Sender) sendFailure(ctx context.Context, d Delivery, err error) {
 		if wait == 0 {
 			wait = 30 * time.Second
 		}
-		s.Store.DeferDelivery(ctx, d.ID, wait)
+		s.Store.DeferDelivery(ctx, d.ID, wait) // #nosec G104 -- the row stays due; the next sweep defers it again
 	case status == 403 || status == 404: // the chat is gone
 		log.Printf("messengers: %s's %s chat is gone: %v", d.Login, d.Venue, err)
-		s.Store.UnlinkMessenger(ctx, d.Login, d.Venue)
-		s.Store.DropDelivery(ctx, d.ID)
+		s.Store.UnlinkMessenger(ctx, d.Login, d.Venue) // #nosec G104 -- the next sweep re-derives and unlinks again
+		s.Store.DropDelivery(ctx, d.ID)                // #nosec G104 -- the row stays; the next sweep drops it again
 	case status/100 == 4: // wrong in a way a retry cannot fix
-		s.Store.FailDelivery(ctx, d.ID, err.Error())
+		s.Store.FailDelivery(ctx, d.ID, err.Error()) // #nosec G104 -- the row stays due; the next sweep fails it again
 	default: // the venue is down or busy
 		if d.Tries >= len(sendBackoff) {
-			s.Store.FailDelivery(ctx, d.ID, err.Error())
+			s.Store.FailDelivery(ctx, d.ID, err.Error()) // #nosec G104 -- the row stays due; the next sweep fails it again
 			return
 		}
-		s.Store.RetryDelivery(ctx, d.ID, sendBackoff[d.Tries], err.Error())
+		s.Store.RetryDelivery(ctx, d.ID, sendBackoff[d.Tries], err.Error()) // #nosec G104 -- the row stays due; the next sweep retries it
 	}
 }
 
@@ -228,7 +228,7 @@ func (s *Sender) editPass(ctx context.Context, names map[string]string) {
 				continue
 			}
 		}
-		s.Store.MarkDeliveryEdited(ctx, d.ID)
+		s.Store.MarkDeliveryEdited(ctx, d.ID) // #nosec G104 -- a lost record at worst posts the notice anew
 	}
 }
 
