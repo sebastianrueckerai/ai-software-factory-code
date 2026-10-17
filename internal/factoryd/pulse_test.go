@@ -21,13 +21,15 @@ import (
 )
 
 // fakePulseStore is the pulse's store in memory; Record publishes on bus
-// as the PGStore does; spent makes the chat task's budget spent.
+// as the PGStore does; spent makes the chat task's budget spent; budget
+// remembers what EnsureChatTask was last given, the policy's word.
 type fakePulseStore struct {
 	mu     sync.Mutex
 	bus    *EventBus
 	events []Event
 	pulses []Pulse
 	spent  bool
+	budget float64
 }
 
 func (s *fakePulseStore) Projects(context.Context) ([]Project, error) {
@@ -40,6 +42,9 @@ func (s *fakePulseStore) CurrentPolicy(context.Context) (policy.Version, bool, e
 }
 
 func (s *fakePulseStore) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
+	s.mu.Lock()
+	s.budget = budget
+	s.mu.Unlock()
 	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository}
 	if s.spent {
 		t.SpentEUR = budget
@@ -305,8 +310,11 @@ func TestPulseAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
 			if e.Repository != "linkshort/linkshort" || e.Actor != FactoryDecider || e.Via != ViaFactoryd {
 				t.Fatalf("the ask: %+v", e)
 			}
-			if budget, ok := e.Detail["budget_eur"].(float64); !ok || budget != 5 {
-				t.Fatalf("the ask's detail: %v", e.Detail)
+			// the ask carries the chat task's budget, the policy's word
+			// the store was given — not a hardcoded €5, which a change of
+			// the policy's chat budget would silently strand
+			if budget, ok := e.Detail["budget_eur"].(float64); !ok || budget != store.budget {
+				t.Fatalf("the ask's detail: %v, budget %v", e.Detail, store.budget)
 			}
 		}
 	})
