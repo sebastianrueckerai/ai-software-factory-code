@@ -2360,12 +2360,15 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at
-// the foot of its lane in the four columns (C16): the dated ones by their
-// next run, then the merge-counted ones by the merges they lack, then the
-// rest. The board's routines choice hides those whose next run is further
-// away than its period, or all, and each lane counts what it hides. The
-// strip's cell names the first held run, else the soonest under an hour
-// away, whatever the choice.
+// the foot of Queued in the four columns (C16, as the 2026-10-17 ruling
+// has it: needs-you holds only what needs a human's action now, so every
+// routine's preview queues like all scheduled work, and the routine's
+// work reaches needs-you only as its filed card, through the card flow):
+// the dated ones by their next run, then the merge-counted ones by the
+// merges they lack, then the rest. The board's routines choice hides
+// those whose next run is further away than its period, or all, and each
+// lane counts what it hides. The strip's cell names the first held run,
+// else the soonest under an hour away, whatever the choice.
 func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 	views, err := c.cfg.Routines.Views(ctx, d.Project)
 	if err != nil {
@@ -2403,15 +2406,11 @@ func (c *Console) placeGhosts(ctx context.Context, d *boardData) {
 		csrf = d.CSRF
 	}
 	for _, rv := range views {
-		col := &d.Columns[colQueued]
-		if rv.Lane == "needs-you" {
-			col = &d.Columns[colNeedsYou]
-		}
 		if d.Routines == "none" || d.Routines == "within" && rv.Next.Sub(now) > d.period() {
-			col.GhostsHidden++
+			d.Columns[colQueued].GhostsHidden++
 			continue
 		}
-		col.Ghosts = append(col.Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
+		d.Columns[colQueued].Ghosts = append(d.Columns[colQueued].Ghosts, ghostOf(rv, now, d.boardFilter, csrf))
 	}
 }
 

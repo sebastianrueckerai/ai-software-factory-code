@@ -965,9 +965,6 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 
 	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
 		v := factoryd.RoutineView{Project: labProject, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
-		if rt.Files == policy.FilesHuman {
-			v.Lane = "needs-you"
-		}
 		labNext(&v, now, at, at)
 		if every := rt.MergesEvery(); every > 0 {
 			v.MergesLeft = every - st.Merges

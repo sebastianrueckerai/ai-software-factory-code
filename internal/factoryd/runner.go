@@ -116,9 +116,12 @@ type LeaseReader interface {
 // credentials, worker pod, supervision and session records. Its exported
 // methods are the Temporal activities TaskWorkflow calls.
 type Runner struct {
-	cfg        RunnerConfig
-	store      Store
-	kube       Kube
+	cfg   RunnerConfig
+	store Store
+	kube  Kube
+	// rollouts reads the factory's own Deployments: a roll's rollout
+	// wait (AwaitRollout) reads them; the in-cluster client is it
+	rollouts   DeploymentReader
 	forgejo    *Forgejo
 	completion *Completion
 	objects    ObjectStore
@@ -337,11 +340,17 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		// within one
 		cfg.ChecksPoll = HeartbeatEvery
 	}
-	return &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
+	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
 			Events: eventStoreOf(store), Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
-		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}, nil
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}
+	// the in-cluster client reads the factory's own Deployments too; a
+	// kube without the read leaves a roll's rollout wait to its retries
+	if dr, ok := kube.(DeploymentReader); ok {
+		runner.rollouts = dr
+	}
+	return runner, nil
 }
 
 // WorkflowConfig is what TaskWorkflow captures at its start: the limits of
@@ -948,7 +957,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	callCap := checkinCap(t, limits)
 	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if calls >= callCap || eurLeft <= 0 {
-		reason := "the check-in's share of the budget is spent"
+		reason := CheckinShareSpent
 		if calls >= callCap {
 			reason = checkinCallCapStop
 		}
@@ -999,7 +1008,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	callCap := checkinCap(t, limits)
 	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if calls >= callCap || eurLeft <= 0 {
-		reason := "the check-in's share of the budget is spent"
+		reason := CheckinShareSpent
 		if calls >= callCap {
 			reason = checkinCallCapStop
 		}
@@ -1034,8 +1043,10 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 }
 
 // checkinBudget is the card's check-in budget: the calls the card has
-// made and what is left of the check-in's share of its budget. A read
-// error is logged and reads as zero, as the check-in proceeds on it.
+// made and what is left of the check-in's share of its budget — the
+// policy's share widened by every share a human's answer to its spend
+// stop granted (TaskUsage.ExtraCheckinShare; versionCheckinGrant). A read error is logged and
+// reads as zero, as the check-in proceeds on it.
 func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (int, float64, error) {
 	calls, err := r.store.CheckinCalls(ctx, t.ID)
 	if err != nil {
@@ -1045,7 +1056,7 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 	if err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	}
-	return calls, limits.CheckinShareOf(t.BudgetEUR) - spent, err
+	return calls, limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
 }
 
 // pushBrief delivers the session's brief: a check-in's handover note, or

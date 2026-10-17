@@ -62,6 +62,13 @@ const (
 	CheckAccess       = "access_factory_lacks"
 )
 
+// The reason a CheckSpend stop carries on the budget's share: the share
+// of the card's budget the check-in may spend is spent. A human's answer
+// to it grants the card one more share of the check-in budget
+// (versionCheckinGrant); the call cap carries checkinCallCapStop, whose
+// answer buys one more turn of the cap (versionCheckinRaise) instead.
+const CheckinShareSpent = "the check-in's share of the budget is spent"
+
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
 // came from, and how many earlier check-ins confirmed or dropped it. Its

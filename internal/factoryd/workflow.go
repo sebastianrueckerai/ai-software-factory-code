@@ -117,6 +117,7 @@ const (
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
+	ActivityAwaitRollout                = "AwaitRollout"
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
 	ActivityAttemptFunded               = "AttemptFunded"
@@ -490,6 +491,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollNoGap)
 	run.rollQueue = workflow.GetVersion(ctx, "roll-no-queue", workflow.DefaultVersion, versionRollNoQueue)
+	run.rollout = workflow.GetVersion(ctx, "roll-rollout", workflow.DefaultVersion, versionRollout)
 	run.cheapTurn = workflow.GetVersion(ctx, "cheap-turn", workflow.DefaultVersion, versionCheapTurn)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
@@ -521,6 +523,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
+	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -792,6 +795,13 @@ const (
 	// a roll that waits, and it merges without a sync (only rolls touch
 	// k8s/*.yaml, one roll task is open per repository).
 	versionRollNoQueue workflow.Version = 1
+	// versionRollout (change id "roll-rollout", ruling 178): a roll's
+	// merge is not its end. The run waits for the rollout the merge
+	// brings — every image the merge changed live on its Deployment
+	// (AwaitRollout) — and finishes done naming what went live; a rollout
+	// the task's wall-clock cap passes unconfirmed fails the roll naming
+	// the rollout, the cap its backstop.
+	versionRollout workflow.Version = 1
 	// versionCheapTurn (change id "cheap-turn", roadmap 222, item 4): at
 	// the queue's turn a sync that moved the head without touching a file
 	// of the pull request runs no second checks stage; the approval comes
@@ -1025,8 +1035,8 @@ const (
 	// back as findings, as it did.
 	versionApprovalPending workflow.Version = 1
 	// versionCriteriaGate (change id "criteria-gate", roadmap 287): the
-	// approval stage runs the criteria gate once before its request, on
-	// the plan's integration card alone (the activity decides which card
+	// approval stage runs the criteria gate once before its request, on the
+	// plan's integration card alone (the activity decides which card
 	// is one); the criteria's findings go on the approval card, for the
 	// human. A run from before asks its approval without the gate.
 	versionCriteriaGate workflow.Version = 1
@@ -1035,6 +1045,15 @@ const (
 	// the cap (TaskUsage.ExtraCheckin), and the budget's share still
 	// refuses on spent money.
 	versionCheckinRaise workflow.Version = 1
+	// versionCheckinGrant (change id "checkin-grant", issue 959): the
+	// answer to a check-in's share stop grants the card one more share of
+	// the check-in budget beside its attempt (TaskUsage.ExtraCheckinShare
+	// widens the runner's share), so a long card stops once per human
+	// answer and not once per check-in moment; the call cap and the card's
+	// own budget stay the caps they were. A run from before the change
+	// buys the attempt alone and its next check-in moment stops the card
+	// again.
+	versionCheckinGrant workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1107,6 +1126,7 @@ type taskRun struct {
 	answerSlice       workflow.Version
 	rollGap           workflow.Version
 	rollQueue         workflow.Version
+	rollout           workflow.Version // a roll's end waits its rollout confirmed (versionRollout)
 	cheapTurn         workflow.Version
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges (versionCheapTurn); "" when the merged head's own
@@ -1140,6 +1160,7 @@ type taskRun struct {
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
+	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1387,6 +1408,12 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v16 >= versionStages && t.isReport(st):
 			return t.report(st.Stronger, 0)
 		case st.Merged:
+			// a healed run of a roll whose pull request merged waits its
+			// rollout like a run that merged it (versionRollout): the
+			// wait needs the pull request and the roll's marks
+			if st.Roll {
+				t.pr, t.rolling = st.PR, true
+			}
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
 			return t.finish("failed", "completion resumed after an interrupted run")
@@ -1463,6 +1490,14 @@ func (t *taskRun) lifecycle() (string, error) {
 					return t.finish(v.final, v.reason)
 				}
 				apply(v)
+			case t.checkinGrant >= versionCheckinGrant && AtCheckinShareStop(st.Question):
+				// the share stop (issue 959): the answer grants the card
+				// one more share of the check-in budget beside the
+				// session it buys, so the next check-in moment runs where
+				// this one stopped the card; a run from before the change
+				// replays its answer-buys-session wait below, unanswered
+				t.grantCheckin(&u, true)
+				buy()
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
 				// here from the first stage, change requests back to the agent
@@ -1797,6 +1832,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				// while the head sits waiting on the approval
 				res.Commit = startRef
 				break
+			} else if t.checkinGrant >= versionCheckinGrant && res.CheckIn.ReasonKind == CheckSpend && res.CheckIn.Reason == CheckinShareSpent {
+				// the share stop (issue 959): the answer grants the card
+				// one more share of the check-in budget beside the session
+				// it buys (versionCheckinGrant), so the next check-in
+				// moment runs where this one stopped the card
+				t.grantCheckin(&u, true)
 			}
 			buy()
 			continue
@@ -2161,6 +2202,20 @@ func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt in
 func (t *taskRun) grant(u *TaskUsage) {
 	u.ExtraAttempts++
 	t.grantTime(u)
+}
+
+// grantCheckin is the share of the check-in budget an answer to its share
+// stop buys beside the attempt (versionCheckinGrant, issue 959): one more
+// of the policy's CheckinShareOf widths, so the stretch the answer pays
+// for can run its own check-in moments and a long card stops once per
+// human answer, not once per check-in moment. The card's own budget and
+// the check-in call cap stay the caps they were; the call cap's stop buys
+// its own raise (versionCheckinRaise) and grants nothing here. The usage
+// is recorded with the attempt the same answer buys.
+func (t *taskRun) grantCheckin(u *TaskUsage, share bool) {
+	if share && t.checkinGrant >= versionCheckinGrant {
+		u.ExtraCheckinShare++
+	}
 }
 
 // grantTime is an answer's agent time: when less than answerTime of agent
@@ -3645,11 +3700,55 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // decides it again (one found closing is finished at once), so no task is
 // left running or closing with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
+	if final == "done" && t.rolling && t.rollout >= versionRollout {
+		final, reason = t.awaitRollout(reason)
+	}
 	ctx := workflow.WithActivityOptions(t.ctx, finishOptions())
 	if err := workflow.ExecuteActivity(ctx, ActivityFinish, t.taskID, final, reason).Get(t.ctx, nil); err != nil {
 		return "", err
 	}
 	return final, nil
+}
+
+// awaitRollout is a roll's last wait (ruling 178): after its merge the
+// run waits until the rollout is confirmed — every image the merge
+// changed runs on its Deployment and is available — and finishes done
+// naming what went live. A rollout the task's wall-clock cap passes
+// unconfirmed fails the roll naming the rollout, the cap its backstop;
+// an error the wait cannot outlive ends it done with the merge's
+// reason: the merge went through, and no retry of the wait changes
+// that.
+func (t *taskRun) awaitRollout(reason string) (final, why string) {
+	ctx := workflow.WithActivityOptions(t.ctx, rolloutWaitOptions(t.cfg.WallClockCap))
+	var res RolloutResult
+	if err := workflow.ExecuteActivity(ctx, ActivityAwaitRollout, t.taskID, t.pr.Number, t.cfg.WallClockCap).Get(t.ctx, &res); err != nil {
+		workflow.GetLogger(t.ctx).Warn("await rollout", "task", t.taskID, "error", err)
+		return "done", reason
+	}
+	switch {
+	case !res.Confirmed:
+		return "failed", reason + "; rollout not confirmed within the wall-clock cap"
+	case len(res.Live) == 0:
+		return "done", reason + "; rollout confirmed: the merge changed no image"
+	}
+	return "done", reason + "; rollout live: " + strings.Join(res.Live, ", ")
+}
+
+// rolloutWaitOptions bound a roll's rollout wait by the task's
+// wall-clock cap and rollWaitSlack; it heartbeats every poll, and a
+// factoryd that stops (the rollout's own restart) has the next one
+// retry it.
+func rolloutWaitOptions(bound time.Duration) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: bound + rollWaitSlack,
+		HeartbeatTimeout:    time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumInterval:        time.Minute,
+			MaximumAttempts:        10,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
 }
 
 // finishOptions are the short activities' options: MaximumAttempts 0 is

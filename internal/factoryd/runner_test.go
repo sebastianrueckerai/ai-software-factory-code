@@ -3699,7 +3699,7 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 }
 
 // A card whose human answered at the call cap runs its check-in under the
-// widened cap: with the policy's calls spent and one raise granted, the
+// raised cap: with the policy's calls spent and one raise granted, the
 // check-in's conversation runs where the plain cap stopped it.
 func TestRunSessionCheckinCallCapRaised(t *testing.T) {
 	runner, _, _, worker, chat, store, _ := checkinRig(t,
@@ -3724,6 +3724,35 @@ func TestRunSessionCheckinCallCapRaised(t *testing.T) {
 	defer worker.mu.Unlock()
 	if len(worker.texts) != 1 || worker.texts[0] != "POST /brief carry on from the last note" {
 		t.Fatalf("worker got %q, want the handover pushed as the brief", worker.texts)
+	}
+}
+
+// The share a human's answer granted widens the budget the check-in counts
+// (issue 959): the card's check-in share is spent, but TaskUsage says the
+// answer granted one more of its widths, so the check-in's conversation
+// runs where the policy's share alone would have stopped the session
+// before any model call.
+func TestRunSessionCheckinShareGrantedByAnAnswerRuns(t *testing.T) {
+	runner, _, _, _, chat, _, _ := checkinRig(t,
+		`{"findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}],"decision":"handover","handover":"fix the caller first"}`)
+	store := runner.store.(*fakeStore)
+	// the coder card's 0.3 EUR budget at the default 10 percent share,
+	// spent to its last cent
+	store.checkinSpent = map[string]float64{"t2": 0.03}
+	tk := store.tasks["t2"]
+	tk.Usage.ExtraCheckinShare = 1
+	store.tasks["t2"] = tk
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("result = %+v, want the pushed session on the check-in's handover", res)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("check-in calls = %d, want the one conversation the grant paid for", chat.calls)
 	}
 }
 

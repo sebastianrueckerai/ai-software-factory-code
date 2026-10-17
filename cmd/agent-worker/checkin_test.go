@@ -191,6 +191,9 @@ func TestBriefWait(t *testing.T) {
 		t.Helper()
 		setRequiredEnv(t)
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		// the seeded repo is its own base; an ambient REPO_SHA from the
+		// harness names a commit it does not carry
+		t.Setenv("REPO_SHA", "")
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {

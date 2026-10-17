@@ -128,6 +128,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityAwaitSessionGap:             r.AwaitSessionGap,
 		ActivityAwaitRollHold:               r.AwaitRollHold,
 		ActivityClearRollHold:               r.ClearRollHold,
+		ActivityAwaitRollout:                r.AwaitRollout,
 		ActivityProviderWait:                r.ProviderWait,
 		ActivityAlertPreCheck:               r.AlertPreCheck,
 		ActivityAttemptFunded:               r.AttemptFunded,
