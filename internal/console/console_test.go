@@ -251,8 +251,12 @@ type fakeTasks struct {
 	plans map[string][]factoryd.PlanRevision // by task, oldest first
 	// questions are the plans' questions by "task revision"
 	questions map[string][]factoryd.PlanQuestion
-	deps      map[string][]string // the tasks a task depends on
-	read      func(s *fakeTasks, id string)
+	// holdouts are the plans' hold-out rows by task, idx order
+	holdouts map[string][]factoryd.Holdout
+	// criteria are the criteria verdict rows by task
+	criteria map[string][]factoryd.CriterionVerdict
+	deps     map[string][]string // the tasks a task depends on
+	read     func(s *fakeTasks, id string)
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -334,6 +338,12 @@ func (s *fakeTasks) PlanQuestions(_ context.Context, id string, revision int) ([
 	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
 }
 
+func (s *fakeTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.holdouts[id]), nil
+}
+
 // answer is factoryd.PGStore.AnswerPlanQuestion on the fake's questions.
 func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) error {
 	s.mu.Lock()
@@ -347,6 +357,46 @@ func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) erro
 	}
 	qs[idx-1].Answer, qs[idx-1].AnsweredBy = answer, by
 	return nil
+}
+
+// decide is factoryd.DecideHoldout on the fake's hold-outs: the round's
+// confirmation unanswered, the row's state taking the verb.
+func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, q := range s.questions[fmt.Sprintf("%s %d", id, round)] {
+		if q.Kind == factoryd.QuestionConfirmation && q.Answer != "" {
+			return factoryd.ErrAnswered
+		}
+	}
+	state := map[string]string{"okay": factoryd.HoldoutStored, "drop": factoryd.HoldoutDropped}[verb]
+	if state == "" {
+		return fmt.Errorf("%w: %s", factoryd.ErrHoldoutClick, verb)
+	}
+	for i, h := range s.holdouts[id] {
+		if h.Round != round || h.Idx != idx {
+			continue
+		}
+		takes := (state == factoryd.HoldoutDropped && (h.State == factoryd.HoldoutProposed || h.State == factoryd.HoldoutUnrunnable)) ||
+			(state == factoryd.HoldoutStored && h.State == factoryd.HoldoutProposed && (h.DryVerdict == "red" || h.DryVerdict == "green"))
+		if !takes {
+			return factoryd.ErrHoldoutClick
+		}
+		s.holdouts[id][i].State = state
+		return nil
+	}
+	for _, h := range s.holdouts[id] {
+		if h.Idx == idx {
+			return factoryd.ErrHoldoutClick
+		}
+	}
+	return factoryd.ErrNoHoldout
+}
+
+func (s *fakeTasks) CriteriaVerdicts(_ context.Context, taskID string) ([]factoryd.CriterionVerdict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.criteria[taskID], nil
 }
 
 func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
@@ -925,6 +975,18 @@ func newRig(t *testing.T) *rig {
 			for _, a := range answers {
 				fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_answered %s %d %d by %s", taskID, revision, a.Idx, by))
 			}
+			return nil
+		},
+		DecideHoldout: func(ctx context.Context, taskID string, revision, idx int, verb, by string) error {
+			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
+				return factoryd.ErrStalePlan{Newest: newest.Revision}
+			}
+			if err := r.tasks.decide(taskID, revision, idx, verb, by); err != nil {
+				return err
+			}
+			fg.mu.Lock()
+			defer fg.mu.Unlock()
+			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL holdout_decided %s %d %d %s by %s", taskID, revision, idx, verb, by))
 			return nil
 		},
 		RejectPlan: func(_ context.Context, taskID, by, why string) error {

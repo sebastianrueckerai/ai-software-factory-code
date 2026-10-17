@@ -706,6 +706,28 @@ func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
+	return nil
+}
+
+func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
+	return nil
+}
+
+func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CriteriaVerdictTasks(context.Context) ([]string, error) { return nil, nil }
+
+func (s *acceptanceStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) AddTaskDeps(_ context.Context, id string, dependsOn []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -770,6 +792,50 @@ func (s *acceptanceStore) AnswerPlanQuestions(context.Context, string, int, []fa
 }
 
 func (s *acceptanceStore) OpenPlanQuestions(context.Context, string, int) (int, error) { return 0, nil }
+
+func (s *acceptanceStore) ConfirmationIndex(context.Context, string, int) (int, bool, error) {
+	return 0, false, nil
+}
+
+func (s *acceptanceStore) PutPlanHoldouts(context.Context, string, int, []factoryd.Holdout) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) PlanHoldouts(context.Context, string) ([]factoryd.Holdout, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) UndecidedHoldouts(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) DecidePlanHoldout(context.Context, string, int, int, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) SweepPlanHoldouts(context.Context, string) error { return nil }
+
+func (s *acceptanceStore) SetHoldoutAudit(context.Context, string, int, string, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) ClearHoldoutAudit(context.Context, string, int) error { return nil }
+
+func (s *acceptanceStore) SetHoldoutTest(context.Context, string, int, string, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) BumpHoldoutRed(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) OpenHoldout(context.Context, string, int) (string, error) {
+	return "", nil
+}
+
+func (s *acceptanceStore) PastReverts(context.Context, string) ([]string, error) {
+	return nil, nil
+}
 
 func (s *acceptanceStore) CreatePlanCard(_ context.Context, t factoryd.Task) (factoryd.Task, error) {
 	return t, s.CreateTask(context.Background(), t)

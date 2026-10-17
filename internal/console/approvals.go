@@ -15,6 +15,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
+// criterionRow is one criterion of a criteria approval card: the
+// criterion, its standing verdict and the evidence behind it.
+type criterionRow struct {
+	factoryd.PlanCriterion
+	Verdict  string
+	Evidence string
+}
+
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
 	factoryd.ApprovalRequest
@@ -25,11 +33,16 @@ type approvalCard struct {
 	Monthly  float64
 	Merge    factoryd.MergeSpec
 	Resource cloudres.ResourceSpec
+	// a plan's criteria gap: the spec, and the open criteria with their
+	// standing verdicts
+	CriteriaSpec factoryd.CriteriaSpec
+	Criteria     []criterionRow
 	// a plan: its revision, the summary and the cards in filing order
 	PlanSpec    factoryd.PlanSpec
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
 	Questions   []planQuestion
+	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
@@ -70,6 +83,27 @@ type planQuestion struct {
 	factoryd.PlanQuestion
 }
 
+// planHoldout is a plan's hold-out criterion as its card shows it: the
+// criterion, its state's one line, and whether its okay and drop work
+// (the round's confirmation unanswered; an unrunnable draft takes no
+// okay).
+type planHoldout struct {
+	Index int
+	factoryd.Holdout
+	Blurb   string
+	CanOkay bool
+	CanDrop bool
+}
+
+// holdoutBlurbs are the hold-out states' one lines.
+var holdoutBlurbs = map[string]string{
+	factoryd.HoldoutProposed:   "drafted; okay keeps it out of the plan and runs it at the gate, hidden from the agent",
+	factoryd.HoldoutStored:     "kept out; it runs at the gate, hidden from the agent",
+	factoryd.HoldoutUnrunnable: "its draft did not run; drop discards it",
+	factoryd.HoldoutDropped:    "dropped",
+	factoryd.HoldoutOpened:     "published: the audit found a real gap; the builder works it",
+}
+
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
@@ -91,11 +125,47 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		if err = c.planOf(ctx, &k); err != nil {
 			k.Problem = "the plan could not be read; see the factoryd log"
 		}
+	case factoryd.ApprovalCriteria:
+		err = c.criteriaOf(ctx, &k)
 	}
 	if err != nil {
 		log.Printf("console: approval request %d: %v", a.ID, err)
 	}
 	return k
+}
+
+// criteriaOf fills the criteria gap card k from its request's spec: the
+// plan's criteria with their standing verdicts (the approver's row over
+// the review's), the open ones the grant or a waiver answers.
+func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
+	if err := json.Unmarshal(k.Spec, &k.CriteriaSpec); err != nil {
+		return fmt.Errorf("spec: %w", err)
+	}
+	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
+	if err != nil || !ok {
+		return fmt.Errorf("revision %d of %s: found %v, %v", k.CriteriaSpec.Revision, k.TaskID, ok, err)
+	}
+	var p factoryd.Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
+	}
+	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, k.CriteriaSpec.Task)
+	if err != nil {
+		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
+	}
+	for _, c := range p.Criteria {
+		verdict, evidence := "", ""
+		for _, v := range rows {
+			if v.Criterion == c.ID && (v.Source == "approver" || verdict == "") {
+				verdict, evidence = v.Verdict, v.Evidence
+				if v.Source == "approver" {
+					break
+				}
+			}
+		}
+		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: verdict, Evidence: evidence})
+	}
+	return nil
 }
 
 // planOf fills plan card k from its request's revision.
@@ -112,15 +182,34 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err != nil {
 		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
 	}
+	confirming := false
 	open := 0
 	for i, q := range qs {
 		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
 		if q.Answer == "" {
 			open++
 		}
+		if q.Kind == factoryd.QuestionConfirmation {
+			confirming = q.Answer == ""
+		}
 	}
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
+	}
+	hos, err := c.cfg.Tasks.PlanHoldouts(ctx, k.TaskID)
+	if err != nil {
+		return fmt.Errorf("hold-outs of %s: %w", k.TaskID, err)
+	}
+	i := 0
+	for _, ho := range hos {
+		if ho.Round != k.PlanSpec.Revision {
+			continue
+		}
+		i++
+		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, Holdout: ho,
+			Blurb:   holdoutBlurbs[ho.State],
+			CanOkay: confirming && ho.State == factoryd.HoldoutProposed,
+			CanDrop: confirming && (ho.State == factoryd.HoldoutProposed || ho.State == factoryd.HoldoutUnrunnable)})
 	}
 	return nil
 }
@@ -153,6 +242,15 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
 		_, err := c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
+		return err
+	})
+}
+
+// waive records the member's waiver of one criterion of the criteria
+// request the path names, with their one-line reason (doWaive).
+func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
+		_, err := c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
 		return err
 	})
 }

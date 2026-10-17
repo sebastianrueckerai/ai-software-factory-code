@@ -565,6 +565,8 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.calls = append(h.calls, fmt.Sprintf("mint %s %s %s", body.Name, strings.Join(body.Scopes, ","), strings.Join(repos, ",")))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":"tok-%s"}`, h.nextID, body.Name)
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
+			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
 			h.calls = append(h.calls, "fork")
 			name := path.Base(r.URL.Path)

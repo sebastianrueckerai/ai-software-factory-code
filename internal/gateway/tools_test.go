@@ -158,11 +158,26 @@ func (f *fakePlanFiler) FilePlan(_ context.Context, taskID, plan string) (PlanFi
 	return f.res, f.err
 }
 
+type fakeVerdicter struct {
+	mu    sync.Mutex
+	calls []string
+	res   VerdictFiled
+	err   error
+}
+
+func (f *fakeVerdicter) FileVerdict(_ context.Context, taskID string, v HoldoutVerdictIn) (VerdictFiled, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("%s|%d|%s|%s|%s|%s", taskID, v.Idx, v.Verdict, v.Reason, v.Quote, v.TestCode))
+	return f.res, f.err
+}
+
 type toolEnv struct {
 	store     *memStore
 	providers *fakeProviders
 	escalator *fakeEscalator
 	filer     *fakePlanFiler
+	verdicter *fakeVerdicter
 	delegator *fakeDelegator
 	session   *mcp.ClientSession
 }
@@ -174,13 +189,14 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	providers := newFakeProviders(t)
 	esc := &fakeEscalator{}
 	filer := &fakePlanFiler{}
+	verdicter := &fakeVerdicter{}
 	delegator := &fakeDelegator{}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc, PlanFiler: filer, Delegator: delegator,
+		Escalator: esc, PlanFiler: filer, HoldoutVerdicter: verdicter, Delegator: delegator,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -190,7 +206,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, delegator: delegator, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -246,7 +262,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "delegate,escalate_to_human,fal_run,file_plan,manual,replicate_predict,request_info,web_scrape,web_search"
+	want := "delegate,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -881,6 +897,75 @@ func TestFilePlanRefused(t *testing.T) {
 	}
 	if calls := e.filer.calls; len(calls) != 1 {
 		t.Fatalf("filer calls = %v, want only the last one through", calls)
+	}
+}
+
+// file_verdict is the audit session's answer in the session it runs in: a
+// verdict the check refuses comes back as every finding, the session goes
+// on and the corrected verdict files in the same session; only a filed
+// verdict ends it.
+func TestFileVerdictTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	finding := "file_verdict: the verdict is one of wrong_test, real_gap, spec_question"
+	e.verdicter.res = VerdictFiled{Findings: []string{finding}}
+	text, isErr := e.call(t, policy.ToolFileVerdict, map[string]any{"idx": 2, "verdict": "no idea"})
+	if !isErr || text != "the verdict was refused:\n- "+finding+"\ncorrect the verdict and file it again in this session" {
+		t.Fatalf("refused verdict = %q, want the finding in the session", text)
+	}
+	if a := e.lastAudit(t); a.Decision != "verdict_refused" || a.Tool != policy.ToolFileVerdict {
+		t.Fatalf("audit = %+v", a)
+	}
+	e.verdicter.res = VerdictFiled{Filed: true}
+	text, isErr = e.call(t, policy.ToolFileVerdict, map[string]any{"idx": 2, "verdict": "wrong_test",
+		"reason": "nothing drops the test", "quote": "The door opens only for a key that fits", "test_code": "package holdout"})
+	if isErr || text != "filed, hold-out 2: wrong_test. It is this session's answer. You may end the session." {
+		t.Fatalf("filed verdict = %q (%v)", text, isErr)
+	}
+	if a := e.lastAudit(t); a.Decision != "verdict_filed" || a.Reason != "hold-out 2: wrong_test" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if calls := e.verdicter.calls; len(calls) != 2 ||
+		calls[1] != "42|2|wrong_test|nothing drops the test|The door opens only for a key that fits|package holdout" {
+		t.Fatalf("verdicter calls = %v", calls)
+	}
+}
+
+// file_verdict reaches factoryd only for a running task of a class that
+// lists it, with a verdict and a rewrite within the bound; every refusal
+// names the reason and files nothing, and a hand-over that fails says so
+// in the session.
+func TestFileVerdictRefused(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	done := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "waiting-human", Classes: []string{"coder"}}, pv)
+	if text, isErr := done.call(t, policy.ToolFileVerdict, map[string]any{"idx": 2, "verdict": "real_gap"}); !isErr ||
+		!strings.Contains(text, "refused_task_status") {
+		t.Fatalf("not running = %q, want refused_task_status", text)
+	}
+	e := newToolEnv(t, running("odd"), pv)
+	if text, isErr := e.call(t, policy.ToolFileVerdict, map[string]any{"idx": 2, "verdict": "real_gap"}); !isErr ||
+		!strings.Contains(text, "refused_capability") {
+		t.Fatalf("class without the tool = %q, want refused_capability", text)
+	}
+	e = newToolEnv(t, running("coder"), pv)
+	for name, args := range map[string]map[string]any{
+		"blank verdict":  {"idx": 2, "verdict": "  "},
+		"negative idx":   {"idx": -1, "verdict": "real_gap"},
+		"over the bound": {"idx": 2, "verdict": "wrong_test", "test_code": strings.Repeat("x", 4<<10+1)},
+	} {
+		if text, isErr := e.call(t, policy.ToolFileVerdict, args); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Fatalf("%s = %q, want refused_arguments", name, text)
+		}
+	}
+	e.verdicter.err = errors.New("no route")
+	if text, isErr := e.call(t, policy.ToolFileVerdict, map[string]any{"idx": 2, "verdict": "real_gap"}); !isErr ||
+		!strings.Contains(text, "the verdict did not reach factoryd: no route") {
+		t.Fatalf("verdicter error = %q", text)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_verdict" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if calls := e.verdicter.calls; len(calls) != 1 {
+		t.Fatalf("verdicter calls = %v, want only the last one through", calls)
 	}
 }
 

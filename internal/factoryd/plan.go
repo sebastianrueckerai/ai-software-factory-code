@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"path"
@@ -68,6 +69,7 @@ const (
 const (
 	CatchQuestion   = "question"
 	CatchSelfAttack = "self_attack"
+	CatchCriterion  = "criterion"
 	FinderPlanner   = "planner"
 )
 
@@ -118,6 +120,10 @@ type PlanCriterion struct {
 	Claim    string `json:"claim,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
+	// Replaces names the id this criterion revises (piece 10): a changed
+	// criterion files under a new id that carries the old one here, so the
+	// revision record holds the pair and no id ever changes meaning.
+	Replaces string `json:"replaces,omitempty"`
 }
 
 // PlanItem is one acceptance item of a card: the test it names and the
@@ -137,13 +143,20 @@ type PlanItem struct {
 // attack on its draft found (piece 5); the catch ledger carries it as the
 // self-attack's kind.
 type PlanQuestion struct {
-	Text       string    `json:"text"`
-	Choices    []string  `json:"choices"`
+	Text    string   `json:"text"`
+	Choices []string `json:"choices"`
+	// Kind marks the confirmation question (kind confirmation), whose
+	// answer fixes the spec and the criteria; every other question's kind
+	// is question.
+	Kind       string    `json:"kind,omitempty"`
 	Origin     string    `json:"origin,omitempty"`
 	Answer     string    `json:"-"`
 	AnsweredBy string    `json:"-"`
 	AnsweredAt time.Time `json:"-"`
 }
+
+// QuestionConfirmation is the confirmation question's kind.
+const QuestionConfirmation = "confirmation"
 
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
@@ -845,7 +858,11 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		cited := citations(p)
 		b.WriteString("\n| # | id | kind | names | cited by |\n|---|---|---|---|---|\n")
 		for i, k := range p.Criteria {
-			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", i+1, cell(k.ID), cell(k.Kind), cell(criterionNames(k)), cell(strings.Join(cited[k.ID], ", ")))
+			id := cell(k.ID)
+			if k.Replaces != "" {
+				id += " (replaces " + cell(k.Replaces) + ")"
+			}
+			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", i+1, id, cell(k.Kind), cell(criterionNames(k)), cell(strings.Join(cited[k.ID], ", ")))
 		}
 	}
 	if len(p.Questions) > 0 {
@@ -952,6 +969,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
@@ -1057,8 +1075,25 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
+	confirming, err := confirmationAnswer(ctx, store, taskID, revision, []int{idx})
+	if err != nil {
+		return err
+	}
+	if confirming {
+		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+			if err == nil {
+				err = ErrHoldoutsOpen
+			}
+			return err
+		}
+	}
 	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, answer, by); err != nil {
 		return err
+	}
+	if confirming {
+		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+			return err
+		}
 	}
 	if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: idx}); err != nil {
 		return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
@@ -1067,6 +1102,22 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+}
+
+// confirmationAnswer tells whether any of idxs names revision's
+// confirmation question: its answer fixes the criteria, so the round's
+// hold-outs must carry their clicks first and sweep after.
+func confirmationAnswer(ctx context.Context, store Store, taskID string, revision int, idxs []int) (bool, error) {
+	ci, ok, err := store.ConfirmationIndex(ctx, taskID, revision)
+	if err != nil || !ok {
+		return false, err
+	}
+	for _, i := range idxs {
+		if i == ci {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // AnswerPlanQuestions is the console's batch answer by a member to every
@@ -1088,8 +1139,29 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
+	idxs := make([]int, len(answers))
+	for i, a := range answers {
+		idxs[i] = a.Idx
+	}
+	confirming, err := confirmationAnswer(ctx, store, taskID, revision, idxs)
+	if err != nil {
+		return err
+	}
+	if confirming {
+		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+			if err == nil {
+				err = ErrHoldoutsOpen
+			}
+			return err
+		}
+	}
 	if err := store.AnswerPlanQuestions(ctx, taskID, revision, answers, by); err != nil {
 		return err
+	}
+	if confirming {
+		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+			return err
+		}
 	}
 	for _, a := range answers {
 		if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: a.Idx}); err != nil {
@@ -1245,6 +1317,20 @@ func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool
 	return answered, err
 }
 
+// ConfirmationIndex is revision's confirmation question's index, and
+// whether it has one.
+func (s *PGStore) ConfirmationIndex(ctx context.Context, id string, revision int) (int, bool, error) {
+	var idx int
+	err := s.db.QueryRowContext(ctx, `SELECT idx FROM plan_questions WHERE task_id = $1 AND revision = $2 AND kind = 'confirmation'`, id, revision).Scan(&idx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return idx, true, nil
+}
+
 // PutPlanCatches stores revision's hole catches of one kind and finder,
 // the recording rule's ledger (the spec-intake concept, roadmap 285):
 // false when the revision holds them already, so an activity retry adds
@@ -1265,7 +1351,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1276,7 +1362,7 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 		var q PlanQuestion
 		var choices []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
@@ -1393,7 +1479,7 @@ func (t *taskRun) planLoop() (string, error) {
 	var ref PlanRef
 	healed := st.Status == "waiting-human"
 	if healed {
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, 0).Get(t.ctx, &ref); err != nil {
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, 0).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
 		t.escalation = ref.Comment
@@ -1561,7 +1647,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
 		t.escalation, findings, wait = ref.Comment, nil, true
@@ -1932,6 +2018,21 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
+	// the revision this one changes, when there is one: the amendment
+	// rules judge the pair (piece 10)
+	var old Plan
+	prev, ok, err := r.store.PlanRevision(ctx, taskID, 0)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if ok {
+		if err := json.Unmarshal(prev.Plan, &old); err != nil {
+			return PlanResult{}, terminalError("plan %s revision %d: %v", taskID, prev.Revision, err)
+		}
+		if found := revisionFindings(old, p); len(found) > 0 {
+			return PlanResult{Findings: found}, nil
+		}
+	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
 		return PlanResult{}, err
@@ -1940,9 +2041,132 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
+	if ok && n > prev.Revision {
+		r.recordCriteria(ctx, taskID, n, old, p)
+		r.restartChildren(ctx, t, n, p)
+	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha})
 	return PlanResult{Revision: n, SHA256: sha}, nil
+}
+
+// revisionFindings judges an amendment against the revision it changes
+// (piece 10): an id never changes meaning, so a changed criterion files
+// under a new id that names the old one in replaces. A removed
+// criterion's citation goes with it; the coverage rules carry that.
+func revisionFindings(old, next Plan) []string {
+	prev := map[string]PlanCriterion{}
+	for _, c := range old.Criteria {
+		prev[c.ID] = c
+	}
+	var found []string
+	for _, c := range next.Criteria {
+		if o, ok := prev[c.ID]; ok && c != o {
+			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
+		}
+		if c.Replaces == "" {
+			continue
+		}
+		if _, ok := prev[c.Replaces]; !ok {
+			found = append(found, "criterion "+c.ID+": replaces "+c.Replaces+", an id the previous revision does not hold")
+		}
+	}
+	return found
+}
+
+// recordCriteria writes the revision's records (the recording rule): one
+// catch per criterion the revision adds, removes or revises under a new
+// id, the churn join's old id, new id and time (piece 10).
+func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int, old, next Plan) {
+	prev := map[string]bool{}
+	for _, c := range old.Criteria {
+		prev[c.ID] = true
+	}
+	held := map[string]bool{}
+	for _, c := range next.Criteria {
+		held[c.ID] = true
+	}
+	var details []string
+	for _, c := range next.Criteria {
+		switch {
+		case prev[c.ID]:
+		case c.Replaces != "":
+			details = append(details, c.ID+" replaces "+c.Replaces)
+		default:
+			details = append(details, c.ID+" added")
+		}
+	}
+	for id := range prev {
+		if !held[id] && replacesNothing(next, id) {
+			details = append(details, id+" removed")
+		}
+	}
+	slices.Sort(details)
+	if len(details) == 0 {
+		return
+	}
+	if _, err := r.store.PutPlanCatches(ctx, taskID, revision, CatchCriterion, FinderPlanner, details); err != nil {
+		log.Printf("plan %s revision %d: its criteria records: %v", taskID, revision, err)
+	}
+}
+
+func replacesNothing(p Plan, id string) bool {
+	for _, c := range p.Criteria {
+		if c.Replaces == id {
+			return false
+		}
+	}
+	return true
+}
+
+// restartChildren runs the restart rules a new revision carries (piece
+// 10): the checks re-ran with the filing, every card that never started
+// takes the new revision's brief, a card the new plan drops ends closed
+// with its issue, a started card keeps its branch (the merge check holds
+// it there) and a final card never reopens.
+func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Plan) {
+	cards, err := r.store.PlanCards(ctx, t.ID)
+	if err != nil {
+		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
+		return
+	}
+	edges := planEdges(p)
+	order := planOrder(p, edges)
+	place := map[string]int{}
+	card := map[string]PlanCard{}
+	for i, c := range order {
+		place[c.Key] = i + 1
+		card[c.Key] = c
+	}
+	issue := map[string]int64{}
+	for _, k := range cards {
+		issue[k.PlanKey] = k.IssueNumber
+	}
+	of := fmt.Sprintf("plan #%d", t.IssueNumber)
+	for _, k := range cards {
+		if Final(k.Status) || k.PlanRevision > 0 {
+			continue
+		}
+		c, ok := card[k.PlanKey]
+		if !ok {
+			if err := r.Finish(ctx, k.ID, "closed", fmt.Sprintf("the plan's revision %d drops the card %s", revision, k.PlanKey)); err != nil {
+				log.Printf("card %s: the plan's revision %d drops it: %v", k.ID, revision, err)
+			}
+			continue
+		}
+		var deps []Dependency
+		for _, d := range dependsOn(order, edges, c.Key) {
+			deps = append(deps, Dependency{Issue: issue[d], Key: d})
+		}
+		spec := ""
+		if c.Role == RoleIntegration {
+			spec = specBlock(p)
+		}
+		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec))
+		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, r.untrusted(t, c.Title)+"\n\n"+body); err != nil {
+			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
+		}
+	}
 }
 
 // PlanFileHandler answers the gateway's file_plan tool: the running
@@ -2110,7 +2334,9 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
 		map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": idx, "kind": "confirmation"})
-	return nil
+	// the round's hold-outs: drafted and dry-run once the confirmation is
+	// asked, so the zone and the question arrive together
+	return r.askHoldouts(ctx, t, revision, p)
 }
 
 // confirmationQuestion is the confirmation question's text: what an

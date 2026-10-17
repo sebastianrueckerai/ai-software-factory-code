@@ -881,14 +881,17 @@ const (
 	ToolRequestStatus  = "resource_request_status"
 	ToolRequestInfo    = "request_info"
 	ToolFilePlan       = "file_plan"
-	ToolManual         = "manual"
+	// ToolFileVerdict is an audit session's verdict on a red hold-out
+	// (the spec-intake concept, piece 6).
+	ToolFileVerdict = "file_verdict"
+	ToolManual      = "manual"
 	// ToolDelegate files a small follow-up card on the cheap rung that
 	// starts when the caller's card has landed (roadmap 222, item 6).
 	ToolDelegate = "delegate"
 )
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

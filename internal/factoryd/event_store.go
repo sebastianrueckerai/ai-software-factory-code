@@ -29,6 +29,7 @@ const (
 	EventCardMoved            = "card_moved"
 	EventQuestionAnswered     = "question_answered"
 	EventPlanQuestionAnswered = "plan_question_answered"
+	EventHoldoutDecided       = "holdout_decided"
 	EventPlanStarted          = "plan_started"
 	EventPlanAccepted         = "plan_accepted"
 	EventPlanChangesRequested = "plan_changes_requested"

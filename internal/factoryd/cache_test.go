@@ -105,7 +105,7 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 // container gets the same mounts and no cache either.
 func TestReproPodHasNoSharedCache(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
-	pod := r.reproPodSpec(Task{ID: "t1", Repository: "linkshort/linkshort"}, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", "b0")
+	pod := r.reproPodSpec(Task{ID: "t1", Repository: "linkshort/linkshort"}, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "b0")
 	spec := pod["spec"].(map[string]any)
 	var vols []string
 	for _, v := range spec["volumes"].([]any) {
@@ -169,7 +169,7 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 			[][]any{{"/bin/sh", "-c", buildReadyScript}, runner}},
 		// the clone and the fetch init containers are copies of the worker's
 		"worker": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), [][]any{worker, worker}},
-		"repro":  {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), [][]any{worker, worker}},
+		"repro":  {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), [][]any{worker, worker}},
 	} {
 		if got := commands(c.pod); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s commands = %q, want %q", name, got, c.want)
@@ -198,7 +198,7 @@ func TestPodsRequestTheirEmptyDirs(t *testing.T) {
 		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
 		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "14Gi", "1", false},
 		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "17Gi", "250m", true},
-		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, 1, "c1", ""), "17Gi", "250m", true},
+		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), "17Gi", "250m", true},
 	} {
 		spec := c.pod["spec"].(map[string]any)
 		requests := spec["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)

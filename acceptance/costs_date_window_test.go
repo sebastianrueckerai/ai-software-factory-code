@@ -280,7 +280,15 @@ func (s *acceptTasks) PlanQuestions(_ context.Context, _ string, _ int) ([]facto
 	return nil, nil
 }
 
+func (s *acceptTasks) PlanHoldouts(_ context.Context, _ string) ([]factoryd.Holdout, error) {
+	return nil, nil
+}
+
 func (s *acceptTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
+func (s *acceptTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }
 

@@ -97,6 +97,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityGateMigration:               r.GateMigration,
 		ActivityGateReproduction:            r.GateReproduction,
 		ActivityGateCriteria:                r.GateCriteria,
+		ActivityHoldoutSettlement:           r.SettleHoldouts,
 		ActivityModelReview:                 r.ModelReview,
 		ActivityRequestApproval:             r.RequestApproval,
 		ActivityMerge:                       r.Merge,
@@ -643,6 +644,20 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, named("plan card", err)
+	}
+	// a plan card's first session pins the revision it runs against
+	// (piece 10); the merge refuses a card the plan has since passed
+	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {
+		rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
+		if err != nil {
+			return SessionResult{}, named("plan revision", err)
+		}
+		if ok {
+			if err := r.store.SetTaskPlanRevision(ctx, t.ID, rev.Revision); err != nil {
+				return SessionResult{}, named("plan revision", err)
+			}
+			t.PlanRevision = rev.Revision
+		}
 	}
 	if t.Source != SourcePlan && t.Standing() == harness.StandingWriter {
 		_, body, _ := strings.Cut(t.Objective, "\n\n")

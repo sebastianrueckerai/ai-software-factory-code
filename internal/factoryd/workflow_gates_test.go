@@ -28,8 +28,9 @@ type gateHarness struct {
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyCalls  int
-	repro        []ReproResult    // in order, the last repeating
-	criteria     []CriteriaResult // in order, the last repeating; empty: no finding
+	repro        []ReproResult       // in order, the last repeating
+	criteria     []CriteriaResult    // in order, the last repeating; empty: no finding
+	settlements  []HoldoutSettlement // in order, the last repeating; empty: settled
 	review       Review
 	reviews      []Review      // in order, the last repeating; empty: review
 	earlier      [][]Review    // the earlier reviews each ModelReview call was given
@@ -118,6 +119,18 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 				return CriteriaResult{}, nil
 			}
 			return g.criteria[min(k, len(g.criteria))-1], nil
+		})
+	s := 0
+	g.env.OnActivity(ActivityHoldoutSettlement, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			s++
+			g.steps = append(g.steps, "settle "+commit)
+			if len(g.settlements) == 0 {
+				return HoldoutSettlement{Settled: true}, nil
+			}
+			return g.settlements[min(s, len(g.settlements))-1], nil
 		})
 	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
@@ -1137,5 +1150,61 @@ func TestWorkflowHandoverReplacesHandoverLines(t *testing.T) {
 			return strings.HasPrefix(l, lastMessageLine) || strings.Contains(l, "the branch holds")
 		}) {
 		t.Fatalf("the next session's findings = %q, want the finding and the stop line, no handover lines", got)
+	}
+}
+
+// A hold-out red at the head goes to the settlement before the criteria
+// gate's verdict stands: the settlement's spec question asks the human,
+// the answer runs the gate again on the same commit, and green then the
+// card goes to its approval and merges.
+func TestWorkflowHoldoutSettlementAsksAndTheAnswerRunsTheGateAgain(t *testing.T) {
+	ask := "hold-out door_state asks a question the spec cannot settle: must the log keep the key id?"
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.criteria = []CriteriaResult{
+			{Holdouts: []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}},
+			{},
+		}
+		g.settlements = []HoldoutSettlement{{Ask: ask}}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the log keeps the key id", Comment: 700})
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(g.sessions) != 1 || !slices.Equal(g.escalated, []string{ask}) {
+		t.Fatalf("sessions %d, escalations %q, want one session and the settlement's ask", len(g.sessions), g.escalated)
+	}
+	want := []string{"policy", "repro c1", "review c1", "criteria c1", "settle c1", "criteria c1", "approval c1", "merge"}
+	if !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}
+
+// A settlement that opens a real gap routes the card back to a session
+// with the audit's finding, as a reviewer's finding does: a new commit,
+// the gates again from the policy gate, and the approval merges it.
+func TestWorkflowHoldoutSettlementRealGapRoutesTheCardToASession(t *testing.T) {
+	finding := "Every key turn lands in the log (hold-out key_log): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion."
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.criteria = []CriteriaResult{
+			{Holdouts: []HoldoutGateResult{{Idx: 1, ID: "key_log", Verdict: "red", Evidence: "--- FAIL: TestKeyLog (0.01s)"}}},
+			{},
+		}
+		g.settlements = []HoldoutSettlement{{Findings: []string{finding}}}
+	})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(g.sessions) != 2 || !slices.Contains(g.sessions[1].Findings, finding) {
+		t.Fatalf("sessions = %+v, want a second session holding the audit's finding", g.sessions)
+	}
+	want := []string{"policy", "repro c1", "review c1", "criteria c1", "settle c1", "policy", "repro c2", "review c2", "criteria c2", "approval c2", "merge"}
+	if !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }

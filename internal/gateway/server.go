@@ -82,6 +82,8 @@ type ServerOptions struct {
 	Escalator Escalator
 	// PlanFiler is the file_plan tool's hand-over to factoryd.
 	PlanFiler PlanFiler
+	// HoldoutVerdicter is the file_verdict tool's hand-over to factoryd.
+	HoldoutVerdicter HoldoutVerdicter
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).

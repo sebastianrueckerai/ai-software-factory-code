@@ -71,6 +71,31 @@ type PlanFiled struct {
 	Findings []string `json:"findings"`
 }
 
+// HoldoutVerdicter files an audit session's hold-out verdict (the
+// file_verdict tool): factoryd checks it against the hold-out the audit
+// runs on and stores it as the session's answer. Implemented by Factoryd;
+// tests substitute a fake.
+type HoldoutVerdicter interface {
+	FileVerdict(ctx context.Context, taskID string, v HoldoutVerdictIn) (VerdictFiled, error)
+}
+
+// HoldoutVerdictIn is the filing's payload: the hold-out's idx on the
+// task, the verdict, why, and the rewrite a wrong test carries.
+type HoldoutVerdictIn struct {
+	Idx      int    `json:"idx"`
+	Verdict  string `json:"verdict"`
+	Reason   string `json:"reason"`
+	Quote    string `json:"quote"`
+	TestCode string `json:"test_code"`
+}
+
+// VerdictFiled is a verdict filing's result: filed, or every finding the
+// check raised, back into the same session.
+type VerdictFiled struct {
+	Filed    bool     `json:"filed"`
+	Findings []string `json:"findings"`
+}
+
 // Escalation is what an agent asks: a human (escalate_to_human: the
 // question, why, what the agent would do and the answers it offers) or the
 // issue's author (request_info: the question, what it tried, what it
@@ -92,8 +117,9 @@ const (
 )
 
 var (
-	_ Escalator = (*Factoryd)(nil)
-	_ PlanFiler = (*Factoryd)(nil)
+	_ Escalator        = (*Factoryd)(nil)
+	_ PlanFiler        = (*Factoryd)(nil)
+	_ HoldoutVerdicter = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -168,6 +194,21 @@ func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled
 			TaskID string `json:"task_id"`
 			Plan   string `json:"plan"`
 		}{taskID, plan})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
+}
+
+func (f *Factoryd) FileVerdict(ctx context.Context, taskID string, v HoldoutVerdictIn) (VerdictFiled, error) {
+	var res VerdictFiled
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/holdout-verdict",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			HoldoutVerdictIn
+		}{taskID, v})
 	if err != nil {
 		return res, err
 	}
@@ -263,6 +304,19 @@ type FilePlanIn struct {
 	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
 
+type FileVerdictIn struct {
+	Idx      int    `json:"idx" jsonschema:"the hold-out's idx, from the task card"`
+	Verdict  string `json:"verdict" jsonschema:"wrong_test, real_gap or spec_question"`
+	Reason   string `json:"reason,omitempty" jsonschema:"why: what the test does wrong, the gap the spec names, or the question for the human"`
+	Quote    string `json:"quote,omitempty" jsonschema:"with a rewrite: the spec sentence it tests, quoted word for word"`
+	TestCode string `json:"test_code,omitempty" jsonschema:"with wrong_test and a rewrite: the rewrite's complete Go code, package holdout, its test's name unchanged"`
+}
+
+// maxVerdictCode bounds a rewrite the gateway passes on: factoryd's
+// check refuses a larger one, so the session learns it here, without
+// the hand-over.
+const maxVerdictCode = 4 << 10
+
 // escalateSchema is EscalateIn's input schema with choices a plain array:
 // the inferred type list ["null", "array"] is one some models' tool calls
 // refuse.
@@ -331,6 +385,13 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"A refusal names every finding; correct the plan and file it again in this session. A filed plan is this session's answer; end the session. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileVerdict, Description: "File the audit's verdict on one hold-out: exactly one of wrong_test (no code drops the test; " +
+		"test_code files the rewrite, with a quote of the spec sentence it tests), real_gap (the criterion becomes public and the builder works it) or " +
+		"spec_question (the reason is the question for the human). A refusal names every finding; correct it and file again in this session. " +
+		"A filed verdict is this session's answer; end the session. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in FileVerdictIn) (*mcp.CallToolResult, any, error) {
+			return s.fileVerdict(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -734,6 +795,38 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 	s.auditTool(c, tool, "plan_filed", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: fmt.Sprintf("filed as revision %d; it is this session's answer. You may end the session.", res.Revision)}}}
+}
+
+// fileVerdict hands the audit session's verdict on one hold-out to
+// factoryd, which checks it against the hold-out the audit runs on: a
+// refusal carries every finding back into the session, a filed verdict
+// is the session's answer. Free, for the classes that list it.
+func (s *Server) fileVerdict(ctx context.Context, c *toolCaller, in FileVerdictIn) *mcp.CallToolResult {
+	tool := policy.ToolFileVerdict
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	if in.Verdict = strings.TrimSpace(in.Verdict); in.Verdict == "" || in.Idx < 0 || len(in.TestCode) > maxVerdictCode {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("idx and verdict are required, the rewrite at most %d bytes", maxVerdictCode))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.HoldoutVerdicter.FileVerdict(ctx, c.task.ID, HoldoutVerdictIn{Idx: in.Idx, Verdict: in.Verdict, Reason: in.Reason, Quote: in.Quote, TestCode: in.TestCode})
+	if err != nil {
+		s.auditTool(c, tool, "error_verdict", err.Error(), &c.task.SpentEUR, nil)
+		return toolError("the verdict did not reach factoryd: " + err.Error())
+	}
+	if !res.Filed {
+		s.auditTool(c, tool, "verdict_refused", textutil.Truncate(strings.Join(res.Findings, "; "), 500), &c.task.SpentEUR, nil)
+		return toolError("the verdict was refused:\n- " + strings.Join(res.Findings, "\n- ") +
+			"\ncorrect the verdict and file it again in this session")
+	}
+	s.auditTool(c, tool, "verdict_filed", fmt.Sprintf("hold-out %d: %s", in.Idx, in.Verdict), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: fmt.Sprintf("filed, hold-out %d: %s. It is this session's answer. You may end the session.", in.Idx, in.Verdict)}}}
 }
 
 // delegate files the child card with factoryd; the session goes on.

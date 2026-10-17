@@ -93,6 +93,9 @@ func TestPGStorePlanQuestions(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked := questionPlan().Questions
+	for i := range asked { // the store keeps every planner's question as kind question
+		asked[i].Kind = "question"
+	}
 	for i, want := range []bool{true, false} { // a healed RequestPlan puts them again
 		if inserted, err := s.PutPlanQuestions(ctx, "t-plan", 1, asked); inserted != want || err != nil {
 			t.Fatalf("put %d: inserted %v (%v), want %v", i+1, inserted, err, want)

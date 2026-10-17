@@ -336,6 +336,7 @@ func main() {
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
+			runner.CriteriaPass(ctx)
 			// SigNoz's rules evaluate every minute, so its list changes no
 			// faster: a sweep a minute heals a lost resolve before a card's
 			// first model call or a promotion's check reads the row
@@ -399,6 +400,8 @@ func main() {
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
+	// the gateway's hand-over of an audit session's hold-out verdict
+	mux.Handle("POST /internal/holdout-verdict", requireBearer(gatewayToken, runner.AuditVerdictHandler))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -469,6 +472,18 @@ func main() {
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)
+		},
+		DecideHoldout: func(ctx context.Context, taskID string, round, idx int, verb, by string) error {
+			return factoryd.DecideHoldout(ctx, store, taskID, round, idx, verb, by)
+		},
+		GrantCriteria: func(ctx context.Context, id, by string, approval int64) (int, error) {
+			return factoryd.GrantCriteria(ctx, store, id, by, approval)
+		},
+		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
+			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
+		},
+		RecordHumanCriteria: func(ctx context.Context, taskID, approver string) (int, error) {
+			return factoryd.RecordHumanCriteria(ctx, store, taskID, approver)
 		},
 		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
 			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
