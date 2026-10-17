@@ -577,6 +577,121 @@ func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]Cha
 	return out, rows.Err()
 }
 
+// ErrNoAsk says a card has no ask row in the chat: nothing waits on a
+// person there for an analysis to enrich.
+var ErrNoAsk = errors.New("the card asks nothing")
+
+// AskSettledError says the ask an analysis targeted is settled already:
+// Word the settling event's reason word, By its actor.
+type AskSettledError struct{ Word, By string }
+
+func (e *AskSettledError) Error() string {
+	if e.By != "" {
+		return fmt.Sprintf("the ask is %s by %s", e.Word, e.By)
+	}
+	return "the ask is " + e.Word
+}
+
+// AttachAnalysis records what the chat agent found about the card's open
+// ask (the main agent concept): an analysis_attached row on the spine and
+// the ask's escalation rows rewritten to carry the findings after the
+// question, so every member reads them with the ask. A settled ask
+// refuses as AskSettledError, a card without an ask row as ErrNoAsk.
+func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found, recommendation, by string) error {
+	t, ok, err := s.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNoAsk
+	}
+	events, err := s.TaskEvents(ctx, taskID, 500)
+	if err != nil {
+		return err
+	}
+	var ask *Event
+	for i := range events { // newest first
+		if events[i].Kind == EventQuestionAsked {
+			ask = &events[i]
+			break
+		}
+	}
+	if ask == nil {
+		return ErrNoAsk
+	}
+	if st := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: ask.At},
+		events, t.Status == "waiting-human", false); !st.Open {
+		return &AskSettledError{Word: st.Word, By: st.By}
+	}
+	// the ask's rows: the poke line the Poker wrote, alone or with an
+	// earlier analysis a new attach replaces; rows of an older ask keep
+	// their own question
+	question, _ := ask.Detail["question"].(string)
+	ref := cardRef(*ask, t)
+	plain := ref + " needs you: " + question
+	budget := ref + " is stopped by its budget: " + question
+	analysis := "\nAnalysis: " + found
+	if recommendation != "" {
+		analysis += "\nRecommendation: " + recommendation
+	}
+	detail := map[string]any{"found": found, "source": "agent"}
+	if recommendation != "" {
+		detail["recommendation"] = recommendation
+	}
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	rows, err := tx.QueryContext(ctx, `SELECT id, content FROM chat_messages
+		WHERE repository = $1 AND task_id = $2 AND kind = $3 AND birth_kind = $4`,
+		repository, taskID, MessageEscalation, EventQuestionAsked)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	var bases []string
+	for rows.Next() {
+		var id int64
+		var content string
+		if err := rows.Scan(&id, &content); err != nil {
+			rows.Close()
+			return err
+		}
+		switch {
+		case content == plain, content == budget:
+			ids, bases = append(ids, id), append(bases, content)
+		case strings.HasPrefix(content, plain+"\nAnalysis: "):
+			ids, bases = append(ids, id), append(bases, plain)
+		case strings.HasPrefix(content, budget+"\nAnalysis: "):
+			ids, bases = append(ids, id), append(bases, budget)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	if len(ids) == 0 {
+		return ErrNoAsk
+	}
+	for i, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, bases[i]+analysis, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
+		VALUES (now(), $1, $2, $3, $4, $5, $6, $7::jsonb)`,
+		repository, taskID, t.IssueNumber, EventAnalysisAttached, by, ViaChat, b); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ProposalState is a proposal's state as GET /chat answers it: pending
 // while unused and unexpired, used once taken, expired otherwise.
 type ProposalState struct {

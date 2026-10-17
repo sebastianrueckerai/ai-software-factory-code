@@ -564,8 +564,9 @@ func main() {
 			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by)
 			return t.IssueNumber, err
 		},
-		Operator: operator,
-		Pulses:   store,
+		AttachAnalysis: store.AttachAnalysis,
+		Operator:       operator,
+		Pulses:         store,
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo

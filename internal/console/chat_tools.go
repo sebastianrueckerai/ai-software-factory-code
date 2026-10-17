@@ -73,10 +73,13 @@ type toolInput struct {
 	Info           string   `json:"info,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
-	Old            string   `json:"old,omitempty"`
-	New            string   `json:"new,omitempty"`
-	BaseSHA256     string   `json:"base_sha256,omitempty"`
-	Find           string   `json:"find,omitempty"`
+	// Found is the analysis the attach_analysis tool records inside an
+	// ask.
+	Found      string `json:"found,omitempty"`
+	Old        string `json:"old,omitempty"`
+	New        string `json:"new,omitempty"`
+	BaseSHA256 string `json:"base_sha256,omitempty"`
+	Find       string `json:"find,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -1442,6 +1445,16 @@ var tools = []chatTool{
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
+	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
+		params: map[string]any{"task_id": taskParam,
+			"found":          str("what you learned about the ask, the facts with their numbers"),
+			"recommendation": str("the answer you would pick and where you read it")},
+		required: []string{"task_id", "found"},
+		about:    "Record what you found inside a card's open ask, for the human who reads it.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.attachAnalysis(in)
+			return s, nil, err
+		}},
 	{name: "active_threads", title: "Read the member's threads",
 		about: "The member's other active threads on the project, then the scratchpad's tail.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
@@ -1508,6 +1521,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projec
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
+  attach_analysis records what you found inside a card's open ask; the members read it with the question.
 `
 
 func (t *turn) systemText() (string, error) {

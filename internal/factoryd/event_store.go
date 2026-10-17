@@ -96,6 +96,12 @@ const EventSessionSaid = "session_said"
 // when the agent offered any}.
 const EventQuestionAsked = "question_asked"
 
+// EventAnalysisAttached is the chat agent's record of what it found about
+// an ask (the main agent concept): detail {"found", "source": "agent",
+// and "recommendation" when it offers one}. The spine is append-only, so
+// the analysis is its own row; the ask's own event stays what it was.
+const EventAnalysisAttached = "analysis_attached"
+
 // EventQuestionWithdrawn is factoryd's record of an escalation it
 // withdrew unanswered, the head it asked about gone back to the agent:
 // detail {"question", "comment", "reason"}.

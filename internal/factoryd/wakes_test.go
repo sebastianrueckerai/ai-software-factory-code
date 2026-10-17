@@ -348,6 +348,37 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	}
 }
 
+// The wake text lists each ask with its card ref, reads the ask the event
+// carries (the question key the real askers write) and tells the turn
+// what to do, attach_analysis named as the way to record what it found.
+func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, nil)
+	if err := s.CreateTask(t.Context(), Task{ID: "t-1", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/wake", IssueNumber: 40, Objective: "Use a replica?"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
+		Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: map[string]any{"question": "Use a replica?"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	text := calls[0].text
+	for _, want := range []string{
+		"#40: Use a replica?",
+		"\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the wake text %q misses %q", text, want)
+		}
+	}
+}
+
 // The marks and the cursor are rows, so a restart changes nothing: what
 // one Waker handled stays handled, and what it left blocked still starts.
 func TestWakerMarksSurviveRestart(t *testing.T) {

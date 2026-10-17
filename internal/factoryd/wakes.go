@@ -127,8 +127,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if e.Kind != EventQuestionAsked || p.Autonomy != policy.AutonomyAutonomous {
 			continue
 		}
-		ask, _ := e.Detail["ask"].(string)
-		sum := sha256.Sum256([]byte(ask))
+		sum := sha256.Sum256([]byte(askSentence(e)))
 		key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
 		if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
 			return err
@@ -202,16 +201,27 @@ func (w *Waker) askBudget(ctx context.Context, repository string, task Task, now
 	return w.Store.WakeMark(ctx, repository, key, now)
 }
 
-// askText is the wake's text: every ask of the batch with its card ref.
+// askText is the wake's text: every ask of the batch with its card ref,
+// then what the turn does with them.
 func (w *Waker) askText(ctx context.Context, asks []pendingAsk) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Wake: %d asks wait for a human.", len(asks))
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
-		ask, _ := a.e.Detail["ask"].(string)
-		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), ask)
+		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), askSentence(a.e))
 	}
+	b.WriteString("\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	return b.String()
+}
+
+// askSentence is the ask event's own words: a shaped ask carries its full
+// ask, the rest the question every real asker records.
+func askSentence(e Event) string {
+	if s, _ := e.Detail["ask"].(string); s != "" {
+		return s
+	}
+	s, _ := e.Detail["question"].(string)
+	return s
 }
 
 // markedWithin says a mark of repository sits within of now.
