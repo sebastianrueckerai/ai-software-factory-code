@@ -1300,6 +1300,9 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != usage {
 		t.Fatalf("usage = %+v, want %+v", got.Usage, usage)
 	}
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage.ExtraCheckin != 1 {
+		t.Fatalf("extra_checkin = %d, want 1: the granted check-in share persists on the row", got.Usage.ExtraCheckin)
+	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
 	}
