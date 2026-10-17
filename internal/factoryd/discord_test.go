@@ -40,6 +40,9 @@ func TestDiscord(t *testing.T) {
 			t.Errorf("the connect joins a member: %s %s", r.Method, r.URL.Path)
 		case r.Method == "POST" && r.URL.Path == "/users/@me/channels":
 			b, _ := io.ReadAll(r.Body)
+			if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("dm create content type %q, want application/json", ct)
+			}
 			if refuseDM {
 				w.WriteHeader(http.StatusForbidden)
 				fmt.Fprint(w, `{"message":"Missing Access"}`)

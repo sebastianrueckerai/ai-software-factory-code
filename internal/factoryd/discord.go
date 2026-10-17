@@ -80,7 +80,7 @@ func (d *Discord) Connect(ctx context.Context, login, code string) error {
 	var channel struct {
 		ID string `json:"id"`
 	}
-	if err := d.call(ctx, "POST", "/users/@me/channels", "", "Bot "+d.BotToken,
+	if err := d.call(ctx, "POST", "/users/@me/channels", "application/json", "Bot "+d.BotToken,
 		[]byte(`{"recipient_id":`+strconv.Quote(user.ID)+`}`), &channel); err != nil {
 		var de *DiscordError
 		if errors.As(err, &de) && de.Status == http.StatusForbidden {
