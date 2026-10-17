@@ -507,3 +507,16 @@ func TestNoRowHoldsTheRawCookieID(t *testing.T) {
 		}
 	}
 }
+
+func (f *fakeSessions) ConsoleSessionsForUser(_ context.Context, login string) ([]factoryd.ConsoleSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ConsoleSession
+	for _, row := range f.rows {
+		if row.Login == login && !f.now().After(row.ExpiresAt) {
+			out = append(out, row)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.ConsoleSession) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return out, nil
+}

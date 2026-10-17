@@ -1164,3 +1164,16 @@ func (f *acceptChat) SaveSummary(context.Context, string, string, int64, factory
 func (f *acceptChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
 
 func (f *acceptChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }
+
+func (f *acceptSessions) ConsoleSessionsForUser(_ context.Context, login string) ([]factoryd.ConsoleSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ConsoleSession
+	for _, row := range f.rows {
+		if row.Login == login {
+			out = append(out, row)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.ConsoleSession) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return out, nil
+}

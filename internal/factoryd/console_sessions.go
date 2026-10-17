@@ -99,3 +99,25 @@ func (s *PGStore) PurgeConsoleSessions(ctx context.Context, at time.Time) (int64
 	}
 	return res.RowsAffected()
 }
+
+// ConsoleSessionsForUser reads the login's live rows newest first: the
+// wake turn's source of the member's tokens.
+func (s *PGStore) ConsoleSessionsForUser(ctx context.Context, login string) ([]ConsoleSession, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id_hash, login, csrf, access, refresh, token_expiry, created_at, last_seen, expires_at
+		FROM console_sessions WHERE login = $1 AND expires_at >= now() ORDER BY created_at DESC LIMIT 4`, login)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ConsoleSession
+	for rows.Next() {
+		var sess ConsoleSession
+		var expiry sql.NullTime
+		if err := rows.Scan(&sess.IDHash, &sess.Login, &sess.CSRF, &sess.Access, &sess.Refresh, &expiry, &sess.CreatedAt, &sess.LastSeen, &sess.ExpiresAt); err != nil {
+			return nil, err
+		}
+		sess.TokenExpiry = expiry.Time
+		out = append(out, sess)
+	}
+	return out, rows.Err()
+}
