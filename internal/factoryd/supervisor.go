@@ -18,12 +18,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The supervisor (architecture 6.6) is a model factoryd asks after a
-// detector trips or at a check-in. It picks continue, message or escalate.
-// redirect and retry_stronger are factoryd's own decisions, never the
-// model's: redirect stops the session when a message or nudge cannot be
-// delivered or the session loops, retry_stronger (the workflow's next ladder rung) ends a
-// session stuck after a message.
+// Supervision (architecture 6.6) answers a detector trip in code first:
+// a message into the session, a redirect when a message or nudge cannot
+// be delivered or the session loops, retry_stronger (the workflow's next
+// ladder rung) for a session stuck after a message. What code cannot
+// answer, the check-in conversation decides; the actions below are the
+// shared vocabulary.
 type SupervisorAction string
 
 const (

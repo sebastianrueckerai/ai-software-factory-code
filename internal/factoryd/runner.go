@@ -1002,8 +1002,9 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail}, Messages: messages, Gates: s.lastGates}
-	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, live: true}
-	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(rec.Transcript(), limits.CheckinTailBytes()), r.checkin, tools,
+	tr := rec.Transcript()
+	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
+	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap()-calls, eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
 	out.Record.Session = s.id
 	switch out.Decision {

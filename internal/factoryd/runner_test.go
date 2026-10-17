@@ -1384,6 +1384,35 @@ func TestRunSessionCheckinHandoverStopsGracefully(t *testing.T) {
 	}
 }
 
+// The in-session check-in's transcript tools read the live session's own
+// record: a search over the trip's events answers the line it found in
+// the next round of the conversation.
+func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
+	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{})
+	chat.answers = []CheckinResponse{
+		{ToolName: "transcript_search", ToolArgs: map[string]any{"query": "loopcheck: FAIL at 10:00:01"}},
+		{Text: `{"decision":"continue","reason":"one failing command, the session carries on"}`},
+	}
+	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + pushedLine("c1") + "\n" + resultLine(true, "done")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want the session run on to its push after a continue", res, err)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("chat calls = %d, want the tool round and the decision", chat.calls)
+	}
+	// the tool's answer is the conversation's last appended piece: on an
+	// empty parent the search returns nothing and the round ends at the
+	// marker
+	_, toolOut, _ := strings.Cut(chat.gots[1].Input, "answered:\n")
+	if !strings.Contains(toolOut, "loopcheck: FAIL at 10:00:01") {
+		t.Fatalf("tool round ends with %q, want the live record's line the search found", toolOut)
+	}
+}
+
 // The check-in's human ask inside the live session ends it the way the
 // gate's does: the record rides the result, and no conversation-time text
 // is invented for the human.
