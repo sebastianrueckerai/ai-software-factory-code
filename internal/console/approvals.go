@@ -104,7 +104,7 @@ var holdoutBlurbs = map[string]string{
 	factoryd.HoldoutOpened:     "published: the audit found a real gap; the builder works it",
 }
 
-func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
+func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
@@ -130,6 +130,26 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	}
 	if err != nil {
 		log.Printf("console: approval request %d: %v", a.ID, err)
+	}
+	// the board's copy whispers: every part of the ask its first line,
+	// the top findings alone — the drawer carries the whole text (ruling
+	// 295). This is the one place a merge face is assembled, so a field
+	// that grows cannot grow the column's card.
+	if face && k.Kind == factoryd.ApprovalMerge {
+		for i, w := range k.Merge.WhyHuman {
+			k.Merge.WhyHuman[i] = faceLine(w, 200)
+		}
+		k.Merge.VerdictSummary = faceLine(k.Merge.VerdictSummary, 300)
+		if len(k.Merge.Review.Findings) > 3 {
+			k.Merge.Review.Findings = k.Merge.Review.Findings[:3]
+		}
+		for i, f := range k.Merge.Review.Findings {
+			k.Merge.Review.Findings[i] = faceLine(f, 200)
+		}
+		for i := range k.Merge.Review.Criteria {
+			k.Merge.Review.Criteria[i].Evidence = faceLine(k.Merge.Review.Criteria[i].Evidence, 200)
+		}
+		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
 	return k
 }
