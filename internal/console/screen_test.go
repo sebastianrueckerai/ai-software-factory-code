@@ -650,6 +650,12 @@ func TestDrawerActivity(t *testing.T) {
 			t.Errorf("the activity lacks %s", want)
 		}
 	}
+	// the <time> cells keep to one line only through the stylesheet's
+	// nowrap rule; the wrapper and the rule stand together
+	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
+	if !strings.Contains(css, "td time { white-space: nowrap; }") {
+		t.Error("console.css lacks td time { white-space: nowrap; }")
+	}
 	r.c.cfg.Timelines = failingObjects{}
 	failed := drawer(t, r, ck, "t-run", "activity")
 	if !strings.Contains(failed, `<p class="problem" role="alert">The timeline could not be read; see the factoryd log.</p>`) || strings.Contains(failed, "<table") {
