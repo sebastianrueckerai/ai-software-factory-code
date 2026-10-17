@@ -786,6 +786,8 @@ func (f *accBatchChat) RenameConversation(context.Context, string, string, int64
 
 func (f *accBatchChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (f *accBatchChat) MarkCleared(context.Context, string, string, int64) error { return nil }
+
 func (f *accBatchChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (f *accBatchChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {

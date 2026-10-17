@@ -423,3 +423,55 @@ func TestChatSettlesRows(t *testing.T) {
 	equal(t, "the read inform recedes with its word, the open ask stays bare",
 		[]bool{msgs[2].Settled, msgs[2].Reason == "seen", msgs[3].Settled, msgs[3].Reason == ""}, []bool{true, true, false, true})
 }
+
+// Clear old (the chat's sweep): the marker hides the thread's old rows
+// from the member's view, the record keeps them, and an open ask stays
+// whatever the marker says, so nothing that needs the member disappears.
+func TestChatClearsOldRows(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	say := func(m factoryd.ChatMessage) {
+		t.Helper()
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#14 needs you: rebase?",
+		Choices: []string{"Yes", "No"}, TaskID: "t-r", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
+		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
+		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() chatGetAnswer {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+		}
+		var answer chatGetAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	answer := read()
+	answer = read() // the seen marker passes the plain row, it settles too
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{3, 0})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
+		t.Fatalf("POST clear = %d: %s", code, body)
+	}
+	answer = read()
+	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{1, 2})
+	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
+		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
+	}
+}
