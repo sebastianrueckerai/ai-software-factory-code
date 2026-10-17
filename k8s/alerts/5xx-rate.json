@@ -1,10 +1,10 @@
 {
   "alert": "5xx rate above 5 %",
   "alertType": "TRACES_BASED_ALERT",
-  "description": "More than 5 % of a service's requests answered 5xx, on average over the last 5 minutes (the server spans of factoryd, its console included, and of the gateway, by service; the probes are not traced).",
+  "description": "More than 5 % of a service's requests answered 5xx, on average over the last 5 minutes (the server spans of factoryd, its console included, and of the gateway, by service; the probes are not traced). At least three requests must have failed in the window: one failure on a quiet service is a share above 5 %, but no storm.",
   "ruleType": "threshold_rule",
   "schemaVersion": "v2alpha1",
-  "version": "v5",
+  "version": "v6",
   "disabled": false,
   "labels": {"severity": "critical"},
   "annotations": {"summary": "share of the service's requests that answered 5xx, in %"},
@@ -21,7 +21,7 @@
           "aggregations": [{"expression": "count()"}],
           "groupBy": [{"name": "service.name", "fieldContext": "resource", "fieldDataType": "string"}],
           "filter": {"expression": "service.name IN ('factoryd', 'factory-gateway') AND kind_string = 'Server'"}}},
-        {"type": "builder_formula", "spec": {"name": "F1", "expression": "A * 100 / B"}}
+        {"type": "builder_formula", "spec": {"name": "F1", "expression": "(A * 100 / B) * ((A - 2.5) / abs(A - 2.5) + 1) / 2"}}
       ]
     },
     "selectedQueryName": "F1",
