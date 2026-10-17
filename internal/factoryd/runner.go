@@ -948,7 +948,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	callCap := checkinCap(t, limits)
 	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if calls >= callCap || eurLeft <= 0 {
-		reason := "the check-in's share of the budget is spent"
+		reason := CheckinShareSpent
 		if calls >= callCap {
 			reason = checkinCallCapStop
 		}
@@ -999,7 +999,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	callCap := checkinCap(t, limits)
 	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if calls >= callCap || eurLeft <= 0 {
-		reason := "the check-in's share of the budget is spent"
+		reason := CheckinShareSpent
 		if calls >= callCap {
 			reason = checkinCallCapStop
 		}
@@ -1034,8 +1034,10 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 }
 
 // checkinBudget is the card's check-in budget: the calls the card has
-// made and what is left of the check-in's share of its budget. A read
-// error is logged and reads as zero, as the check-in proceeds on it.
+// made and what is left of the check-in's share of its budget — the
+// policy's share widened by every share a human's answer to its spend
+// stop granted (TaskUsage.ExtraCheckinShare; versionCheckinGrant). A read error is logged and
+// reads as zero, as the check-in proceeds on it.
 func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (int, float64, error) {
 	calls, err := r.store.CheckinCalls(ctx, t.ID)
 	if err != nil {
@@ -1045,7 +1047,7 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 	if err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	}
-	return calls, limits.CheckinShareOf(t.BudgetEUR) - spent, err
+	return calls, limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
 }
 
 // pushBrief delivers the session's brief: a check-in's handover note, or

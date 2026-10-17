@@ -1723,6 +1723,78 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	}
 }
 
+// The answer to the check-in's spend stop buys the stretch its own
+// check-in moments (issue 959): beside the attempt, the answer grants the
+// card one more share of the check-in budget — TaskUsage.ExtraCheckinShare,
+// which widens the share the runner counts — so a long card that spent
+// its share stops once per human answer, not once per check-in moment,
+// and the card's own budget stays the cap. Without the grant the next
+// moment stops the card again before any model call, and the human pays
+// one answer per stretch.
+func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human",
+		Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+		Usage:    TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	h.onTimedSessions(timedSession{time.Minute, pushed("s2", "c2")})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 2 {
+		t.Fatalf("sessions = %+v, want the next session to run on the answer, attempt 2: the check-in moment is not stopped again", h.sessions)
+	}
+	if len(h.escalated) != 1 {
+		t.Fatalf("escalations = %q, want the one re-asked stop and no second spend stop", h.escalated)
+	}
+	if u := h.usage[len(h.usage)-1]; u.ExtraCheckinShare != 1 {
+		t.Fatalf("usage = %+v, want the answer's grant of one more check-in share recorded", u)
+	}
+}
+
+// The live loop's answer to the check-in's spend stop grants the share the
+// same way (issue 959): the next session runs on the answer and its card
+// stops there, not at every check-in moment to come. A run from before the
+// change buys the attempt alone — the next moment would stop the card
+// again.
+func TestWorkflowCheckSpendAnswerInTheLoopGrantsTheShare(t *testing.T) {
+	for name, pinned := range map[string]bool{"gated": false, "before the gate": true} {
+		h := newWorkflowHarness(t)
+		if pinned {
+			h.env.OnGetVersion("checkin-grant", workflow.DefaultVersion, versionCheckinGrant).Return(workflow.DefaultVersion)
+		}
+		h.taskConfig = askTaskConfig()
+		h.onTimedSessions(
+			timedSession{time.Minute, checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+				ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+				Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})},
+			timedSession{time.Minute, pushed("s3", "c3")})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("%s: final = %q, escalations = %q", name, final, h.escalated)
+		}
+		if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 {
+			t.Fatalf("%s: sessions = %+v, want the answered session to run, attempt 2", name, h.sessions)
+		}
+		if !slices.Equal(h.escalated, []string{checkinShareStop}) {
+			t.Fatalf("%s: escalations = %q, want the one spend stop", name, h.escalated)
+		}
+		want := 1
+		if pinned {
+			want = 0
+		}
+		if u := h.usage[len(h.usage)-1]; u.ExtraCheckinShare != want {
+			t.Fatalf("%s: usage = %+v, want ExtraCheckinShare %d", name, u, want)
+		}
+	}
+}
+
 // A run restarted while a gate's escalation waits takes the answer as the
 // live gate does, by verifying again, here from the first stage
 // (versionSessionLadder): the head c2 goes through the review again and the
