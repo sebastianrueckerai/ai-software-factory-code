@@ -520,8 +520,8 @@ type step struct {
 type statusPanel struct {
 	Name, User, CSRF string
 	Page             string // the layout marks the bar's current destination: Projects
-	Factory          bool // the layout's factory-level links: the panel is a factory-level page
-	Messengers       bool // the layout's notifications link
+	Factory          bool   // the layout's factory-level links: the panel is a factory-level page
+	Messengers       bool   // the layout's notifications link
 	Steps            []step
 	Final            bool
 	CanMerge         bool

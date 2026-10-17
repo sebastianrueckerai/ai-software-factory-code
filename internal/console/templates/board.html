@@ -134,7 +134,7 @@
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
 {{end}}
 
-{{define "brief-block"}}{{with .Brief}}{{if .IDSuffix}}<p class="need-line brief">{{.}}</p>{{else}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<p class="reason detail">{{.}}</p>{{end}}{{end}}{{end}}
+{{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<p class="reason detail">{{.}}</p>{{end}}{{end}}{{end}}
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" data-card="{{.TaskID}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
 {{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>

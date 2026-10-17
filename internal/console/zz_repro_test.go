@@ -1,6 +1,8 @@
 package console
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -76,6 +78,15 @@ func TestIssueFaultsHeldFixed(t *testing.T) {
 	// the brief on one line, the Approve and Deny buttons and the foot
 	// links — the five parts render only in the drawer
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
+	rec := "Adds the column; merge it once the default lands."
+	spec8 := fmt.Sprintf(`{"risk_class":"high","migration":false,"verdict_summary":"adds the column",`+
+		`"review":{"verdict":"approve","findings":["0018_x.sql: add a default"],`+
+		`"criteria":[{"criterion":"no schema migration","kind":"human","evidence":"the diff moves the column"}]},`+
+		`"head_sha":"abc123","recommendation":%q,"why_human":["first why","second why"]}`, rec)
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 8, Kind: "merge", TaskID: "t-m8",
+		Project: "sf/code", PRNumber: 18, Status: "pending",
+		Brief: "first line of the merge brief\nsecond line of the merge brief", Spec: json.RawMessage(spec8)})
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m8", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 18}})
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	start := strings.Index(wide, `aria-labelledby="approval-4"`)
 	merge := wide[start : start+strings.Index(wide[start:], "</article>")]
@@ -94,6 +105,34 @@ func TestIssueFaultsHeldFixed(t *testing.T) {
 	} {
 		if strings.Contains(merge, bulky) {
 			t.Errorf("FAULT 3 STILL PRESENT: the lane face carries the drawer's five parts (%s):\n%s", bulky, merge)
+		}
+	}
+	start8 := strings.Index(wide, `aria-labelledby="approval-8"`)
+	if start8 < 0 {
+		t.Fatal("FIX 3 MISSING: the wide board has no face for approval 8")
+	}
+	face8 := wide[start8 : start8+strings.Index(wide[start8:], "</article>")]
+	for _, want := range []string{
+		`<p class="need-line brief">first line of the merge brief</p>`,
+		`action="/approvals/8/approve"`,
+	} {
+		if !strings.Contains(face8, want) {
+			t.Errorf("FIX 3 MISSING: the briefed merge face lacks %s:\n%s", want, face8)
+		}
+	}
+	for _, bulky := range []string{"second line of the merge brief", "first why", "adds the column",
+		"0018_x.sql: add a default", "yours to judge at this merge"} {
+		if strings.Contains(face8, bulky) {
+			t.Errorf("FAULT 3 STILL PRESENT: the briefed lane face carries %s:\n%s", bulky, face8)
+		}
+	}
+	briefDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m8/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
+		`<p class="finding">0018_x.sql: add a default</p>`,
+	} {
+		if !strings.Contains(briefDrawer, want) {
+			t.Errorf("FIX 3 MISSING: the briefed merge drawer lacks %s", want)
 		}
 	}
 	mergeDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
