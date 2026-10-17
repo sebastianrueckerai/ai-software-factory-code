@@ -830,6 +830,10 @@ func (f *accBatchChat) Conversations(context.Context, string, string) ([]factory
 	return nil, nil
 }
 
+func (f *accBatchChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+	return nil, nil
+}
+
 func (f *accBatchChat) ProposalStates(_ context.Context, _, _ string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

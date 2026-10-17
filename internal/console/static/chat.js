@@ -61,21 +61,24 @@ var chatView = (function () {
   }
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
-  // when the agent acted alone; a summary turn after /compact
+  // when the agent acted alone; a summary turn after /compact. A settled
+  // row recedes: no needs-you mark, no buttons, its reason line in the
+  // decider's pattern (the settle concept)
   function factoryHTML(m) {
     if (m.kind === "summary") {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
     }
     var esc1 = m.kind === "escalation";
     var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
-      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
     var body = saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
-    if (m.choices && m.choices.length && !esc1) {
+    if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
+    if (m.choices && m.choices.length && !esc1 && !m.settled) {
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
         return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
-    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
+    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
       (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + "</div>";
   }
   function agentHTML(at, parts) {
@@ -193,8 +196,15 @@ var chatView = (function () {
     if (t.working) return "<span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i><span class=\"visually-hidden\">a turn in flight</span></span>";
     return "<span class=\"tmark\" aria-hidden=\"true\"></span>";
   }
+  // splitOf is thread t's split as words (the settle concept's badge):
+  // the asks still open need the member, the unread rows that are no open
+  // ask are new
+  function splitOf(t) {
+    return (t.needs_you ? t.needs_you + " needs you" : "") + (t.needs_you && t.new_rows ? " · " : "") + (t.new_rows ? t.new_rows + " new" : "");
+  }
   function badgeHTML(t) {
-    return t.unread ? "<span class=\"badge\" aria-label=\"" + esc(t.unread) + " unread\">" + esc(t.unread) + "</span>" : "";
+    var split = splitOf(t);
+    return split ? "<span class=\"badge" + (t.needs_you ? "" : " new") + "\" aria-label=\"" + esc(split) + "\">" + esc(split) + "</span>" : "";
   }
   // rowsHTML is the switcher's rows: the inbox first, the active threads,
   // then the archived under their rule; open is the open thread's number
@@ -202,10 +212,11 @@ var chatView = (function () {
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
     var archived = (list || []).filter(function (t) { return t.state === "archived"; });
     var rows = active.map(function (t) {
-      var on = t.number === open, tip = titleOf(t) + (t.unread ? ", " + t.unread + " unread" : "") + (t.working ? ", a turn in flight" : "");
-      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (t.unread ? " unread" : "") + (t.inbox ? " inbox" : "") +
+      var on = t.number === open, mark = badgeHTML(t);
+      var tip = titleOf(t) + (mark ? ", " + splitOf(t) : "") + (t.working ? ", a turn in flight" : "");
+      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (mark ? " unread" : "") + (t.inbox ? " inbox" : "") +
         "\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + on + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
-        "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (t.unread ? badgeHTML(t) : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
+        "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (mark ? mark : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
     }).join("");
     if (archived.length) {
       rows += "<div class=\"tarch\"><span class=\"tarch-l\">archived</span>" + archived.map(function (t) {
@@ -219,15 +230,19 @@ var chatView = (function () {
   // sumHTML is the folded switcher's one row on the phone
   function sumHTML(list, folded) {
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
-    var unread = active.reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+    var needs = active.reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
+    var fresh = active.reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
+    var split = (needs ? needs + " needs you" : "") + (needs && fresh ? " · " : "") + (fresh ? fresh + " new" : "");
     var working = active.filter(function (t) { return t.working; }).length;
-    return "Threads <span class=\"n\">" + active.length + "</span>" + (unread ? " · <span class=\"badge\">" + unread + "</span> unread" : "") +
+    return "Threads <span class=\"n\">" + active.length + "</span>" + (split ? " · <span class=\"badge" + (needs ? "" : " new") + "\">" + esc(split) + "</span>" : "") +
       (working ? " · <span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i></span> " + working + " working" : "") +
       "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
   }
-  // unreadOf is the sum of the threads' unread turns, the tab title's count
+  // unreadOf is the threads' split summed, the tab title's count
   function unreadOf(list) {
-    return (list || []).reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+    var needs = (list || []).reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
+    var fresh = (list || []).reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
+    return (needs ? needs + " needs you" : "") + (needs && fresh ? " · " : "") + (fresh ? fresh + " new" : "");
   }
   // headHTML is the open thread's head: its title (a click renames it),
   // its last turn or the inbox's line or the archived note, and Archive and
@@ -241,10 +256,12 @@ var chatView = (function () {
         "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
   }
   // pendingOf is the escalation the thread's answer row offers: its newest
-  // row, when that is an escalation with choices (C14)
+  // ask row, while it is open — settled, the row's reason line stands in
+  // its place (the settle concept)
   function pendingOf(msgs) {
-    var m = (msgs || [])[(msgs || []).length - 1];
-    return m && m.kind === "escalation" && m.choices && m.choices.length ? m : null;
+    var m = null;
+    (msgs || []).forEach(function (x) { if (x.kind === "escalation") m = x; });
+    return m && m.choices && m.choices.length && !m.settled ? m : null;
   }
   function answerHTML(m) {
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
@@ -931,7 +948,16 @@ var chatView = (function () {
       add(log, "<p class=\"chat-error\">A new thread could not be started; try again.</p>");
     });
   });
-  // the list follows the factory: a turn ending elsewhere, a poke arriving
+  // the list follows the factory: a turn ending elsewhere, a poke arriving,
+  // and a settling event at once — the answer row and the badges follow
+  // over the page's one stream (the settle concept)
+  var settleEvents = {question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
+    plan_accepted: 1, plan_changes_requested: 1, plan_rejected: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
+  document.addEventListener("factoryevent", function (e) {
+    if (!settleEvents[e.detail.kind]) return;
+    listThreads();
+    if (open && !busy(open) && !document.hidden && !readOnly) load(open);
+  });
   setInterval(function () {
     if (!document.hidden) listThreads();
   }, 10000);

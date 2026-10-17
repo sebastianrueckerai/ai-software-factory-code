@@ -673,6 +673,10 @@ func (f *acceptChat) NewConversation(_ context.Context, repository, login string
 	return highest + 1, nil
 }
 
+func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+	return nil, nil
+}
+
 func (f *acceptChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -1003,6 +1003,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .tmark.inbox { color: var(--need-text); font: 13px/1 var(--font-mono); }
 .tmark.working .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-running); color: var(--st-running); animation: live 2.2s ease-in-out infinite; }
 .badge { min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--need); color: var(--need-ink); font: 600 11px/18px var(--font-mono); text-align: center; }
+.badge.new { background: none; border: 1px solid var(--line-strong); color: var(--text-muted); font-weight: 400; }
 .tarch { display: flex; flex-direction: column; padding-top: 6px; border-top: 1px solid var(--line-strong); }
 .tarch-l { padding: 0 8px 2px; color: var(--text-faint); font: 11px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .trow.arch { color: var(--text-faint); cursor: default; }
@@ -1041,6 +1042,12 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .decider { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .msg .who .rep { color: var(--text-faint); font: 11.5px var(--font-mono); }
 .decider::before { content: "⚙ "; }
+.msg.settled { color: var(--text-faint); }
+.msg.settled .who .name, .msg.settled .esc-l { color: var(--text-faint); }
+.msg.settled .av { border-color: var(--line-strong); color: var(--text-faint); }
+.msg.settled .av::before { background: none; }
+.msg.settled .esc-b { padding: 0; border: 0; background: none; }
+.settled-why { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .msg.sum .av { border-style: dashed; color: var(--text-faint); font: 12px/1 var(--font-mono); }
 .msg.sum .av::before { content: none; }
 .msg.sum .said { color: var(--text-muted); font-size: 13px; }

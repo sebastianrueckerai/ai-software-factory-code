@@ -413,6 +413,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     };
     s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
+      document.dispatchEvent(new CustomEvent("factoryevent", { detail: e }));
       if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
       else if (e.kind === "session_said") said(e);
       else if (e.kind === "doc_written") document.dispatchEvent(new CustomEvent("docwritten", { detail: e }));

@@ -1131,6 +1131,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () { timers++; }, setInterval: function () { timers++; }, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
+  CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
   // a request is in flight until settle answers it; as htmx does, a read of
   // the board asked for while one is in flight queues behind it, its
@@ -1469,6 +1470,7 @@ var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchPar
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () {}, setInterval: function () {}, clearTimeout: function () {},
   Event: function (type) { this.type = type; },
+  CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
   fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
   htmx: {ajax: function (verb, url) {
     if (url.indexOf("/board") === 0 && locked) {

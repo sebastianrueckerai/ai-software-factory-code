@@ -134,7 +134,7 @@ var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
 var now = new Date("2026-10-11T12:00:00Z");
 var cmds = [{name: "compact", words: "the older turns of this thread become a summary"}, {name: "new", words: "a new thread"},
   {name: "standup", words: "what moved", message: "What moved since yesterday?"}];
-var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2},
+var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2, needs_you: 1, new_rows: 1},
   {number: 2, title: "world", state: "active", current: true, last_at: "2026-10-11T09:30:04Z", unread: 0, working: true},
   {number: 4, title: "", state: "active", last_at: "2026-10-10T18:00:00Z", unread: 0},
   {number: 1, title: "a <b>", state: "archived", last_at: "2026-10-08T09:30:02Z", unread: 0}];
@@ -149,8 +149,9 @@ console.log(JSON.stringify({
   head: chatView.headHTML(threads[1], now),
   headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, now),
   pendingRow: JSON.stringify([chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes", "No"]}]) && 1,
-    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]),
-    chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([])]),
+    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]) && 1,
+    chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([]),
+    chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian · 09:14"}])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
   levelConfirm: chatView.levelConfirmHTML({name: "full auto", words: "nothing waits"}),
@@ -167,6 +168,10 @@ console.log(JSON.stringify({
   paletteHTML: chatView.paletteHTML(cmds.slice(0, 2), 1),
   expand: [chatView.expand(cmds, "/standup"), chatView.expand(cmds, "/compact"), chatView.expand(cmds, "/standup now")].join("|"),
   repeated: chatView.factoryHTML({id: 9, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:14:00Z", repeats: 2}),
+  settledEscalation: chatView.factoryHTML({id: 10, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:15:00Z",
+    choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian · 09:14"}),
+  settledPoke: chatView.factoryHTML({id: 11, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:16:00Z",
+    choices: ["Retry", "Leave it"], settled: true, reason: "moved on · 09:16"}),
   queue: (function () {
     var started = [], drawn = [], busy = false;
     var q = chatView.queue(function (text) { started.push(text); busy = true; }, function () { return busy; },
@@ -210,8 +215,8 @@ console.log(JSON.stringify({
 		{"used", you + agent + `<details class="tool"><summary>🔧 new_card · ` + result + `</summary><pre>` + args + "\n\n" + result + `</pre></details>` +
 			`<p class="pfoot"><span class="expired">used</span></p></div>`},
 		{"stream", proposal},
-		{"rows", `<button type="button" class="trow unread inbox" data-thread="3" aria-current="false" title="Inbox, 2 unread">` +
-			`<span class="tmark inbox" aria-hidden="true">⌂</span><span class="ttitle">Inbox</span><span class="badge" aria-label="2 unread">2</span></button>` +
+		{"rows", `<button type="button" class="trow unread inbox" data-thread="3" aria-current="false" title="Inbox, 1 needs you · 1 new">` +
+			`<span class="tmark inbox" aria-hidden="true">⌂</span><span class="ttitle">Inbox</span><span class="badge" aria-label="1 needs you · 1 new">1 needs you · 1 new</span></button>` +
 			`<button type="button" class="trow on" data-thread="2" aria-current="true" title="world, a turn in flight">` + dot +
 			`<span class="ttitle">world</span><span class="tat">09:30</span></button>` +
 			`<button type="button" class="trow" data-thread="4" aria-current="false" title="New thread"><span class="tmark" aria-hidden="true"></span>` +
@@ -219,14 +224,14 @@ console.log(JSON.stringify({
 			`<div class="tarch"><span class="tarch-l">archived</span><span class="trow arch"><span class="tmark" aria-hidden="true">arc</span>` +
 			`<button type="button" class="ttitle open-arch" data-thread="1" aria-current="false">a &lt;b&gt;</button>` +
 			`<button type="button" class="linkbtn restore" data-restore="1">restore</button></span></div>`},
-		{"sum", `Threads <span class="n">3</span> · <span class="badge">2</span> unread · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
+		{"sum", `Threads <span class="n">3</span> · <span class="badge">1 needs you · 1 new</span> · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
 			`<span class="chev" aria-hidden="true">⌃</span>`},
-		{"unread", "2"},
+		{"unread", "1 needs you · 1 new"},
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
 			`<span class="tacts"><button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
-		{"pendingRow", `[1,null,null,null]`},
+		{"pendingRow", `[1,1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
 		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>a change confirms</span></p>` +
@@ -259,6 +264,10 @@ console.log(JSON.stringify({
 		{"expand", `What moved since yesterday?|/compact|/standup now`},
 		{"repeated", `<div class="msg agent poke" data-message="9"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:14Z</time> <span class="rep">3 times</span></p>` +
 			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div></div>`},
+		{"settledEscalation", `<div class="msg agent poke esc settled" data-message="10"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:15Z</time></p>` +
+			`<div class="esc-b"><div class="said"><p>Which store?</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>answered by sebastian · 09:14</p></div></div>`},
+		{"settledPoke", `<div class="msg agent poke settled" data-message="11"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:16Z</time></p>` +
+			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>moved on · 09:16</p></div>`},
 		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
 		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +

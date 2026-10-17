@@ -227,6 +227,7 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		}
 		out[i].LastAt = m.At
 		out[i].Messages++
+		out[i].SeenUpto = f.seen[fmt.Sprint(k, " ", m.Conversation)]
 		turnEnd := m.Role == "assistant" && !m.Queued &&
 			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
@@ -349,6 +350,18 @@ func (f *fakeChat) ChatMessages(_ context.Context, repository, login string, con
 		}
 	}
 	return all[max(0, len(all)-limit):], nil
+}
+
+func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range f.msgs[repository+" "+login] {
+		if m.Kind == factoryd.MessageEscalation && m.TaskID != "" {
+			out = append(out, m)
+		}
+	}
+	return out, nil
 }
 
 func (f *fakeChat) ProposalStates(_ context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {

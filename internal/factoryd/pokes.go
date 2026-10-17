@@ -166,7 +166,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	ref := cardRef(e, t)
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
-	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID}
+	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID, BirthKind: e.Kind}
 	switch e.Kind {
 	case EventQuestionAsked:
 		m.Kind = MessageEscalation

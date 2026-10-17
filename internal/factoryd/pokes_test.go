@@ -82,6 +82,7 @@ func TestPokeOf(t *testing.T) {
 				t.Fatalf("the writer reads no %s event", tt.e.Kind)
 			}
 			tt.want.Role = "assistant"
+			tt.want.BirthKind = tt.e.Kind
 			if tt.e.Kind != EventAutonomyChanged {
 				tt.want.TaskID = tt.e.TaskID
 			}

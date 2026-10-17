@@ -35,9 +35,9 @@ const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issu
 // scenarios word them; a missing word is a missing control.
 const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
-    "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 unread", "New"],
+    "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 new", "New"],
   escalation: ["Answer:", "or in your words below", "needs you", "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?"],
-  poke: ["Inbox", "Why is the session store card waiting?", "1 unread", "archived", "restore", "Archive", "Delete…"],
+  poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
     "Why is the session store card waiting?"],
   assisted: ["Inbox", "Board", "autonomy", "assisted", "Moved #8 to lane ready",
@@ -885,17 +885,23 @@ async function text(page) {
       if (!(await p.page.evaluate(() => !!document.activeElement && !!document.activeElement.closest("#thread-rows")))) fails.push("threads: Ctrl+k does not reach the switcher");
     }
     if (sc === "poke") {
-      // a poke on another thread: the inbox row first, its badge, and the sum in the tab title (C14)
+      // a poke on another thread: the inbox row first, its split badge, and the split in the tab title (C14, the settle concept)
       const first = p.page.locator("#thread-rows .trow").first();
       if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
       if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
+      const badge = first.locator(".badge");
+      if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
+        fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
       const title = await p.page.title();
-      if (!title.startsWith("(2) ")) fails.push('poke: the tab title is "' + title + '", want the sum (2) first');
+      if (!title.startsWith("(1 needs you · 2 new) ")) fails.push('poke: the tab title is "' + title + '", want the split (1 needs you · 2 new) first');
       await first.click();
       await p.page.waitForTimeout(600);
       const log = await p.page.locator("#chat").innerText();
-      for (const w of ["#600 is done", "needs you", "Merge PR #612 of #606 waits for you"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
-      if ((await p.page.title()).startsWith("(2) ")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      for (const w of ["#600 is done", "needs you", "Merge PR #612 of #606 waits for you", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      const settled = p.page.locator("#chat-log .msg.esc.settled");
+      if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
+      else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
+      if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
