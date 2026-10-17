@@ -171,10 +171,10 @@ func TestNotificationsPanel(t *testing.T) {
 		}
 	}
 
-	// the instrument panel (C19): one row per venue the console carries,
-	// the state said in words beside its lamp; discord not connected reads
-	// as a row with its connect link, connected as the address and a
-	// Disconnect, and a connected telegram keeps its own row
+	// the instrument panel (C19): one row per venue the console carries or
+	// the member connected, the state said in words beside its lamp; discord
+	// not connected reads as a row with its connect link, connected as the
+	// address and a Disconnect, and a connected telegram keeps its own row
 	c = seat(&Messengers{Store: fm, TelegramName: "factorybot", Discord: &DiscordConnect{}})
 	page = get(c, "/notifications", bk)
 	for _, want := range []string{"telegram", "not connected", "discord", "/messengers/discord/start"} {
@@ -184,9 +184,9 @@ func TestNotificationsPanel(t *testing.T) {
 	}
 	fm.links = []factoryd.MessengerLink{
 		{Venue: factoryd.VenueTelegram, Address: "@sebastian", VenueUser: "42"},
-		{Venue: factoryd.VenueDiscord, Address: "seb"},
+		{Venue: factoryd.VenueDiscord, Address: "dexter"},
 	}
-	if page = get(c, "/notifications", bk); !strings.Contains(page, "@sebastian") || !strings.Contains(page, "seb") {
+	if page = get(c, "/notifications", bk); !strings.Contains(page, "@sebastian") || !strings.Contains(page, "dexter") {
 		t.Fatalf("the panel misses a connected address:\n%s", page)
 	}
 	if strings.Count(page, "Disconnect") != 2 {
@@ -194,5 +194,13 @@ func TestNotificationsPanel(t *testing.T) {
 	}
 	if strings.Contains(page, "not connected") {
 		t.Fatalf("a connected venue still says not connected:\n%s", page)
+	}
+
+	// a link outlives its venue's config: the row stays, and with it the
+	// console's only disconnect for that venue
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot"})
+	fm.links = []factoryd.MessengerLink{{Venue: factoryd.VenueDiscord, Address: "carl"}}
+	if page = get(c, "/notifications", bk); !strings.Contains(page, "carl") || strings.Count(page, "Disconnect") != 1 {
+		t.Fatalf("a link past its venue's config hides from the panel:\n%s", page)
 	}
 }

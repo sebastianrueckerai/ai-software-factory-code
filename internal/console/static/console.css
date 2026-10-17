@@ -1114,7 +1114,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 /* the notifications panel (C19): one monospaced readout, a square lamp
    on every state — cyan for connected and a level the member set, amber
    for needs-you, an unlit socket for off and not connected */
-.notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); }
+.notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); white-space: normal; }
 .notify td.act { width: 100%; text-align: right; }
 .notify td.act form.inline { white-space: nowrap; }
 .notify .dim { color: var(--text-muted); }
