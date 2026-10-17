@@ -27,6 +27,10 @@ type CriteriaResult struct {
 	Skipped  string   `json:",omitempty"`
 	Findings []string `json:",omitempty"`
 	Escalate string   `json:",omitempty"`
+	// Holdouts are the plan's hold-outs that ran red or unrunnable at
+	// this head, for the settlement activity; the card and the comment
+	// never see them.
+	Holdouts []HoldoutGateResult `json:",omitempty"`
 }
 
 // The house format of the criteria's test fields, as the gate reads them:
@@ -210,13 +214,18 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if len(p.Criteria) == 0 {
 		findings = append(findings, "criteria gate: the plan names no criteria")
 	}
+	// the plan's stored hold-outs run here too, beside the criteria: their
+	// reds never reach the card's findings or the comment (blind by
+	// routing and storage), they go to the settlement as Holdouts
+	hos := r.gateHoldouts(ctx, t.Parent)
 	entries := make([]map[string]any, 0, len(runs))
+	holdoutEntries := make([]map[string]any, 0, len(hos))
 	detail := func() map[string]any {
-		return gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries})
+		return gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries, "holdouts": holdoutEntries})
 	}
 	// nothing to run (an empty plan, or every runnable criterion off the
 	// format): the sandbox would report nothing
-	if len(runs) == 0 {
+	if len(runs) == 0 && len(hos) == 0 {
 		if len(findings) > 0 {
 			r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
 				commit, fenced(strings.Join(findings, "\n")))))
@@ -252,8 +261,8 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		return CriteriaResult{Escalate: f.escalation(thenCriteria)}, nil
 	}
 	run := t
-	run.ReproCommand = criteriaScript(runs)
-	rep, err := r.runRepro(ctx, run, repo, pr, commit, "")
+	run.ReproCommand = criteriaScript(runs) + holdoutScript(hos)
+	rep, err := r.runRepro(ctx, run, repo, pullRef(pr), commit, "")
 	if err != nil {
 		return cannotStart(err)
 	}
@@ -262,9 +271,18 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	runFindings, lines, entries = criteriaReport(runs, markers)
 	findings = append(findings, runFindings...)
 	met := len(runs) - len(runFindings)
+	holdouts := make([]HoldoutGateResult, 0, len(hos))
+	hmarkers := parseHoldoutMarkers(rep.Output)
+	for _, h := range hos {
+		dry, ev := holdoutDryVerdict(hmarkers[h.Idx], holdoutRan(hmarkers, h.Idx))
+		holdoutEntries = append(holdoutEntries, map[string]any{"id": h.ID, "verdict": dry})
+		if dry == "red" || dry == HoldoutUnrunnable {
+			holdouts = append(holdouts, HoldoutGateResult{Idx: h.Idx, ID: h.ID, Verdict: dry, Evidence: ev})
+		}
+	}
 	r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, met, lines)))
 	r.record(ctx, t.ID, "gate_criteria", detail())
-	return CriteriaResult{Findings: findings}, nil
+	return CriteriaResult{Findings: findings, Holdouts: holdouts}, nil
 }
 
 // criteriaComment is the gate's comment on the pull request: the head, how

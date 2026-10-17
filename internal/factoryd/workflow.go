@@ -94,6 +94,7 @@ const (
 	ActivityGateMigration               = "GateMigration"
 	ActivityGateReproduction            = "GateReproduction"
 	ActivityGateCriteria                = "GateCriteria"
+	ActivityHoldoutSettlement           = "SettleHoldouts"
 	ActivityModelReview                 = "ModelReview"
 	ActivityRequestApproval             = "RequestApproval"
 	ActivityMerge                       = "Merge"
@@ -2591,6 +2592,39 @@ const reproActivityTimeout = 2 * (MaxReproTimeout + 10*time.Minute)
 // MaxReproTimeout is the longest reproduction command run.
 const MaxReproTimeout = 15 * time.Minute
 
+// requestPlanOptions: asking for a plan also drafts hold-outs, which is
+// two model calls and up to two dry runs; it heartbeats while they run.
+func requestPlanOptions() workflow.ActivityOptions {
+	budget := 2*(reviewChunks*policy.MaxSupervisorTimeout) + 2*(MaxReproTimeout+10*time.Minute) + 10*time.Minute
+	return workflow.ActivityOptions{
+		HeartbeatTimeout:       2 * time.Minute,
+		StartToCloseTimeout:    budget,
+		ScheduleToCloseTimeout: 2 * budget,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
+// holdoutOptions: one settlement runs an audit session per red hold-out
+// (each bounded as a review) and at most one dry run (bounded as a
+// reproduction); it heartbeats while it works.
+func holdoutOptions() workflow.ActivityOptions {
+	budget := 3*(reviewChunks*policy.MaxSupervisorTimeout) + reproActivityTimeout + 10*time.Minute
+	return workflow.ActivityOptions{
+		HeartbeatTimeout:       2 * time.Minute,
+		StartToCloseTimeout:    budget,
+		ScheduleToCloseTimeout: 2 * budget,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
+}
+
 // reviewOptions: one review or audit makes up to reviewChunks calls, each
 // bounded by the policy's supervisor_timeout, at most
 // policy.MaxSupervisorTimeout; it heartbeats, so a cancel reaches the call
@@ -2666,17 +2700,46 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 
 // criteria runs the criteria gate on commit into out: a sandbox that
 // could not start asks the human (its start escalation), and the answer
-// runs the gate again, as gateEscalated's.
+// runs the gate again, as gateEscalated's. A hold-out red or unrunnable
+// at the head goes to the settlement activity before the gate's verdict
+// stands: its escalation or its findings decide the card, anything else
+// runs the gate again.
 func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, error) {
 	for {
 		*out = CriteriaResult{}
 		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit)
-		if decided || err != nil || out.Escalate == "" {
+		if err != nil {
 			return v, decided, err
 		}
-		if v, stop := t.gateEscalated(out.Escalate); stop {
+		if decided {
 			return v, true, nil
 		}
+		if out.Escalate != "" {
+			if v, stop := t.gateEscalated(out.Escalate); stop {
+				return v, true, nil
+			}
+			continue
+		}
+		if len(out.Holdouts) == 0 {
+			return v, decided, nil
+		}
+		var res HoldoutSettlement
+		v, decided, err = t.gateActivity(true, holdoutOptions(), &res, ActivityHoldoutSettlement, t.taskID, t.cfg.PolicyVersion, t.pr.Number, commit, out.Holdouts)
+		if err != nil {
+			return v, decided, err
+		}
+		if decided {
+			return v, true, nil
+		}
+		switch {
+		case res.Ask != "":
+			if v, stop := t.gateEscalated(res.Ask); stop {
+				return v, true, nil
+			}
+		case len(res.Findings) > 0:
+			return verdict{findings: res.Findings, reason: "a real gap the audit found", requested: true}, true, nil
+		}
+		continue // settled, or the answer said run it again: the gate runs again
 	}
 }
 

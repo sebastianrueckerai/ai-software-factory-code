@@ -97,6 +97,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityGateMigration:               r.GateMigration,
 		ActivityGateReproduction:            r.GateReproduction,
 		ActivityGateCriteria:                r.GateCriteria,
+		ActivityHoldoutSettlement:           r.SettleHoldouts,
 		ActivityModelReview:                 r.ModelReview,
 		ActivityRequestApproval:             r.RequestApproval,
 		ActivityMerge:                       r.Merge,

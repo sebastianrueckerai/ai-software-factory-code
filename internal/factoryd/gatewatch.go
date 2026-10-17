@@ -56,25 +56,26 @@ var StepGates = map[string]string{
 // (activityBeside): its stage moves the row to its gate once it awaits
 // it (SetGate).
 var activityGates = map[string]string{
-	ActivityRunSession:       GateSession,
-	ActivityWaitChecks:       GateChecks,
-	ActivityGatePolicy:       GatePolicy,
-	ActivityGateMigration:    GateMigration,
-	ActivityGateReproduction: GateReproduction,
-	ActivityGateCriteria:     GateCriteria,
-	ActivityModelReview:      GateReview,
-	ActivityRequestApproval:  GateApproval,
-	ActivityMerge:            GateMerge,
-	ActivityEscalate:         GateHuman,
-	ActivityScreen:           GateScreening,
-	ActivityScreenAnswer:     GateScreening,
-	ActivityRunReport:        GateSession,
-	ActivityGateAudit:        GateAudit,
-	ActivityRunPlan:          GateSession,
-	ActivityRunSplit:         GateSession,
-	ActivityRequestPlan:      GateApproval,
-	ActivityAwaitSessionGap:  GateMerge,
-	ActivityProviderWait:     GateProvider,
+	ActivityRunSession:        GateSession,
+	ActivityWaitChecks:        GateChecks,
+	ActivityGatePolicy:        GatePolicy,
+	ActivityGateMigration:     GateMigration,
+	ActivityGateReproduction:  GateReproduction,
+	ActivityGateCriteria:      GateCriteria,
+	ActivityModelReview:       GateReview,
+	ActivityRequestApproval:   GateApproval,
+	ActivityMerge:             GateMerge,
+	ActivityEscalate:          GateHuman,
+	ActivityScreen:            GateScreening,
+	ActivityScreenAnswer:      GateScreening,
+	ActivityRunReport:         GateSession,
+	ActivityGateAudit:         GateAudit,
+	ActivityRunPlan:           GateSession,
+	ActivityRunSplit:          GateSession,
+	ActivityRequestPlan:       GateApproval,
+	ActivityHoldoutSettlement: GateSession,
+	ActivityAwaitSessionGap:   GateMerge,
+	ActivityProviderWait:      GateProvider,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
@@ -86,7 +87,7 @@ var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, Act
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
 	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
-	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed}
+	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

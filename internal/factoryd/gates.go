@@ -502,11 +502,11 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		if reproBase == "" {
 			return ReproResult{}, terminalError("task %s has no base commit to reproduce at", t.ID)
 		}
-		if at, err = r.runRepro(ctx, t, repo, pr, commit, reproBase); err != nil {
+		if at, err = r.runRepro(ctx, t, repo, pullRef(pr), commit, reproBase); err != nil {
 			return cannotStart(err)
 		}
 	}
-	rep, err := r.runRepro(ctx, t, repo, pr, commit, "")
+	rep, err := r.runRepro(ctx, t, repo, pullRef(pr), commit, "")
 	if err != nil {
 		return cannotStart(err)
 	}
@@ -562,9 +562,9 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 // task's namespace at the pull request head commit, or at a commit of its
 // history (the base) when given. A sandbox that cannot start is a
 // *startFailure.
-func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, pr int64, commit, at string) (harness.Repro, error) {
+func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, at string) (harness.Repro, error) {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
-	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, pr, commit, at)); err != nil {
+	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, ref, commit, at)); err != nil {
 		return harness.Repro{}, fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
@@ -720,7 +720,7 @@ func fenced(s string) string {
 // project's shared cache, where an agent may have planted a binary or a
 // build result (ruling 291): Go and npm build cold in the pod's own
 // emptyDir, with PATH naming no cache directory.
-func (r *Runner) reproPodSpec(t Task, repo Repo, pr int64, commit, at string) map[string]any {
+func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
 	pod := r.sandboxPodSpec(t, "", []map[string]any{
 		{"name": "MODE", "value": "repro"},
 		{"name": "TASK_ID", "value": t.ID},
@@ -743,7 +743,7 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, pr int64, commit, at string) ma
 		{"name": "REPO_URL", "value": r.repoURL(repo)},
 		{"name": "REPO_TOKEN", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": "task-git", "key": "REPO_TOKEN"}}},
-		{"name": "PR_REF", "value": fmt.Sprintf("refs/pull/%d/head", pr)},
+		{"name": "PR_REF", "value": ref},
 		{"name": "REPO_SHA", "value": commit},
 	}
 	if at != "" {

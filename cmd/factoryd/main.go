@@ -399,6 +399,8 @@ func main() {
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
+	// the gateway's hand-over of an audit session's hold-out verdict
+	mux.Handle("POST /internal/holdout-verdict", requireBearer(gatewayToken, runner.AuditVerdictHandler))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -469,6 +471,9 @@ func main() {
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)
+		},
+		DecideHoldout: func(ctx context.Context, taskID string, round, idx int, verb, by string) error {
+			return factoryd.DecideHoldout(ctx, store, taskID, round, idx, verb, by)
 		},
 		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
 			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)

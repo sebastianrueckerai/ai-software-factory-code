@@ -99,12 +99,13 @@ func main() {
 			HTTP: egress.Client(75 * time.Second)},
 		Fal: &gateway.Fal{RunURL: "https://fal.run", APIURL: "https://api.fal.ai", Key: cfg.FalKey,
 			HTTP: egress.Client(120 * time.Second)},
-		Escalator:     factoryd,
-		PlanFiler:     factoryd,
-		Delegator:     factoryd,
-		Cloud:         cloud,
-		Telemetry:     tel,
-		FactorydToken: cfg.FactorydToken,
+		Escalator:        factoryd,
+		PlanFiler:        factoryd,
+		HoldoutVerdicter: factoryd,
+		Delegator:        factoryd,
+		Cloud:            cloud,
+		Telemetry:        tel,
+		FactorydToken:    cfg.FactorydToken,
 	})
 	go cloud.Run(ctx)
 

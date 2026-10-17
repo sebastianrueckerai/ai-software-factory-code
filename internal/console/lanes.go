@@ -307,6 +307,18 @@ func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
 }
 
+// planHoldout posts a writer's okay or drop of one hold-out of the plan
+// (doDecideHoldout).
+func (c *Console) planHoldout(w http.ResponseWriter, r *http.Request) {
+	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
+	idx, _ := strconv.Atoi(r.PostFormValue("index"))
+	if _, err := c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+}
+
 // planChanges posts a writer's change request on the plan
 // (doRequestChanges).
 func (c *Console) planChanges(w http.ResponseWriter, r *http.Request) {

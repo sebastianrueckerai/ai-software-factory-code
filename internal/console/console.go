@@ -67,6 +67,9 @@ type Tasks interface {
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanQuestions are revision's questions of plan task id, in order.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]factoryd.PlanQuestion, error)
+	// PlanHoldouts are plan task id's hold-out criteria, every round's, in
+	// idx order; a round's rows carry its number.
+	PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
 	// Dependencies are the tasks task id depends on, those not done
@@ -149,7 +152,10 @@ type Config struct {
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).
 	AnswerPlanQuestions func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error
-	RejectPlan          func(ctx context.Context, taskID, by, why string) error
+	// DecideHoldout stores a writer's okay or drop of one hold-out of a
+	// plan's newest revision (factoryd.DecideHoldout).
+	DecideHoldout func(ctx context.Context, taskID string, round, idx int, verb, by string) error
+	RejectPlan    func(ctx context.Context, taskID, by, why string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
@@ -371,6 +377,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
 		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
+		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},

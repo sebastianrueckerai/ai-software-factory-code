@@ -182,7 +182,22 @@
 <input type="text" id="answer-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required>
 <button type="submit">Answer</button>
 </form></fieldset>
-{{end}}{{end}}{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
+{{end}}{{end}}{{if .Holdouts}}<div class="holdouts">
+<p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
+{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Criterion}}</legend>
+<p class="meta">{{$h.Blurb}}</p>
+{{if or $h.CanOkay $h.CanDrop}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
+{{if $h.CanOkay}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
+<button type="submit" name="verb" value="okay">Okay</button>
+</form>
+{{end}}{{if $h.CanDrop}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
+<button type="submit" name="verb" value="drop" class="deny">Drop</button>
+</form>
+{{end}}</div>{{end}}
+</fieldset>
+{{end}}</div>{{end}}{{if .Approver}}<form method="post" action="/tasks/{{.TaskID}}/plan/accept" hx-post="/tasks/{{.TaskID}}/plan/accept" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <input type="hidden" name="revision" value="{{.PlanSpec.Revision}}">
 <input type="hidden" name="sha256" value="{{.PlanSpec.SHA256}}">

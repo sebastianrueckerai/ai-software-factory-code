@@ -30,6 +30,7 @@ type approvalCard struct {
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
 	Questions   []planQuestion
+	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
@@ -68,6 +69,27 @@ func (k approvalCard) Returns() bool {
 type planQuestion struct {
 	Index int
 	factoryd.PlanQuestion
+}
+
+// planHoldout is a plan's hold-out criterion as its card shows it: the
+// criterion, its state's one line, and whether its okay and drop work
+// (the round's confirmation unanswered; an unrunnable draft takes no
+// okay).
+type planHoldout struct {
+	Index int
+	factoryd.Holdout
+	Blurb   string
+	CanOkay bool
+	CanDrop bool
+}
+
+// holdoutBlurbs are the hold-out states' one lines.
+var holdoutBlurbs = map[string]string{
+	factoryd.HoldoutProposed:   "drafted; okay keeps it out of the plan and runs it at the gate, hidden from the agent",
+	factoryd.HoldoutStored:     "kept out; it runs at the gate, hidden from the agent",
+	factoryd.HoldoutUnrunnable: "its draft did not run; drop discards it",
+	factoryd.HoldoutDropped:    "dropped",
+	factoryd.HoldoutOpened:     "published: the audit found a real gap; the builder works it",
 }
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver bool) approvalCard {
@@ -112,15 +134,34 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err != nil {
 		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
 	}
+	confirming := false
 	open := 0
 	for i, q := range qs {
 		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
 		if q.Answer == "" {
 			open++
 		}
+		if q.Kind == factoryd.QuestionConfirmation {
+			confirming = q.Answer == ""
+		}
 	}
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
+	}
+	hos, err := c.cfg.Tasks.PlanHoldouts(ctx, k.TaskID)
+	if err != nil {
+		return fmt.Errorf("hold-outs of %s: %w", k.TaskID, err)
+	}
+	i := 0
+	for _, ho := range hos {
+		if ho.Round != k.PlanSpec.Revision {
+			continue
+		}
+		i++
+		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, Holdout: ho,
+			Blurb:   holdoutBlurbs[ho.State],
+			CanOkay: confirming && ho.State == factoryd.HoldoutProposed,
+			CanDrop: confirming && (ho.State == factoryd.HoldoutProposed || ho.State == factoryd.HoldoutUnrunnable)})
 	}
 	return nil
 }

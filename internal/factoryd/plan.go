@@ -137,13 +137,20 @@ type PlanItem struct {
 // attack on its draft found (piece 5); the catch ledger carries it as the
 // self-attack's kind.
 type PlanQuestion struct {
-	Text       string    `json:"text"`
-	Choices    []string  `json:"choices"`
+	Text    string   `json:"text"`
+	Choices []string `json:"choices"`
+	// Kind marks the confirmation question (kind confirmation), whose
+	// answer fixes the spec and the criteria; every other question's kind
+	// is question.
+	Kind       string    `json:"kind,omitempty"`
 	Origin     string    `json:"origin,omitempty"`
 	Answer     string    `json:"-"`
 	AnsweredBy string    `json:"-"`
 	AnsweredAt time.Time `json:"-"`
 }
+
+// QuestionConfirmation is the confirmation question's kind.
+const QuestionConfirmation = "confirmation"
 
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
@@ -1057,8 +1064,25 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
+	confirming, err := confirmationAnswer(ctx, store, taskID, revision, []int{idx})
+	if err != nil {
+		return err
+	}
+	if confirming {
+		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+			if err == nil {
+				err = ErrHoldoutsOpen
+			}
+			return err
+		}
+	}
 	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, answer, by); err != nil {
 		return err
+	}
+	if confirming {
+		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+			return err
+		}
 	}
 	if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: idx}); err != nil {
 		return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
@@ -1067,6 +1091,22 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+}
+
+// confirmationAnswer tells whether any of idxs names revision's
+// confirmation question: its answer fixes the criteria, so the round's
+// hold-outs must carry their clicks first and sweep after.
+func confirmationAnswer(ctx context.Context, store Store, taskID string, revision int, idxs []int) (bool, error) {
+	ci, ok, err := store.ConfirmationIndex(ctx, taskID, revision)
+	if err != nil || !ok {
+		return false, err
+	}
+	for _, i := range idxs {
+		if i == ci {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // AnswerPlanQuestions is the console's batch answer by a member to every
@@ -1088,8 +1128,29 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
+	idxs := make([]int, len(answers))
+	for i, a := range answers {
+		idxs[i] = a.Idx
+	}
+	confirming, err := confirmationAnswer(ctx, store, taskID, revision, idxs)
+	if err != nil {
+		return err
+	}
+	if confirming {
+		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+			if err == nil {
+				err = ErrHoldoutsOpen
+			}
+			return err
+		}
+	}
 	if err := store.AnswerPlanQuestions(ctx, taskID, revision, answers, by); err != nil {
 		return err
+	}
+	if confirming {
+		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+			return err
+		}
 	}
 	for _, a := range answers {
 		if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: a.Idx}); err != nil {
@@ -1245,6 +1306,20 @@ func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool
 	return answered, err
 }
 
+// ConfirmationIndex is revision's confirmation question's index, and
+// whether it has one.
+func (s *PGStore) ConfirmationIndex(ctx context.Context, id string, revision int) (int, bool, error) {
+	var idx int
+	err := s.db.QueryRowContext(ctx, `SELECT idx FROM plan_questions WHERE task_id = $1 AND revision = $2 AND kind = 'confirmation'`, id, revision).Scan(&idx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return idx, true, nil
+}
+
 // PutPlanCatches stores revision's hole catches of one kind and finder,
 // the recording rule's ledger (the spec-intake concept, roadmap 285):
 // false when the revision holds them already, so an activity retry adds
@@ -1265,7 +1340,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1276,7 +1351,7 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 		var q PlanQuestion
 		var choices []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
@@ -1393,7 +1468,7 @@ func (t *taskRun) planLoop() (string, error) {
 	var ref PlanRef
 	healed := st.Status == "waiting-human"
 	if healed {
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, 0).Get(t.ctx, &ref); err != nil {
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, 0).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
 		t.escalation = ref.Comment
@@ -1561,7 +1636,7 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
 		t.escalation, findings, wait = ref.Comment, nil, true
@@ -2110,7 +2185,9 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
 		map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": idx, "kind": "confirmation"})
-	return nil
+	// the round's hold-outs: drafted and dry-run once the confirmation is
+	// asked, so the zone and the question arrive together
+	return r.askHoldouts(ctx, t, revision, p)
 }
 
 // confirmationQuestion is the confirmation question's text: what an

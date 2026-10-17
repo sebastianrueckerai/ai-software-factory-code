@@ -58,6 +58,7 @@ type accBatchTasks struct {
 	tasks     []factoryd.BoardTask
 	plans     map[string][]factoryd.PlanRevision
 	questions map[string][]factoryd.PlanQuestion
+	holdouts  map[string][]factoryd.Holdout
 }
 
 func newAccBatchTasks() *accBatchTasks {
@@ -232,6 +233,12 @@ func (s *accBatchTasks) PlanQuestions(_ context.Context, id string, revision int
 	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
 }
 
+func (s *accBatchTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdout, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.holdouts[id]), nil
+}
+
 func (s *accBatchTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, error) {
 	return nil, nil
 }
@@ -398,6 +405,50 @@ func (s *accBatchStore) OpenPlanQuestions(ctx context.Context, id string, revisi
 		}
 	}
 	return n, err
+}
+
+func (s *accBatchStore) ConfirmationIndex(context.Context, string, int) (int, bool, error) {
+	return 0, false, nil
+}
+
+func (s *accBatchStore) PutPlanHoldouts(context.Context, string, int, []factoryd.Holdout) (bool, error) {
+	return false, nil
+}
+
+func (s *accBatchStore) PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error) {
+	return s.tasks.PlanHoldouts(ctx, id)
+}
+
+func (s *accBatchStore) UndecidedHoldouts(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+
+func (s *accBatchStore) DecidePlanHoldout(context.Context, string, int, int, string) error {
+	return nil
+}
+
+func (s *accBatchStore) SweepPlanHoldouts(context.Context, string) error { return nil }
+
+func (s *accBatchStore) SetHoldoutAudit(context.Context, string, int, string, string, string) error {
+	return nil
+}
+
+func (s *accBatchStore) ClearHoldoutAudit(context.Context, string, int) error { return nil }
+
+func (s *accBatchStore) SetHoldoutTest(context.Context, string, int, string, string, string) error {
+	return nil
+}
+
+func (s *accBatchStore) BumpHoldoutRed(context.Context, string, int) (int, error) {
+	return 0, nil
+}
+
+func (s *accBatchStore) OpenHoldout(context.Context, string, int) (string, error) {
+	return "", nil
+}
+
+func (s *accBatchStore) PastReverts(context.Context, string) ([]string, error) {
+	return nil, nil
 }
 
 func (s *accBatchStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []factoryd.PlanAnswer, by string) error {

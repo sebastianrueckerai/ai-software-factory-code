@@ -785,6 +785,38 @@ func batchLines(batch []factoryd.PlanAnswer) []string {
 	return lines
 }
 
+// doDecideHoldout runs the member's okay or drop of hold-out idx of plan
+// id's newest revision: factoryd stores the decision. Nothing is posted
+// on the issue: the agent reads it, and the hold-outs stay hidden from
+// the agent by routing; the event feed carries the decision.
+func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revision, idx int, verb string) (string, error) {
+	if verb != "okay" && verb != "drop" {
+		return "", refuse(http.StatusBadRequest, "okay or drop is required")
+	}
+	t, err := c.planIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	var stale factoryd.ErrStalePlan
+	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.s.user); {
+	case errors.As(err, &stale):
+		return "", refuse(http.StatusConflict, stale.Error())
+	case errors.Is(err, factoryd.ErrAnswered):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The confirmation of plan #%d is answered already; its hold-outs are settled.", t.IssueNumber))
+	case errors.Is(err, factoryd.ErrHoldoutClick), errors.Is(err, factoryd.ErrNoHoldout):
+		return "", refuse(http.StatusConflict, err.Error())
+	case err != nil:
+		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
+		return "", refuse(http.StatusConflict, "The decision could not be recorded; see the factoryd log.")
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
+	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
+	if verb == "okay" {
+		return fmt.Sprintf("Hold-out %d of plan #%d kept out; it runs at the gate, hidden from the agent.", idx, t.IssueNumber), nil
+	}
+	return fmt.Sprintf("Hold-out %d of plan #%d dropped.", idx, t.IssueNumber), nil
+}
+
 // doRequestChanges posts a writer's change request on plan id's issue
 // as the member; intake hands it to the planner. The plan's pending
 // request is denied as theirs at once: the planner answers a new revision.

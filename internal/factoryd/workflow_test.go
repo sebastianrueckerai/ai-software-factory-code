@@ -156,6 +156,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityGateCriteria: func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 			return CriteriaResult{}, nil
 		},
+		ActivityHoldoutSettlement: func(ctx context.Context, taskID string, pin, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
+			return HoldoutSettlement{Settled: true}, nil
+		},
 		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{}, nil
 		},
