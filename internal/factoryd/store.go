@@ -461,6 +461,13 @@ type Store interface {
 	// PutPlanQuestions stores revision's questions of plan task id, numbered
 	// from 1, unless it has them already, and reports whether it did.
 	PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) (bool, error)
+	// PutPlanConfirmation appends the confirmation question to revision's
+	// questions, after the planner's, kind confirmation, unless it has it
+	// already, and returns its index and whether it stored it.
+	PutPlanConfirmation(ctx context.Context, id string, revision int, q PlanQuestion) (int, bool, error)
+	// PlanConfirmationAnswered tells whether any of plan task id's
+	// revisions had its confirmation question answered.
+	PlanConfirmationAnswered(ctx context.Context, id string) (bool, error)
 	// PlanQuestions are revision's questions of plan task id in order,
 	// each with its answer once given.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)

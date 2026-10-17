@@ -26,9 +26,10 @@ func questionPlan() Plan {
 }
 
 // A plan asks up to five questions, each of 1 to 300 characters with 2 to
-// 5 distinct choices of 1 to 60; a breach is a finding like a card's. The
-// guide gives the field's format and one sentence on it, nothing about
-// when to ask (ruling 263).
+// 5 distinct choices of 1 to 60, an origin of self_attack or none (an
+// attack on the planner's own draft, piece 5); a breach is a finding like
+// a card's. The guide gives the field's format and one sentence on it,
+// nothing about when to ask (ruling 263).
 func TestPlanQuestionsFormat(t *testing.T) {
 	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, 0)
 	rawWith, with, _ := planSHA(p)
@@ -57,6 +58,8 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"no text":           {change(func(p *Plan) { p.Questions[0].Text = "" }), []string{"plan: question 1: text empty"}},
 		"text at the cap":   {change(func(p *Plan) { p.Questions[0].Text = strings.Repeat("q", 300) }), nil},
 		"long text":         {change(func(p *Plan) { p.Questions[0].Text = strings.Repeat("q", 301) }), []string{"plan: question 1: text over 300 characters"}},
+		"an attack":         {change(func(p *Plan) { p.Questions[0].Origin = CatchSelfAttack }), nil},
+		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
 		if got := ValidatePlan(tc.text, testShape, testLimits, 0); !slices.Equal(got, tc.want) {
@@ -68,12 +71,14 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	g := planGuide(testShape, testLimits)
 	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the member; their answers come back to you with your last plan, "+
-			"and a plan with open questions cannot be accepted until they are answered.") || strings.Count(g, "question") != 3 {
-		t.Fatalf("planGuide names questions %d times, want 3 (the format's key, the sentence's two):\n%s", strings.Count(g, "question"), g)
+			"and a plan with open questions cannot be accepted until they are answered.") || strings.Count(g, "question") != 4 {
+		t.Fatalf("planGuide names questions %d times, want 4 (the format's key, the attack sentence's one, the sentence's two):\n%s", strings.Count(g, "question"), g)
 	}
 }
 
-// The store keeps a revision's questions in order and each answer once.
+// The store keeps a revision's questions in order and each answer once;
+// the confirmation question (piece 5) appends after them once, and its
+// answer ends the asking for every later revision.
 func TestPGStorePlanQuestions(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_questions"))
@@ -118,6 +123,30 @@ func TestPGStorePlanQuestions(t *testing.T) {
 	if open := must(s.OpenPlanQuestions(ctx, "t-plan", 1)); open != 0 || got[0].Answer != "60 seconds" || got[1].Answer != "30 days" || got[1].AnsweredBy != "bob" {
 		t.Fatalf("questions %+v, %d open", got, open)
 	}
+	// The confirmation (piece 5): appended after the revision's questions,
+	// once however often it runs, and its answer ends the asking for every
+	// later revision.
+	confirm := PlanQuestion{Text: "Confirmation of the spec and the criteria of plan revision 1: answer okay.", Choices: []string{"okay"}}
+	for i, want := range []bool{true, false} {
+		if idx, inserted, err := s.PutPlanConfirmation(ctx, "t-plan", 1, confirm); inserted != want || err != nil || (inserted && idx != 3) {
+			t.Fatalf("confirmation put %d: idx %d inserted %v (%v), want inserted %v at idx 3", i+1, idx, inserted, err, want)
+		}
+	}
+	if answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered {
+		t.Fatalf("answered %v (%v), want not yet", answered, err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, "t-plan", 1, 3, "okay", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered {
+		t.Fatalf("answered %v (%v), want yes", answered, err)
+	}
+	if got, _ := s.PlanQuestions(ctx, "t-plan", 1); len(got) != 3 || got[2].Answer != "okay" {
+		t.Fatalf("questions with the confirmation %+v", got)
+	}
+	if open := must(s.OpenPlanQuestions(ctx, "t-plan", 1)); open != 0 {
+		t.Fatalf("%d open questions, want 0", open)
+	}
 }
 
 func must[T any](v T, err error) T {
@@ -128,11 +157,12 @@ func must[T any](v T, err error) T {
 }
 
 // RequestPlan of a revision with two questions lists them in the plan
-// comment after the table, stores them sanitised as the comment is (a
-// clicked choice is posted as the member's), records one question_asked
-// row each and writes them to the recording rule's ledger as the
-// planner's catches, once however often it runs; the approval request
-// waits.
+// comment after the table (the confirmation question never reaches the
+// comment; it waits in Needs you, its own test), stores them sanitised as
+// the comment is (a clicked choice is posted as the member's), records
+// one question_asked row each and writes them to the recording rule's
+// ledger as the planner's catches, once however often it runs; the
+// approval request waits.
 func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	p := questionPlan()
 	p.Questions[1].Choices[1] = "30 days, see https://evil.example"
@@ -152,7 +182,7 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	}
 	var rows []string
 	for _, e := range rec.rows {
-		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && e.Via == ViaFactoryd {
+		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && e.Via == ViaFactoryd && e.Detail["kind"] == nil {
 			rows = append(rows, fmt.Sprintf("%v %v %v %v", e.Detail["revision"], e.Detail["index"], e.Detail["question"], e.Detail["choices"]))
 		}
 	}
@@ -160,7 +190,8 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 		"1 2 How long are the results kept? [7 days 30 days, see hxxps://evil[.]example]"}) {
 		t.Fatalf("question_asked rows %q", rows)
 	}
-	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 2 || qs[1].Choices[1] != "30 days, see hxxps://evil[.]example" {
+	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 3 || qs[1].Choices[1] != "30 days, see hxxps://evil[.]example" ||
+		!strings.HasPrefix(qs[2].Text, "Confirmation of the spec and the criteria of plan revision 1:") || !slices.Equal(qs[2].Choices, []string{"okay"}) {
 		t.Fatalf("stored questions %+v", qs)
 	}
 	if got := store.catches["t-plan 1 "+CatchQuestion+" "+FinderPlanner]; !slices.Equal(got,
@@ -169,6 +200,102 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	}
 	if len(store.approvals) != 1 || store.approvals[0].Kind != ApprovalPlan || store.approvals[0].Status != "pending" {
 		t.Fatalf("approvals %+v", store.approvals)
+	}
+}
+
+// The confirmation question (the spec-intake concept, piece 5) shows the
+// spec and the criteria to the members in Needs you: factoryd appends it
+// to a revision with criteria, after the planner's questions, one
+// question_asked row of kind confirmation, once however often the
+// revision runs. Asked until answered once: the answer ends the asking,
+// a later revision asks nothing; a plan without criteria carries no spec
+// to confirm.
+func TestRequestPlanAsksTheConfirmation(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := newPlanRunner(t, questionPlan())
+	rec := &fakeEventRecorder{}
+	r.timeline.Events = rec
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := "Confirmation of the spec and the criteria of plan revision 1: answer okay to confirm them, or answer with what changes; " +
+		"the criteria are fixed only when this is answered.\n" +
+		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
+		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
+		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
+		"The whole plan is in the plan's comment on this issue."
+	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)
+	if len(qs) != 3 || qs[2].Text != want || !slices.Equal(qs[2].Choices, []string{"okay"}) {
+		t.Fatalf("stored questions %+v, want the confirmation third:\n%s", qs, want)
+	}
+	var rows []string
+	for _, e := range rec.rows {
+		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && e.Detail["kind"] == "confirmation" {
+			rows = append(rows, fmt.Sprintf("%v %v %v %v", e.Detail["revision"], e.Detail["index"], e.Detail["kind"], e.Detail["choices"]))
+		}
+	}
+	if !slices.Equal(rows, []string{"1 3 confirmation [okay]"}) {
+		t.Fatalf("confirmation rows %q", rows)
+	}
+	if answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered {
+		t.Fatalf("answered %v (%v), want not yet", answered, err)
+	}
+	// the answer ends the asking: revision 2, filed with the answers, asks
+	// its questions again but no confirmation
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 3, "okay", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered {
+		t.Fatalf("answered %v (%v), want yes", answered, err)
+	}
+	p2 := questionPlan()
+	p2.Summary = "Answered, the same plan again."
+	raw, sha, _ := planSHA(p2)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2); err != nil {
+		t.Fatal(err)
+	}
+	if qs, _ = store.PlanQuestions(ctx, "t-plan", 2); len(qs) != 2 {
+		t.Fatalf("revision 2's questions %+v, want the planner's two only: the confirmation was answered once", qs)
+	}
+	for _, e := range rec.rows {
+		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && e.Detail["kind"] == "confirmation" && e.Detail["revision"] == 2 {
+			t.Fatalf("revision 2 asked a confirmation: %+v", e.Detail)
+		}
+	}
+	// no criteria, no confirmation: a plan this process gives no spec
+	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 3, Plan{Summary: "s"}); err != nil {
+		t.Fatal(err)
+	}
+	if qs, _ = store.PlanQuestions(ctx, "t-plan", 3); len(qs) != 0 {
+		t.Fatalf("a plan without criteria asked %+v", qs)
+	}
+}
+
+// The planner's one attack on its own draft (piece 5) reaches the
+// recording rule's ledger under its own kind: a question with origin
+// self_attack is stored with its origin and written as a catch of kind
+// self_attack, the plain questions as kind question, both finder
+// planner.
+func TestRequestPlanSplitsTheCatches(t *testing.T) {
+	p := questionPlan()
+	p.Questions[0].Origin = CatchSelfAttack
+	r, store, _, _ := newPlanRunner(t, p)
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.catches["t-plan 1 "+CatchSelfAttack+" "+FinderPlanner]; !slices.Equal(got, []string{"How often does the checker probe a site?"}) {
+		t.Fatalf("the attack's catches %q", got)
+	}
+	if got := store.catches["t-plan 1 "+CatchQuestion+" "+FinderPlanner]; !slices.Equal(got, []string{"How long are the results kept?"}) {
+		t.Fatalf("the plain catches %q", got)
+	}
+	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); qs[0].Origin != CatchSelfAttack || qs[1].Origin != "" {
+		t.Fatalf("stored questions' origins %+v", qs)
 	}
 }
 

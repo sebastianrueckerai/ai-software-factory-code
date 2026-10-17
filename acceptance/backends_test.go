@@ -745,6 +745,14 @@ func (s *acceptanceStore) PutPlanQuestions(context.Context, string, int, []facto
 	return false, nil
 }
 
+func (s *acceptanceStore) PutPlanConfirmation(context.Context, string, int, factoryd.PlanQuestion) (int, bool, error) {
+	return 0, false, nil
+}
+
+func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) PutPlanCatches(context.Context, string, int, string, string, []string) (bool, error) {
 	return false, nil
 }
