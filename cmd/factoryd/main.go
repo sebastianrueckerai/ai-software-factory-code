@@ -430,19 +430,33 @@ func main() {
 	// the console is the only listener the edge gateway reaches; the
 	// webhook and intake API above stay in-cluster
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
-	// the messengers (roadmap 145): Telegram when its bot key is seated;
-	// its webhook rides the console's public host
+	// the messengers (roadmap 145): Telegram when its bot key is seated,
+	// Discord when its application is; their routes ride the console's
+	// public host
+	publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
 	var messengers *console.Messengers
 	if key := optionalSecret("TELEGRAM_BOT_KEY"); key != "" {
-		publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
 		telegram := &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
 		if err := telegram.Boot(ctx, publicURL); err != nil {
 			log.Printf("messengers: telegram boot: %v", err)
 		}
 		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update}
 	}
+	if id, secret, token, guild := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
+		optionalSecret("DISCORD_BOT_TOKEN"), env("DISCORD_GUILD_ID", ""); id != "" || secret != "" || token != "" || guild != "" {
+		if id == "" || secret == "" || token == "" || guild == "" {
+			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN and DISCORD_GUILD_ID together")
+		} else {
+			if messengers == nil {
+				messengers = &console.Messengers{}
+			}
+			discord := &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
+				GuildID: guild, PublicURL: publicURL, Store: store}
+			messengers.Discord = &console.DiscordConnect{AuthorizeURL: discord.AuthorizeURL, Connect: discord.Connect}
+		}
+	}
 	consoleHandler, err := console.New(console.Config{
-		PublicURL:        env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world"),
+		PublicURL:        publicURL,
 		Messengers:       messengers,
 		ForgejoURL:       forgejo.BaseURL,
 		ForgejoPublicURL: forgejo.PublicURL,

@@ -88,15 +88,34 @@ func (s *PGStore) ConsumeMessengerCode(ctx context.Context, code, venue, address
 	case err != nil:
 		return "", false, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM messenger_links WHERE venue = $1 AND address = $2`, venue, address); err != nil {
-		return "", false, err
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO messenger_links (login, venue, address, venue_user) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (login, venue) DO UPDATE SET address = excluded.address, venue_user = excluded.venue_user, created_at = now()`,
-		login, venue, address, venueUser); err != nil {
+	if err := bindLink(ctx, tx, login, venue, address, venueUser); err != nil {
 		return "", false, err
 	}
 	return login, true, tx.Commit()
+}
+
+// BindMessenger binds venue's chat address to login, with their venue
+// user id, the way a consumed code does.
+func (s *PGStore) BindMessenger(ctx context.Context, login, venue, address, venueUser string) error {
+	return bindLink(ctx, s.db, login, venue, address, venueUser)
+}
+
+// execer is what *sql.DB and *sql.Tx share; the caller owns the
+// transaction, if any.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+// bindLink replaces login's link on venue and steals the address from
+// another member.
+func bindLink(ctx context.Context, ex execer, login, venue, address, venueUser string) error {
+	if _, err := ex.ExecContext(ctx, `DELETE FROM messenger_links WHERE venue = $1 AND address = $2`, venue, address); err != nil {
+		return err
+	}
+	_, err := ex.ExecContext(ctx, `INSERT INTO messenger_links (login, venue, address, venue_user) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (login, venue) DO UPDATE SET address = excluded.address, venue_user = excluded.venue_user, created_at = now()`,
+		login, venue, address, venueUser)
+	return err
 }
 
 // MessengerLinks are the member's connected chats.

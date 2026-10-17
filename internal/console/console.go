@@ -338,6 +338,8 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
+		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
+		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
 			http.StripPrefix("/static/", http.FileServerFS(static)).ServeHTTP(w, r)
 		}, "", "the static files"},

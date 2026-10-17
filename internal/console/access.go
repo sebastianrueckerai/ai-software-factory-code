@@ -74,6 +74,8 @@ var accessTable = map[string]accessRule{
 	// GET routes
 	"GET /static/":                            {},
 	"GET /login":                              {},
+	"GET /messengers/discord/start":           rMember,
+	"GET /messengers/discord/callback":        rMember,
 	"GET /auth/callback":                      {},
 	"GET /{$}":                                rMember,
 	"GET /board":                              rMember,
