@@ -644,7 +644,7 @@ func TestDrawerActivity(t *testing.T) {
 	}
 	for _, want := range []string{
 		`<tr><td>session</td><td>1</td><td>2026-10-11 10:00:00</td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
-		`<tr><td>2026-10-11T10:05:00Z</td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td title="2026-10-11T10:05:00Z">2026-10-11 10:05:00</td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)

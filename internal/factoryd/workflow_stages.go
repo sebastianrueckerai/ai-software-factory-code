@@ -90,11 +90,23 @@ func atReproStart(escalation string) bool {
 // budget asks (checkinBlock in the runner).
 const checkinSpendAsk = "check-in: " + CheckSpend + ": "
 
+// checkinCallCapStop is the reason a check-in stopped at its call cap,
+// the one stop whose answer buys the card a wider cap.
+const checkinCallCapStop = "check-in call cap reached"
+
 // atCheckinSpend: escalation is a check-in stopped at its spent budget,
 // its call cap or the budget's share: the answer verifies the head again,
 // no session, for one would stop at the same cap before any model call.
 func atCheckinSpend(escalation string) bool {
 	return strings.HasPrefix(escalation, checkinSpendAsk)
+}
+
+// atCheckinCallCap: escalation is a check-in stopped at its call cap,
+// not the budget's share (versionCheckinRaise): the answer buys the card
+// one more turn of the cap, for the session it buys would stop at the
+// same cap before any model call.
+func atCheckinCallCap(escalation string) bool {
+	return atCheckinSpend(escalation) && strings.Contains(escalation, checkinCallCapStop)
 }
 
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
