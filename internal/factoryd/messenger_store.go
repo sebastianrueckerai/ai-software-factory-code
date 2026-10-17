@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"slices"
 	"time"
 )
 
@@ -152,6 +153,93 @@ func (s *PGStore) NotifyLevelsOf(ctx context.Context, login string) (map[string]
 func (s *PGStore) DeleteNotifyLevel(ctx context.Context, login, repository string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM notify_levels WHERE login = $1 AND repository = $2`, login, repository)
 	return err
+}
+
+// PokeRecipients are a poke's recipients on repository: base plus every
+// member whose explicit level row (needs-you or all) joins them. A member
+// of base keeps their rows whatever their level.
+func (s *PGStore) PokeRecipients(ctx context.Context, repository string, base []string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT login FROM notify_levels WHERE repository = $1 AND level IN ($2, $3)
+		AND login <> ALL($4) ORDER BY login`, repository, LevelNeedsYou, LevelAll, base)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	joined := slices.Clone(base)
+	for rows.Next() {
+		var login string
+		if err := rows.Scan(&login); err != nil {
+			return nil, err
+		}
+		joined = append(joined, login)
+	}
+	return joined, rows.Err()
+}
+
+// queueDeliveries writes one pending outbox row per connection whose
+// member's effective level passes plan's row level, inside the poke's
+// transaction, so a notification is never lost between the event and the
+// send. The explicit level row wins; without one the derived default is
+// needs-you inside plan's notify list, off outside it.
+func queueDeliveries(ctx context.Context, tx *sql.Tx, repository string, logins []string, ids []int64, plan PokeDelivery) error {
+	if plan.RowLevel == "" || !plan.On {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT l.id, l.login, v.level FROM messenger_links l
+		LEFT JOIN notify_levels v ON v.login = l.login AND v.repository = $1`, repository)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	links, explicit := map[string][]int64{}, map[string]string{}
+	for rows.Next() {
+		var id int64
+		var login string
+		var level sql.NullString
+		if err := rows.Scan(&id, &login, &level); err != nil {
+			return err
+		}
+		links[login] = append(links[login], id)
+		if level.Valid {
+			explicit[login] = level.String
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	row := levelRank(plan.RowLevel)
+	for i, login := range logins {
+		if ids[i] == 0 {
+			continue // a repeat sends nothing new
+		}
+		member := explicit[login]
+		if member == "" {
+			member = LevelOff
+			if slices.Contains(plan.Derived, login) {
+				member = LevelNeedsYou
+			}
+		}
+		if levelRank(member) < row {
+			continue
+		}
+		for _, link := range links[login] {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO notify_deliveries (message_id, link_id) VALUES ($1, $2)`, ids[i], link); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// levelRank orders the levels for a row's pass check.
+func levelRank(level string) int {
+	switch level {
+	case LevelAll:
+		return 2
+	case LevelNeedsYou:
+		return 1
+	}
+	return 0
 }
 
 // Delivery is one outbox row with what its send needs: the link, the inbox

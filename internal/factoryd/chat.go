@@ -509,9 +509,13 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 
 // StartQueued lands queued row id in its place: the row takes the next
 // id, after every row of the turns before it, and is queued no longer.
+// The row's pending delivery rows follow it to the landing id, so a
+// notification born mid-turn still names a row the console shows.
 func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
-		WHERE id = $1 AND repository = $2 AND login = $3 AND queued`, id, repository, login)
+	_, err := s.db.ExecContext(ctx, `WITH landed AS (
+		UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
+		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id)
+		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1`, id, repository, login)
 	return err
 }
 
