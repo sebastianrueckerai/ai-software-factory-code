@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -106,5 +107,58 @@ func TestPokerAppendsLaterAsksToCardThread(t *testing.T) {
 				t.Fatalf("the %s's row %d = %+v, want the ask %q", th.name, i, rows[i], want)
 			}
 		}
+	}
+}
+
+// ProjectConversations lists every member's threads on a repository,
+// each named by its owner: the same number under two members is two
+// threads, not one merged.
+func TestProjectConversationsNamesEveryOwner(t *testing.T) {
+	s := newCardThreadStore(t)
+	ctx := t.Context()
+	for _, login := range []string{"sebastian", "bob"} {
+		if _, err := s.EnsureInbox(ctx, "sf/code", login); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, row := range []struct {
+		login string
+		rows  int
+	}{
+		{"sebastian", 2},
+		{"bob", 1},
+	} {
+		for i := range row.rows {
+			if _, err := s.AddChatMessage(ctx, "sf/code", row.login, ChatMessage{Role: "user",
+				Content: fmt.Sprintf("%s's row %d", row.login, i), Conversation: 1}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	list, err := s.ProjectConversations(ctx, "sf/code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := map[string]int64{}
+	for _, th := range list {
+		counts[fmt.Sprintf("%s %d %t", th.Login, th.Number, th.Inbox)] = th.Messages
+	}
+	want := map[string]int64{
+		"sebastian 1 false": 2,
+		"bob 1 false":       1,
+	}
+	for k, n := range want {
+		if counts[k] != n {
+			t.Errorf("thread %s = %d messages, want %d (all rows: %v)", k, counts[k], n, counts)
+		}
+	}
+	inboxes := 0
+	for _, th := range list {
+		if th.Inbox {
+			inboxes++
+		}
+	}
+	if inboxes != 2 || len(list) != 4 {
+		t.Fatalf("%d threads, %d inboxes: want 4 threads, one inbox per member: %+v", len(list), inboxes, list)
 	}
 }

@@ -849,6 +849,10 @@ func (a *AcceptanceRig) Conversations(context.Context, string, string) ([]factor
 	return nil, nil
 }
 
+func (a *AcceptanceRig) ProjectConversations(context.Context, string) ([]factoryd.ChatConversation, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) ProposalStates(_ context.Context, _, _ string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

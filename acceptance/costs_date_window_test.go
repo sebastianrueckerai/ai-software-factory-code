@@ -703,6 +703,28 @@ func (f *acceptChat) Conversations(_ context.Context, repository, login string) 
 	return out, nil
 }
 
+func (f *acceptChat) ProjectConversations(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatConversation
+	for key, msgs := range f.msgs {
+		repo, login, _ := strings.Cut(key, " ")
+		if repo != repository {
+			continue
+		}
+		for _, m := range msgs {
+			i := slices.IndexFunc(out, func(c factoryd.ChatConversation) bool { return c.Login == login && c.Number == m.Conversation })
+			if i < 0 {
+				out, i = append(out, factoryd.ChatConversation{Login: login, Number: m.Conversation, FirstAt: m.At}), len(out)
+			}
+			out[i].LastAt = m.At
+			out[i].Messages++
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int { return cmp.Compare(b.Number, a.Number) })
+	return out, nil
+}
+
 func (f *acceptChat) ChatMessages(_ context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

@@ -840,6 +840,10 @@ func (f *accBatchChat) Conversations(context.Context, string, string) ([]factory
 	return nil, nil
 }
 
+func (f *accBatchChat) ProjectConversations(context.Context, string) ([]factoryd.ChatConversation, error) {
+	return nil, nil
+}
+
 func (f *accBatchChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
 	return nil, nil
 }

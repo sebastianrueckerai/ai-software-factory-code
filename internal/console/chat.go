@@ -95,8 +95,12 @@ type turn struct {
 	// it is an earlier turn's or the turn's own message, a row after it
 	// the turn stored.
 	upto int64
-	// conv is the member's thread the turn answers in (roadmap 239).
-	conv int64
+	// conv is the member's thread the turn answers in (roadmap 239); its
+	// owner is whose number space that thread is, the member's own until
+	// the request names another member's thread, which everyone may read
+	// and talk in.
+	conv  int64
+	owner string
 	// pageQuery is the view the member's page stands on (282): the board's
 	// data-query the chat's POST carries, whose controls the view tools
 	// merge their words onto. present are the argument keys the call itself
@@ -125,7 +129,7 @@ func (c *Console) chatTurn(w http.ResponseWriter, r *http.Request) (*turn, bool)
 	if pc, ok := v.Projects[p.Name]; ok {
 		a.level, a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
-	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree,
+	return &turn{c: c, r: r, a: a, p: p, tree: v.Tree, owner: a.s.user,
 		cfg: v.Document.ChatOf(v.Projects[p.Name])}, true
 }
 
@@ -154,13 +158,13 @@ func (t *turn) fail(msg string) {
 	t.send("error", map[string]string{"message": msg})
 }
 
-// save appends m to the member's conversation, even once they left; false
-// once the turn failed.
+// save appends m to the thread's conversation, even once the member
+// left; false once the turn failed.
 func (t *turn) save(m factoryd.ChatMessage) bool {
 	ctx := context.WithoutCancel(t.r.Context())
 	m.Conversation = t.conv
-	if _, err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	if _, err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, m); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
 		return false
 	}
@@ -191,22 +195,22 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	ctx, repo, login := r.Context(), t.p.Repository, t.a.s.user
-	if r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 {
-		if err := c.cfg.Chat.OpenConversation(ctx, repo, login, t.conv); err != nil {
-			log.Printf("console: open the chat of %s on %s: %v", login, repo, err)
+	ctx, repo, owner := r.Context(), t.p.Repository, t.owner
+	if owner == t.a.s.user && r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 {
+		if err := c.cfg.Chat.OpenConversation(ctx, repo, owner, t.conv); err != nil {
+			log.Printf("console: open the chat of %s on %s: %v", owner, repo, err)
 		} else {
 			th.Current = true
 		}
 	}
-	msgs, err := c.cfg.Chat.ChatMessages(ctx, repo, login, t.conv, chatHistory)
+	msgs, err := c.cfg.Chat.ChatMessages(ctx, repo, owner, t.conv, chatHistory)
 	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
+		log.Printf("console: the chat of %s on %s: %v", owner, repo, err)
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
 		return
 	}
 	t.settleRows(ctx, msgs, th.SeenUpto)
-	// the member's Clear old swept the rows up to their marker from view;
+	// the owner's Clear old swept the rows up to their marker from view;
 	// an open ask stays whatever the marker says, and the record keeps
 	// every row
 	if th.ClearedUpto > 0 {
@@ -220,8 +224,12 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		}
 		msgs = kept
 	}
-	if err := c.cfg.Chat.MarkSeen(ctx, repo, login, t.conv); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
+	// reading marks the member's own thread seen; another member's keeps
+	// its owner's unread marker
+	if owner == t.a.s.user {
+		if err := c.cfg.Chat.MarkSeen(ctx, repo, owner, t.conv); err != nil {
+			log.Printf("console: the chat of %s on %s: %v", owner, repo, err)
+		}
 	}
 	if msgs == nil {
 		msgs = []factoryd.ChatMessage{}
@@ -240,16 +248,16 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs}
 	if len(tokens) > 0 {
-		states, err := c.cfg.Chat.ProposalStates(ctx, repo, login, tokens, time.Now())
+		states, err := c.cfg.Chat.ProposalStates(ctx, repo, owner, tokens, time.Now())
 		if err != nil {
-			log.Printf("console: the chat proposals of %s on %s: %v", login, repo, err)
+			log.Printf("console: the chat proposals of %s on %s: %v", owner, repo, err)
 		} else {
 			answer.Proposals = states
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(answer); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
+		log.Printf("console: the chat of %s on %s: %v", owner, repo, err)
 	}
 }
 
@@ -294,12 +302,12 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	waits, events := askFacts(ctx, t.c, ids)
-	// a card's own thread (the card door): an open ask row names its
-	// thread, the reader's when they bound it
-	threads := map[string]int64{}
+	// a card's own thread (the card door): an open ask row names it,
+	// whosever binding it carries
+	threads, whose := map[string]int64{}, map[string]string{}
 	for _, id := range ids {
-		if who, n, ok, err := t.c.cfg.Chat.CardThreadFor(ctx, t.p.Repository, id); err == nil && ok && who == t.a.s.user {
-			threads[id] = n
+		if who, n, ok, err := t.c.cfg.Chat.CardThreadFor(ctx, t.p.Repository, id); err == nil && ok {
+			threads[id], whose[id] = n, who
 		}
 	}
 	for i, m := range msgs {
@@ -315,7 +323,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		if s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
 			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
 		} else if n := threads[m.TaskID]; n != 0 {
-			msgs[i].Thread = n
+			msgs[i].Thread, msgs[i].ThreadOwner = n, whose[m.TaskID]
 		}
 	}
 }
@@ -348,7 +356,7 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 	}
 	waits, events := askFacts(ctx, c, ids)
 	for _, m := range asks {
-		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Number == m.Conversation })
+		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Login == login && th.Number == m.Conversation })
 		if i < 0 {
 			continue
 		}
@@ -414,9 +422,9 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		t.compactByHand(task.ID)
 		return
 	}
-	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv, Queued: pos > 0})
+	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv, Queued: pos > 0})
 	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
 		return
 	}
@@ -424,8 +432,8 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	t.open(w)
 	t.takeTurn(pos, wait)
 	if pos > 0 {
-		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.a.s.user, id); err != nil {
-			log.Printf("console: start the queued turn of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id); err != nil {
+			log.Printf("console: start the queued turn of %s on %s: %v", t.owner, t.p.Repository, err)
 			t.fail("The queued message could not start its turn; send it again.")
 			return
 		}
@@ -783,11 +791,11 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.a.s.user, t.conv)
+	th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
 	if err != nil {
 		return nil, err
 	}
-	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, t.conv, chatContextMax)
+	history, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, chatContextMax)
 	if err != nil {
 		return nil, err
 	}
@@ -1007,18 +1015,23 @@ func (c *Console) chatClear(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	if err := c.cfg.Chat.MarkCleared(r.Context(), t.p.Repository, t.a.s.user, t.conv); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	if err := t.mine(); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if err := c.cfg.Chat.MarkCleared(r.Context(), t.p.Repository, t.owner, t.conv); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		http.Error(w, "cannot clear the conversation", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// chatConversations answers GET /projects/{name}/chat/conversations: the
-// member's threads on the project, the inbox first (made here the first
-// time), then the active by their last message, the archived last, each
-// with its unread turns and whether a turn runs on it.
+// chatConversations answers GET /projects/{name}/chat/conversations:
+// the project's threads, every member's with its owner named, the
+// busiest first; the member's own inbox is made here the first time.
+// Each of the member's own threads carries its unread turns; every
+// thread whether a turn runs on it.
 func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -1027,7 +1040,7 @@ func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	if _, err := c.cfg.Chat.EnsureInbox(r.Context(), t.p.Repository, t.a.s.user); err != nil {
 		log.Printf("console: the inbox of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
-	list, err := c.cfg.Chat.Conversations(r.Context(), t.p.Repository, t.a.s.user)
+	list, err := c.cfg.Chat.ProjectConversations(r.Context(), t.p.Repository)
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot read the conversations", http.StatusInternalServerError)
@@ -1037,7 +1050,7 @@ func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 		list = []factoryd.ChatConversation{}
 	}
 	for i := range list {
-		list[i].Working = c.turns.working(threadKey(t.p.Repository, t.a.s.user, list[i].Number))
+		list[i].Working = c.turns.working(threadKey(t.p.Repository, list[i].Login, list[i].Number))
 	}
 	c.settleCounts(r.Context(), t.p.Repository, t.a.s.user, list)
 	w.Header().Set("Content-Type", "application/json")

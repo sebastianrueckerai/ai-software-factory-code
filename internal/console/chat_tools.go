@@ -39,6 +39,7 @@ type toolInput struct {
 	Accent     string `json:"accent,omitempty"`
 	Login      string `json:"login,omitempty"`
 	N          int    `json:"n,omitempty"`
+	Thread     int64  `json:"thread,omitempty"`
 	Ref        string `json:"ref,omitempty"`
 	Path       string `json:"path,omitempty"`
 	SHA        string `json:"sha,omitempty"`
@@ -1455,12 +1456,18 @@ var tools = []chatTool{
 			s, err := t.attachAnalysis(in)
 			return s, nil, err
 		}},
-	{name: "active_threads", title: "Read the member's threads",
-		about: "The member's other active threads on the project, then the scratchpad's tail.",
+	{name: "active_threads", title: "Read the project's threads",
+		about: "The project's active threads, every member's with its owner named, then the scratchpad's tail.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.activeThreads()
 			return s, nil, err
 		}},
+	{name: "chat_search", title: "Search the project's threads",
+		params: map[string]any{"query": str("the text to find, any case"),
+			"thread": map[string]any{"type": "integer", "description": "one of your own thread's numbers to search only it", "minimum": 1}},
+		required: []string{"query"},
+		about:    "Search every thread of the project, every member's, for a text, at most 20 hits.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
 		about:  "Works the board's view controls as a click does: menus, find, routines, card, panel, theme.",
 		params: boardViewParams(),

@@ -65,6 +65,9 @@ type ChatMessage struct {
 	// Thread is the conversation bound to the ask's card (the card door),
 	// the reader's own; derived, never stored.
 	Thread int64 `json:"thread,omitempty"`
+	// ThreadOwner is that thread's member when it is another member's;
+	// derived, never stored.
+	ThreadOwner string `json:"thread_owner,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -178,6 +181,9 @@ const (
 // unread turns, the open asks and the rest (the notification-settling
 // concept).
 type ChatConversation struct {
+	// Login is the thread's owner, the member whose conversation number
+	// it is; every listing fills it, the project's threads included.
+	Login    string    `json:"login,omitempty"`
 	Number   int64     `json:"number"`
 	Title    string    `json:"title"`
 	State    string    `json:"state"`
@@ -214,19 +220,25 @@ type ChatConversation struct {
 // row.
 const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
 
-const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
+const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
 	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
 	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0)
 	FROM chat_conversations c
 	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
 	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
-	WHERE c.repository = $1 AND c.login = $2`
+	WHERE c.repository = $1`
+
+// conversationGroup is every conversation query's grouping and order: the
+// inbox first, then the threads by their last message, newest first, the
+// archived last, each member's threads their own.
+const conversationGroup = ` GROUP BY c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
+	ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.login DESC, c.conversation DESC`
 
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
+	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}
@@ -236,9 +248,26 @@ func scanConversation(scan func(...any) error) (ChatConversation, error) {
 // Conversations lists login's threads on repository: the inbox first,
 // then the active by their last message, newest first, the archived last.
 func (s *PGStore) Conversations(ctx context.Context, repository, login string) ([]ChatConversation, error) {
-	rows, err := s.db.QueryContext(ctx, conversationSelect+`
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
-		ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.conversation DESC`, repository, login)
+	rows, err := s.db.QueryContext(ctx, conversationSelect+` AND c.login = $2`+conversationGroup, repository, login)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatConversation
+	for rows.Next() {
+		c, err := scanConversation(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ProjectConversations lists every member's threads on repository, each
+// named by its owner, the busiest first; there are no private threads.
+func (s *PGStore) ProjectConversations(ctx context.Context, repository string) ([]ChatConversation, error) {
+	rows, err := s.db.QueryContext(ctx, conversationSelect+conversationGroup, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -256,8 +285,7 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 
 // Conversation is login's thread n on repository; false for none.
 func (s *PGStore) Conversation(ctx context.Context, repository, login string, n int64) (ChatConversation, bool, error) {
-	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.conversation = $3
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id`, repository, login, n).Scan)
+	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.login = $2 AND c.conversation = $3`+conversationGroup, repository, login, n).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatConversation{}, false, nil
 	}

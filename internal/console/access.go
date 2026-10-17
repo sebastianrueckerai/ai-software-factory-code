@@ -155,7 +155,7 @@ var accessTable = map[string]accessRule{
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
-	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "routines": rMember,
+	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
 	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "projects": rFactory, "policy": rFactory,
 

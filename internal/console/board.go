@@ -3059,7 +3059,7 @@ func (c *Console) cardThreadStart(w http.ResponseWriter, r *http.Request) {
 		c.seedCardAsk(ctx, bt, who, n)
 	}
 	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"conversation":%d}`, n)
+	fmt.Fprintf(w, `{"conversation":%d,"owner":%q}`, n, who)
 }
 
 // seedCardAsk writes the card's open ask as its thread's first row: the
@@ -3175,10 +3175,9 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
 		if v.escalated(bt.Task) && c.cfg.Chat != nil {
-			// the card door: its own thread, the viewer's or unbound
-			if who, _, ok, err := c.cfg.Chat.CardThreadFor(ctx, bt.Repository, bt.ID); err == nil && (!ok || who == current(r).user) {
-				d.Door = true
-			}
+			// the card door: its own thread, unbound for the first
+			// member to start, bound for every member to open
+			d.Door = true
 		}
 		var err error
 		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {

@@ -1020,6 +1020,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .trow.unread .ttitle { color: var(--text); font-weight: 600; }
 .trow .ttitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .trow .tat { color: var(--text-faint); font: 11px var(--font-mono); white-space: nowrap; }
+.trow.others .twhose { color: var(--text-faint); font-weight: 400; }
 .tmark { display: inline-flex; align-items: center; justify-content: flex-start; width: 22px; height: 12px; flex: none; }
 .tmark.inbox { color: var(--need-text); font: 13px/1 var(--font-mono); }
 .tmark.working .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-running); color: var(--st-running); animation: live 2.2s ease-in-out infinite; }
@@ -1110,6 +1111,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-form.arch .prompt, .chat-form.arch .own { display: none; }
 .arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
 .arch-note[hidden] { display: none; }
+#chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }
 #level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }

@@ -83,20 +83,25 @@ func (t *turn) writeNotes(text, old, new string) (string, error) {
 	return "", refuse(http.StatusConflict, "the scratchpad changed under every try; read it with notes_read and write again")
 }
 
-// activeThreads is active_threads: the member's other active threads,
-// each with its newest message of theirs, and the scratchpad's tail.
+// activeThreads is active_threads: the project's active threads, every
+// member's with its owner named, each with its newest message, and the
+// scratchpad's tail. The inbox threads stay out; they are the members'
+// own faces to the factory.
 func (t *turn) activeThreads() (string, error) {
 	ctx := t.r.Context()
-	list, err := t.c.cfg.Chat.Conversations(ctx, t.p.Repository, t.a.s.user)
+	list, err := t.c.cfg.Chat.ProjectConversations(ctx, t.p.Repository)
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the threads")
 	}
 	var b strings.Builder
 	for _, th := range list {
-		if th.Inbox || th.State != factoryd.ThreadActive || th.Number == t.conv || th.Messages == 0 {
+		if th.Inbox || th.State != factoryd.ThreadActive || th.Messages == 0 {
 			continue
 		}
-		rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.a.s.user, th.Number, 40)
+		if th.Login == t.a.s.user && th.Number == t.conv {
+			continue
+		}
+		rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, th.Login, th.Number, 40)
 		if err != nil {
 			return "", refuse(http.StatusInternalServerError, "cannot read the threads")
 		}
@@ -106,18 +111,22 @@ func (t *turn) activeThreads() (string, error) {
 				said = m.Content
 			}
 		}
-		fmt.Fprintf(&b, "- thread %d %q, last turn %s", th.Number, th.Title, th.LastAt.UTC().Format(stampLayout))
-		if t.c.turns.working(threadKey(t.p.Repository, t.a.s.user, th.Number)) {
+		fmt.Fprintf(&b, "- thread %d %q", th.Number, th.Title)
+		if th.Login != t.a.s.user {
+			fmt.Fprintf(&b, " (%s's)", th.Login)
+		}
+		fmt.Fprintf(&b, ", last turn %s", th.LastAt.UTC().Format(stampLayout))
+		if t.c.turns.working(threadKey(t.p.Repository, th.Login, th.Number)) {
 			b.WriteString(", a turn running")
 		}
 		if said != "" {
-			fmt.Fprintf(&b, ": %s's newest message %q", t.a.s.user, textutil.Truncate(strings.Join(strings.Fields(said), " "), 300))
+			fmt.Fprintf(&b, ": %s's newest message %q", th.Login, textutil.Truncate(strings.Join(strings.Fields(said), " "), 300))
 		}
 		b.WriteString("\n")
 	}
-	out := "No other active thread of " + t.a.s.user + " on " + t.p.Name + "."
+	out := "No active thread on " + t.p.Name + " besides this one."
 	if b.Len() > 0 {
-		out = t.a.s.user + "'s other active threads on " + t.p.Name + ":\n" + b.String()
+		out = "The project's active threads on " + t.p.Name + ":\n" + b.String()
 	}
 	if t.c.cfg.Notes != nil {
 		n, err := t.notes()

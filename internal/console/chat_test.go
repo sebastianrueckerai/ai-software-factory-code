@@ -237,6 +237,42 @@ func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([
 	return f.threads(repository, login), nil
 }
 
+// ProjectConversations lists every member's threads on the repository,
+// the listing's order: the inboxes first, then the rest by their last
+// row, the owner's name on each.
+func (f *fakeChat) ProjectConversations(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var logins []string
+	for k := range f.msgs {
+		if repo, login, ok := strings.Cut(k, " "); ok && repo == repository && !slices.Contains(logins, login) {
+			logins = append(logins, login)
+		}
+	}
+	for k := range f.inboxes {
+		if repo, login, ok := strings.Cut(k, " "); ok && repo == repository && !slices.Contains(logins, login) {
+			logins = append(logins, login)
+		}
+	}
+	var out []factoryd.ChatConversation
+	for _, login := range logins {
+		out = append(out, f.threads(repository, login)...)
+	}
+	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
+		rank := func(c factoryd.ChatConversation) int {
+			switch {
+			case c.Inbox:
+				return 0
+			case c.State == factoryd.ThreadArchived:
+				return 2
+			}
+			return 1
+		}
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), b.LastAt.Compare(a.LastAt), cmp.Compare(b.Login, a.Login), cmp.Compare(b.Number, a.Number))
+	})
+	return out, nil
+}
+
 // threads is the member's threads as the store lists them; f.mu held.
 func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation {
 	k := repository + " " + login
@@ -272,6 +308,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
 			out[i].Unread++
 		}
+	}
+	for i := range out {
+		out[i].Login = login
 	}
 	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
 		rank := func(c factoryd.ChatConversation) int {
@@ -795,7 +834,7 @@ func TestChatTextReply(t *testing.T) {
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
-		`{"conversation":1,"thread":{"number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
+		`{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
@@ -904,12 +943,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
-			"active_threads", "board_view", "board_view_reset"}},
+			"active_threads", "chat_search", "board_view", "board_view_reset"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"attach_analysis", "active_threads", "board_view", "board_view_reset"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -1063,7 +1102,7 @@ func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	body := rec.Body.String()
-	if rec.Code != 200 || !strings.Contains(body, `"thread":{"number":1,"title":"","state":"active","messages":0,"unread":0}`) {
+	if rec.Code != 200 || !strings.Contains(body, `"thread":{"login":"sebastian","number":1,"title":"","state":"active","messages":0,"unread":0}`) {
 		t.Fatalf("GET = %d %s, want thread 1 with no first_at or last_at", rec.Code, body)
 	}
 }
@@ -2063,18 +2102,18 @@ func TestChatNewConversation(t *testing.T) {
 		}
 		return strings.TrimSpace(rec.Body.String())
 	}
-	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"number":2,"title":"world","state":"active","current":true,`+
+	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
-	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"number":1,"title":"hello","state":"active","current":true,`+
+	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
-		`[{"number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
-			`{"number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
-			`{"number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
+		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
+			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
+			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)
 	}

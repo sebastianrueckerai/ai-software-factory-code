@@ -108,6 +108,10 @@ type Chat interface {
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
+	// ProjectConversations lists every member's threads on the project
+	// with each thread's owner named: threads are project-visible, there
+	// are no private ones.
+	ProjectConversations(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
