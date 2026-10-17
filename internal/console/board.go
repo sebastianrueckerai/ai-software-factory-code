@@ -444,6 +444,15 @@ type card struct {
 	Reason   string   // an escalation's reason
 	Choices  []string // the answers its agent offered, a button each
 	Capped   bool     // an escalated card at its session cap, which an answer grants a session
+	// Question is the escalation's five-part question (the question
+	// format): the ask as the headline, the why under it, its buttons by
+	// value, and the info and recommendation behind the fold. nil on a
+	// card whose ask no template shaped.
+	Question *factoryd.HumanQuestion
+	// AnswersPending counts the trusted answers the card's workflow has
+	// not taken: one that holds some cannot process another, so its
+	// answer box yields to the liveness warning.
+	AnswersPending int
 	// Fund is the approver's Fund action on an escalated card whose
 	// remaining budget cannot fund a call (ruling 322's floor), which
 	// raises its budget (roadmap 210).
@@ -1833,6 +1842,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	if v.escalated(t) {
 		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
+		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the fund's floor refuses a
 		// session's opening calls for want of budget (roadmap 243): the same
@@ -2800,7 +2810,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 
 // answer posts the human's answer to an escalation (doAnswer).
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	if _, err := c.doAnswer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer")); err != nil {
+	if _, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value")); err != nil {
 		c.fail(w, r, err)
 		return
 	}

@@ -86,26 +86,45 @@ func TestChatAnswerRow(t *testing.T) {
 	})
 }
 
-// The escalate tool files the question and its choices through the
-// factory's escalation and names the card; a list of choices outside the
-// rule refuses with the rule.
+// The escalate tool files the question and its five parts through the
+// factory's escalation and names the card; a question without its why or
+// its info refuses, as do choices outside the rule.
 func TestChatEscalate(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
 	var events []string
 	trn := r.chatTurnOf(t, s, &events)
-	_, err := trn.escalate("Which store?", nil)
+	_, err := trn.escalate("Which store?", "", "", "", nil)
 	equal(t, "without the factory's escalation", err.Error(), "this factory files no escalation from the chat")
-	var filed []string
-	r.c.cfg.Escalate = func(_ context.Context, repository, question string, choices []string, by string) (int64, error) {
-		filed = append(filed, repository+" "+by+": "+question+" "+slices.Concat([]string{"["}, choices, []string{"]"})[1])
+	var filed []factoryd.HumanQuestion
+	var repo string
+	r.c.cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
+		repo, _ = repository, by
+		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", "", []string{" Postgres ", "SQLite"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's members with its choices.", error(nil)})
-	equal(t, "what it filed", filed, []string{"sf/code sebastian: Which store? Postgres"})
+	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
+		Ask:     "Which store?",
+		Why:     "Postgres runs out of connections at the measured peak.",
+		Info:    "The counts and the plan section both say so.",
+		Choices: []factoryd.QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}},
+	}}})
+	for _, in := range []struct {
+		ask, why, info, recommendation string
+		choices                        []string
+	}{
+		{"", "why", "info", "", nil},
+		{"Which?", "", "info", "", nil},
+		{"Which?", "why", "", "", nil},
+	} {
+		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || !strings.HasPrefix(err.Error(), "why:") && !strings.HasPrefix(err.Error(), "ask:") && !strings.HasPrefix(err.Error(), "info:") {
+			t.Errorf("escalate %+q = %v", in, err)
+		}
+	}
 	for _, choices := range [][]string{{"one"}, {"a", "b", "c", "d", "e", "f"}, {"a", ""}} {
-		if _, err := trn.escalate("Which?", choices); err == nil || err.Error() != "choices: 2 to 5 answers of 1 to 60 characters, or none" {
+		if _, err := trn.escalate("Which?", "why", "info", "", choices); err == nil || err.Error() != "choices: 2 to 5 answers of 1 to 60 characters, or none" {
 			t.Errorf("choices %q = %v", choices, err)
 		}
 	}

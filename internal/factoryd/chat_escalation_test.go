@@ -17,13 +17,24 @@ func TestEscalateToHuman(t *testing.T) {
 	f, labels := fileStub(t)
 	store, rows := newFakeStore(), &fakeEventRecorder{}
 	tl := &Timeline{Store: store, Events: rows}
-	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria.",
-		[]string{"Write the criteria", "Park"}, "sebastian")
+	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
+		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
+		Why:            "the plan needs its acceptance criteria before the build can start",
+		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
+		Recommendation: "Write the criteria, read off the roadmap's section",
+		Choices: []QuestionChoice{
+			{Value: "Write the criteria", Label: "Write the criteria"},
+			{Value: "Park", Label: "Park"},
+		},
+	}, "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Kind != "human" || got.Status != "waiting-human" || got.Source != SourceChat || got.IssueNumber != 40 || got.Repository != "sf/r" ||
-		!strings.HasPrefix(got.Objective, "needs you: Nothing on the roadmap is ready. Item 12: no acceptance criteria.\n\n") ||
+		!strings.HasPrefix(got.Objective, "needs you: Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?\n\n") ||
+		!strings.Contains(got.Objective, "Why: the plan needs its acceptance criteria before the build can start\n\n") ||
+		!strings.Contains(got.Objective, "Info: item 12's section stops at the goal sentence; the options below both satisfy it\n\n") ||
+		!strings.Contains(got.Objective, "Recommendation: Write the criteria, read off the roadmap's section\n\n") ||
 		!strings.Contains(got.Objective, "Choices:\n- Write the criteria\n- Park\n") || !strings.Contains(got.Objective, "asked in sebastian's chat") {
 		t.Fatalf("the card = %+v", got)
 	}
@@ -31,8 +42,13 @@ func TestEscalateToHuman(t *testing.T) {
 		t.Fatalf("labels = %v", *labels)
 	}
 	want := []Event{{Repository: "sf/r", TaskID: got.ID, IssueNumber: 40, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaChat,
-		Detail: map[string]any{"question": "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria.", "source": "agent", "by": "sebastian",
-			"choices": []string{"Write the criteria", "Park"}}}}
+		Detail: map[string]any{"question": "Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?",
+			"ask":    "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
+			"why":    "the plan needs its acceptance criteria before the build can start",
+			"info":   "item 12's section stops at the goal sentence; the options below both satisfy it",
+			"source": "agent", "by": "sebastian",
+			"recommendation": "Write the criteria, read off the roadmap's section",
+			"choices":        []string{"Write the criteria", "Park"}}}}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v,\nwant %+v", rows.rows, want)
 	}
@@ -44,7 +60,7 @@ func TestEscalateToHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	if m, ok := pokeOf(stored, got); !ok || m.Kind != MessageEscalation ||
-		m.Content != "#40 needs you: Nothing on the roadmap is ready.\nItem 12: no acceptance criteria." || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
+		m.Content != "#40 needs you: Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?" || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
 		t.Fatalf("its poke = %+v", m)
 	}
 }

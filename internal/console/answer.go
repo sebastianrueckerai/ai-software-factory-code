@@ -239,11 +239,13 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	return strings.TrimSuffix(note, ".") + fmt.Sprintf(" with “%s”; the card goes on.", choice), nil
 }
 
-// escalate is the escalate tool: the question and its choices filed as a
-// human-lane card in Needs you, which the inbox's poke carries to the
-// project's members.
-func (t *turn) escalate(ask string, choices []string) (string, error) {
-	ask = strings.TrimSpace(ask)
+// escalate is the escalate tool: the question and its five parts (the
+// question format) filed as a human-lane card in Needs you, which the
+// inbox's poke carries to the project's members. The writer's own ask is
+// never forced to a template, but it must carry its why and its info.
+func (t *turn) escalate(ask, why, info, recommendation string, choices []string) (string, error) {
+	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
+	recommendation = strings.TrimSpace(recommendation)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
 	}
@@ -252,11 +254,21 @@ func (t *turn) escalate(ask string, choices []string) (string, error) {
 		return "", refuse(http.StatusConflict, "this factory files no escalation from the chat")
 	case ask == "" || len(ask) > 2000:
 		return "", refuse(http.StatusBadRequest, "ask: the question of 1 to 2000 characters")
+	case why == "" || len(why) > 2000:
+		return "", refuse(http.StatusBadRequest, "why: why the card cannot go on without a person, 1 to 2000 characters")
+	case info == "" || len(info) > 2000:
+		return "", refuse(http.StatusBadRequest, "info: what a person should know to answer well, 1 to 2000 characters")
+	case len(recommendation) > 2000:
+		return "", refuse(http.StatusBadRequest, "recommendation: 0 to 2000 characters, empty to offer none")
 	case len(choices) == 1 || len(choices) > factoryd.MaxChoices ||
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters, or none", factoryd.MaxChoices, factoryd.MaxChoice))
 	}
-	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, ask, choices, t.a.s.user)
+	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation}
+	for _, c := range choices {
+		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: c, Label: c})
+	}
+	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, q, t.a.s.user)
 	if err != nil {
 		log.Printf("console: the escalation of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed; see the factoryd log.")

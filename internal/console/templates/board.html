@@ -75,7 +75,27 @@
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 
-{{define "escalation-actions"}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
+{{define "escalation-actions"}}
+{{if .Card.Question}}{{with .Card.Question}}
+<p class="ask">{{.Ask}}</p>
+<p class="why">{{.Why}}</p>
+<div class="choices" role="group" aria-label="Answer with one click">
+{{range .Choices}}{{if eq .Value "close"}}
+<form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" hx-target="#board" hx-swap="outerHTML" class="inline close" hx-confirm="Close #{{$.Card.IssueNumber}}? Its issue closes as you, and the card ends.">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<button type="submit" class="deny" aria-label="{{.Label}}">{{.Label}}</button></form>
+{{else}}
+<form method="post" action="/tasks/{{$.Card.ID}}/answer" class="inline">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
+<input type="hidden" name="value" value="{{.Value}}">
+<button type="submit" aria-label="{{.Label}}{{if or (eq .Value "park") (eq .Value "keep_waiting")}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
+{{end}}{{end}}</div>
+<details class="fold"><summary>What each answer does</summary>
+<p class="info">{{.Info}}</p>
+{{if .Recommendation}}<p class="recommendation">Recommendation{{with .Source}} ({{.}}){{end}}: {{.Recommendation}}</p>{{end}}
+{{with $.Card.Reason}}<pre class="reason detail">{{.}}</pre>{{end}}
+</details>
+{{end}}{{else}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
@@ -83,12 +103,13 @@
 </form>
 {{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
 </div>
-{{end}}<form method="post" action="/tasks/{{.Card.ID}}/answer"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
+{{end}}{{end}}{{end}}{{if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
+{{else}}<form method="post" action="/tasks/{{.Card.ID}}/answer"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required></textarea>
 <button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
-</form>{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
+</form>{{end}}{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" class="inline fund">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
 <label for="fund-{{$.Card.ID}}{{$.Suffix}}">Fund this card, EUR</label>
 <input type="number" step="0.01" min="0.01" id="fund-{{$.Card.ID}}{{$.Suffix}}" name="eur" required>

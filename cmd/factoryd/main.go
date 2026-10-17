@@ -518,12 +518,12 @@ func main() {
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		Notes:          store,
-		Escalate: func(ctx context.Context, repository, question string, choices []string, by string) (int64, error) {
+		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
 			repo, err := factoryd.SplitRepo(repository)
 			if err != nil {
 				return 0, err
 			}
-			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, question, choices, by)
+			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by)
 			return t.IssueNumber, err
 		},
 		Operator: operator,
