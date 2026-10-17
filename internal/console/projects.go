@@ -27,7 +27,6 @@ type projectRow struct {
 	// policy's approvers.
 	NotifyList    []string
 	NotifyDefault bool
-	Envelope      envelopeView
 	GatewayYAML   string
 	// File links projects/<name>.yaml at the version in force.
 	File string
@@ -121,10 +120,11 @@ func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factory
 	return "not deployed yet: " + cmp.Or(s.Message, fluxNotReconciled)
 }
 
-// projects shows every project read-only (ruling 183): its file's
+// settings shows the open project's file read-only (ruling 183): its
 // settings with a link to the file, where every change is made, its
-// registration's state and its envelope's use.
-func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
+// registration's state and its GitHub export. The bar's select picks the
+// project; the envelope's use reads on the resources page instead.
+func (c *Console) settings(w http.ResponseWriter, r *http.Request) {
 	ps, err := c.cfg.Projects.Projects(r.Context())
 	if err != nil {
 		log.Printf("console: projects: %v", err)
@@ -137,21 +137,31 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the policy", http.StatusInternalServerError)
 		return
 	}
-	var rows []projectRow
-	envs := c.envRows(r.Context(), ps)
+	names := make([]string, len(ps))
+	pick := -1
 	for i, p := range ps {
-		row := projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.ApproversOf(p.Repository)), NotifyDefault: len(p.Notify) == 0,
+		names[i] = p.Name
+		if p.Name == r.URL.Query().Get("project") {
+			pick = i
+		}
+	}
+	if want := r.URL.Query().Get("project"); want != "" && pick < 0 {
+		http.NotFound(w, r)
+		return
+	}
+	var row *projectRow
+	if pick < 0 && len(ps) > 0 {
+		pick = 0
+	}
+	if pick >= 0 {
+		p := ps[pick]
+		row = &projectRow{Project: p, NotifyList: p.NotifyOrApprovers(v.ApproversOf(p.Repository)), NotifyDefault: len(p.Notify) == 0,
 			GatewayYAML: factoryd.ListenerYAML(p)}
 		if p.File {
 			row.File = c.fileLink(v, p.Name)
-			if row.Envelope, err = c.envelopeOf(r.Context(), v, p.Repository); err != nil {
-				log.Printf("console: envelope use of %s: %v", p.Repository, err)
-				http.Error(w, "cannot read the envelopes' use", http.StatusInternalServerError)
-				return
-			}
 		}
 		row.Approver = slices.Contains(v.ApproversOf(p.Repository), current(r).user)
-		row.Envs = envs[i]
+		row.Envs = c.envRows(r.Context(), ps[pick:pick+1])[0]
 		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
 			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
 			if err != nil {
@@ -163,12 +173,20 @@ func (c *Console) projects(w http.ResponseWriter, r *http.Request) {
 				row.Mirror = &m
 			}
 		}
-		rows = append(rows, row)
 	}
 	s := current(r)
-	c.render(w, "projects.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Projects": rows,
-		"New": c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil,
+	c.render(w, "settings.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Row": row, "Project": cmp.Or(r.URL.Query().Get("project"), first(names)),
+		"Projects": names,
+		"New":      c.cfg.ConfigRepo + "/src/branch/main/" + c.cfg.ConfigDir + "/projects", "Export": c.cfg.Mirrors != nil,
 		"Sync": c.cfg.GitHubSync != nil})
+}
+
+// first is the list's head, "" when it is empty.
+func first(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
 }
 
 // projectRun is what the status panel keeps in memory of a new project:
@@ -533,7 +551,7 @@ type statusPanel struct {
 func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 	ctx := r.Context()
 	s := current(r)
-	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf, Page: "projects", Factory: true, Messengers: c.cfg.Messengers != nil}
+	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf, Page: "board", Factory: true, Messengers: c.cfg.Messengers != nil}
 	pulled := step{Name: "Pull request opened", State: stepWaiting,
 		Tip:    "The project's file as a pull request on the infra repository, filed as you; the factory checked it as its loader will.",
 		Detail: "No pull request from branch project-" + name + " into main yet."}
@@ -867,7 +885,7 @@ func (c *Console) exportable(ctx context.Context, a actor, p factoryd.Project) e
 // exportForm is the sentence sending a member to the projects page's
 // export form of project, where an approver sets the export's token.
 func (c *Console) exportForm(project string) string {
-	return "Set the export's token on the project page: " + strings.TrimSuffix(c.cfg.PublicURL, "/") + "/projects#export-" + project
+	return "Set the export's token on the settings page: " + strings.TrimSuffix(c.cfg.PublicURL, "/") + "/settings?project=" + project + "#export-" + project
 }
 
 // doGithubSync starts bringing project p's GitHub default branch back as
@@ -964,5 +982,5 @@ func (c *Console) projectAction(w http.ResponseWriter, r *http.Request, do func(
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/projects#project-"+p.Name, http.StatusSeeOther)
+	http.Redirect(w, r, "/settings?project="+p.Name, http.StatusSeeOther)
 }

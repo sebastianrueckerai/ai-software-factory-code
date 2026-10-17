@@ -864,7 +864,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
-			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
+			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "settings", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "active_threads", "board_view", "board_view_reset"}},
@@ -1166,7 +1166,7 @@ func TestSystemTool(t *testing.T) {
 	contains(got, first+"\n",
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
-		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.\n",
+		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.\n",
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
 			"  assisted: the agent starts and files ready work by itself; direction, money and merges still ask\n"+
@@ -2314,7 +2314,7 @@ func TestChatScrubsAGitHubToken(t *testing.T) {
 	g.replies = [][]string{{say("Noted.")}, {say("Yes.")}}
 	_, events, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"export to acme/app, my token is " + token}})
 	const notice = "I removed a GitHub token from your message; it was not stored or sent. " +
-		"Set the export's token on the project page: https://console.example/projects#export-demo-app"
+		"Set the export's token on the settings page: https://console.example/settings?project=demo-app#export-demo-app"
 	equal(t, "stream", events, []string{`text {"text":"` + notice + `\n\n"}`, `text {"text":"Noted."}`, `done {}`})
 	scrubbed := map[string]any{"role": "user", "content": "export to acme/app, my token is [token]"}
 	equal(t, "the model's messages after the system's", messages(t, g.calls()[0])[1:], []map[string]any{scrubbed})

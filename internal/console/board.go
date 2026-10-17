@@ -80,17 +80,19 @@ var funcs = template.FuncMap{
 		}
 		return ""
 	},
-	"inc":         func(i int) int { return i + 1 },
-	"join":        strings.Join,
-	"verdictForm": func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
-	// alertSupervisor is what the supervisor did on a machine alert; an
-	// escalation's detail stays off the page
-	"alertSupervisor": func(a factoryd.Alert) supervised {
-		if a.Kind == factoryd.AlertEscalation {
-			return supervised{}
-		}
-		return supervisedBy(a.Detail["action"], a.Detail["diagnosis"], a.Detail["recommendation"])
-	},
+	"inc":             func(i int) int { return i + 1 },
+	"join":            strings.Join,
+	"verdictForm":     func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
+	"alertSupervisor": alertSupervisor,
+}
+
+// alertSupervisor is what the supervisor did on a machine alert; an
+// escalation's detail stays private.
+func alertSupervisor(a factoryd.Alert) supervised {
+	if a.Kind == factoryd.AlertEscalation {
+		return supervised{}
+	}
+	return supervisedBy(a.Detail["action"], a.Detail["diagnosis"], a.Detail["recommendation"])
 }
 
 // supervised is a supervisor's action and diagnosis, for the "supervised"

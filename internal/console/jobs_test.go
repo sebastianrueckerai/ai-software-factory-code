@@ -22,7 +22,7 @@ func (f fakeJobs) CronJobs(context.Context) ([]factoryd.CronJobState, error) { r
 
 // jobsSection is the page's section of the cluster's jobs, "" without one.
 func jobsSection(page string) string {
-	i := strings.Index(page, `<section aria-labelledby="jobs">`)
+	i := strings.Index(page, `<section class="ro" aria-labelledby="jobs">`)
 	if i < 0 {
 		return ""
 	}
@@ -67,9 +67,9 @@ func TestResourcesPageListsTheClustersJobs(t *testing.T) {
 	utc := func(t time.Time) string { return t.UTC().Format("2006-01-02 15:04 UTC") }
 	for _, want := range []string{
 		`<h3 id="jobs">Jobs of the cluster</h3>`,
-		`<caption>The cluster's scheduled jobs by namespace</caption>`,
+		`<table aria-label="The cluster's scheduled jobs by namespace">`,
 		`<th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th>` +
-			`<th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th>`,
+			`<th scope="col">Last run</th><th scope="col">Last ok</th><th scope="col">Suspended</th>`,
 		`<tr><td>sf-cluster-daily</td><td>ScheduledBackup</td><td>platform</td><td title="0 0 2 * * *">daily 02:00 UTC</td>` +
 			`<td title="` + utc(ran) + `">3 h ago</td><td>not reported</td><td>no</td></tr>`,
 		`<tr><td>openbao-config</td><td>CronJob</td><td>platform</td><td title="*/10 * * * *">*/10 * * * * UTC</td><td>never</td><td>never</td><td>no</td></tr>`,
@@ -98,7 +98,7 @@ func TestResourcesPageSaysTheClusterDidNotAnswer(t *testing.T) {
 	}
 	page := rec.Body.String()
 	jobs := jobsSection(page)
-	if jobs != `<section aria-labelledby="jobs">`+"\n"+`<h3 id="jobs">Jobs of the cluster</h3>`+"\n"+`<p>The cluster did not answer.</p>`+"\n" {
+	if jobs != `<section class="ro" aria-labelledby="jobs">`+"\n"+`<h3 id="jobs">Jobs of the cluster</h3>`+"\n"+`<p>The cluster did not answer.</p>`+"\n" {
 		t.Errorf("the jobs section = %q", jobs)
 	}
 	if rest := strings.Replace(page, jobs+"</section>\n", "", 1); rest != without || !strings.Contains(rest, `<h3 id="project-demo-app/demo-app">`) {

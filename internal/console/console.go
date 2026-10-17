@@ -355,9 +355,8 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /costs", c.costs, "costs", ""},
 		{"GET /policy", c.policy, "policy", ""},
 		{"GET /resources", c.resources, "resources", ""},
-		{"GET /alerts", c.alerts, "alerts", ""},
-		{"GET /projects", c.projects, "projects", ""},
-		{"GET /projects/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
+		{"GET /settings", c.settings, "settings", ""},
+		{"GET /settings/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
 		{"GET /projects/{name}/status", c.projectStatus, "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
 		{"GET /projects/{name}/events", c.projectEvents, "", "a project's event feed fragment: the history tool reads the chat project's events"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
@@ -776,9 +775,9 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 // marks the open page's word (C23); the board and the project status
 // pages carry their own Page on their structs.
 var pageOf = map[string]string{
-	"new.html": "new", "projects.html": "projects", "project_new.html": "projects",
+	"new.html": "new", "settings.html": "settings", "project_new.html": "settings",
 	"resources.html": "resources", "costs.html": "costs", "policy.html": "policy",
-	"alerts.html": "alerts", "notifications.html": "notifications",
+	"notifications.html": "notifications",
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {

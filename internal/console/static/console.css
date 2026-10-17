@@ -1228,3 +1228,18 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .cursor { display: none; }
   .typing i { animation: none; opacity: .7; }
 }
+
+/* C24: the secondary pages follow one readout grammar — a small-caps
+   section label, one line of figures, then rows on the page ground */
+.project > h3, .ro > h3 { margin: 18px 0 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.pagehead h2 { margin: 16px 0 8px; }
+.figs { margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.figs a { color: var(--text-muted); }
+.figs code { font-size: 1em; }
+.daycap { margin: 2px 0; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.daycap strong { color: var(--text); font-weight: 600; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+tr.standing > td { border-top: 2px solid var(--btn-line); }
+ul.rows { list-style: none; margin: 6px 0; padding: 0; }
+ul.rows li { padding: 5px 0; border-bottom: 1px solid var(--line); }

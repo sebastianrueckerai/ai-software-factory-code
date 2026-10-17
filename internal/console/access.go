@@ -86,9 +86,8 @@ var accessTable = map[string]accessRule{
 	"GET /costs":                              rFactory,
 	"GET /policy":                             rFactory,
 	"GET /resources":                          rFactory,
-	"GET /alerts":                             rFactory,
-	"GET /projects":                           rFactory,
-	"GET /projects/new":                       rFactory,
+	"GET /settings":                           rFactory,
+	"GET /settings/new":                       rFactory,
 	"GET /projects/{name}/status":             rFactory,
 	"GET /projects/{name}/events":             rProject,
 	"GET /projects/{name}/events/stream":      rMember, // follows() judges the project's sight
@@ -157,7 +156,7 @@ var accessTable = map[string]accessRule{
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
 	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
-	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "projects": rFactory, "policy": rFactory,
+	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "settings": rFactory, "policy": rFactory,
 
 	// chat tools: writes
 	"alert_verdict":    {need: factoryWriter | approver, scope: scFactory, what: "judge an alert"},

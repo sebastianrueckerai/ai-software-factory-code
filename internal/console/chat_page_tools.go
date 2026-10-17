@@ -76,6 +76,9 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 			if al.ResolvedBy != "" {
 				b.WriteString(" by " + al.ResolvedBy)
 			}
+			if s := alertSupervisor(al); s.Action != "" {
+				b.WriteString(", " + s.Action + ": " + s.Diagnosis)
+			}
 		} else {
 			b.WriteString(", open")
 		}
@@ -175,7 +178,7 @@ func mirrorWords(m *factoryd.Mirror) string {
 	return m.Remote + " (" + mode + ", " + m.State + ")"
 }
 
-// projectsText is the /projects page as the agent reads it: every
+// projectsText is the /settings page as the agent reads it: every
 // project with its name, objects, process, merge rule, state, GitHub
 // export state and a factory project's environments with their deploy
 // state.
