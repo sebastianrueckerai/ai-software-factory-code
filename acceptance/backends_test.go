@@ -706,6 +706,14 @@ func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
+	return nil
+}
+
+func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
 	return nil
 }

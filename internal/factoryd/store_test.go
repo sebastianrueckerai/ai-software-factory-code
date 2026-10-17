@@ -261,6 +261,22 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 	return out, nil
 }
 
+func (s *fakeStore) SetTaskPlanRevision(ctx context.Context, id string, revision int) error {
+	if t, ok := s.tasks[id]; ok && t.PlanRevision == 0 {
+		t.PlanRevision = revision
+		s.tasks[id] = t
+	}
+	return nil
+}
+
+func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
+	if t, ok := s.tasks[id]; ok {
+		t.Objective = objective
+		s.tasks[id] = t
+	}
+	return nil
+}
+
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	t, ok := s.tasks[id]
 	return t, ok, nil

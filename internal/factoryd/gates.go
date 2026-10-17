@@ -1233,6 +1233,13 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	if err != nil {
 		return err
 	}
+	// a card the plan has passed never asks for its merge (piece 10): it
+	// fails with the reason, its branch stays for the plan's re-run
+	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+		return err
+	} else if stale {
+		return terminalError("the plan moved to revision %d, the card ran against revision %d", newest, started)
+	}
 	g := in.Gates.Policy
 	if g.Factory {
 		in.WhyHuman = append([]string{fmt.Sprintf("factoryd opened this pull request, no agent: a human approves its change to paths forbidden to agents (risk class %s): %s",
@@ -1348,6 +1355,20 @@ func lastAttempt(ctx context.Context) bool {
 	return info.RetryPolicy != nil && info.RetryPolicy.MaximumAttempts > 0 && info.Attempt >= info.RetryPolicy.MaximumAttempts
 }
 
+// staleRevision names the plan's newest revision past the one the task
+// started against (piece 10): the card cannot merge until the plan is
+// re-run. stale is false for every task that is no started plan card.
+func (r *Runner) staleRevision(ctx context.Context, t Task) (newest, started int, stale bool, err error) {
+	if t.Source != SourcePlan || t.Parent == "" || t.PlanRevision == 0 {
+		return 0, 0, false, nil
+	}
+	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
+	if err != nil || !ok {
+		return 0, 0, false, err
+	}
+	return rev.Revision, t.PlanRevision, rev.Revision > t.PlanRevision, nil
+}
+
 func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
@@ -1355,6 +1376,13 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	}
 	if st.Merged {
 		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+	}
+	// the merge refuses a card the plan has passed (piece 10), the
+	// auto-merge's path and a request opened before the revision landed
+	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+		return MergeResult{}, err
+	} else if stale {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan moved to revision %d, the card ran against revision %d", newest, started)), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil

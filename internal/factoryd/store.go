@@ -93,6 +93,9 @@ type Task struct {
 	Lane, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// PlanRevision is the plan revision the card's first session ran
+	// against (roadmap 291); 0 while the card has not started.
+	PlanRevision int
 	// Rung is the model rung the card starts on (RungCheap, RungFrontier,
 	// "" for the ladder's start) and Size its card size, both from its
 	// filing (roadmap 222, item 5).
@@ -440,6 +443,12 @@ type Store interface {
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// SetTaskPlanRevision records the plan revision a card first runs
+	// against; the guard makes it once.
+	SetTaskPlanRevision(ctx context.Context, id string, revision int) error
+	// UpdatePlanCardBrief replaces a not-yet-started card's stored brief
+	// with its card's text of the plan's newest revision.
+	UpdatePlanCardBrief(ctx context.Context, id, objective string) error
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -712,6 +721,20 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
+// SetTaskPlanRevision records the plan revision a card first runs
+// against; the guard makes it once, the card's start (roadmap 291).
+func (s *PGStore) SetTaskPlanRevision(ctx context.Context, id string, revision int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan_revision = $2 WHERE id = $1 AND plan_revision = 0`, id, revision)
+	return err
+}
+
+// UpdatePlanCardBrief replaces a not-yet-started card's stored brief with
+// its card's text of the plan's newest revision (roadmap 291).
+func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2 WHERE id = $1`, id, objective)
+	return err
+}
+
 func defaultKind(kind string) string {
 	if kind == "" {
 		return "agent"
@@ -724,7 +747,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at, rung, size`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -734,7 +757,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision); err != nil {
 		return Task{}, err
 	}
 	var err error

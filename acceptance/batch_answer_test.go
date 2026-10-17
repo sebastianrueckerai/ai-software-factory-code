@@ -627,6 +627,14 @@ func (s *accBatchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.
 	panic("unused")
 }
 
+func (s *accBatchStore) SetTaskPlanRevision(context.Context, string, int) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, string) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
 	panic("unused")
 }

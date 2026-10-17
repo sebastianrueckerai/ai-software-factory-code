@@ -1564,6 +1564,13 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			}
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
 		}
+		// a card the plan has passed cannot merge (roadmap 291): the
+		// request opened before the revision landed
+		if t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanRevision > 0 {
+			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.Parent, 0); err == nil && ok && rev.Revision > t.PlanRevision {
+				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
+			}
+		}
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the approving review", err}
 		}

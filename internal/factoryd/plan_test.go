@@ -329,6 +329,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 			"kind human names a claim only a person settles, with the evidence the approver will see.",
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item.",
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition.",
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {
 		if !strings.Contains(got, want) {
@@ -548,6 +549,13 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, c)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, c.id)
+		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/users/") && strings.HasSuffix(r.URL.Path, "/tokens"):
+			json.NewEncoder(w).Encode([]any{})
+		case r.Method == "GET" && len(parts) == 2 && parts[0] == "issues":
+			n, _ := strconv.ParseInt(parts[1], 10, 64)
+			fmt.Fprintf(w, `{"number":%d,"state":%q}`, n, f.issues[n].state)
+		case r.Method == "GET" && strings.HasPrefix(rest, "pulls"):
+			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			f.issues[n].state = body["state"].(string)
