@@ -137,9 +137,11 @@
 {{define "brief-block"}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{if .IDSuffix}}{{with .Detail}}<p class="reason detail">{{.}}</p>{{end}}{{end}}{{end}}
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" data-card="{{.TaskID}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
-{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
+{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{if .Healed}} <span class="chip">checks healed after a re-run</span>{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
 {{template "brief-block" .}}
 {{template "merge-brief" .}}
+{{if .HeadUnread}}<p class="problem">The head's current checks could not be read, so the card may be stale; see the factoryd log.</p>
+{{end}}
 {{else}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Resource request</a>{{else}}Resource request{{end}}</h4>{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
 {{template "brief-block" .}}
 <p class="need-line"><b>{{.Resource.ServerType}}</b>{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}} · {{.Resource.Purpose}}</p>

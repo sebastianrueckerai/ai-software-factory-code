@@ -32,7 +32,15 @@ type approvalCard struct {
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
-	Resource cloudres.ResourceSpec
+	// Healed: a merge request opened on red checks whose recorded head's
+	// checks are green now (#1013: a re-run healed them), so the card
+	// offers its Approve again and says so.
+	Healed bool
+	// HeadUnread: the head's current checks could not be read (#1013), so
+	// the card shows the face its frozen spec gives it, which may be
+	// stale; the card says so rather than fail silently.
+	HeadUnread bool
+	Resource   cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, and the open criteria with their
 	// standing verdicts
 	CriteriaSpec factoryd.CriteriaSpec
@@ -66,15 +74,16 @@ func (k approvalCard) Waiting() string {
 
 // Rerun: the card is a factory pull request's merge request on red
 // checks, whose approval offers their re-run instead of a merge (roadmap
-// 264).
+// 264) — unless the head's checks healed (#1013), when it merges again.
 func (k approvalCard) Rerun() bool {
-	return k.Kind == factoryd.ApprovalMerge && k.Merge.Factory && k.Merge.RedChecks
+	return k.Kind == factoryd.ApprovalMerge && k.Merge.Factory && k.Merge.RedChecks && !k.Healed
 }
 
 // Returns: the card is an agent's merge request on red checks, which cannot
-// merge: it offers the return to the agent and the close, not Approve.
+// merge: it offers the return to the agent and the close, not Approve —
+// unless the head's checks healed (#1013), when it merges again.
 func (k approvalCard) Returns() bool {
-	return k.Kind == factoryd.ApprovalMerge && !k.Merge.Factory && k.Merge.RedChecks
+	return k.Kind == factoryd.ApprovalMerge && !k.Merge.Factory && k.Merge.RedChecks && !k.Healed
 }
 
 // planQuestion is a plan's question as its card shows it, numbered from 1.
@@ -104,7 +113,7 @@ var holdoutBlurbs = map[string]string{
 	factoryd.HoldoutOpened:     "published: the audit found a real gap; the builder works it",
 }
 
-func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
+func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
 	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
@@ -119,6 +128,17 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	case factoryd.ApprovalMerge:
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
 		err = json.Unmarshal(a.Spec, &k.Merge)
+		// a red request whose head's checks are green now (#1013) merges
+		// again; a read that fails leaves the red face, which says so —
+		// its refusal still names the remedies
+		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
+			if green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA); gerr != nil {
+				log.Printf("console: approval request %d: %v", a.ID, gerr)
+				k.HeadUnread = true
+			} else {
+				k.Healed = green
+			}
+		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
@@ -307,4 +327,22 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), q.PRNumber)
 	return c.as(ctx, a.s, http.MethodPost, path, map[string]string{"event": event, "body": body, "commit_id": commit}, http.StatusOK, nil)
+}
+
+// headChecksGreen reads whether commit sha's checks are green in project
+// now, as a's member: a merge request opened on red checks heals once the
+// same head's checks turn green (#1013: a re-run) and may merge then.
+// Green mirrors factoryd's checksResult: a head that reports no statuses
+// is still pending, and warning counts as green.
+func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
+	repo, err := factoryd.SplitRepo(project)
+	if err != nil {
+		return false, err
+	}
+	var cs factoryd.CombinedStatus
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/commits/%s/status", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(sha))
+	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &cs); err != nil {
+		return false, &forgejoRefusal{"read the head's checks", err}
+	}
+	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning"), nil
 }

@@ -1977,8 +1977,9 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
-		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") || len(r.fg.calls) != 0 {
-		t.Fatalf("approve on red = %d %q, calls %q: want the refusal and no review", rec.Code, rec.Body, r.fg.calls)
+		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") ||
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
@@ -1986,8 +1987,8 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
-	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
-		"SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
+	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
+		"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
 	got = item()
@@ -2039,8 +2040,9 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") || len(r.fg.calls) != 0 {
-		t.Fatalf("approve on red = %d %q, calls %q: want the refusal naming both ways and no review", rec.Code, rec.Body, r.fg.calls)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") ||
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
 	if rec.Code != http.StatusSeeOther {
@@ -2048,6 +2050,102 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	}
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "make the stub match the interface" {
 		t.Fatalf("reviews = %v: want one REQUEST_CHANGES with the note", r.fg.reviews)
+	}
+}
+
+// A merge request opened on red checks (#1013: the head healed after a
+// re-run) approves once the recorded head's checks are green again — the
+// approval re-reads the head's current verdicts, so no spec is written by
+// hand — and a head still red keeps the refusal and its remedies.
+func TestApproveOnRedChecksOnceTheHeadTurnedGreen(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+
+	// the head still red: the refusal stands, and nothing was posted
+	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure","description":"exit 1"}]}`}
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(),
+		"checks were red when its request opened, so it cannot merge: return it to the agent") || len(r.fg.reviews) != 0 {
+		t.Fatalf("approve on a still-red head = %d %q, reviews %v", rec.Code, rec.Body, r.fg.reviews)
+	}
+
+	// the same head green after the re-run: the approve goes through
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve on the healed head = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "abc123" {
+		t.Fatalf("reviews = %v: want one APPROVED at the recorded head", r.fg.reviews)
+	}
+	if !slices.Contains(r.fg.calls, "SIGNAL approved t-m #9 by sebastian") {
+		t.Fatalf("calls = %q: want the approved signal", r.fg.calls)
+	}
+}
+
+// The card of a red-checks merge request whose head's checks turned green
+// says so and offers the Approve again; still red keeps what fits a red
+// head, the return and the close.
+func TestHealedRedChecksCardOffersApprove(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	item := func() string {
+		t.Helper()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+		start := strings.Index(body, `action="/approvals/4/`)
+		if start < 0 {
+			t.Fatalf("the board shows no form of request 4:\n%s", body)
+		}
+		start = strings.LastIndex(body[:start], "<article")
+		return body[start : start+strings.Index(body[start:], "</article>")]
+	}
+
+	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
+	if got := item(); strings.Contains(got, `action="/approvals/4/approve"`) || strings.Contains(got, "checks healed after a re-run") {
+		t.Errorf("the still-red card offers an approve or says the checks healed:\n%s", got)
+	}
+
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	r.fg.calls = nil
+	got := item()
+	for _, want := range []string{`action="/approvals/4/approve"`, "checks healed after a re-run"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the healed card lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{`action="/approvals/4/rerun"`, `aria-controls="deny-4">Return or close</button>`} {
+		if strings.Contains(got, not) {
+			t.Errorf("the healed card shows %q:\n%s", not, got)
+		}
+	}
+	// the button path reads the head's current checks as the viewer who
+	// asked for the board (#1013), the one forge call the read makes
+	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+}
+
+// A red-checks card whose head's current checks cannot be read keeps the
+// red face and says so (#1013): a failed read fails closed, and the card
+// names it instead of failing silently.
+func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.failAPI = true
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if !strings.Contains(body, "The head's current checks could not be read") {
+		t.Errorf("the card does not say the head's checks were unread:\n%s", body)
+	}
+	if strings.Contains(body, "checks healed after a re-run") || strings.Contains(body, `action="/approvals/4/approve"`) {
+		t.Errorf("the unread card offers an approve or says the checks healed:\n%s", body)
 	}
 }
 
