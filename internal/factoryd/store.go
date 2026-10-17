@@ -544,6 +544,11 @@ type ApprovalRequest struct {
 	DecidedAt    *time.Time
 	DecisionNote string
 	CreatedAt    time.Time
+	// Brief and Detail are the card's LLM-written brief and its plain
+	// language detail (brief.go), empty until its writer files them.
+	Brief      string
+	Detail     string
+	BriefError string
 }
 
 // FactoryDecider is decided_by for the factory's own decisions.
@@ -1376,7 +1381,7 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
-		        status, decided_by, decided_at, decision_note, created_at
+		        status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error
 		 FROM approval_requests WHERE status = $1 ORDER BY id`, status)
 	if err != nil {
 		return nil, err
@@ -1387,7 +1392,7 @@ func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]Approv
 		var a ApprovalRequest
 		var spec []byte
 		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
-			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt); err != nil {
+			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError); err != nil {
 			return nil, err
 		}
 		a.Spec = spec
