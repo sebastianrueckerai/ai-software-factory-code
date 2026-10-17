@@ -43,8 +43,11 @@ func markup(raw string) template.HTML {
 // markupSafeTarget is a link target a question may carry: none, a
 // fragment, a path on the console or the forge, http or https, mailto.
 func markupSafeTarget(target string) bool {
+	if len(target) == 0 { // the guard first, so no reorder of the cases below can index an empty target
+		return true
+	}
 	switch {
-	case target == "", target[0] == '#', target[0] == '/',
+	case target[0] == '#', target[0] == '/',
 		strings.HasPrefix(target, "http://"), strings.HasPrefix(target, "https://"),
 		strings.HasPrefix(target, "mailto:"):
 		return true
