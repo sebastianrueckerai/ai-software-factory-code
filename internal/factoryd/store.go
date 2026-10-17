@@ -489,6 +489,14 @@ type Store interface {
 	// the recording rule's ledger, unless it has them already, and reports
 	// whether it did.
 	PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error)
+	// PlanCatches are a plan task's catches, revision, kind and idx order.
+	PlanCatches(ctx context.Context, id string) ([]PlanCatch, error)
+	// The spec's verdict as data (the spec-intake concept, pieces 7 and
+	// 8): verdict rows on the plan's integration card, one per source, and
+	// the tasks that carry them.
+	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
+	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
 	// The plan's hold-outs (the spec-intake concept, piece 6): rows by
 	// round, the undecided count of one round, the human's okay or drop,
 	// the sweep of a closing round, the audit's verdict, its refused
@@ -544,6 +552,11 @@ const (
 	// ApprovalPlan is a plan revision for approvers to accept (Spec a
 	// PlanSpec).
 	ApprovalPlan = "plan"
+	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
+	// pieces 7 and 8): its cards ran out with a criterion still open; the
+	// approver grants one more bounded card or waives (Spec a
+	// criteriaSpec).
+	ApprovalCriteria = "criteria"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling

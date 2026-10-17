@@ -119,6 +119,7 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/split":                    {need: approver, scope: scCard, what: "split a card"},
 	"POST /approvals/{id}/approve":              {need: approver, scope: scApproval, what: "authorize spend"},
 	"POST /approvals/{id}/deny":                 {need: writer, scope: scApproval},
+	"POST /approvals/{id}/waive":                {need: approver, scope: scApproval, what: "waive a criterion"},
 	"POST /approvals/{id}/rerun":                {need: writer, scope: scApproval},
 	"POST /resources/{id}/promote":              {need: factoryWriter | approver, scope: scFactory, what: "authorize spend"},
 	"POST /resources/{id}/release":              rFactory,

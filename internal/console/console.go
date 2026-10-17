@@ -72,6 +72,9 @@ type Tasks interface {
 	PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
+	// CriteriaVerdicts are task's criteria verdict rows (the spec-intake
+	// concept, pieces 7 and 8), every source's, in criterion order.
+	CriteriaVerdicts(ctx context.Context, taskID string) ([]factoryd.CriterionVerdict, error)
 	// Dependencies are the tasks task id depends on, those not done
 	// first; Dependents those that depend on it.
 	Dependencies(ctx context.Context, id string) ([]factoryd.Dependency, error)
@@ -155,7 +158,16 @@ type Config struct {
 	// DecideHoldout stores a writer's okay or drop of one hold-out of a
 	// plan's newest revision (factoryd.DecideHoldout).
 	DecideHoldout func(ctx context.Context, taskID string, round, idx int, verb, by string) error
-	RejectPlan    func(ctx context.Context, taskID, by, why string) error
+	// GrantCriteria records an approver's grant of one more bounded card
+	// for a plan's open criteria (factoryd.GrantCriteria); DecideCriterion
+	// records their waiver of one criterion with their one-line reason
+	// (factoryd.DecideCriterion); RecordHumanCriteria records the
+	// approver's met on every human criterion of the plan whose
+	// integration card's merge they approved (factoryd.RecordHumanCriteria).
+	GrantCriteria       func(ctx context.Context, id, by string, approval int64) (int, error)
+	DecideCriterion     func(ctx context.Context, id, cid, verdict, by, reason string) error
+	RecordHumanCriteria func(ctx context.Context, taskID, approver string) (int, error)
+	RejectPlan          func(ctx context.Context, taskID, by, why string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
@@ -387,6 +399,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
+		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},
 		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},

@@ -90,8 +90,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 40 || !slices.Equal(skipped, []string{"POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 40 driven and only logout and the documents' save skipped", pages, skipped)
+	if pages != 41 || !slices.Equal(skipped, []string{"POST /logout", "POST /projects/{name}/docs/{path...}"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 41 driven and only logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on

@@ -253,6 +253,8 @@ type fakeTasks struct {
 	questions map[string][]factoryd.PlanQuestion
 	// holdouts are the plans' hold-out rows by task, idx order
 	holdouts map[string][]factoryd.Holdout
+	// criteria are the criteria verdict rows by task
+	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
 	read     func(s *fakeTasks, id string)
 }
@@ -389,6 +391,12 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 		}
 	}
 	return factoryd.ErrNoHoldout
+}
+
+func (s *fakeTasks) CriteriaVerdicts(_ context.Context, taskID string) ([]factoryd.CriterionVerdict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.criteria[taskID], nil
 }
 
 func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {

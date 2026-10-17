@@ -243,6 +243,10 @@ func (s *accBatchTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
+func (s *accBatchTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
+
 func (s *accBatchTasks) Dependencies(_ context.Context, _ string) ([]factoryd.Dependency, error) {
 	return nil, nil
 }
@@ -620,6 +624,20 @@ func (s *accBatchStore) ReportOf(ctx context.Context, parent, source string) (fa
 	panic("unused")
 }
 func (s *accBatchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) CriteriaVerdictTasks(context.Context) ([]string, error) { panic("unused") }
+
+func (s *accBatchStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
 	panic("unused")
 }
 func (s *accBatchStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {

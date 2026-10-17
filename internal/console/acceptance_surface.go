@@ -631,6 +631,9 @@ func (a *AcceptanceRig) PlanHoldouts(context.Context, string) ([]factoryd.Holdou
 }
 
 func (a *AcceptanceRig) PlanCards(context.Context, string) ([]factoryd.Task, error) { return nil, nil }
+func (a *AcceptanceRig) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
 
 func (a *AcceptanceRig) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
 	return nil, nil

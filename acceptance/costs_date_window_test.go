@@ -288,6 +288,10 @@ func (s *acceptTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
+
 func (s *acceptTasks) Dependencies(_ context.Context, _ string) ([]factoryd.Dependency, error) {
 	return nil, nil
 }
