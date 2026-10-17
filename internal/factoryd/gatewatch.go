@@ -85,7 +85,7 @@ var activityGates = map[string]string{
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan, ActivityCreateChildren,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
-	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityProviderWait, ActivityOpenPlanQuestions,
+	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
 	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement}
 

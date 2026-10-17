@@ -12,14 +12,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
@@ -176,10 +180,21 @@ func TestBriefWait(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
+	// the worker listens on one fixed port; where something else already
+	// holds it (a factory worker itself runs in this sandbox) the brief
+	// wait cannot run
+	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)); err != nil {
+		t.Skipf("message port %d in use: %v", harness.MessagePort, err)
+	} else {
+		ln.Close()
+	}
 	ready := func(t *testing.T) {
 		t.Helper()
 		setRequiredEnv(t)
 		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+		// the seeded repo is its own base; an ambient REPO_SHA from the
+		// harness names a commit it does not carry
+		t.Setenv("REPO_SHA", "")
 		home := t.TempDir()
 		t.Setenv("HOME", home)
 		if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
