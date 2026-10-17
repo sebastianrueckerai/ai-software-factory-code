@@ -57,6 +57,10 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardSplit            = "card_split"
 	EventCardFunded           = "card_funded"
+	// EventChatFunded is an approver's raise of a project's chat task's
+	// monthly budget, the console's Fund the chat: detail {"from_eur",
+	// "to_eur", "amount_eur", "reason"}.
+	EventChatFunded = "chat_funded"
 	// EventRoutineSkipped is a Skip once set or, with undo, cleared:
 	// detail {"project", "routine", "undo"}.
 	EventRoutineSkipped = "routine_skipped"
@@ -100,6 +104,12 @@ const EventQuestionAsked = "question_asked"
 // withdrew unanswered, the head it asked about gone back to the agent:
 // detail {"question", "comment", "reason"}.
 const EventQuestionWithdrawn = "question_withdrawn"
+
+// EventChatBudgetSpent is factoryd's record of a project's chat task
+// reaching its monthly budget, which stands the pulse and the chat until
+// a raise (the console's Fund the chat) or the month's turn: detail
+// {"budget_eur"}. The poke it raises asks at the needs-you level.
+const EventChatBudgetSpent = "chat_budget_spent"
 
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is

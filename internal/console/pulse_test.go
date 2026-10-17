@@ -71,6 +71,39 @@ func TestPulseLineSubduedAndProminent(t *testing.T) {
 	}
 }
 
+// The strip carries the pulse's age once it is two minutes old, marked
+// warn when the pulse is stale on a project with an event in the last
+// hour — stopped computing, not quiet: without such an event the age
+// stays plain until one lands, and a pulse under two minutes carries no
+// cell at all.
+func TestStatusStripCarriesThePulseAge(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	stale := calm
+	stale.At = time.Now().Add(-25 * time.Minute)
+	r.c.cfg.Pulses = fakePulses{"sf/code": stale}
+	r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardMoved, TaskID: "t-2"})
+	fresh := `<span class="cell warn" title="the age of the project's newest pulse">pulse 25 min old</span>`
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, fresh) {
+		t.Errorf("a stale pulse on a live project:\n%s", body)
+	}
+	r.events = &fakeEvents{bus: factoryd.NewEventBus()} // no event of the last hour
+	r.c.cfg.Events = r.events
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, fresh) {
+		t.Error("a quiet project marks its pulse's age warn")
+	}
+	r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardMoved, TaskID: "t-2"})
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, fresh) {
+		t.Errorf("a fresh event does not warn again:\n%s", body)
+	}
+	r.c.cfg.Pulses = fakePulses{"sf/code": calm2min}
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "the age of the project's newest pulse") {
+		t.Error("a pulse under two minutes carries an age cell")
+	}
+}
+
+var calm2min = factoryd.Pulse{ID: 8, Repository: "sf/code", At: time.Now().Add(-90 * time.Second), Sentence: "All quiet."}
+
 // readerForgejo shows the member repository sf/code, as Forgejo does a
 // repository they read.
 type readerForgejo struct{ http.RoundTripper }

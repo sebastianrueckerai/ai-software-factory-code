@@ -59,6 +59,9 @@ func TestPokeOf(t *testing.T) {
 		{"a chat task", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed"}}, Task{ID: "t-1", Kind: KindChat}, ChatMessage{}, false},
 		{"a plan done", Event{Kind: EventAllChildrenDone, TaskID: "t-plan", Detail: map[string]any{"cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessagePoke, Content: "Plan #558 is done: all 6 cards."}, true},
+		{"a chat budget spent", Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"budget_eur": float64(5)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
+			ChatMessage{Kind: MessagePoke, Content: "The chat's monthly budget of €5.00 is spent: the pulse and the chat stand until it is raised (Fund the chat on the board) or the month turns."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money and merges still ask."}, true},
 		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "backlog_cap": float64(5)}}, Task{},
@@ -90,6 +93,21 @@ func TestPokeOf(t *testing.T) {
 				t.Fatalf("pokeOf = %+v,\nwant %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A chat budget's poke asks at the needs-you level: the messenger's copy
+// goes to every member whose plan carries the level, an inform though it
+// is, for the chat task's row settles an escalation the moment it is
+// read.
+func TestChatBudgetPokeDeliversAtNeedsYou(t *testing.T) {
+	e := Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Detail: map[string]any{"budget_eur": float64(5)}}
+	m, ok := pokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat})
+	if !ok || m.Kind != MessagePoke {
+		t.Fatalf("pokeOf = %+v, %v", m, ok)
+	}
+	if got := deliveryLevel(m); got != LevelNeedsYou {
+		t.Fatalf("deliveryLevel = %q, want %q", got, LevelNeedsYou)
 	}
 }
 

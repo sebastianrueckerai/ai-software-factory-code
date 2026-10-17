@@ -21,12 +21,15 @@ import (
 )
 
 // fakePulseStore is the pulse's store in memory; Record publishes on bus
-// as the PGStore does.
+// as the PGStore does; spent makes the chat task's budget spent; budget
+// remembers what EnsureChatTask was last given, the policy's word.
 type fakePulseStore struct {
 	mu     sync.Mutex
 	bus    *EventBus
 	events []Event
 	pulses []Pulse
+	spent  bool
+	budget float64
 }
 
 func (s *fakePulseStore) Projects(context.Context) ([]Project, error) {
@@ -39,7 +42,14 @@ func (s *fakePulseStore) CurrentPolicy(context.Context) (policy.Version, bool, e
 }
 
 func (s *fakePulseStore) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
-	return Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository}, nil
+	s.mu.Lock()
+	s.budget = budget
+	s.mu.Unlock()
+	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository}
+	if s.spent {
+		t.SpentEUR = budget
+	}
+	return t, nil
 }
 
 func (s *fakePulseStore) Record(ctx context.Context, e Event) (int64, error) {
@@ -254,6 +264,60 @@ func TestPulseCall(t *testing.T) {
 		!reflect.DeepEqual(last.Detail, map[string]any{"sentence": row.Sentence, "bullets": row.Bullets, "prominent": false}) {
 		t.Fatalf("events %v, the last %+v", kinds, last)
 	}
+}
+
+// A spent chat budget refuses the computation — the pulse stands — and
+// the pulser asks the inbox of it once an hour: repeats within the hour
+// count on the poke's row instead of writing it anew, and an hour past
+// the ask repeats once.
+func TestPulseAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakePulseStore{bus: NewEventBus(), spent: true}
+		pl := &Pulser{Store: store, Bus: store.bus,
+			Context: func(context.Context, Project) (string, bool, error) { return "", false, nil }}
+		p := Project{Name: "linkshort", Repository: "linkshort/linkshort"}
+		asks := func() []Event {
+			var out []Event
+			store.mu.Lock()
+			for _, e := range store.events {
+				if e.Kind == EventChatBudgetSpent {
+					out = append(out, e)
+				}
+			}
+			store.mu.Unlock()
+			return out
+		}
+		for i := 0; i < 2; i++ {
+			err := pl.compute(context.Background(), p)
+			if err == nil || !strings.Contains(err.Error(), "budget of €") {
+				t.Fatalf("computation %d: error %v", i+1, err)
+			}
+		}
+		if got := len(asks()); got != 1 {
+			t.Fatalf("two computations: %d asks, want 1", got)
+		}
+		pl.askedMu.Lock()
+		pl.asked[ChatTaskID(p.Name, time.Now())] = time.Now().Add(-pulseAskWait - time.Minute)
+		pl.askedMu.Unlock()
+		if err := pl.compute(context.Background(), p); err == nil {
+			t.Fatal("the third computation ran")
+		}
+		got := asks()
+		if len(got) != 2 {
+			t.Fatalf("an hour past: %d asks, want 2", len(got))
+		}
+		for _, e := range got {
+			if e.Repository != "linkshort/linkshort" || e.Actor != FactoryDecider || e.Via != ViaFactoryd {
+				t.Fatalf("the ask: %+v", e)
+			}
+			// the ask carries the chat task's budget, the policy's word
+			// the store was given — not a hardcoded €5, which a change of
+			// the policy's chat budget would silently strand
+			if budget, ok := e.Detail["budget_eur"].(float64); !ok || budget != store.budget {
+				t.Fatalf("the ask's detail: %v, budget %v", e.Detail, store.budget)
+			}
+		}
+	})
 }
 
 // An answer that is not the pulse's JSON files no row: the newest stays,
