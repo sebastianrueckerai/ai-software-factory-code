@@ -1846,9 +1846,11 @@ func TestReviewPromptSkippedReproductionIsNoFinding(t *testing.T) {
 }
 
 // GatePolicy classifies under the risk rules of the version the task
-// pinned, and names it; the review asks the pinned version's review model
-// (Task 72's review: the pin covers the gates too). 0 reads the current.
-func TestGatePolicyAndReviewTakeThePinnedVersion(t *testing.T) {
+// pinned, and names it (Task 72's review: the pin covers the gates); the
+// review's ALIAS comes from the version in force, because the gateway's
+// purpose check enforces that version — a pinned alias is refused once the
+// key changes (the #937 probe). 0 reads the current.
+func TestGatePolicyTakesThePinTheReviewAliasTheVersionInForce(t *testing.T) {
 	fj := &gateForgejo{files: []string{`{"filename":"k8s/factoryd.yaml"}`}, diff: "diff --git a/k8s/factoryd.yaml b/k8s/factoryd.yaml\n"}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
@@ -1872,8 +1874,8 @@ func TestGatePolicyAndReviewTakeThePinnedVersion(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7}); err != nil {
 		t.Fatal(err)
 	}
-	if got := ll.chats[0]["model"]; got != pinned.Document.Classes["coder"].ReviewModel {
-		t.Fatalf("review model = %v, want the pinned %q", got, pinned.Document.Classes["coder"].ReviewModel)
+	if got := ll.chats[0]["model"]; got != current.Document.Classes["coder"].ReviewModel {
+		t.Fatalf("review model = %v, want the version in force's %q", got, current.Document.Classes["coder"].ReviewModel)
 	}
 }
 

@@ -345,7 +345,7 @@ func (r *Runner) ScreenAnswer(ctx context.Context, taskID, text string, pin int6
 	if err != nil {
 		return ScreenResult{}, err
 	}
-	model := factoryModel(pinned, t, policy.PurposeReview)
+	model := r.callModel(t, policy.PurposeReview)
 	text = sanitize.Inbound(text)
 	tag := randomTag()
 	for strings.Contains(text, tag) {

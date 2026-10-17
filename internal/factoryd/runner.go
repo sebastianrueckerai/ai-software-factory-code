@@ -941,11 +941,11 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		if calls >= limits.CheckinCallCap() {
 			reason = "check-in call cap reached"
 		}
-		rec := &CheckInRecord{Model: factoryModel(s.policy, t, policy.PurposeCheckin), Session: s.id,
+		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
 		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}, true
 	}
-	if alias := factoryModel(s.policy, t, policy.PurposeCheckin); alias != "" {
+	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := r.objects.Get(ctx, "sessions/"+t.ID+"/"+s.parent+".jsonl"); err != nil {
@@ -991,11 +991,11 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		if calls >= limits.CheckinCallCap() {
 			reason = "check-in call cap reached"
 		}
-		record := &CheckInRecord{Model: factoryModel(s.policy, t, policy.PurposeCheckin), Session: s.id,
+		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
 		return Decision{Action: ActionEscalate, Reason: reason}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: record}, true
 	}
-	alias := factoryModel(s.policy, t, policy.PurposeCheckin)
+	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
 		log.Printf("task %s: no model under the check-in's purpose: the session runs on over %s", t.ID, trip.Kind)
 		return Decision{Action: ActionContinue, Reason: "no model under the check-in's purpose"}, nil, false
@@ -1253,10 +1253,14 @@ func (r *Runner) pinnedVersion(ctx context.Context, id int64) (policy.Version, e
 	return v, nil
 }
 
-// factoryModel is the alias the task's pinned document names for purpose
-// on t's capability classes; "" when it names none.
-func factoryModel(d policy.Document, t Task, purpose string) string {
-	return d.FactoryModel(t.RequiredCapabilities, purpose)
+// callModel is the alias a factoryd model call uses for a purpose: the
+// version in force names it, because the gateway's purpose check enforces
+// that version — never the task's pinned document, whose alias a version
+// loaded after the task pinned can strand — and no alias under the version
+// in force means no call. The pinned document still governs limits and
+// prompts.
+func (r *Runner) callModel(t Task, purpose string) string {
+	return r.cfg.Policy().Document.FactoryModel(t.RequiredCapabilities, purpose)
 }
 
 // recordDecision writes the check-in's decision into the session record,

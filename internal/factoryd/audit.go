@@ -143,7 +143,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		r.record(ctx, t.ID, "stage_skipped", map[string]any{"stage": policy.StageAudit, "reason": auditNotSwitchedOn})
 		return AuditResult{Skipped: auditNotSwitchedOn}, nil
 	}
-	res := AuditResult{Model: factoryModel(v.Document, t, policy.PurposeAudit)}
+	res := AuditResult{Model: r.callModel(t, policy.PurposeAudit)}
 	noVerdict := func(why string) {
 		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}

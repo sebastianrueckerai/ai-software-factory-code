@@ -1060,7 +1060,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	model := factoryModel(pinned, t, policy.PurposeReview)
+	model := r.callModel(t, policy.PurposeReview)
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
 		if !isTerminal(err) {
 			return Review{}, err

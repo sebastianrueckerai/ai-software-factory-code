@@ -1512,6 +1512,59 @@ func TestRunSessionCheckinNoAliasContinues(t *testing.T) {
 	}
 }
 
+// The alias a factoryd model call uses comes from the version in force,
+// never the task's pinned one: the gateway's purpose check enforces the
+// version in force, and a task pinned before an alias landed would have
+// every call refused for its life (the #937 probe's defect).
+func TestCheckinAliasFollowsTheVersionInForce(t *testing.T) {
+	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"on track"}`})
+	pinned := testPolicyVersion() // coder: no checkin_model, so the pin's fallback is review-frontier
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return pinned, true, nil }
+	inForce := testPolicyVersion()
+	cl := inForce.Document.Classes["coder"]
+	cl.CheckinModel = "checkin"
+	inForce.Document.Classes["coder"] = cl
+	runner.cfg.Policy = func() policy.Version { return inForce }
+
+	logs := commands(0, 24) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", PolicyVersion: 7}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want the push through the conversation", res, err)
+	}
+	if chat.calls != 1 || chat.aliases[0] != "checkin" {
+		t.Fatalf("chat = %d calls on %v, want one on the version in force's checkin alias", chat.calls, chat.aliases)
+	}
+}
+
+// The inverse skew: the version in force names no model under the purpose
+// while the pin still does — no call leaves factoryd, because the gateway
+// would refuse any alias the pin names.
+func TestCheckinAliasNoneInForceMeansNoCall(t *testing.T) {
+	runner, _, _, _, chat, _, objects := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
+	pinned := testPolicyVersion()
+	cl := pinned.Document.Classes["coder"]
+	cl.CheckinModel = "checkin"
+	pinned.Document.Classes["coder"] = cl
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return pinned, true, nil }
+	inForce := testPolicyVersion()
+	cl = inForce.Document.Classes["coder"]
+	cl.ReviewModel = ""
+	inForce.Document.Classes["coder"] = cl
+	runner.cfg.Policy = func() policy.Version { return inForce }
+
+	logs := commands(0, 24) + pushedLine("c2") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", PolicyVersion: 7}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c2" {
+		t.Fatalf("result = (%+v, %v), want the session carried on without a call", res, err)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("chat calls = %d, want none: the version in force names no alias", chat.calls)
+	}
+	if tl := objGet(objects, "sessions/t2/timeline.jsonl"); strings.Contains(string(tl), `"step":"checkin"`) {
+		t.Fatalf("timeline = %s, want no check-in step without a call", tl)
+	}
+}
+
 // A check-in still answering when the wall-clock cap arrives loses to the
 // cap: the session ends wall_clock, the cut conversation's record still
 // landed, and the comment says the cap superseded the check-in.
