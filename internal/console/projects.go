@@ -519,6 +519,7 @@ type step struct {
 
 type statusPanel struct {
 	Name, User, CSRF string
+	Page             string // the layout marks the bar's current destination: Projects
 	Factory          bool // the layout's factory-level links: the panel is a factory-level page
 	Messengers       bool // the layout's notifications link
 	Steps            []step
@@ -532,7 +533,7 @@ type statusPanel struct {
 func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 	ctx := r.Context()
 	s := current(r)
-	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf, Factory: true, Messengers: c.cfg.Messengers != nil}
+	out := statusPanel{Name: name, User: s.user, CSRF: s.csrf, Page: "projects", Factory: true, Messengers: c.cfg.Messengers != nil}
 	pulled := step{Name: "Pull request opened", State: stepWaiting,
 		Tip:    "The project's file as a pull request on the infra repository, filed as you; the factory checked it as its loader will.",
 		Detail: "No pull request from branch project-" + name + " into main yet."}

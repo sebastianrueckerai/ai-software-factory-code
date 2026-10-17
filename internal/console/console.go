@@ -772,9 +772,19 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 	c.render(w, "forbidden.html", map[string]any{"User": user})
 }
 
+// pageOf names the bar's destination a page template is, so the layout
+// marks the open page's word (C23); the board and the project status
+// pages carry their own Page on their structs.
+var pageOf = map[string]string{
+	"new.html": "new", "projects.html": "projects", "project_new.html": "projects",
+	"resources.html": "resources", "costs.html": "costs", "policy.html": "policy",
+	"alerts.html": "alerts", "notifications.html": "notifications",
+}
+
 func (c *Console) render(w http.ResponseWriter, name string, data any) {
 	if m, ok := data.(map[string]any); ok {
 		m["Messengers"] = c.cfg.Messengers != nil // the layout links the notifications panel
+		m["Page"] = pageOf[name]
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.tmpl.ExecuteTemplate(w, name, data); err != nil {

@@ -83,7 +83,7 @@ func TestProjectsPage(t *testing.T) {
 		"Agents: none: every issue goes to the human lane", "Tokens: read forgejo-config",
 		"No file projects/gone.yaml in the configuration: nothing acts on this project",
 		`<a href="/projects/new">New project</a>`,
-		`<a href="/projects">Projects</a>`,
+		`<a href="/projects" aria-current="page">Projects</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/projects lacks %q", want)
@@ -741,6 +741,9 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s := newStatusRig(t)
 			c.setup(s)
 			body := s.status(t)
+			if !strings.Contains(body, `<a href="/projects" aria-current="page">Projects</a>`) {
+				t.Error("the status page's bar does not mark Projects current")
+			}
 			names, states, tips := steps(body)
 			if want := []string{"Pull request opened", "Approved and merged", "Repository created", "Board ready"}; !slices.Equal(names, want) {
 				t.Fatalf("steps %q, want %q", names, want)

@@ -19,10 +19,14 @@ import (
 )
 
 // faceOf is the face of card id: the first card article in section that
-// carries its id.
+// carries its id. An escalation article shares the face's data-card, so
+// the face's own match is the one with a place.
 func faceOf(t *testing.T, section, id string) string {
 	t.Helper()
-	i := strings.Index(section, `data-card="`+id+`"`)
+	i := strings.Index(section, `data-card="`+id+`" data-place="`)
+	if i < 0 {
+		i = strings.Index(section, `data-card="`+id+`"`)
+	}
 	if i < 0 {
 		t.Fatalf("card %s missing:\n%s", id, section)
 	}
@@ -302,18 +306,19 @@ func TestCardFaceChecksCached(t *testing.T) {
 // The wide view renders an escalated card twice, in the escalations and
 // in its column, the five columns once, in Needs you: its summary and
 // accent fields sit inside their labels with no id, so no id repeats on
-// the page.
+// the page. The escalation article shares its face's data-card, which
+// the click handler reads to open the drawer from anywhere on the card.
 func TestEscalatedCardRepeatsNoID(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("The agent asks: which region?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 13, Objective: "asks"})
-	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 1 {
-		t.Errorf("the five columns render the escalated card %d times, want 1", n)
+	if n := strings.Count(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(), `data-card="t-e"`); n != 2 {
+		t.Errorf("the five columns render the escalated card's data-card %d times, want the escalation article's and its face's", n)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if n := strings.Count(body, `data-card="t-e"`); n != 2 {
-		t.Fatalf("the escalated card renders %d times, want 2", n)
+	if n := strings.Count(body, `data-card="t-e"`); n != 3 {
+		t.Fatalf("the escalated card renders %d times, want the escalation article's, its face's and its column card's", n)
 	}
 	ids := map[string]int{}
 	for _, m := range regexp.MustCompile(` id="([^"]+)"`).FindAllStringSubmatch(body, -1) {
@@ -481,6 +486,57 @@ func TestCardFaceWaitingReason(t *testing.T) {
 		}
 		if face := faceOf(t, col(t, board, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_moved") {
 			t.Errorf("%s: the waiting card's activity is not its question:\n%s", title, face)
+		}
+	}
+}
+
+// The top bar (C23): the eight destinations sit in three groups, the open
+// page's link alone carries aria-current, New task is the bar's one
+// bordered word with the phone's "+" beside its word, and the menu sheet
+// repeats every destination as a row with the logout last, so a narrow
+// bar never hides Board behind a second press.
+func TestTopBarSparseNav(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	get := func(target string) string {
+		rec := r.do(httptest.NewRequest(http.MethodGet, target, nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", target, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	board := get("/")
+	for _, want := range []string{
+		`<a href="/" aria-current="page">Board</a>`,
+		`class="ng ng-work"`, `class="ng ng-ref"`, `class="ng ng-gov"`,
+		`<a class="act" href="/tasks/new"><span class="w">New task</span><span class="p">+</span></a>`,
+		`<details class="menu">`, `<summary>`,
+		`<a class="s-work" href="/" aria-current="page">Board</a>`,
+		`<a class="s-ref" href="/projects">Projects</a>`,
+		`<a class="s-gov" href="/alerts">Alerts</a>`,
+		`<form method="post" action="/logout" class="logout s-out">`,
+	} {
+		if !strings.Contains(board, want) {
+			t.Errorf("the board's bar lacks %s", want)
+		}
+	}
+	if i, j := strings.Index(board, `class="ng ng-ref"`), strings.Index(board, `class="ng ng-gov"`); i > j {
+		t.Error("the reference group sits after governance")
+	}
+	for target, want := range map[string][2]string{
+		"/alerts":     {`<a href="/alerts" aria-current="page">Alerts</a>`, `href="/" aria-current="page"`},
+		"/projects":   {`<a href="/projects" aria-current="page">Projects</a>`, `href="/" aria-current="page"`},
+		"/tasks/new":  {`<a class="act" href="/tasks/new" aria-current="page">`, `href="/" aria-current="page"`},
+		"/costs":      {`<a href="/costs" aria-current="page">Costs</a>`, `href="/" aria-current="page"`},
+		"/policy":     {`<a href="/policy" aria-current="page">Policy</a>`, `href="/" aria-current="page"`},
+		"/resources":  {`<a href="/resources" aria-current="page">Resources</a>`, `href="/" aria-current="page"`},
+	} {
+		body := get(target)
+		if !strings.Contains(body, want[0]) {
+			t.Errorf("GET %s lacks %s", target, want[0])
+		}
+		if strings.Contains(body, want[1]) {
+			t.Errorf("GET %s marks %s current", target, want[1])
 		}
 	}
 }
@@ -829,6 +885,33 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	}
 	if !strings.Contains(esc, `name="value" value="park"`) {
 		t.Errorf("the card with pending answers lost its buttons:\n%s", esc)
+	}
+}
+
+// A click anywhere on a needs-you card opens its drawer, as on every
+// other card: the board's click handler reads
+// e.target.closest("#board [data-card]"), so the escalation article
+// carries its face's data-card and the ask, the choices row and the
+// foot — children of the escalation article, not of the face — reach
+// the card. The answer buttons stay their own doors: the handler skips
+// a form, a button and a label.
+func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+		Escalation: "the session cap is reached: every finding sent to a human returns unacted",
+		Question: &factoryd.HumanQuestion{Ask: "The call cap is reached: which way on?",
+			Choices: []factoryd.QuestionChoice{{Value: "grant", Label: "Grant one session"}, {Value: "park", Label: "Park it"}}}}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if !strings.Contains(body, `<article class="card escalation" id="need-t-q" data-card="t-q">`) {
+		t.Errorf("the escalation article carries no data-card, so a click on the ask, the choices or the foot opens no drawer:\n%s", escalationOf(t, body, "t-q"))
+	}
+	// the face article ends first; the ask, the choices and the foot sit
+	// after it, in the escalation article whose data-card the walk finds
+	esc := escalationOf(t, body, "t-q")
+	faceEnd, askAt := strings.Index(esc, "</article>"), strings.Index(esc, `<p class="ask">`)
+	if faceEnd < 0 || askAt < faceEnd || !strings.Contains(esc[askAt:], `<div class="choices" role="group"`) || !strings.Contains(esc[askAt:], `<p class="need-foot">`) {
+		t.Errorf("the ask, the choices and the foot do not sit in the escalation article, outside the face:\n%s", esc)
 	}
 }
 

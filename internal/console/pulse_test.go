@@ -96,13 +96,11 @@ func TestStatusStripCarriesThePulseAge(t *testing.T) {
 	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, fresh) {
 		t.Errorf("a fresh event does not warn again:\n%s", body)
 	}
-	r.c.cfg.Pulses = fakePulses{"sf/code": calm2min}
+	r.c.cfg.Pulses = fakePulses{"sf/code": {ID: 8, Repository: "sf/code", At: time.Now().Add(-90 * time.Second), Sentence: "All quiet."}}
 	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "the age of the project's newest pulse") {
 		t.Error("a pulse under two minutes carries an age cell")
 	}
 }
-
-var calm2min = factoryd.Pulse{ID: 8, Repository: "sf/code", At: time.Now().Add(-90 * time.Second), Sentence: "All quiet."}
 
 // readerForgejo shows the member repository sf/code, as Forgejo does a
 // repository they read.
