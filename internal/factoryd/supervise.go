@@ -62,7 +62,6 @@ type SupervisorConfig struct {
 	SameFailure      int           // 0 = DefaultSameFailure
 	SameCall         int           // limits.same_call; 0 = policy.DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
-	MaxCalls         int           // supervisor calls per session (limits.supervisor_calls); the next trip escalates without one
 	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
 	// policy.DefaultDetectors
 	NoWriteAfter time.Duration
@@ -96,9 +95,9 @@ func (c SupervisorConfig) validate() error {
 	if c.RepetitionEvents < 2 {
 		return fmt.Errorf("supervisor: RepetitionEvents must be >= 2, is %d", c.RepetitionEvents)
 	}
-	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 || c.MaxCalls < 1 ||
+	if c.SameFailure < 0 || c.SameFailure == 1 || c.SameCall < 0 || c.SameCall == 1 || c.Churn < 0 || c.Churn == 1 ||
 		c.NudgeAfter < 0 || c.NudgeAfter == 1 || c.Nudges < 0 {
-		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default), calls >= 1: %+v", c)
+		return fmt.Errorf("supervisor: detector thresholds must be >= 2 (0 = default): %+v", c)
 	}
 	if c.NoWriteAfter < 0 {
 		return fmt.Errorf("supervisor: NoWriteAfter must be positive (0 = default), is %s", c.NoWriteAfter)

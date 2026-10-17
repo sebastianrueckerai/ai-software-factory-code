@@ -861,20 +861,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		res.Outcome, res.Summary, res.Reason, res.StartFailed = OutcomeEscalate, out.start.Error(), out.start.escalation(thenAnswer), true
 		return res
 	}
-	// the check-in at the session's start stopped it: no conversation ran,
-	// so no adapter verdict or trip can apply
-	if out.checkIn != nil {
-		switch out.checkIn.Decision {
-		case CheckHuman:
-			res.Outcome, res.Summary, res.Reason = OutcomeCheckinHuman, out.checkIn.Reason, out.checkIn.Reason
-			return res
-		case CheckDroppedAll:
-			res.Outcome, res.Summary = OutcomeCheckinDropped, "the check-in dropped every finding"
-			return res
-		}
-	}
 	// a session that finished and pushed goes to verification, even when a
-	// stop raced its finish
+	// stop or a check-in raced its finish
 	if out.result != nil && out.result.Success && out.commit != "" {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, out.commit, out.result.Summary
 		return res
@@ -893,13 +881,32 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Findings = append([]string{out.trip.Stuck}, res.Findings...)
 		}
 	}
+	// the check-in at the session's start stopped it: no conversation ran,
+	// so no adapter verdict or trip can apply
+	if out.checkIn != nil {
+		switch out.checkIn.Decision {
+		case CheckHuman:
+			res.Outcome, res.Summary, res.Reason = OutcomeCheckinHuman, out.checkIn.Reason, out.checkIn.Reason
+			return res
+		case CheckDroppedAll:
+			res.Outcome, res.Summary = OutcomeCheckinDropped, "the check-in dropped every finding"
+			return res
+		case CheckHandover:
+			// a mid-session handover is not the escalate a stop would read;
+			// a start-moment one falls through to the result's own shape
+			if out.trip != nil {
+				res.Summary = fmt.Sprintf("check-in: handover after %s", out.trip.Kind)
+				return res
+			}
+		}
+	}
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
 		res.Outcome, res.Summary = OutcomeWallClock, "supervision trip: "+string(TripWallClock)
 		return res
 	case out.trip != nil && out.decision != nil:
 		d := out.decision
-		res.Summary = fmt.Sprintf("supervisor: %s after %s: %s", d.Action, out.trip.Kind, out.trip.Detail)
+		res.Summary = fmt.Sprintf("check-in: %s after %s: %s", d.Action, out.trip.Kind, out.trip.Detail)
 		if d.Guidance != "" {
 			res.Findings = append(res.Findings, "supervisor guidance: "+d.Guidance)
 		}

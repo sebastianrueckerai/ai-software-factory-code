@@ -14,7 +14,7 @@ import (
 )
 
 func TestSupervisorConfigMustBeSane(t *testing.T) {
-	base := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, MaxCalls: 3}
+	base := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10}
 	if _, err := NewSupervisor(base, time.Unix(0, 0), time.Unix(0, 0)); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
@@ -25,7 +25,6 @@ func TestSupervisorConfigMustBeSane(t *testing.T) {
 		"wall clock spent":  func(c *SupervisorConfig) { c.WallClockCap = -time.Hour },
 		"repetition 1":      func(c *SupervisorConfig) { c.RepetitionEvents = 1 },
 		"repetition 0":      func(c *SupervisorConfig) { c.RepetitionEvents = 0 },
-		"no calls":          func(c *SupervisorConfig) { c.MaxCalls = 0 },
 	} {
 		cfg := base
 		mutate(&cfg)
@@ -126,7 +125,7 @@ func TestSupervisorRepetitionDetector(t *testing.T) {
 }
 
 func TestSupervisorWallClockSpansSessions(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 30 * time.Minute, RepetitionEvents: 100, MaxCalls: 3}
+	cfg := SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 30 * time.Minute, RepetitionEvents: 100}
 	taskStart := time.Unix(0, 0)
 	// A resumed session starting 25 minutes into the task has 5 minutes left.
 	s, err := NewSupervisor(cfg, taskStart, taskStart.Add(25*time.Minute))
@@ -165,7 +164,6 @@ func mustSupervisor(t *testing.T, noProgress, wallClock time.Duration, repetitio
 		NoProgressAfter:  noProgress,
 		WallClockCap:     wallClock,
 		RepetitionEvents: repetition,
-		MaxCalls:         3,
 		NoWriteAfter:     100 * time.Hour,
 	}, time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
@@ -619,7 +617,7 @@ func minute(m float64) time.Time { return time.Unix(0, 0).Add(time.Duration(m * 
 // checkpoint or silence never do (a changed diff is a write:
 // TestShellWriteCountsAsWrite).
 func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
-	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3},
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000},
 		time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -662,7 +660,7 @@ func TestNoWriteTripsOnAnAgentEventFiveMinutesAfterTheLastWrite(t *testing.T) {
 // compile of 3 min 30 s does not count towards no_write (Stage 11's gate
 // lane task tripped it on a cold `go test` compile in the sandbox).
 func TestNoWriteExcludesACommandsRunningTime(t *testing.T) {
-	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3},
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000},
 		time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -699,7 +697,7 @@ func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
 	d := policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
 		Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}}
 	c := r.supervisorConfig(d, d.Limits.AgentTime, d.Limits.CheckIn)
-	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute || c.MaxCalls != 2 {
+	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute {
 		t.Fatalf("config = %+v, want no_write 1m, agent time 45m and 2 calls from the policy, the rest as configured", c)
 	}
 }
@@ -725,7 +723,7 @@ func TestWorkflowConfigTakesTheLimits(t *testing.T) {
 func TestReadOnlySessionTakesNoWriteDetectors(t *testing.T) {
 	start := time.Unix(0, 0)
 	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 20 * time.Minute, RepetitionEvents: 3,
-		NoWriteAfter: time.Minute, MaxCalls: 3, ReadOnly: true}, start, start)
+		NoWriteAfter: time.Minute, ReadOnly: true}, start, start)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -908,7 +906,7 @@ func TestLoopEndsAtTheThirdNudgeWithoutNewContent(t *testing.T) {
 	}
 
 	// a report session writes no file: its nudges are no loop
-	ro, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 10 * time.Hour, RepetitionEvents: 100, MaxCalls: 3, ReadOnly: true}, t0, t0)
+	ro, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Hour, WallClockCap: 10 * time.Hour, RepetitionEvents: 100, ReadOnly: true}, t0, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1013,7 @@ func TestNudgeNotSentIsNotSpent(t *testing.T) {
 // anchor, across sessions: anchor t0, 45m, a session from t0+50m trips at
 // t0+90m and t0+135m and not between.
 func TestCheckInEveryInterval(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3,
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
 	s, err := NewSupervisor(cfg, minute(0), minute(50))
 	if err != nil {
@@ -1052,7 +1050,7 @@ func TestCheckInEveryInterval(t *testing.T) {
 // it counts as a write for repetition and no_write. The first checkpoint
 // is the baseline.
 func TestShellWriteCountsAsWrite(t *testing.T) {
-	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 100, MaxCalls: 3},
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 100},
 		minute(0), minute(0))
 	if err != nil {
 		t.Fatal(err)
@@ -1074,7 +1072,7 @@ func TestShellWriteCountsAsWrite(t *testing.T) {
 // a write since ends the session as retry_stronger, decided already; a
 // write disarms it; a check-in never ends it.
 func TestSupervisorStuckAfterMessage(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 3,
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
@@ -1109,7 +1107,7 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 // A message starts every progress detector afresh: a detector that did
 // not trip keeps no count from before the message (review I1).
 func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 24, MaxCalls: 6,
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 24,
 		NoWriteAfter: 5 * time.Minute, CheckIn: 45 * time.Minute}
 	// (a) 24 reads in 4 minutes trip repetition; after the message at 4:06
 	// the first model call at 5:00 is no no_write trip
@@ -1172,7 +1170,7 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 // Silence after a message is no circle: a command running over 5 minutes
 // trips no_progress, which the supervisor is asked about (review I2).
 func TestNoProgressAfterMessageAsks(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour}
+	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
 	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
@@ -1187,7 +1185,7 @@ func TestNoProgressAfterMessageAsks(t *testing.T) {
 // not progress, although they write: they end the session too.
 func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	const check = "go test ./..."
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
 	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
@@ -1219,7 +1217,7 @@ func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 // is and the session runs on.
 func TestUndoAfterAMessageLeavesTheCardWhereItIs(t *testing.T) {
 	const check = "go test ./..."
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour, Churn: 1000}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
 	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
@@ -1248,7 +1246,7 @@ func TestUndoAfterAMessageLeavesTheCardWhereItIs(t *testing.T) {
 // (retry_stronger), not to the supervisor.
 func TestARefailAfterAReturnMovesTheCardToTheFrontierTier(t *testing.T) {
 	const check = "go test ./..."
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour, Churn: 1000}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
 	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
@@ -1273,7 +1271,7 @@ func TestARefailAfterAReturnMovesTheCardToTheFrontierTier(t *testing.T) {
 // pending and the card does not move.
 func TestAFailureOnlyAfterAReturnIsNewWork(t *testing.T) {
 	const check = "go vet ./..."
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 6, NoWriteAfter: time.Hour, Churn: 1000}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
 	s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
@@ -1296,7 +1294,7 @@ func TestAFailureOnlyAfterAReturnIsNewWork(t *testing.T) {
 // No check-in in a session's first 10 minutes: anchor t0, 45m, a session
 // from t0+40m skips t0+45m and checks in at t0+90m.
 func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3,
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 4 * time.Hour, RepetitionEvents: 1000,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
 	s, _ := NewSupervisor(cfg, minute(0), minute(40))
 	if trip := s.Tick(minute(89.99)); trip != nil {
@@ -1319,7 +1317,7 @@ func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
 // alternating file).
 func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 	const check = "go test ./..."
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, MaxCalls: 3,
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(fileEvent("stats_test.go", "versionA"), minute(1))
@@ -1346,7 +1344,7 @@ func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 // without a push the supervisor trips cheap_cap with the climb decided, no
 // model call; a push before it, or the climb in place, ends the cap.
 func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3, CheapCap: 8 * time.Minute, NoWriteAfter: 10 * time.Hour}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, CheapCap: 8 * time.Minute, NoWriteAfter: 10 * time.Hour}
 	s, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
 	if err != nil {
 		t.Fatal(err)
@@ -1371,7 +1369,7 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 		t.Fatalf("tripped after the climb: %+v", trip)
 	}
 
-	s, _ = NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, MaxCalls: 3}, time.Unix(0, 0), time.Unix(0, 0))
+	s, _ = NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000}, time.Unix(0, 0), time.Unix(0, 0))
 	if trip := s.Tick(minute(30)); trip != nil {
 		t.Fatalf("a session without the cap tripped: %+v", trip)
 	}
@@ -1379,7 +1377,7 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 
 func spendSupervisor(t *testing.T, mutate func(*SupervisorConfig)) *Supervisor {
 	t.Helper()
-	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 100, MaxCalls: 3,
+	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 100,
 		NoWriteAfter: 100 * time.Hour, NoPushSpend: 0.6}
 	if mutate != nil {
 		mutate(&cfg)
@@ -1441,7 +1439,7 @@ func TestSpendTripAfterAMessageIsNotTheStuckRule(t *testing.T) {
 }
 
 func TestSpendNoPushShareMustBeBelowOne(t *testing.T) {
-	cfg := SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, MaxCalls: 3, NoPushSpend: 1}
+	cfg := SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 10, NoPushSpend: 1}
 	if _, err := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0)); err == nil {
 		t.Fatal("a share of 1 accepted")
 	}

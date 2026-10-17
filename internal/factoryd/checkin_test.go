@@ -223,19 +223,40 @@ func TestCheckinStatement(t *testing.T) {
 	})
 }
 
+// scriptedChat answers a check-in's conversations in order. Fails makes
+// the first calls error before the answers apply; delay holds each call,
+// honouring the caller's context, so a session's deadline cuts it; onCall
+// runs at each call's start.
 type scriptedChat struct {
 	answers []CheckinResponse
 	calls   int
 	got     CheckinRequest
+	gots    []CheckinRequest
+	aliases []string
+	fails   int
+	delay   time.Duration
+	onCall  func()
 }
 
-func (c *scriptedChat) Call(_ context.Context, _, _ string, in CheckinRequest) (CheckinResponse, error) {
+func (c *scriptedChat) Call(ctx context.Context, _, alias string, in CheckinRequest) (CheckinResponse, error) {
 	c.got = in
+	c.gots = append(c.gots, in)
+	c.aliases = append(c.aliases, alias)
 	c.calls++
-	if c.calls > len(c.answers) {
+	if c.onCall != nil {
+		c.onCall()
+	}
+	if c.delay > 0 {
+		select {
+		case <-time.After(c.delay):
+		case <-ctx.Done():
+			return CheckinResponse{}, ctx.Err()
+		}
+	}
+	if n := c.calls - c.fails; n < 1 || n > len(c.answers) {
 		return CheckinResponse{}, errors.New("provider refused")
 	}
-	return c.answers[c.calls-1], nil
+	return c.answers[c.calls-c.fails-1], nil
 }
 
 type scriptedTools struct{ out map[string]string }

@@ -56,35 +56,6 @@ func (r *SessionRecorder) Snapshot(ctx context.Context, findings []string, resta
 	return r.store.UpdateSession(ctx, r.id, findings, restartState)
 }
 
-// SupervisorTail is the history's last events within n bytes as the
-// supervisor reads them beside its digest and messages (roadmap 201): no
-// supervisor event, whose guidance the messages carry; no command's
-// output and no checkpoint's patch, the digest carrying the failures'
-// outputs and the diff so far; no model call's tokens and cost, which no
-// decision reads; a command's line as CommandLine cuts it.
-func (r *SessionRecorder) SupervisorTail(n int) json.RawMessage {
-	return jsonlTail(r.history.Bytes(), n, func(line []byte) []byte {
-		var ev harness.Event
-		if json.Unmarshal(line, &ev) != nil || ev.Kind == harness.EventSupervisor {
-			return nil
-		}
-		switch ev.Kind {
-		case harness.EventCommand:
-			delete(ev.Detail, "output")
-			if cmd, ok := ev.Detail["command"].(string); ok {
-				ev.Detail["command"] = CommandLine(cmd)
-			}
-		case harness.EventCheckpoint:
-			delete(ev.Detail, "patch")
-		case harness.EventModelCall:
-			delete(ev.Detail, "tokens")
-			delete(ev.Detail, "cost")
-		}
-		out, _ := json.Marshal(ev)
-		return out
-	})
-}
-
 // Transcript is the live session's record so far: the in-session
 // check-in reads it factoryd-side, where the pod's copy does not reach.
 func (r *SessionRecorder) Transcript() []byte {

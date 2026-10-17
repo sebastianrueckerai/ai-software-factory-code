@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -22,15 +21,15 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The agent's escalate_to_human ends the session like a supervisor's
-// escalate, without a supervisor call: the worker is stopped, the outcome
+// The agent's escalate_to_human ends the session like an escalation,
+// without a check-in conversation: the worker is stopped, the outcome
 // carries the question for the workflow's Escalate.
 func TestRunSessionAgentEscalation(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
-	f := &fakeLiteLLM{content: `{"action":"continue"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	chat := &scriptedChat{}
+	runner.checkin = chat
 	runner.stopWait = 200 * time.Millisecond
 
 	delivered := make(chan error, 1)
@@ -56,8 +55,8 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 		!strings.Contains(res.Reason, "Detector: agent_escalation") || !slices.Equal(res.Choices, []string{"MIT", "Apache-2.0", "GPL-3.0"}) {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(f.chats) != 0 {
-		t.Fatalf("supervisor called %d times, want none", len(f.chats))
+	if chat.calls != 0 {
+		t.Fatalf("check-in conversations = %d, want none", chat.calls)
 	}
 	// the agent's question is the workflow's escalation alert, no trip
 	if alerts := store.alertRows(); len(alerts) != 0 {
@@ -82,34 +81,19 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	}
 }
 
-// An escalate_to_human that arrives while a supervisor call is in flight
-// wins: the agent was told "escalated", so the supervisor's redirect never
-// takes effect, and the call is cut.
-func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
+// An escalate_to_human that arrives while a check-in conversation is in
+// flight wins: the agent was told "escalated", so the check-in's message
+// never takes effect, and the conversation is cut.
+func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	runner.stopWait = 5 * time.Second
-	inFlight, cut := make(chan struct{}), make(chan struct{})
+	inFlight := make(chan struct{})
 	var once sync.Once
-	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/key/list":
-			io.WriteString(w, `{"keys":[],"total_pages":1}`)
-		case "/v1/chat/completions":
-			io.ReadAll(r.Body)
-			once.Do(func() { close(inFlight) })
-			select {
-			case <-r.Context().Done():
-				close(cut)
-				return
-			case <-time.After(20 * time.Second):
-			}
-			io.WriteString(w, `{"choices":[{"message":{"content":"{\"action\":\"redirect\",\"guidance\":\"try another way\"}"}}]}`)
-		}
-	}))
-	t.Cleanup(sup.Close)
-	runner.supervisor = testSupervisorModel(sup.URL)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"try another way"}`}}, delay: 20 * time.Second}
+	chat.onCall = func() { once.Do(func() { close(inFlight) }) }
+	runner.checkin = chat
 
 	delivered := make(chan error, 1)
 	go func() {
@@ -118,6 +102,7 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 	}()
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + cutLogs +
 		pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed at c-wip") + "\n"
+	began := time.Now()
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
@@ -125,22 +110,23 @@ func TestAgentEscalationWinsOverAnInFlightSupervisorCall(t *testing.T) {
 	if err := <-delivered; err != nil {
 		t.Fatalf("EscalateSession = %v", err)
 	}
-	select {
-	case <-cut:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the escalation did not cut the supervisor call")
+	if took := time.Since(began); took > 10*time.Second {
+		t.Fatalf("took %s: the escalation did not cut the conversation", took)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want the cut one", chat.calls)
 	}
 	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, "The agent asks: Which license applies?") || res.Commit != "c-wip" {
 		t.Fatalf("result = %+v, want the agent's escalation with the work in progress", res)
 	}
 	if strings.Contains(strings.Join(res.Findings, "\n"), "try another way") {
-		t.Fatalf("findings = %v carry the superseded redirect", res.Findings)
+		t.Fatalf("findings = %v carry the superseded message", res.Findings)
 	}
 	if len(hub.comments) != 0 {
 		t.Fatalf("comments = %q, want the question left to the workflow's Escalate", hub.comments)
 	}
 	record := string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl"))
-	if !strings.Contains(record, `"detector":"agent_escalation"`) || strings.Contains(record, `"decision":"redirect"`) {
+	if !strings.Contains(record, `"detector":"agent_escalation"`) || strings.Contains(record, `"decision":"message"`) {
 		t.Fatalf("record = %s", record)
 	}
 	// the stopped session takes no second escalation

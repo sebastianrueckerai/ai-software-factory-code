@@ -1,11 +1,9 @@
 package factoryd
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,7 +15,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func TestDigestCollectsCommandsFilesErrorsAndDiff(t *testing.T) {
@@ -127,61 +124,13 @@ func TestCommandLineIsCutWhereAModelReadsIt(t *testing.T) {
 	if g.Commands[0].Command != line(a) || g.Commands[1].Command != line(b) || g.Commands[0].Signature == g.Commands[1].Signature || len(g.Errors) != 2 {
 		t.Fatalf("digest = %+v, want two cut lines with two signatures", g)
 	}
-	sup, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24, MaxCalls: 1}, t0, t0)
+	sup, err := NewSupervisor(SupervisorConfig{NoProgressAfter: time.Minute, WallClockCap: time.Hour, RepetitionEvents: 24}, t0, t0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	sup.Event(cmdEvent(a, 1, "FAIL"), t0)
 	if f := sup.findings; len(f) != 1 || f[0] != "ran `"+line(a)+"` (exit 1)" {
 		t.Fatalf("findings = %q", f)
-	}
-	r, err := NewSessionRecorder(context.Background(), newFakeStore(), &fakeObjectStore{}, "t1", "s1", "", "m")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := r.Record(context.Background(), cmdEvent(a, 1, "FAIL")); err != nil {
-		t.Fatal(err)
-	}
-	if tail := string(r.SupervisorTail(maxRecordTail)); !strings.Contains(tail, `"command":"`+line(a)+`"`) || strings.Contains(tail, "bbbb") {
-		t.Fatalf("tail = %s, want the cut line", tail)
-	}
-}
-
-func TestParseDecision(t *testing.T) {
-	for _, tc := range []struct {
-		name, in string
-		want     Decision
-	}{
-		{"continue", `{"action":"continue","reason":"tests are converging"}`, Decision{Action: ActionContinue, Reason: "tests are converging"}},
-		{"message", ` {"action":"message","guidance":"stop editing the script; read the test"} `, Decision{Action: ActionMessage, Guidance: "stop editing the script; read the test"}},
-		{"escalate", `{"action":"escalate","reason":"the check can never pass"}`, Decision{Action: ActionEscalate, Reason: "the check can never pass"}},
-		{"fenced", "```json\n{\"action\":\"continue\"}\n```", Decision{Action: ActionContinue}},
-	} {
-		if got := parseDecision(tc.in); !reflect.DeepEqual(got, tc.want) {
-			t.Fatalf("%s: %+v, want %+v", tc.name, got, tc.want)
-		}
-	}
-	for name, in := range map[string]string{
-		"not json":           `I think we should continue`,
-		"unknown action":     `{"action":"raise_budget"}`,
-		"unknown field":      `{"action":"continue","budget_eur":10}`,
-		"two objects":        `{"action":"continue"}{"action":"escalate"}`,
-		"trailing text":      `{"action":"continue"} because`,
-		"message no advice":  `{"action":"message"}`,
-		"redirect":           `{"action":"redirect","guidance":"read the test"}`,
-		"retry_stronger":     `{"action":"retry_stronger","guidance":"read the test"}`,
-		"escalate no reason": `{"action":"escalate"}`,
-		"empty":              ``,
-		"array":              `[{"action":"continue"}]`,
-	} {
-		got := parseDecision(in)
-		if got.Action != ActionEscalate || !strings.Contains(got.Reason, "invalid") {
-			t.Fatalf("%s: %+v, want escalate with an invalid-answer reason", name, got)
-		}
-	}
-	long := parseDecision(`{"action":"message","guidance":"` + strings.Repeat("g", 5000) + `"}`)
-	if long.Action != ActionMessage || len(long.Guidance) > maxDecisionText+len("…") {
-		t.Fatalf("long guidance = %d bytes, want capped at %d", len(long.Guidance), maxDecisionText)
 	}
 }
 
@@ -256,129 +205,5 @@ func testSupervisorModel(url string) *SupervisorModel {
 		GatewayURL: url,
 		Token:      "gw-token",
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
-	}
-}
-
-// One call is bounded by the policy's supervisor_timeout.
-func TestSupervisorModelTimesOut(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.Copy(io.Discard, r.Body) // #nosec G104 -- read, so the client's close ends the request's context
-		<-r.Context().Done()
-	}))
-	t.Cleanup(srv.Close)
-	m := testSupervisorModel(srv.URL)
-	start := time.Now()
-	_, _, err := m.Chat(context.Background(), "t1", "supervisor", policy.PurposeSupervisor, 50*time.Millisecond, "system", testInput())
-	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > 5*time.Second {
-		t.Fatalf("Chat = %v after %s, want the deadline after 50ms", err, time.Since(start))
-	}
-}
-
-func testInput() SupervisorInput {
-	return SupervisorInput{
-		Brief:   harness.TaskBrief{Objective: "make loopcheck pass", Repository: "sf/r", SHA: "abc"},
-		Trip:    TripReport{Detector: TripSameFailure, Detail: "`sh loop.sh` failed 3 times"},
-		Digest:  ProgressDigest{Files: map[string]int{}},
-		Record:  json.RawMessage(`[{"kind":"command"}]`),
-		Model:   "factory/coding-cheap",
-		Calls:   1,
-		MaxCall: 3,
-	}
-}
-
-// The supervisor's call goes to the gateway on the task's account: the
-// gateway-factoryd token, the task and the purpose, the policy's alias
-// and answer plus headroom as the output limit, which the gateway clamps.
-func TestSupervisorModelCallsTheGatewayOnTheTasksAccount(t *testing.T) {
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"read the script first"}`}
-	m := testSupervisorModel(f.srv(t).URL)
-	d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput())
-	if !reflect.DeepEqual(d, Decision{Action: ActionMessage, Guidance: "read the script first"}) {
-		t.Fatalf("decision = %+v", d)
-	}
-	if len(f.chats) != 1 || f.auth[0] != "Bearer gw-token" || f.tasks[0] != "t1" || f.purposes[0] != "supervisor" {
-		t.Fatalf("calls = %d, auth %v, tasks %v, purposes %v; want one with the gateway-factoryd token on t1 for the supervisor",
-			len(f.chats), f.auth, f.tasks, f.purposes)
-	}
-	chat := f.chats[0]
-	if chat["model"] != "supervisor" || chat["max_tokens"] != float64(9000) {
-		t.Fatalf("chat = model %v, max_tokens %v; want the alias and answer+headroom", chat["model"], chat["max_tokens"])
-	}
-	msgs, _ := chat["messages"].([]any)
-	if len(msgs) != 2 {
-		t.Fatalf("messages = %v", msgs)
-	}
-	user, _ := msgs[1].(map[string]any)["content"].(string)
-	for _, want := range []string{"make loopcheck pass", "same_failure", "failed 3 times", `"record":[{"kind":"command"}]`} {
-		if !strings.Contains(user, want) {
-			t.Fatalf("user message lacks %q: %s", want, user)
-		}
-	}
-	// roadmap 201: compact JSON, the record's lines JSON of their own
-	if want := jsonOf(testInput()); user != want {
-		t.Fatalf("user message = %s, want the compact %s", user, want)
-	}
-}
-
-func TestSupervisorModelFailureEscalates(t *testing.T) {
-	f := &fakeLiteLLM{status: http.StatusInternalServerError}
-	m := testSupervisorModel(f.srv(t).URL)
-	if d := m.Decide(context.Background(), "t1", "supervisor", time.Minute, testInput()); d.Action != ActionEscalate || !strings.Contains(d.Reason, "500") {
-		t.Fatalf("decision = %+v, want escalate naming the failure", d)
-	}
-	f2 := &fakeLiteLLM{content: "sure, continue"}
-	if d := testSupervisorModel(f2.srv(t).URL).Decide(context.Background(), "t1", "supervisor", time.Minute, testInput()); d.Action != ActionEscalate {
-		t.Fatalf("prose answer: %+v, want escalate", d)
-	}
-	f3 := &fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}
-	_, _, err := testSupervisorModel(f3.srv(t).URL).Chat(context.Background(), "t1", "supervisor", "supervisor", time.Minute, "sys", testInput())
-	var refusal *policy.Refusal
-	if !errors.As(err, &refusal) || *refusal != (policy.Refusal{Decision: "refused_budget", Reason: "task headroom 0.000000 EUR"}) {
-		t.Fatalf("refused call: %v, want the gateway's refusal", err)
-	}
-	// no alias in the policy: no call
-	f4 := &fakeLiteLLM{content: "{}"}
-	if _, _, err := testSupervisorModel(f4.srv(t).URL).Chat(context.Background(), "t1", "", "review", time.Minute, "sys", testInput()); err == nil ||
-		!strings.Contains(err.Error(), "names no review model") || len(f4.chats) != 0 {
-		t.Fatalf("no alias: %v, calls %d; want an error without a call", err, len(f4.chats))
-	}
-}
-
-func TestSessionSupervisionCapsCallsPerSession(t *testing.T) {
-	calls := 0
-	s := &sessionSupervision{max: 3, decide: func(context.Context, *Trip, int) Decision {
-		calls++
-		return Decision{Action: ActionContinue}
-	}}
-	trip := &Trip{Kind: TripSameCall, Detail: "read ×4"}
-	for i := 1; i <= 3; i++ {
-		if d, called := s.onTrip(context.Background(), trip); !called || d.Action != ActionContinue {
-			t.Fatalf("trip %d: %+v called=%v, want a call answering continue", i, d, called)
-		}
-	}
-	d, called := s.onTrip(context.Background(), trip)
-	if called || calls != 3 || d.Action != ActionEscalate || !strings.Contains(d.Reason, "same_call") {
-		t.Fatalf("4th trip: %+v called=%v calls=%d, want escalate without a call", d, called, calls)
-	}
-}
-
-// Check-ins are not counted against supervisor_calls: with the calls used
-// up, a check-in is still asked and a detector trip after it escalates.
-func TestSessionSupervisionCheckInsNotCounted(t *testing.T) {
-	calls := 0
-	s := &sessionSupervision{max: 1, decide: func(context.Context, *Trip, int) Decision {
-		calls++
-		return Decision{Action: ActionContinue}
-	}}
-	checkIn := &Trip{Kind: TripCheckIn, Detail: "scheduled check-in, no detector tripped"}
-	s.onTrip(context.Background(), checkIn)
-	if _, called := s.onTrip(context.Background(), &Trip{Kind: TripSameCall}); !called {
-		t.Fatal("the detector trip after a check-in was not asked")
-	}
-	if _, called := s.onTrip(context.Background(), checkIn); !called || calls != 3 {
-		t.Fatalf("check-in with the calls used up: called=%v, calls=%d; want asked, 3 calls", called, calls)
-	}
-	if d, called := s.onTrip(context.Background(), &Trip{Kind: TripSameCall}); called || d.Action != ActionEscalate {
-		t.Fatalf("second detector trip: %+v called=%v, want escalate without a call", d, called)
 	}
 }

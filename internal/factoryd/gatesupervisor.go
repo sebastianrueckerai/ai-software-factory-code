@@ -369,9 +369,9 @@ func scrubbed(b gateBundle, s *redact.Scrubber) any {
 	return walk(v)
 }
 
-// parseGateDecision validates the answer like parseDecision: one JSON
-// object, a known and allowed action, a diagnosis, a recommendation for
-// escalate. Anything else escalates.
+// parseGateDecision validates the answer: one JSON object, a known and
+// allowed action, a diagnosis, a recommendation for escalate. Anything
+// else escalates.
 func parseGateDecision(content string, allowed []SupervisorAction) GateDecision {
 	invalid := func(why string) GateDecision {
 		return GateDecision{Action: ActionEscalate, Diagnosis: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300),

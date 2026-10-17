@@ -615,15 +615,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	defer func() { out.model, out.reads = s.model, sup.Reads() }()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
-	// messages: the guidance this session's delivered messages carried;
-	// briefed: a supervisor call of this session read the whole brief
+	// messages: the guidance this session's delivered messages carried
 	var messages []string
-	briefed := false
-	supervision := &sessionSupervision{max: sup.cfg.MaxCalls, decide: func(ctx context.Context, trip *Trip, call int) Decision {
-		d := r.askSupervisor(ctx, t, s, recorder, digest, trip, call, sup.cfg.MaxCalls, slices.Clone(messages), !briefed)
-		briefed = true
-		return d
-	}}
 
 	sessCtx, cancelLog := context.WithCancel(ctx)
 	defer cancelLog()
@@ -758,15 +751,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stop(trip)
 			return true, ctx.Err()
 		}
-		// the call never outlives the session: at the cap the cap decides,
-		// and factoryd stopping cuts it, its decision unread
+		// the conversation never outlives the session: the deadline cuts
+		// it, and factoryd stopping cuts it, its answer unread
 		callCtx, cancel := context.WithDeadline(ctx, deadline)
 		defer cancel()
 		var d Decision
-		var called bool
+		var ck *CheckInOutcome
+		var ride bool
 		// the agent was told "escalated" once the session took it: its
-		// escalation during the call wins over whatever the supervisor
-		// answers, and cuts the call
+		// escalation during the conversation wins over whatever the
+		// check-in answers, and cuts the conversation
 		var esc *AgentAsk
 		if trip.decided != nil {
 			d = *trip.decided
@@ -774,7 +768,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			answered := make(chan struct{})
 			go func() {
 				defer close(answered)
-				d, called = supervision.onTrip(callCtx, trip)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline)
 			}()
 			select {
 			case <-answered:
@@ -791,23 +785,29 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				stopAt = time.Now()
 				cancel()
 				<-answered
-				log.Printf("task %s: factoryd stopping cut the supervisor call for %s", t.ID, trip.Kind)
+				log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
 				return true, shutdown()
 			}
 		}
 		if esc != nil {
-			log.Printf("task %s: the agent escalated during the supervisor call for %s", t.ID, trip.Kind)
+			log.Printf("task %s: the agent escalated during the check-in for %s", t.ID, trip.Kind)
 			sup.tripped = nil
 			trip = sup.AgentAsk(*esc)
 			d = *trip.decided
+			ck, ride = nil, false
 		}
 		out.digest = digest.digest().Summary()
-		r.recordDecision(ctx, t, s, recorder, trip, d, called, out.digest)
+		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
 		note := ""
+		rode := false
 		switch {
 		case !time.Now().Before(deadline):
+			ck, ride = nil, false
 			stop(&Trip{Kind: TripWallClock, Findings: trip.Findings, Detail: "the task's wall-clock cap is reached"})
-			note = "Superseded: the task's wall-clock cap was reached during the supervisor call."
+			note = "Superseded: the task's wall-clock cap was reached during the check-in."
+		case ride:
+			rode = true
+			stop(trip)
 		case d.Action == ActionContinue:
 			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
@@ -841,13 +841,20 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stop(trip)
 		}
 		if trip.decided != nil && d.Action == ActionRetryStronger {
-			note = "The agent is stuck after the supervisor's message: the session ends without a supervisor call, and a new session resumes from the work in progress."
+			note = "The agent is stuck after the supervisor's message: the session ends without a check-in, and a new session resumes from the work in progress."
 		}
+		// a session that finished and pushed during the conversation goes to
+		// verification: its answer is superseded, its record is kept
 		if out.result != nil && out.result.Success && out.commit != "" {
-			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the supervisor call; the task goes to verification.", out.commit)
+			ck, ride = nil, false
+			note = fmt.Sprintf("Superseded: the session finished and pushed %s during the check-in; the task goes to verification.", out.commit)
 		}
-		// the agent's own escalation reaches the issue through Escalate
-		if trip.decided == nil || note != "" {
+		if ride {
+			out.checkIn = ck
+		}
+		// the agent's own escalation reaches the issue through Escalate, and
+		// a riding outcome's is the workflow's to deliver
+		if note != "" || (trip.decided == nil && !rode) {
 			r.commentDecision(ctx, t, s, trip, d, out.digest, note)
 		}
 		return true, ctx.Err()
@@ -968,6 +975,49 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief is the empty one
 	brief("")
 	return nil, false
+}
+
+// checkinLive is the mid-session check-in: a detector tripped, and the
+// check-in decides over the running session from the transcript it reads
+// factoryd-side. Nothing is pushed to the pod — the coding agent needs no
+// record of its own audit. d is the action for the trip switch; ck the
+// conversation's outcome with its record (nil only under no alias); ride
+// says the outcome stops the session and rides SessionResult.CheckIn.
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
+	limits := s.policy.Limits
+	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	if calls >= limits.CheckinCallCap() || eurLeft <= 0 {
+		reason := "the check-in's share of the budget is spent"
+		if calls >= limits.CheckinCallCap() {
+			reason = "check-in call cap reached"
+		}
+		record := &CheckInRecord{Model: factoryModel(s.policy, t, policy.PurposeCheckin), Session: s.id,
+			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
+		return Decision{Action: ActionEscalate, Reason: reason}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: record}, true
+	}
+	alias := factoryModel(s.policy, t, policy.PurposeCheckin)
+	if alias == "" {
+		log.Printf("task %s: no model under the check-in's purpose: the session runs on over %s", t.ID, trip.Kind)
+		return Decision{Action: ActionContinue, Reason: "no model under the check-in's purpose"}, nil, false
+	}
+	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail}, Messages: messages, Gates: s.lastGates}
+	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, live: true}
+	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(rec.Transcript(), limits.CheckinTailBytes()), r.checkin, tools,
+		limits.CheckinCallCap()-calls, eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+	out.Record.Session = s.id
+	switch out.Decision {
+	case "continue":
+		return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
+	case "message":
+		return Decision{Action: ActionMessage, Guidance: out.Guidance, Reason: out.Reason}, &out, false
+	case CheckHandover:
+		if out.Handover == "" && len(out.Verdicts) == 0 {
+			// the refusal shape: the round runs as if no check-in existed
+			return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
+		}
+	}
+	return Decision{Action: ActionEscalate, Reason: cmp.Or(out.Handover, out.Reason)}, &out, true
 }
 
 // checkinBudget is the card's check-in budget: the calls the card has
@@ -1173,7 +1223,7 @@ func (r *Runner) climb(ctx context.Context, t Task, s *sessionSpec, ns, pod stri
 func (r *Runner) supervisorConfig(d policy.Document, agentTime, checkIn time.Duration) SupervisorConfig {
 	c := r.cfg.Supervisor
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
-	c.WallClockCap, c.MaxCalls = agentTime, d.Limits.SupervisorCalls
+	c.WallClockCap = agentTime
 	c.CheckIn = checkIn
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
 	c.SameCall = d.Limits.SameCallAfter()
@@ -1209,47 +1259,38 @@ func factoryModel(d policy.Document, t Task, purpose string) string {
 	return d.FactoryModel(t.RequiredCapabilities, purpose)
 }
 
-// askSupervisor builds the supervisor's input and calls it through the
-// gateway on the task's account. The session's first call reads the whole
-// brief, a later one (whole false) the issue's text and the answers that
-// amend it: the findings the session started from are judged once
-// (roadmap 201).
-func (r *Runner) askSupervisor(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, digest *digestBuilder, trip *Trip, call, maxCalls int, messages []string, whole bool) Decision {
-	brief := harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: s.startRef,
-		Answers: newest(s.answers, maxCarriedAnswers, false), PosterInfo: newest(s.posterInfo, maxCarriedAnswers, true),
-		Author: t.Author, AuthorStanding: cmp.Or(s.standing, t.Standing())}
-	if whole {
-		brief.Findings = newest(s.findings, maxCarriedFindings, true)
+// recordDecision writes the check-in's decision into the session record,
+// the timeline and, for a detector's trip, an alert the decision judged.
+// The timeline step is the runner's only when the outcome does not ride —
+// a riding outcome's step is the workflow's.
+func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, ck *CheckInOutcome, ride bool, digest string) {
+	refused := ck != nil && ck.Decision == CheckHandover && ck.Handover == "" && len(ck.Verdicts) == 0
+	called := ck != nil && !refused
+	decision := string(d.Action)
+	if called {
+		decision = ck.Decision
 	}
-	return r.supervisor.Decide(ctx, t.ID, factoryModel(s.policy, t, policy.PurposeSupervisor), s.policy.Limits.SupervisorTimeout, SupervisorInput{
-		Brief:    InboundBrief(brief),
-		Trip:     TripReport{Detector: trip.Kind, Detail: trip.Detail},
-		Digest:   digest.digest(),
-		Record:   recorder.SupervisorTail(maxRecordTail),
-		Model:    s.model,
-		Calls:    call,
-		MaxCall:  maxCalls,
-		Messages: messages,
-	})
-}
-
-// recordDecision writes a supervisor decision into the session record, the
-// timeline and, for a detector's trip, an alert the decision judged.
-func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, recorder *SessionRecorder, trip *Trip, d Decision, called bool, digest string) {
 	detail := map[string]any{"detector": string(trip.Kind), "trip": trip.Detail, "digest": digest,
-		"decision": string(d.Action), "guidance": d.Guidance, "reason": d.Reason, "called": called}
-	if err := recorder.Record(ctx, harness.Event{Time: time.Now(), Kind: harness.EventSupervisor, Detail: detail}); err != nil {
-		log.Printf("task %s: record supervisor decision: %v", t.ID, err)
+		"decision": decision, "guidance": d.Guidance, "reason": d.Reason, "called": called}
+	if ck != nil && ck.Record != nil {
+		detail["record"] = ck.Record
+		detail["moment"] = ck.Record.Moment
+		detail["parent_session"] = ck.Record.ParentSession
 	}
-	detail["session"] = s.id
-	r.record(ctx, t.ID, "supervisor", detail)
+	if err := recorder.Record(ctx, harness.Event{Time: time.Now(), Kind: harness.EventSupervisor, Detail: detail}); err != nil {
+		log.Printf("task %s: record check-in decision: %v", t.ID, err)
+	}
+	if !ride && (ck != nil || trip.decided != nil) {
+		detail["session"] = s.id
+		r.record(ctx, t.ID, "checkin", detail)
+	}
 	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripCheckIn {
 		return // the agent's question (the workflow's escalation or info_request alert) or no detector
 	}
-	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "supervisor",
+	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}
 	if _, err := r.store.InsertAlert(ctx, a); err != nil {
-		log.Printf("task %s: record the supervisor trip alert: %v", t.ID, err)
+		log.Printf("task %s: record the check-in trip alert: %v", t.ID, err)
 	}
 }
 

@@ -47,34 +47,6 @@ type Decision struct {
 // issue comments.
 const maxDecisionText = 2000
 
-// parseDecision validates the model's answer: exactly one JSON object with
-// a known action, guidance for message, a reason for escalate, no other
-// field. A markdown fence around it is tolerated. Anything else escalates.
-func parseDecision(content string) Decision {
-	invalid := func(why string) Decision {
-		return Decision{Action: ActionEscalate, Reason: "supervisor answer invalid (" + why + "): " + textutil.Truncate(content, 300)}
-	}
-	var d Decision
-	if err := decodeAnswer(content, &d); err != nil {
-		return invalid(err.Error())
-	}
-	d.Guidance, d.Reason = textutil.Truncate(strings.TrimSpace(d.Guidance), maxDecisionText), textutil.Truncate(strings.TrimSpace(d.Reason), maxDecisionText)
-	switch d.Action {
-	case ActionContinue:
-	case ActionMessage:
-		if d.Guidance == "" {
-			return invalid("message without guidance")
-		}
-	case ActionEscalate:
-		if d.Reason == "" {
-			return invalid("escalate without a reason")
-		}
-	default:
-		return invalid(fmt.Sprintf("unknown action %q", d.Action))
-	}
-	return d
-}
-
 // decodeAnswer decodes a model's answer into v: exactly one JSON object
 // with no unknown field, a markdown fence around it tolerated.
 func decodeAnswer(content string, v any) error {
@@ -229,35 +201,11 @@ func (g ProgressDigest) Summary() string {
 	return s
 }
 
-// TripReport is the detector's side of the supervisor input.
+// TripReport is the detector's side of the check-in's input.
 type TripReport struct {
 	Detector TripKind `json:"detector"`
 	Detail   string   `json:"detail"`
 }
-
-// SupervisorInput is everything the supervisor reads: the brief, the trip,
-// the digest and the tail of the session record, each fact in one of them.
-type SupervisorInput struct {
-	Brief  harness.TaskBrief `json:"brief"`
-	Trip   TripReport        `json:"trip"`
-	Digest ProgressDigest    `json:"digest"`
-	Record json.RawMessage   `json:"record"` // the session record's last events, a JSON array (SessionRecorder.SupervisorTail)
-	Model  string            `json:"model"`
-	Calls  int               `json:"supervisor_call"`
-	// Messages: the guidance this session's earlier messages delivered
-	Messages []string `json:"messages,omitempty"`
-	MaxCall  int      `json:"supervisor_calls_per_session"`
-}
-
-// maxRecordTail bounds the session record the supervisor reads.
-const maxRecordTail = 24 << 10
-
-const supervisorPrompt = `You supervise an autonomous coding agent that works on one task in a sandbox. You are asked when a cheap detector tripped (the session may be going in circles) or at a scheduled check-in (detector "check_in": no detector tripped; judge whether the session is on track). Read the brief, the trip, the progress digest (commands with outcomes over time, the files edited last with edit counts, the last error signatures with their output, the diff against the base so far) and the tail of the session record (its last events without outputs and patches: the digest holds the failures' outputs and the diff), then choose exactly one action:
-- "continue": the agent makes real progress; the trip is a false alarm or the check-in finds the session on track. The session runs on untouched.
-- "message": the agent is off track: circling, stuck on a wrong approach, or missing something the brief or the record shows. Your guidance goes into the running session as a message the agent reads next; it keeps its context and its work. Give concrete guidance: what to stop doing and what to do instead. If the agent writes no file after your message before a detector trips again, or writes in circles, the session ends and a new session resumes from the work in progress. Your earlier messages in this session are in messages: do not repeat one that did not work.
-- "escalate": the task cannot be completed as specified (contradictory, impossible, needs a human decision or access the agent does not have). A human is asked. Give the reason.
-You cannot raise a time limit, a budget or a model; only a human can.
-Answer with one JSON object and nothing else: {"action": "continue|message|escalate", "guidance": "...", "reason": "..."}. guidance is required for message, reason for escalate; each under 1000 characters.`
 
 // SupervisorModel is factoryd's model client: every call it makes (the
 // session supervisor, the gate supervisor, the model review) goes to the
@@ -273,16 +221,7 @@ type SupervisorModel struct {
 	HTTP       *http.Client // nil = http.DefaultClient
 }
 
-// Decide never fails: a failed or invalid answer, or a call the gateway
-// refuses, is an escalation.
-func (m *SupervisorModel) Decide(ctx context.Context, taskID, alias string, timeout time.Duration, in SupervisorInput) Decision {
-	content, _, err := m.Chat(ctx, taskID, alias, policy.PurposeSupervisor, timeout, supervisorPrompt, in)
-	if err != nil {
-		return Decision{Action: ActionEscalate, Reason: "supervisor call failed: " + textutil.Truncate(err.Error(), 500)}
-	}
-	return parseDecision(content)
-}
-
+// chatPayload builds one JSON-mode call's body.
 func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 	return json.Marshal(map[string]any{
 		"model":           alias,
@@ -366,25 +305,4 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 		return "", "", fmt.Errorf("unreadable completion: %s", textutil.Truncate(string(body), 300))
 	}
 	return out.Choices[0].Message.Content, res.Header.Get(gateway.HeaderDeployment), nil
-}
-
-// sessionSupervision caps the supervisor calls of one session: the trip
-// after the last allowed call escalates without asking. Check-ins are
-// asked always and not counted.
-type sessionSupervision struct {
-	max    int
-	calls  int
-	decide func(ctx context.Context, trip *Trip, call int) Decision
-}
-
-func (s *sessionSupervision) onTrip(ctx context.Context, trip *Trip) (Decision, bool) {
-	if trip.Kind == TripCheckIn {
-		return s.decide(ctx, trip, s.calls), true
-	}
-	if s.calls >= s.max {
-		return Decision{Action: ActionEscalate, Reason: fmt.Sprintf(
-			"%s tripped again after %d supervisor calls in this session: %s", trip.Kind, s.calls, trip.Detail)}, false
-	}
-	s.calls++
-	return s.decide(ctx, trip, s.calls), true
 }

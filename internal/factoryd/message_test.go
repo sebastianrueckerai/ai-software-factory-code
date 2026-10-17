@@ -151,9 +151,10 @@ func TestRunSessionNudgesTheRunningSession(t *testing.T) {
 }
 
 // Three delivered nudges with no file change in between end the session
-// as a redirect on loop, no supervisor call: the stopped worker pushes its
-// work in progress, the timeline holds the loop, and the next session's
-// brief the line naming what the session repeated.
+// as a redirect on loop, on the check-in's refusal and not on a model
+// answer: the stopped worker pushes its work in progress, the timeline
+// holds the loop, and the next session's brief the line naming what the
+// session repeated.
 func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -188,12 +189,12 @@ func TestRunSessionLoopEndsAfterThreeNudges(t *testing.T) {
 	var step map[string]any
 	for _, l := range strings.Split(strings.TrimSpace(string(tl)), "\n") {
 		var e map[string]any
-		if json.Unmarshal([]byte(l), &e) == nil && e["step"] == "supervisor" {
+		if json.Unmarshal([]byte(l), &e) == nil && e["step"] == "checkin" {
 			step = e
 		}
 	}
 	if step == nil || step["detector"] != "loop" || step["trip"] != detail || step["decision"] != "redirect" || step["called"] != false {
-		t.Fatalf("timeline supervisor step = %v", step)
+		t.Fatalf("timeline check-in step = %v", step)
 	}
 }
 
@@ -223,13 +224,13 @@ func TestRunSessionNudgeFallsBackToTheRedirect(t *testing.T) {
 	}
 }
 
-// A nudge that cannot be delivered asks the supervisor, as a same_call
-// trip; the supervisor's message cannot be delivered either, so the
-// session stops with it as the guidance.
-func TestRunSessionUndeliveredNudgeAsksTheSupervisor(t *testing.T) {
+// A nudge that cannot be delivered asks the check-in, as a same_call
+// trip; the check-in's message cannot be delivered either, so the session
+// stops with it as the guidance.
+func TestRunSessionUndeliveredNudgeRunsCheckin(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"read b.go instead"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"read b.go instead"}`}}}
+	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusBadGateway}
 	worker.start(t, runner)
 
@@ -240,8 +241,8 @@ func TestRunSessionUndeliveredNudgeAsksTheSupervisor(t *testing.T) {
 	if !slices.Contains(res.Findings, "supervisor guidance: read b.go instead") {
 		t.Fatalf("findings = %q, want the message as the guidance", res.Findings)
 	}
-	if len(f.chats) != 1 {
-		t.Fatalf("supervisor calls = %d, want 1", len(f.chats))
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want 1", chat.calls)
 	}
 }
 
@@ -303,15 +304,15 @@ func commands(from, n int) string {
 	return s
 }
 
-// The supervisor's message reaches the running worker through the
-// nudge's path; the pod runs on and the tripped detector is reset, so a
-// third read makes no second trip.
+// The check-in's message reaches the running worker through the nudge's
+// path; the pod runs on and the tripped detector is reset, so a third
+// read makes no second trip.
 func TestMessageKeepsSessionRunning(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
+	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -327,8 +328,8 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	if len(worker.texts) != 2 || worker.texts[0] != "POST /brief " || worker.texts[1] != "POST /message use the store's New" {
 		t.Fatalf("worker got %q", worker.texts)
 	}
-	if len(f.chats) != 1 {
-		t.Fatalf("supervisor calls = %d, want 1", len(f.chats))
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want 1", chat.calls)
 	}
 	if len(kube.deletedPods) != 1 {
 		t.Fatalf("deleted pods = %v, want only the cleanup delete", kube.deletedPods)
@@ -339,11 +340,13 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 }
 
 // After a delivered message, 24 commands without a write trip repetition:
-// the session ends as retry_stronger without a second supervisor call.
-func TestTripAfterMessageWithoutWriteIsStuck(t *testing.T) {
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+// the stuck rule ends the session as retry_stronger without a second
+// conversation, and both check-in steps are on the timeline.
+func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
+	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -352,8 +355,8 @@ func TestTripAfterMessageWithoutWriteIsStuck(t *testing.T) {
 	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Commit != "c-wip" {
 		t.Fatalf("result = (%+v, %v), want retry_stronger on repetition with c-wip", res, err)
 	}
-	if len(f.chats) != 1 {
-		t.Fatalf("supervisor calls = %d, want still 1", len(f.chats))
+	if chat.calls != 1 {
+		t.Fatalf("check-in conversations = %d, want still 1: the stuck rule decides in code", chat.calls)
 	}
 	found := false
 	for _, l := range res.Findings {
@@ -362,15 +365,22 @@ func TestTripAfterMessageWithoutWriteIsStuck(t *testing.T) {
 	if !found {
 		t.Fatalf("findings = %q", res.Findings)
 	}
+	tl := string(objGet(objects, "sessions/t2/timeline.jsonl"))
+	if !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"guidance":"use the store's New"`) {
+		t.Fatalf("timeline = %s, want the message's step with its guidance", tl)
+	}
+	step := timelineStep(t, objects, "t2", "checkin")
+	if step["decision"] != "retry_stronger" || !strings.Contains(fmt.Sprint(step["reason"]), "stuck after the supervisor's message") {
+		t.Fatalf("last check-in step = %v, want the stuck end decided in code", step)
+	}
 }
 
-// A write after the message: the next trip asks the supervisor again.
-func TestTripAfterMessageWithWriteAsks(t *testing.T) {
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
-	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	worker.start(t, runner)
+// A write after the message: the next trip asks the check-in again, and
+// its statement carries the guidance already delivered.
+func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
+	runner, _, _, _, chat, _, _ := liveRig(t,
+		CheckinResponse{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		CheckinResponse{Text: `{"decision":"continue","reason":"carried"}`})
 
 	logs := commands(0, 24) +
 		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
@@ -379,8 +389,15 @@ func TestTripAfterMessageWithWriteAsks(t *testing.T) {
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("result = (%+v, %v), want pushed", res, err)
 	}
-	if len(f.chats) != 2 {
-		t.Fatalf("supervisor calls = %d, want 2", len(f.chats))
+	if chat.calls != 2 {
+		t.Fatalf("check-in conversations = %d, want 2", chat.calls)
+	}
+	if !strings.Contains(chat.gots[1].Input, "Guidance delivered to the agent this session:") ||
+		!strings.Contains(chat.gots[1].Input, "use the store's New") {
+		t.Fatalf("second statement misses the delivered guidance:\n%s", chat.gots[1].Input)
+	}
+	if strings.Contains(chat.gots[0].Input, "use the store's New") {
+		t.Fatalf("first statement already saw the guidance:\n%s", chat.gots[0].Input)
 	}
 }
 
@@ -389,8 +406,7 @@ func TestTripAfterMessageWithWriteAsks(t *testing.T) {
 func TestUndeliveredMessageStops(t *testing.T) {
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	runner.cfg.Supervisor.RepetitionEvents = 2
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
 	worker := &fakeWorkerEndpoint{status: http.StatusNotImplemented}
 	worker.start(t, runner)
 
@@ -419,11 +435,15 @@ func TestNoHalfWay(t *testing.T) {
 }
 
 // A stuck end is commented on the issue with the stuck finding (review
-// minor 2); a second call sees the session's earlier message (minor 4).
+// minor 2); a second conversation sees the session's earlier message
+// (minor 4).
 func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+	}}
+	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
@@ -431,64 +451,18 @@ func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
 		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeRetryStronger || len(f.chats) != 2 {
-		t.Fatalf("result = (%+v, %v) after %d calls, want retry_stronger after 2", res, err, len(f.chats))
+	if err != nil || res.Outcome != OutcomeRetryStronger || chat.calls != 2 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want retry_stronger after 2", res, err, chat.calls)
 	}
-	var in SupervisorInput
-	msgs := f.chats[1]["messages"].([]any)
-	json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &in)
-	if !slices.Equal(in.Messages, []string{"use the store's New"}) {
-		t.Fatalf("second call's messages = %q, want the first message", in.Messages)
+	if !strings.Contains(chat.gots[1].Input, "use the store's New") {
+		t.Fatalf("second statement = %q, want the first message carried", chat.gots[1].Input)
 	}
-	if first := f.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string); strings.Contains(first, "use the store's New") {
-		t.Fatal("the first call already saw the message")
+	if strings.Contains(chat.gots[0].Input, "use the store's New") {
+		t.Fatal("the first conversation already saw the message")
 	}
 	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[2], "**retry_stronger**") ||
 		!strings.Contains(hub.comments[2], "stuck after the supervisor's message: repetition") {
 		t.Fatalf("comments = %q, want two messages and the stuck end", hub.comments)
-	}
-}
-
-// Roadmap 201: a session's first supervisor call reads the whole brief,
-// its carried findings the newest 60; a later call the issue's text and
-// the answers that amend it, without the findings, and the guidance it
-// gave in messages only, not again as a supervisor event of the record.
-// The objective comes without the intake's Size line.
-func TestSupervisorReadsTheBriefOncePerSession(t *testing.T) {
-	task := supervisedTask("t2")
-	task.Objective = "make loopcheck pass\n\nIt loops.\n\nSize: small"
-	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"message","guidance":"use the store's New"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
-	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
-	var findings []string
-	for i := range 70 {
-		findings = append(findings, fmt.Sprint("ran x", i))
-	}
-	answers := []string{`sebastian, to "Which store?": the default one`}
-	logs := commands(0, 24) +
-		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
-		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", Findings: findings, Answers: answers}, nil, logs); err != nil || len(f.chats) != 2 {
-		t.Fatalf("session: %v after %d calls, want 2", err, len(f.chats))
-	}
-	in := make([]SupervisorInput, 2)
-	for i := range in {
-		if err := json.Unmarshal([]byte(f.chats[i]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in[i]); err != nil {
-			t.Fatal(err)
-		}
-		if in[i].Brief.Objective != "make loopcheck pass\n\nIt loops." || !slices.Equal(in[i].Brief.Answers, answers) {
-			t.Errorf("call %d: brief = %+v, want the objective without its Size line and the answer", i+1, in[i].Brief)
-		}
-		if strings.Contains(string(in[i].Record), `"kind":"supervisor"`) {
-			t.Errorf("call %d: record holds a supervisor event: %s", i+1, in[i].Record)
-		}
-	}
-	if !slices.Equal(in[0].Brief.Findings, findings[10:]) || in[1].Brief.Findings != nil {
-		t.Fatalf("findings: first call %d (want the newest 60), second %d (want none)", len(in[0].Brief.Findings), len(in[1].Brief.Findings))
-	}
-	if in[0].Messages != nil || !slices.Equal(in[1].Messages, []string{"use the store's New"}) {
-		t.Fatalf("messages = %q, then %q; want none, then the first call's guidance", in[0].Messages, in[1].Messages)
 	}
 }
 
@@ -619,21 +593,20 @@ func watchStop(t *testing.T, runner *Runner, kube *fakeKube) (*fakeWorkerEndpoin
 	}
 }
 
-// A supervisor's stop deletes the pod; the stopped worker's push request
-// is answered within its grace period, and its work in progress reaches
-// the next session.
-func TestSupervisorStopAnswersThePushRequest(t *testing.T) {
+// A check-in's handover stops the session: the pod is deleted, the
+// stopped worker's push request is answered within the grace period, and
+// its work in progress reaches the next session.
+func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
-	f := &fakeLiteLLM{content: `{"action":"escalate","reason":"the check needs a file the agent never created"}`}
-	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.checkin = &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"handover","handover":"stop here"}`}}}
 	runner.stopWait = 10 * time.Second
 	worker, order := watchStop(t, runner, kube)
 
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + stoppedWorker("t2")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeEscalate || res.Commit != "c-wip" {
-		t.Fatalf("result = (%+v, %v), want escalate with the work in progress c-wip", res, err)
+	if err != nil || res.Outcome != OutcomeNoPush || res.Commit != "c-wip" {
+		t.Fatalf("result = (%+v, %v), want the handover with the work in progress c-wip", res, err)
 	}
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
@@ -696,10 +669,10 @@ func TestShutdownDetachesWithoutAStop(t *testing.T) {
 	}
 }
 
-// A worker that finishes while the supervisor is asked gets its push token
+// A worker that finishes while the check-in is asked gets its push token
 // at once: the log follower answers the request, not the session loop,
-// which waits for the supervisor's answer.
-func TestPushAnsweredDuringASupervisorCall(t *testing.T) {
+// which waits for the conversation's answer.
+func TestPushAnsweredDuringACheckin(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
 	pushed := make(chan struct{})
@@ -707,23 +680,15 @@ func TestPushAnsweredDuringASupervisorCall(t *testing.T) {
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent, onPush: func() { once.Do(func() { close(pushed) }) }}
 	worker.start(t, runner)
 	var sawPush atomic.Bool
-	sup := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.ReadAll(r.Body)
-		switch r.URL.Path {
-		case "/key/list":
-			io.WriteString(w, `{"keys":[],"total_pages":1}`)
-		case "/v1/chat/completions":
-			select {
-			case <-pushed:
-				sawPush.Store(true)
-			case <-time.After(3 * time.Second):
-			}
-			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": `{"action":"continue"}`}}}})
-			w.Write(out)
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"the push is the answer"}`}}}
+	chat.onCall = func() {
+		select {
+		case <-pushed:
+			sawPush.Store(true)
+		case <-time.After(3 * time.Second):
 		}
-	}))
-	t.Cleanup(sup.Close)
-	runner.supervisor = testSupervisorModel(sup.URL)
+	}
+	runner.checkin = chat
 
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) +
 		pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t2 at c1")
@@ -732,7 +697,7 @@ func TestPushAnsweredDuringASupervisorCall(t *testing.T) {
 		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
 	}
 	if !sawPush.Load() {
-		t.Fatal("the push request waited for the supervisor's answer")
+		t.Fatal("the push request waited for the check-in's answer")
 	}
 }
 
