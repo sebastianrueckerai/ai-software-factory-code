@@ -212,7 +212,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if th.ClearedUpto > 0 {
 		kept := make([]factoryd.ChatMessage, 0, len(msgs))
 		for _, m := range msgs {
-			if m.ID <= th.ClearedUpto && !(askFamily(m) != "" && !m.Settled) {
+			if m.ID <= th.ClearedUpto && !(factoryd.AskFamily(m) != "" && !m.Settled) {
 				th.Cleared++
 				continue
 			}
@@ -277,11 +277,6 @@ func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, m
 	return waits, events
 }
 
-// approvalWaits reports whether a pending approval request names id.
-func approvalWaits(pending []factoryd.ApprovalRequest, id string) bool {
-	return slices.ContainsFunc(pending, func(q factoryd.ApprovalRequest) bool { return q.TaskID == id })
-}
-
 // settleRows stamps each poke row's derived state onto the log (the
 // notification-settling concept): an ask past its settling event or its
 // wait facts gets its reason line, a poke the member has read recedes.
@@ -303,14 +298,14 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
 			continue
 		}
-		if askFamily(m) == "" {
+		if factoryd.AskFamily(m) == "" {
 			if msgs[i].Settled = m.ID <= seenUpto; msgs[i].Settled {
 				msgs[i].Reason = "seen"
 			}
 			continue
 		}
-		if s := settleOf(m, events[m.TaskID], waits[m.TaskID], approvalWaits(pending, m.TaskID)); !s.Open {
-			msgs[i].Settled, msgs[i].Reason = true, reasonLine(s)
+		if s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
+			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
 		}
 	}
 }
@@ -347,7 +342,7 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 		if i < 0 {
 			continue
 		}
-		if settleOf(m, events[m.TaskID], waits[m.TaskID], approvalWaits(pending, m.TaskID)).Open {
+		if factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
 			list[i].NeedsYou++
 			if m.ID > list[i].SeenUpto {
 				list[i].NewRows--
