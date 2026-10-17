@@ -206,6 +206,20 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.settleRows(ctx, msgs, th.SeenUpto)
+	// the member's Clear old swept the rows up to their marker from view;
+	// an open ask stays whatever the marker says, and the record keeps
+	// every row
+	if th.ClearedUpto > 0 {
+		kept := make([]factoryd.ChatMessage, 0, len(msgs))
+		for _, m := range msgs {
+			if m.ID <= th.ClearedUpto && !(askFamily(m) != "" && !m.Settled) {
+				th.Cleared++
+				continue
+			}
+			kept = append(kept, m)
+		}
+		msgs = kept
+	}
 	if err := c.cfg.Chat.MarkSeen(ctx, repo, login, t.conv); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
 	}
@@ -971,6 +985,26 @@ func (c *Console) chatNew(w http.ResponseWriter, r *http.Request) {
 	if _, err := c.cfg.Chat.NewConversation(r.Context(), t.p.Repository, t.a.s.user); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot start a new conversation", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatClear answers POST /projects/{name}/chat/clear: sweeps the open
+// thread's old rows from the member's view, the marker its newest row, and
+// answers 204. The record keeps every row; an open ask stays in view.
+func (c *Console) chatClear(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	if _, err := t.thread(r, false); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if err := c.cfg.Chat.MarkCleared(r.Context(), t.p.Repository, t.a.s.user, t.conv); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot clear the conversation", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

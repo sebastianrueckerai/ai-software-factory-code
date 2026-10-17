@@ -188,6 +188,11 @@ type ChatConversation struct {
 	NeedsYou int64     `json:"needs_you,omitempty"`
 	NewRows  int64     `json:"new_rows,omitempty"`
 	SeenUpto int64     `json:"-"`
+	// ClearedUpto is the member's cleared marker: the console's Clear old
+	// swept the rows up to it from view, the record keeps them. Cleared is
+	// the console's count of the rows the marker hid on this read.
+	ClearedUpto int64 `json:"-"`
+	Cleared     int64 `json:"cleared,omitempty"`
 	// Summary is the thread's running summary of its rows up to
 	// SummaryUpto, which compaction keeps (roadmap 239); "" before the
 	// first, and Compactions counts them.
@@ -209,7 +214,7 @@ const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS N
 const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
 	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
-	coalesce(seen.last_seen_message_id, 0)
+	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0)
 	FROM chat_conversations c
 	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
 	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
@@ -218,7 +223,7 @@ const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto)
+	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}
@@ -229,7 +234,7 @@ func scanConversation(scan func(...any) error) (ChatConversation, error) {
 // then the active by their last message, newest first, the archived last.
 func (s *PGStore) Conversations(ctx context.Context, repository, login string) ([]ChatConversation, error) {
 	rows, err := s.db.QueryContext(ctx, conversationSelect+`
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
 		ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.conversation DESC`, repository, login)
 	if err != nil {
 		return nil, err
@@ -249,7 +254,7 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 // Conversation is login's thread n on repository; false for none.
 func (s *PGStore) Conversation(ctx context.Context, repository, login string, n int64) (ChatConversation, bool, error) {
 	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.conversation = $3
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id`, repository, login, n).Scan)
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id`, repository, login, n).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatConversation{}, false, nil
 	}
@@ -385,6 +390,19 @@ func (s *PGStore) MarkSeen(ctx context.Context, repository, login string, n int6
 		VALUES ($1, $2, $3, (SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3))
 		ON CONFLICT (repository, login, conversation) DO UPDATE
 		SET last_seen_message_id = greatest(chat_seen.last_seen_message_id, excluded.last_seen_message_id)`, repository, login, n)
+	return err
+}
+
+// MarkCleared moves login's cleared marker of thread n on repository to
+// its newest row: the console's Clear old sweeps the thread's old rows
+// from the member's view, the record keeps them. An open ask never leaves
+// with the sweep; the console's read keeps it whatever the marker says.
+func (s *PGStore) MarkCleared(ctx context.Context, repository, login string, n int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_seen (repository, login, conversation, last_seen_message_id, cleared_message_id)
+		VALUES ($1, $2, $3, (SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3),
+			(SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3))
+		ON CONFLICT (repository, login, conversation) DO UPDATE
+		SET cleared_message_id = greatest(chat_seen.cleared_message_id, excluded.cleared_message_id)`, repository, login, n)
 	return err
 }
 

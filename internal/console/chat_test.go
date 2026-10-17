@@ -36,10 +36,12 @@ type fakeChat struct {
 	// started is the conversation each member opened last, by repository
 	// and login
 	started map[string]int64
-	// titles are the renamed threads' titles and seen the seen markers,
+	// titles are the renamed threads' titles, seen the seen markers and
+	// cleared the clear markers,
 	// by repository, login and thread
-	titles map[string]string
-	seen   map[string]int64
+	titles  map[string]string
+	seen    map[string]int64
+	cleared map[string]int64
 	// inboxes are the members' inbox threads as made, by repository and
 	// login; archived the archived threads by repository, login and thread
 	inboxes  map[string]factoryd.ChatConversation
@@ -228,6 +230,7 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		out[i].LastAt = m.At
 		out[i].Messages++
 		out[i].SeenUpto = f.seen[fmt.Sprint(k, " ", m.Conversation)]
+		out[i].ClearedUpto = f.cleared[fmt.Sprint(k, " ", m.Conversation)]
 		turnEnd := m.Role == "assistant" && !m.Queued &&
 			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
@@ -318,6 +321,21 @@ func (f *fakeChat) MarkSeen(_ context.Context, repository, login string, n int64
 	for _, m := range f.msgs[repository+" "+login] {
 		if m.Conversation == n {
 			f.seen[k] = max(f.seen[k], m.ID)
+		}
+	}
+	return nil
+}
+
+func (f *fakeChat) MarkCleared(_ context.Context, repository, login string, n int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cleared == nil {
+		f.cleared = map[string]int64{}
+	}
+	k := fmt.Sprint(repository, " ", login, " ", n)
+	for _, m := range f.msgs[repository+" "+login] {
+		if m.Conversation == n {
+			f.cleared[k] = max(f.cleared[k], m.ID)
 		}
 	}
 	return nil

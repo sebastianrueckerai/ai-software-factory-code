@@ -130,6 +130,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/new":            rProject,
 	"POST /projects/{name}/chat/rename":         rProject,
 	"POST /projects/{name}/chat/seen":           rProject,
+	"POST /projects/{name}/chat/clear":          rProject,
 	"POST /projects/{name}/chat/archive":        rProject,
 	"POST /projects/{name}/chat/delete":         rProject,
 	"POST /projects/{name}/chat/answer":         rProject,

@@ -153,15 +153,18 @@ var chatView = (function () {
     close();
     return out.join("");
   }
-  // threadHTML is a thread's log: after a compaction its rows up to the
-  // summary fold behind one line, the summary turn follows, then the rows
-  // after it (C14)
+  // threadHTML is a thread's log: the rows Clear old swept from view name
+  // their count in one line at the top; after a compaction its rows up to
+  // the summary fold behind one line, the summary turn follows, then the
+  // rows after it (C14)
   function threadHTML(msgs, login, proposals, thread) {
+    var swept = thread && thread.cleared ? "<p class=\"meta chat-cleared\">cleared: " + thread.cleared + " older " +
+      (thread.cleared === 1 ? "message" : "messages") + " out of view</p>" : "";
     var upto = thread && thread.summary ? thread.summary_upto || 0 : 0;
-    if (!upto) return historyHTML(msgs, login, proposals);
+    if (!upto) return swept + historyHTML(msgs, login, proposals);
     var old = msgs.filter(function (m) { return m.id <= upto; }), rest = msgs.filter(function (m) { return m.id > upto; });
     var at = old.length ? old[old.length - 1].at : (rest[0] || {}).at;
-    return (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
+    return swept + (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
       ", compacted</summary>" + historyHTML(old, login, proposals) + "</details>" : "") +
       factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals);
   }
@@ -260,15 +263,20 @@ var chatView = (function () {
     return (needs ? needs + " needs you" : "") + (needs && fresh ? " · " : "") + (fresh ? fresh + " new" : "");
   }
   // headHTML is the open thread's head: its title (a click renames it),
-  // its last turn or the inbox's line or the archived note, and Archive and
-  // Delete… on an active thread with rows, never on the inbox (C14)
+  // its last turn or the inbox's line or the archived note, and its acts:
+  // Clear old sweeps the old rows from view on any thread with more than
+  // one row, Archive and Delete… on an active thread with rows, never on
+  // the inbox (C14)
   function headHTML(t, now) {
     var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
+    var acts = t.messages >= 2 ? "<button type=\"button\" data-clear title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
+    if (!t.inbox && t.state !== "archived" && t.messages) {
+      acts += "<button type=\"button\" data-archive>Archive</button><button type=\"button\" class=\"danger\" data-delete>Delete…</button>";
+    }
     return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
       (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
       "</h3><span class=\"thint" + (t.inbox || t.state === "archived" ? "" : " when") + "\">" + esc(hint) + "</span>" +
-      (t.inbox || t.state === "archived" || !t.messages ? "" : "<span class=\"tacts\"><button type=\"button\" data-archive>Archive</button>" +
-        "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
+      (acts ? "<span class=\"tacts\">" + acts + "</span>" : "");
   }
   // pendingOf is the escalation the thread's answer row offers: its newest
   // ask row, while it is open — settled, the row's reason line stands in
@@ -774,9 +782,11 @@ var chatView = (function () {
   });
 
   // load shows thread n, the current one for "": its head and its log,
-  // read marks it seen; an archived thread is read-only
+  // read marks it seen; an archived thread is read-only. keep holds the
+  // member's place: a refresh of the thread they stand in moves the log
+  // only when they sit at its end; opening lands on the newest rows
   var intro = log.innerHTML;
-  function load(n) {
+  function load(n, keep) {
     var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n));
     return fetch(url, {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + url + ": " + resp.status);
@@ -785,7 +795,8 @@ var chatView = (function () {
       open = data.conversation;
       openThread = data.thread || {number: open};
       readOnly = openThread.state === "archived";
-      log.innerHTML = data.messages.length ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
+      var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
+      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
       if (form) {
         // an archived thread's composer is one line with restore (C14)
         form.classList.toggle("arch", readOnly);
@@ -795,7 +806,8 @@ var chatView = (function () {
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
       drawHead();
-      scrollEnd(true);
+      if (keep && !held) log.scrollTop = was;
+      else scrollEnd(true);
       queueOf(open).flush();
       lock();
       return listThreads();
@@ -925,6 +937,10 @@ var chatView = (function () {
     postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer}).then(function () { return load(n); }).catch(failed);
   });
   head.addEventListener("click", function (e) {
+    if (e.target.closest("[data-clear]")) {
+      postThread("/clear", {conversation: open}).then(function () { return load(open); }).catch(failed);
+      return;
+    }
     if (e.target.closest("[data-archive]")) {
       postThread("/archive", {conversation: open}).then(function () { return load(""); }).catch(failed);
       return;
@@ -986,7 +1002,7 @@ var chatView = (function () {
   document.addEventListener("factoryevent", function (e) {
     if (!settleEvents[e.detail.kind]) return;
     listThreads();
-    if (open && !busy(open) && !document.hidden && !readOnly) load(open);
+    if (open && !busy(open) && !document.hidden && !readOnly) load(open, true);
   });
   setInterval(function () {
     if (!document.hidden) listThreads();
