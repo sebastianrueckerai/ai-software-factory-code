@@ -519,6 +519,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
+	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -577,6 +578,12 @@ func drainSignals(ctx workflow.Context) {
 // the old branch until no workflow started before the change is still
 // running (temporal workflow list --query 'ExecutionStatus="Running"').
 const (
+	// versionCheckinSpend (change id "checkin-spend"): a spent check-in's
+	// answer verifies the open pull request's head again instead of buying
+	// a session, which would stop at the same cap before any model call;
+	// histories recorded before it answered by buying, so the new branch
+	// is gated and the old runs keep their answer-buys-session wait.
+	versionCheckinSpend workflow.Version = 1
 	// versionSignalsDrained: terminal signals are acted on at every
 	// decision point, change requests are coalesced, pull request signals
 	// count only for the task's own PR, a terminal session error finishes
@@ -1125,6 +1132,7 @@ type taskRun struct {
 	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
+	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1429,7 +1437,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
-			case st.PR.Number != 0 && atCheckinSpend(st.Question):
+			case t.checkinSpend >= versionCheckinSpend && st.PR.Number != 0 && atCheckinSpend(st.Question):
 				// a spent check-in's answer verifies again, as the gate's
 				// stop does, but with no session: a bought one would stop
 				// at the same cap before any model call, so the answer
@@ -1765,7 +1773,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// head it judged below, like a dropped check-in: a bought
 			// session would stop at the same cap before any model call
 			// while the head sits waiting on the approval
-			if res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
+			if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
 				res.Commit = startRef
 				break
 			}
