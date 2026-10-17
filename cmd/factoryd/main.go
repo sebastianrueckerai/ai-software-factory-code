@@ -434,9 +434,12 @@ func main() {
 	// Discord when its application is; their routes ride the console's
 	// public host
 	publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
+	lists := consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now)
 	var messengers *console.Messengers
+	var telegram *factoryd.Telegram
+	var discord *factoryd.Discord
 	if key := optionalSecret("TELEGRAM_BOT_KEY"); key != "" {
-		telegram := &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
+		telegram = &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
 		if err := telegram.Boot(ctx, publicURL); err != nil {
 			log.Printf("messengers: telegram boot: %v", err)
 		}
@@ -450,10 +453,14 @@ func main() {
 			if messengers == nil {
 				messengers = &console.Messengers{}
 			}
-			discord := &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
+			discord = &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
 				GuildID: guild, PublicURL: publicURL, Store: store}
 			messengers.Discord = &console.DiscordConnect{AuthorizeURL: discord.AuthorizeURL, Connect: discord.Connect}
 		}
+	}
+	if messengers != nil {
+		sender := &factoryd.Sender{Store: store, Telegram: telegram, Discord: discord, PublicURL: publicURL, Lists: lists}
+		go sender.Loop(ctx, 5*time.Second)
 	}
 	consoleHandler, err := console.New(console.Config{
 		PublicURL:        publicURL,
@@ -465,7 +472,7 @@ func main() {
 		SessionKey:       []byte(consoleSessionKey),
 		Sessions:         store,
 		Tasks:            store,
-		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now),
+		Writers:          lists,
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,

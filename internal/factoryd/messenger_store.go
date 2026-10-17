@@ -355,6 +355,13 @@ func (s *PGStore) RetryDelivery(ctx context.Context, id int64, wait time.Duratio
 	return err
 }
 
+// DeferDelivery waits before the next try without counting one, for a
+// rate limit that is not the row's fault.
+func (s *PGStore) DeferDelivery(ctx context.Context, id int64, wait time.Duration) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE notify_deliveries SET next_try = now() + $2 WHERE id = $1`, id, wait)
+	return err
+}
+
 // FailDelivery closes the row after its last try.
 func (s *PGStore) FailDelivery(ctx context.Context, id int64, why string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE notify_deliveries SET state = 'failed', tries = tries + 1, last_error = $2 WHERE id = $1`, id, why)
