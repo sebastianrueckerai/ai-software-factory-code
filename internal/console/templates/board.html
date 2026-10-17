@@ -80,7 +80,7 @@
 
 {{define "filter"}}{{range .Hidden}}<input type="hidden" name="{{.Name}}" value="{{.Value}}">{{end}}{{end}}
 
-{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}">
+{{define "escalation"}}<article class="card escalation" id="need-{{.Card.ID}}{{.Suffix}}" data-card="{{.Card.ID}}">
 {{template "card" .Card}}
 {{template "escalation-actions" .}}</article>{{end}}
 

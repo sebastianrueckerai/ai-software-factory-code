@@ -26,8 +26,11 @@ import (
 func columnItems(t *testing.T, body, title string) []string {
 	t.Helper()
 	var out []string
+	// an escalation article shares its face's data-card, which the
+	// face's place marks: drop the article's copy before the walk
+	esc := regexp.MustCompile(`(<article class="card escalation" id="need-[^"]+") data-card="[^"]*"`)
 	re := regexp.MustCompile(`<article class="card approval[^"]*" data-card="[^"]*" aria-labelledby="approval-(\d+)"|data-card="([^"]+)"`)
-	for _, m := range re.FindAllStringSubmatch(col(t, body, title), -1) {
+	for _, m := range re.FindAllStringSubmatch(esc.ReplaceAllString(col(t, body, title), "$1"), -1) {
 		if m[1] != "" {
 			out = append(out, "approval "+m[1])
 		} else {
@@ -107,8 +110,10 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
-			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {
-				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`"`))
+			// an escalation article shares its face's data-card; the
+			// face alone carries it with a place, which names one column
+			if id[0] == 't' && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
+				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`" data-place="`))
 			}
 		}
 	}
