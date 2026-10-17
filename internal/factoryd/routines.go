@@ -62,7 +62,10 @@ type RoutineView struct {
 	// open").
 	Open *Task
 	Held bool
-	// Lane is "needs-you" for a routine that files human, else "queued".
+	// Lane is the preview's lane, always "queued" (ruling 2026-10-17):
+	// needs-you holds only what needs a human's action now, and a
+	// routine's work lands there only as its filed card waiting on the
+	// human, through the normal card flow.
 	Lane string
 }
 
@@ -379,9 +382,6 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 			st = RoutineState{Project: key, Routine: rt.Name}
 		}
 		view := RoutineView{Project: project, Routine: rt, State: st, Lane: "queued"}
-		if rt.Files == policy.FilesHuman {
-			view.Lane = "needs-you"
-		}
 		if next, ok := rt.NextCron(now, loc); ok {
 			if st.SkipNext {
 				if after, ok := rt.NextCron(next, loc); ok {
