@@ -3,11 +3,15 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/mock"
 )
 
 // The recorded-answer ledger: each fixture compresses the facts the design's
@@ -398,4 +402,320 @@ func checkinVerdictsOf(t *testing.T, detail map[string]any) map[string]CheckVerd
 		t.Fatal(err)
 	}
 	return verdicts
+}
+
+// liveGateHarness is the gate harness whose sessions are real: every
+// SessionInput the workflow builds drives the real RunSession activity —
+// the real supervisor, its detectors, the check-in plumbing and the brief
+// captures — against a scripted worker endpoint and a scripted check-in
+// model, each session reading the pod log sessionBodies hands out in
+// order. results keeps each session's own result in the same order.
+type liveGateHarness struct {
+	*gateHarness
+	runner        *Runner
+	worker        *fakeWorkerEndpoint
+	chat          *scriptedChat
+	objects       *fakeObjectStore
+	store         *fakeStore
+	sessionBodies [][]string
+	results       []SessionResult
+	beforeSession func(n int) // called before session n runs, none kept
+}
+
+func newLiveGateHarness(t *testing.T) *liveGateHarness {
+	t.Helper()
+	l := &liveGateHarness{gateHarness: newGateHarness(t, func(g *gateHarness) { g.taskConfig = askTaskConfig() })}
+	l.objects = &fakeObjectStore{}
+	l.runner, _, l.store = newTestRunner(t, supervisedTask("t1"), newFakeKube(), l.objects)
+	l.worker = &fakeWorkerEndpoint{status: http.StatusNoContent}
+	l.worker.start(t, l.runner)
+	l.chat = &scriptedChat{}
+	l.runner.checkin = l.chat
+	l.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			l.sessions = append(l.sessions, in)
+			if l.beforeSession != nil {
+				l.beforeSession(len(l.sessions) - 1)
+			}
+			var bodies []string
+			if n := len(l.sessions); n <= len(l.sessionBodies) {
+				bodies = l.sessionBodies[n-1]
+			}
+			res, err := runSession(t, ctx, l.runner, in, nil, bodies...)
+			l.results = append(l.results, res)
+			return res, err
+		})
+	return l
+}
+
+// The three check-in moments the eight do not carry, replayed beside them:
+// the in-session trip (plan E's session moment), the spend trip's
+// handover, and the dead session's ask. Unlike the eight, whose sessions
+// are recorded results, these run the real RunSession activity inside the
+// gate harness, so every ask, answer, step and session count below is the
+// landed code's own.
+func TestLadderReplaysTheCheckinMoments(t *testing.T) {
+	// plan E's session moment, the churn round: a session circles writes —
+	// a.go returns to a content it had while `go test ./...` fails again
+	// (flip_flop), and after the delivered message the circle goes on
+	// without growing the diff (churn).
+	//
+	// The ledger: one session; two detector trips; one conversation, asked
+	// once on flip_flop, answered message with the correction, delivered
+	// through the worker's /message; the second trip decided by the stuck
+	// rule in code, no second conversation; the climb in place put
+	// model_switched on the timeline; the climbed session itself pushed c1;
+	// one merge, no escalation.
+	//
+	// Reshape against the letter: the letter's "guidance in the second ask"
+	// has no second ask to carry it — the stuck rule's second trip is
+	// decided without a conversation, which is the letter's own "no second
+	// conversation" — so the guidance is read on the first ask's timeline
+	// step. And the letter's "retried session pushes" is the same session:
+	// a climb needs canClimb, and the climb in place (roadmap 222) is what
+	// records the letter's "the climb in the timeline"; a stop without it
+	// records no climb step at all.
+	t.Run("churn_round_in_session", func(t *testing.T) {
+		correction := "the flip is the test's own clock: stub it and do not wait"
+		l := newLiveGateHarness(t)
+		l.chat.answers = []CheckinResponse{{Text: `{"decision":"message","guidance":"` + correction + `"}`}}
+		logs := envLine(fileEvent("a.go", "h1")) + "\n" +
+			envLine(cmdEvent("go test ./...", 1, "FAIL: TestLinks")) + "\n" +
+			envLine(fileEvent("a.go", "h2")) + "\n" +
+			envLine(fileEvent("a.go", "h1")) + "\n" +
+			envLine(cmdEvent("go test ./...", 1, "FAIL: TestLinks"))
+		for i := range 12 {
+			logs += "\n" + envLine(fileEvent(fmt.Sprintf("f%d.go", i), fmt.Sprintf("k%d", i)))
+		}
+		l.sessionBodies = [][]string{{logs + "\n" + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t1 at c1")}}
+		l.onChecks(ChecksResult{State: ChecksSuccess})
+		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := l.run(t); final != "done" {
+			t.Fatalf("final = %q, escalations = %q", final, l.escalated)
+		}
+		if len(l.sessions) != 1 || l.chat.calls != 1 {
+			t.Fatalf("sessions = %d, conversations = %d; want the one session the climb kept, its one conversation", len(l.sessions), l.chat.calls)
+		}
+		if res := l.results[0]; res.Outcome != OutcomePushed || res.Commit != "c1" ||
+			res.Summary != "pushed branch factory/t1 at c1" {
+			t.Fatalf("the session's result = %+v, want the climbed session's own push", res)
+		}
+		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") {
+			t.Fatalf("the ask's statement = %.80s, want the flip_flop trip named", l.chat.gots[0].Input)
+		}
+		l.worker.mu.Lock()
+		defer l.worker.mu.Unlock()
+		if len(l.worker.texts) != 3 || l.worker.texts[0] != "POST /brief " ||
+			l.worker.texts[1] != "POST /message "+correction {
+			t.Fatalf("worker got %q, want the brief, the correction, the climb", l.worker.texts)
+		}
+		if !strings.Contains(l.worker.texts[2], "continues on the stronger model") || !strings.Contains(l.worker.texts[2], "churn") {
+			t.Fatalf("climb message = %.120s, want the stuck rule's climb on churn", l.worker.texts[2])
+		}
+		tl := string(objGet(l.objects, "sessions/t1/timeline.jsonl"))
+		if !strings.Contains(tl, `"step":"model_switched"`) || !strings.Contains(tl, `"to":"coding-frontier"`) ||
+			!strings.Contains(tl, `"trip":"churn"`) {
+			t.Fatalf("timeline = %s, want the climb in place", tl)
+		}
+		if !strings.Contains(tl, `"guidance":"`+correction+`"`) {
+			t.Fatalf("timeline = %s, want the first ask's correction on its checkin step", tl)
+		}
+		step := timelineStep(t, l.objects, "t1", "checkin")
+		if step["decision"] != "retry_stronger" || step["detector"] != "churn" || step["called"] != false {
+			t.Fatalf("last checkin step = %v, want the stuck end decided in code", step)
+		}
+		if len(l.merges) != 1 || len(l.escalated) != 0 {
+			t.Fatalf("merges %d, escalations %q; want the card merged, nothing asked of the human", len(l.merges), l.escalated)
+		}
+	})
+
+	// plan E's session moment, the spend round: the card is past the
+	// no-push share of its budget with nothing pushed, the trip's check-in
+	// reads the workspace, finds the work uncommittable, and answers
+	// handover; the next session starts from the note and the round
+	// verifies.
+	//
+	// The ledger: no asks of the human; one trip (spend_no_push, 3.50 of
+	// 5.00 EUR spent, the line 60 percent); one conversation, two answers —
+	// the workspace read through the worker's /tool, then the handover; the
+	// session stopped with the note riding the result's check-in; the
+	// workflow wrote the checkin and handover steps and put the note in the
+	// next session's brief; that session pushed c2; one merge.
+	t.Run("spend_without_push", func(t *testing.T) {
+		note := "the workspace holds the parser rewrite; nothing here is committable until vendoring lands"
+		l := newLiveGateHarness(t)
+		l.chat.answers = []CheckinResponse{
+			{ToolName: "read_file", ToolArgs: map[string]any{"path": "/workspace/parser/parser.go"}},
+			{Text: `{"decision":"handover","handover":"` + note + `"}`},
+		}
+		l.sessionBodies = [][]string{
+			{hangLogs},
+			{pushedLine("c2") + "\n" + resultLine(true, "pushed branch factory/t1 at c2")},
+		}
+		tk := l.store.tasks["t1"]
+		tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
+		l.store.tasks["t1"] = tk
+		l.runner.tick = 50 * time.Millisecond
+		l.runner.cfg.Supervisor.NoProgressAfter = time.Hour
+		l.onChecks(ChecksResult{State: ChecksSuccess})
+		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := l.run(t); final != "done" {
+			t.Fatalf("final = %q, escalations = %q", final, l.escalated)
+		}
+		if len(l.sessions) != 2 || l.chat.calls != 2 {
+			t.Fatalf("sessions = %d, conversations = %d; want the spend trip's session and the note's, the one conversation's two answers", len(l.sessions), l.chat.calls)
+		}
+		res := l.results[0]
+		if res.Outcome != OutcomeNoPush || res.Trip != string(TripSpendNoPush) || res.Commit != "" ||
+			res.Summary != "check-in: handover after spend_no_push" {
+			t.Fatalf("the trip's outcome = %+v, want the handover stop with nothing pushed", res)
+		}
+		if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Handover != note ||
+			res.CheckIn.Record == nil || res.CheckIn.Record.Moment != CheckInSession ||
+			res.CheckIn.Record.Session != res.SessionID {
+			t.Fatalf("the riding check-in = %+v, want the note and the session's own record", res.CheckIn)
+		}
+		if !strings.Contains(l.chat.gots[0].Input, "spend_no_push") {
+			t.Fatalf("the ask's statement = %.80s, want the spend trip named", l.chat.gots[0].Input)
+		}
+		if len(l.worker.tools) != 1 || !strings.HasPrefix(l.worker.tools[0], "read_file ") {
+			t.Fatalf("tool calls = %q, want the workspace read", l.worker.tools)
+		}
+		l.worker.mu.Lock()
+		noteBriefs := 0
+		for _, got := range l.worker.texts {
+			noteBriefs += min(strings.Count(got, note), 1)
+		}
+		l.worker.mu.Unlock()
+		if l.worker.texts[0] != "POST /brief " || noteBriefs != 1 {
+			t.Fatalf("worker got %q, want the empty start brief alone and the note on the next session's brief", l.worker.texts)
+		}
+		in := l.sessions[1]
+		if in.Handover != note || in.CheckInAsk != nil || in.ParentSessionID != res.SessionID {
+			t.Fatalf("the next session's input = %+v, want the note handed over, no ask", in)
+		}
+		var checkin, handover *recordedStep
+		for i := range l.recorded {
+			switch l.recorded[i].step {
+			case "checkin":
+				checkin = &l.recorded[i]
+			case "handover":
+				handover = &l.recorded[i]
+			}
+		}
+		if checkin == nil || checkin.detail["decision"] != CheckHandover || handover == nil ||
+			handover.detail["handover"] != note || handover.detail["session"] != res.SessionID {
+			t.Fatalf("recorded = %+v, want the checkin and handover steps carrying the note", l.recorded)
+		}
+		if len(l.merges) != 1 {
+			t.Fatalf("merges = %d, want the note's work verified and merged", len(l.merges))
+		}
+	})
+
+	// plan E's dead moment: a session runs out its time with work in
+	// progress and no push, the cap grants it no extra time, its stop ends
+	// the round dead, and the next session's check-in reads the dead
+	// session's record and writes the handover the following work starts
+	// from.
+	//
+	// The ledger: one dead session — the start rung's cheap time cap passed
+	// without a push, its climb undeliverable, so the session stopped with
+	// no check-in and the round turned dead; no conversation in it; the
+	// next session asked at the dead moment, parent the dead session's id,
+	// stop its summary line; the dead record went to the pod through
+	// /records and its ask named the stop; the answer's handover rode the
+	// brief and the reading session pushed c3; the handover step names that
+	// reader; one merge.
+	//
+	// Reshape against the letter: the letter's dead session runs to its
+	// wall clock, but through landed code a wall-clock session never
+	// reaches a next session's dead ask — with nothing pushed the keep-work
+	// time cap fails the card at once, and anything pushed verifies or
+	// parks at a cap card whose findings make the next ask a gate ask. The
+	// replay's dead session therefore runs out the start rung's cheap time
+	// cap instead — the same ran-out-of-time, work in progress, nothing
+	// pushed shape — and stops because the climb its cap decided cannot be
+	// delivered.
+	t.Run("dead_session", func(t *testing.T) {
+		note := "the dead session left the parser half rewritten; take its record and finish the vendor fix"
+		l := newLiveGateHarness(t)
+		l.chat.answers = []CheckinResponse{{Text: `{"decision":"handover","handover":"` + note + `"}`}}
+		l.sessionBodies = [][]string{
+			{hangLogs},
+			{pushedLine("c3") + "\n" + resultLine(true, "pushed branch factory/t1 at c3")},
+		}
+		l.runner.cheapCap = 150 * time.Millisecond
+		l.runner.tick = 50 * time.Millisecond
+		l.runner.cfg.Supervisor.NoProgressAfter = time.Hour
+		l.worker.status = http.StatusNotImplemented // the climb its cap decided cannot be delivered
+		l.beforeSession = func(n int) {
+			if n == 1 {
+				l.worker.mu.Lock()
+				l.worker.status = http.StatusNoContent
+				l.worker.mu.Unlock()
+			}
+		}
+		l.onChecks(ChecksResult{State: ChecksSuccess})
+		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := l.run(t); final != "done" {
+			t.Fatalf("final = %q, escalations = %q", final, l.escalated)
+		}
+		if len(l.sessions) != 2 || l.chat.calls != 1 {
+			t.Fatalf("sessions = %d, conversations = %d; want the dead session without a conversation and the reader with one", len(l.sessions), l.chat.calls)
+		}
+		dead := l.results[0]
+		stop := "check-in: retry_stronger after cheap_cap: the cheap rung's 150ms passed without a push"
+		if dead.Outcome != OutcomeRetryStronger || dead.Trip != string(TripCheapCap) || dead.CheckIn != nil ||
+			dead.Commit != "" || dead.Summary != stop {
+			t.Fatalf("the dead session = %+v, want the cheap cap's stop with no check-in", dead)
+		}
+		ask := l.sessions[1].CheckInAsk
+		if ask == nil || ask.Moment != CheckInDead || ask.ParentSession != dead.SessionID || ask.Stop != stop {
+			t.Fatalf("the dead ask = %+v, want the dead moment, the dead session as parent, its stop", ask)
+		}
+		if l.sessions[1].ParentSessionID != dead.SessionID || l.sessions[1].Model != "factory/coding-frontier" {
+			t.Fatalf("the reader's input = %+v, want the dead session as parent and the stronger rung", l.sessions[1])
+		}
+		if !strings.Contains(l.chat.gots[0].Input, stop) || !strings.Contains(l.chat.gots[0].Input, dead.SessionID) {
+			t.Fatalf("the statement = %.120s, want the stop line and the dead session named", l.chat.gots[0].Input)
+		}
+		l.worker.mu.Lock()
+		records, noteBriefs, climbs := 0, 0, 0
+		for _, got := range l.worker.texts {
+			switch {
+			case strings.HasPrefix(got, "POST /records"):
+				records++
+				if !strings.Contains(got, dead.SessionID) || !strings.Contains(got, `"detector":"cheap_cap"`) {
+					t.Fatalf("the record delivery = %.160s, want the dead session's record with its trip", got)
+				}
+			case strings.HasPrefix(got, "POST /brief"):
+				noteBriefs += min(strings.Count(got, note), 1)
+			case strings.Contains(got, "continues on the stronger model"):
+				climbs++
+			}
+		}
+		l.worker.mu.Unlock()
+		if records != 1 || noteBriefs != 1 || climbs != 1 {
+			t.Fatalf("records %d, note briefs %d, climbs %d; want the dead record delivered once, the note on the reader's brief, the refused climb once", records, noteBriefs, climbs)
+		}
+		var handover *recordedStep
+		for i := range l.recorded {
+			if l.recorded[i].step == "handover" {
+				handover = &l.recorded[i]
+			}
+		}
+		if handover == nil || handover.detail["handover"] != note || handover.detail["session"] != l.results[1].SessionID {
+			t.Fatalf("handover steps = %+v, want the reader's note", l.recorded)
+		}
+		if res := l.results[1]; res.Outcome != OutcomePushed || res.Commit != "c3" || res.CheckIn == nil ||
+			res.CheckIn.Decision != CheckHandover || res.CheckIn.Record.Moment != CheckInDead {
+			t.Fatalf("the reader's result = %+v, want the push with the dead check-in riding", res)
+		}
+		if len(l.merges) != 1 {
+			t.Fatalf("merges = %d, want the record's work verified and merged", len(l.merges))
+		}
+	})
 }
