@@ -904,31 +904,35 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}
 }
 
-// The merge item on the four-column board carries the five-part ask on
-// single lines: the headline with the risk and migration chips, why a
-// human, the model review's verdict and summary, the recommendation,
-// Approve, Deny and a Details link to the drawer; the migration files,
-// the earlier reviews, the audit and the facts wall live in the drawer's
-// Reviews and audit (item 4).
+// The merge item on the four-column board stays small, like a
+// question's face: the headline with the risk and migration chips, the
+// Approve and Deny controls and the foot links. The five-part ask —
+// why a human, the model review's verdict and summary, the
+// recommendation — and the facts wall (the migration files, the
+// earlier reviews, the audit) live in the drawer, which the item's
+// Details link opens (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`,
-		`<form method="post" action="/approvals/4/deny" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}
 	}
-	for _, gone := range []string{"0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
+	for _, gone := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the merge drawer lacks %s", want)
 		}
 	}
 }

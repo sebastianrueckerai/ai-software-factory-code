@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -892,4 +893,46 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 		t.Fatalf("the fund answer posted %q", got)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
+}
+
+// The merge approval's face stays as small as a question's (the
+// 2026-10-17 issue): the title row with the risk and migration chips,
+// the Approve and Deny controls and the foot links. A five-part ask
+// of any length — here a recommendation over three lines — waits in
+// the drawer, which the face's Details link opens.
+func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
+	r := newRig(t)
+	long := "line one of the recommendation\nline two weighs the risk\nline three names the migration order"
+	spec := fmt.Sprintf(`{"risk_class":"high","migration":false,"verdict_summary":"adds the column",`+
+		`"review":{"verdict":"approve"},"head_sha":"abc123","recommendation":%q,`+
+		`"why_human":["first why","second why"]}`, long)
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: "merge", TaskID: "t-m2",
+		Project: "sf/code", PRNumber: 12, Status: "pending", Spec: json.RawMessage(spec)})
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m2", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12}})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, `aria-labelledby="approval-6"`)
+	face := body[start : start+strings.Index(body[start:], "</article>")]
+	for _, bulky := range []string{"line one of the recommendation", "first why", "adds the column",
+		`<p class="why">`, `<p class="info">`, `<p class="finding">`, `<p class="recommendation">`} {
+		if strings.Contains(face, bulky) {
+			t.Errorf("the merge face carries %q, which belongs to the drawer:\n%s", bulky, face)
+		}
+	}
+	for _, want := range []string{`action="/approvals/6/approve"`,
+		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
+		if !strings.Contains(face, want) {
+			t.Errorf("the merge face lacks %q:\n%s", want, face)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		`<p class="why">first why; second why</p>`,
+		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
+		`<p class="recommendation">Recommendation: ` + long + `</p>`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the merge drawer lacks %q", want)
+		}
+	}
 }

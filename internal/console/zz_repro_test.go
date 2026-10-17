@@ -72,22 +72,38 @@ func TestIssueFaultsHeldFixed(t *testing.T) {
 		t.Errorf("FAULT 2 STILL PRESENT: the drawer renders the markup as text")
 	}
 
-	// 3. the merge approval asks first: why a human, the model review,
-	// the recommendation — not one undifferentiated block
+	// 3. the merge approval's lane face stays small like a question's:
+	// the brief on one line, the Approve and Deny buttons and the foot
+	// links — the five parts render only in the drawer
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
 	start := strings.Index(wide, `aria-labelledby="approval-4"`)
 	merge := wide[start : start+strings.Index(wide[start:], "</article>")]
 	for _, want := range []string{
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
 		`action="/approvals/4/approve"`, `class="deny"`,
+		`<a href="#card=t-m:reviews" class="details">Details</a>`,
 	} {
 		if !strings.Contains(merge, want) {
 			t.Errorf("FIX 3 MISSING: the merge approval lacks %s:\n%s", want, merge)
 		}
 	}
-	if strings.Contains(merge, `<p class="need-line"><b>Model review</b>`) {
-		t.Errorf("FAULT 3 STILL PRESENT: the model review renders as a flat need-line:\n%s", merge)
+	for _, bulky := range []string{
+		`<p class="why">`, `<p class="info">`, `<p class="finding">`, `<p class="recommendation">`,
+		"the project&#39;s merge rule is human", "adds the column safely", "Adds the column; merge it.",
+		`<p class="need-line"><b>Model review</b>`,
+	} {
+		if strings.Contains(merge, bulky) {
+			t.Errorf("FAULT 3 STILL PRESENT: the lane face carries the drawer's five parts (%s):\n%s", bulky, merge)
+		}
+	}
+	mergeDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
+	} {
+		if !strings.Contains(mergeDrawer, want) {
+			t.Errorf("FIX 3 MISSING: the drawer's merge approval lacks %s", want)
+		}
 	}
 }
