@@ -97,7 +97,8 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 	if err != nil || !ok {
 		return err
 	}
-	alias := factoryModel(b.Current().Document, t, policy.PurposeSupervisor)
+	// the version in force names the alias, as every factoryd call site
+	alias := b.Current().Document.FactoryModel(t.RequiredCapabilities, policy.PurposeSupervisor)
 	brief, detail, err := b.ask(ctx, a, t, alias)
 	switch {
 	case err != nil:
