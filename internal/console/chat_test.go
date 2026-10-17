@@ -46,6 +46,9 @@ type fakeChat struct {
 	// login; archived the archived threads by repository, login and thread
 	inboxes  map[string]factoryd.ChatConversation
 	archived map[string]bool
+	// cards are the bound card threads (the card door) by repository and
+	// task
+	cards map[string]boundThread
 	// summaries are the threads' compactions by repository, login and
 	// thread; tokens the newest call's tokens by thread reference, which a
 	// test sets, and totals its calls' sums
@@ -64,6 +67,13 @@ type fakeChat struct {
 type fakeProposal struct {
 	factoryd.ChatProposal
 	used time.Time
+}
+
+// boundThread is a card thread's binding: the member who opened the card's
+// door first and the thread's number under them.
+type boundThread struct {
+	login string
+	n     int64
 }
 
 // spendRow is a ledger row of a task of repository on day, chat when the
@@ -150,6 +160,32 @@ func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int
 	f.inboxes[k] = factoryd.ChatConversation{Number: max(f.highest(repository, login), f.current(repository, login)) + 1,
 		Title: factoryd.InboxTitle, State: factoryd.ThreadActive, Inbox: true, FirstAt: made, LastAt: made}
 	return f.inboxes[k].Number, nil
+}
+
+func (f *fakeChat) EnsureCardThread(_ context.Context, repository, login, taskID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + taskID
+	if b, ok := f.cards[k]; ok {
+		return b.n, nil
+	}
+	if f.cards == nil {
+		f.cards = map[string]boundThread{}
+	}
+	n := f.highest(repository, login) + 1
+	f.cards[k] = boundThread{login: login, n: n}
+	if f.titles == nil {
+		f.titles = map[string]string{}
+	}
+	f.titles[fmt.Sprint(repository, " ", login, " ", n)] = "#" + taskID
+	return n, nil
+}
+
+func (f *fakeChat) CardThreadFor(_ context.Context, repository, taskID string) (string, int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.cards[repository+" "+taskID]
+	return b.login, b.n, ok, nil
 }
 
 func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {

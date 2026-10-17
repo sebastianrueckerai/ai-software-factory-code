@@ -113,6 +113,7 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/summary":                  rCard,
 	"POST /tasks/{id}/accent":                   rCard,
 	"POST /cards/{id}/lane":                     rLane,
+	"POST /cards/{id}/thread":                   rCard,
 	"POST /tasks/{id}/start-plan":               {need: approver, scope: scCard, what: "start a plan"},
 	"POST /tasks/{id}/plan/accept":              {need: approver, scope: scCard, what: "accept a plan"},
 	"POST /tasks/{id}/plan/answer":              rCard,

@@ -634,6 +634,14 @@ func (f *acceptChat) MarkCleared(context.Context, string, string, int64) error {
 
 func (f *acceptChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (f *acceptChat) EnsureCardThread(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (f *acceptChat) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
 func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
 }

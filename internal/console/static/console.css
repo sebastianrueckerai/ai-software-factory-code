@@ -1106,7 +1106,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .cmds { display: inline-flex; gap: 4px; }
 .cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
-.thread-link { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
+.thread-link, .thread-door { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .chat-form.arch .prompt, .chat-form.arch .own { display: none; }
 .arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
 .arch-note[hidden] { display: none; }

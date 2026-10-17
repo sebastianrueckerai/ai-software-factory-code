@@ -2905,9 +2905,9 @@ func (c *Console) cardFragment(w http.ResponseWriter, r *http.Request) {
 // drawerTab is a tab of the card drawer: its ?tab= and its title.
 type drawerTab struct{ Name, Title string }
 
-// drawerTabs are the card drawer's tabs: Chat the default of a running
-// card, Overview of any other.
-var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Chat"}, {"activity", "Activity"}, {"files", "Files"}}
+// drawerTabs are the card drawer's tabs: Session the worker's live
+// session, the default of a running card, Overview of any other.
+var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"activity", "Activity"}, {"files", "Files"}}
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
@@ -2942,6 +2942,9 @@ type drawerData struct {
 	Need *need
 	// Thread is the chat thread the card came from, nil for none.
 	Thread *threadLink
+	// Door is the card door: the card waits on a person and its own
+	// thread is the viewer's or not bound yet (the main agent concept).
+	Door bool
 	// RoutineLine names the routine run that filed the card, nil for a
 	// card no routine filed.
 	RoutineLine *routineProvenance
@@ -3029,6 +3032,90 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 	c.drawer(w, r, tab, "")
 }
 
+// cardThreadStart answers POST /cards/{id}/thread, the card door: the
+// card's own conversation, made for the member when the card has none
+// (the main agent concept). Its first row, written by code from the
+// card's open ask, holds the ask's five parts with its choices, so an
+// answer through the thread settles the card as the inbox's buttons do;
+// no model runs. The answer is the conversation's number.
+func (c *Console) cardThreadStart(w http.ResponseWriter, r *http.Request) {
+	bt, _, _, ok := c.writableCard(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	if _, err := c.cfg.Chat.EnsureCardThread(ctx, bt.Repository, current(r).user, bt.ID); err != nil {
+		log.Printf("console: the card thread of %s: %v", bt.ID, err)
+		http.Error(w, "cannot make the card's thread", http.StatusInternalServerError)
+		return
+	}
+	who, n, _, err := c.cfg.Chat.CardThreadFor(ctx, bt.Repository, bt.ID)
+	if err != nil {
+		log.Printf("console: the card thread of %s: %v", bt.ID, err)
+		http.Error(w, "cannot read the card's thread", http.StatusInternalServerError)
+		return
+	}
+	if rows, err := c.cfg.Chat.ChatMessages(ctx, bt.Repository, who, n, 1); err == nil && len(rows) == 0 {
+		c.seedCardAsk(ctx, bt, who, n)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"conversation":%d}`, n)
+}
+
+// seedCardAsk writes the card's open ask as its thread's first row: the
+// ask's five parts with its choices, the row the thread's answer buttons
+// settle.
+func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who string, n int64) {
+	events, err := c.cfg.Events.TaskEvents(ctx, bt.ID, startEvents)
+	if err != nil {
+		log.Printf("console: the events of %s: %v", bt.ID, err)
+		return
+	}
+	var ask *factoryd.Event
+	for i := range events { // newest first
+		if events[i].Kind == factoryd.EventQuestionAsked {
+			ask = &events[i]
+			break
+		}
+	}
+	if ask == nil {
+		return
+	}
+	if s := factoryd.SettleOf(factoryd.ChatMessage{Kind: factoryd.MessageEscalation,
+		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status == "waiting-human", false); !s.Open {
+		return
+	}
+	question, _ := ask.Detail["question"].(string)
+	ref := ask.TaskID
+	switch {
+	case bt.IssueNumber != 0:
+		ref = "#" + strconv.FormatInt(bt.IssueNumber, 10)
+	case ask.IssueNumber != 0:
+		ref = "#" + strconv.FormatInt(ask.IssueNumber, 10)
+	}
+	content := ref + " needs you: " + question
+	for _, part := range []struct{ label, key string }{{"Why", "why"}, {"Info", "info"}, {"Recommendation", "recommendation"}} {
+		if s, _ := ask.Detail[part.key].(string); s != "" {
+			content += "\n" + part.label + ": " + s
+		}
+	}
+	m := factoryd.ChatMessage{Role: "user", Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked,
+		Content: content, TaskID: bt.ID, Conversation: n}
+	switch cs := ask.Detail["choices"].(type) {
+	case []any:
+		for _, ch := range cs {
+			if s, ok := ch.(string); ok {
+				m.Choices = append(m.Choices, s)
+			}
+		}
+	case []string:
+		m.Choices = append(m.Choices, cs...)
+	}
+	if _, err := c.cfg.Chat.AddChatMessage(ctx, bt.Repository, who, m); err != nil {
+		log.Printf("console: the card thread of %s: %v", bt.ID, err)
+	}
+}
+
 // steerCard hands the member's message from the drawer's Chat to card
 // id's running session (doSteer) and answers the tab again with its note.
 func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
@@ -3087,6 +3174,12 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)
 		d.Thread = c.cardThread(ctx, bt.Task, current(r).user)
+		if v.escalated(bt.Task) && c.cfg.Chat != nil {
+			// the card door: its own thread, the viewer's or unbound
+			if who, _, ok, err := c.cfg.Chat.CardThreadFor(ctx, bt.Repository, bt.ID); err == nil && (!ok || who == current(r).user) {
+				d.Door = true
+			}
+		}
 		var err error
 		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
 			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {

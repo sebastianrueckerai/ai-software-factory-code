@@ -402,6 +402,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
+		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
 		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},

@@ -73,7 +73,8 @@ var chatView = (function () {
     }
     var esc1 = m.kind === "escalation";
     var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
-      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") +
+      (m.thread ? " <button type=\"button\" class=\"chip linkbtn\" data-open-thread=\"" + esc(m.thread) + "\">thread ↗</button>" : "") + "</p>";
     var body = saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
@@ -132,6 +133,13 @@ var chatView = (function () {
       parts = null;
     }
     msgs.forEach(function (m) {
+      // a row the factory wrote itself renders as its own whatever its
+      // role: a card thread's first row is the ask, seeded as a user row
+      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
+        close();
+        out.push(factoryHTML(m));
+        return;
+      }
       if (m.role === "user") {
         close();
         if (/^wake/.test(m.birth_kind || "")) {
@@ -139,11 +147,6 @@ var chatView = (function () {
           return;
         }
         out.push(userHTML(login, m.content, m.at, m.queued));
-        return;
-      }
-      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
-        close();
-        out.push(factoryHTML(m));
         return;
       }
       var dst = wake ? wake.parts : parts;
@@ -634,6 +637,24 @@ var chatView = (function () {
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-open-thread]");
     if (b && Number(b.dataset.openThread) !== open) load(Number(b.dataset.openThread));
+  });
+  // a drawer's "Talk about this card" opens the card's own thread, made
+  // on its first open (the card door)
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-card-thread]");
+    if (!b || !form) return;
+    b.disabled = true;
+    fetch("/cards/" + encodeURIComponent(b.dataset.cardThread) + "/thread", {method: "POST",
+      headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+      if (!resp.ok) throw new Error(resp.status);
+      return resp.json();
+    }).then(function (d) {
+      b.disabled = false;
+      load(Number(d.conversation));
+    }).catch(function () {
+      b.disabled = false;
+      failed();
+    });
   });
   // openCard opens a card's drawer over the board and lights the card on
   // the board, so the eye finds it where the chat named it. The scroll to

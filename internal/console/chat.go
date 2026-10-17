@@ -294,6 +294,14 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	waits, events := askFacts(ctx, t.c, ids)
+	// a card's own thread (the card door): an open ask row names its
+	// thread, the reader's when they bound it
+	threads := map[string]int64{}
+	for _, id := range ids {
+		if who, n, ok, err := t.c.cfg.Chat.CardThreadFor(ctx, t.p.Repository, id); err == nil && ok && who == t.a.s.user {
+			threads[id] = n
+		}
+	}
 	for i, m := range msgs {
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
 			continue
@@ -306,6 +314,8 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 		if s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
 			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
+		} else if n := threads[m.TaskID]; n != 0 {
+			msgs[i].Thread = n
 		}
 	}
 }

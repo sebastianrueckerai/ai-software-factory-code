@@ -62,6 +62,9 @@ type ChatMessage struct {
 	// are derived, never stored.
 	Settled bool   `json:"settled,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Thread is the conversation bound to the ask's card (the card door),
+	// the reader's own; derived, never stored.
+	Thread int64 `json:"thread,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -440,6 +443,52 @@ func ensureInbox(ctx context.Context, db sqlRunner, repository, login string) (i
 	err := db.QueryRowContext(ctx, `SELECT conversation FROM chat_conversations WHERE repository = $1 AND login = $2 AND inbox`,
 		repository, login).Scan(&n)
 	return n, err
+}
+
+// cardThreadOf answers the login and conversation of repository's thread
+// bound to card taskID, if it has one.
+func cardThreadOf(ctx context.Context, db sqlRunner, repository, taskID string) (string, int64, bool, error) {
+	var login string
+	var n int64
+	err := db.QueryRowContext(ctx, `SELECT login, conversation FROM chat_conversations
+		WHERE repository = $1 AND task_id = $2`, repository, taskID).Scan(&login, &n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, err
+	}
+	return login, n, true, nil
+}
+
+// CardThreadFor answers the login and conversation of repository's thread
+// bound to card taskID, if it has one.
+func (s *PGStore) CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error) {
+	return cardThreadOf(ctx, s.db, repository, taskID)
+}
+
+// EnsureCardThread answers the conversation bound to repository's card
+// taskID, making it for login when the card has none: the first caller
+// binds the thread, titled #taskID, and every later caller, whoever they
+// are, gets the same one (the card door).
+func (s *PGStore) EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error) {
+	for i := 0; i < 3; i++ {
+		// another racing maker can eat this number; a card bound meanwhile
+		// answers below
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, task_id)
+			SELECT $1, $2, coalesce(max(conversation), 0) + 1, $3, $4 FROM chat_conversations WHERE repository = $1 AND login = $2
+			ON CONFLICT DO NOTHING`, repository, login, "#"+taskID, taskID); err != nil {
+			return 0, err
+		}
+		_, n, ok, err := cardThreadOf(ctx, s.db, repository, taskID)
+		switch {
+		case err != nil:
+			return 0, err
+		case ok:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("the thread of card %s on %s lost every race to be made", taskID, repository)
 }
 
 // threadTitle is a thread's title from its first message: its words on

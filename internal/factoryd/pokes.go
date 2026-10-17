@@ -324,6 +324,20 @@ func (s *PGStore) PokeEvents(ctx context.Context, limit int) ([]Event, error) {
 		AND kind = ANY($1) ORDER BY id LIMIT $2`, pokeKinds, limit)
 }
 
+// bumpRepeat counts m as a repeat on the newest poke row about its card
+// in login's thread n, when that row says the same; false: no repeat.
+func bumpRepeat(ctx context.Context, db sqlRunner, repository, login string, n int64, m ChatMessage) (bool, error) {
+	res, err := db.ExecContext(ctx, `UPDATE chat_messages SET repeats = repeats + 1, at = now()
+		WHERE id = (SELECT id FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3
+			AND task_id = $4 AND kind IN ($5, $6) ORDER BY id DESC LIMIT 1)
+		AND kind = $7 AND content = $8`, repository, login, n, m.TaskID, MessagePoke, MessageEscalation, m.Kind, m.Content)
+	if err != nil {
+		return false, err
+	}
+	repeated, err := res.RowsAffected()
+	return repeated > 0, err
+}
+
 func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage, plan PokeDelivery) ([]int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -339,22 +353,35 @@ func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins 
 		m.Conversation, m.Queued = n, queued[i]
 		if m.TaskID != "" {
 			// a repeat: the newest poke about the card says the same
-			res, err := tx.ExecContext(ctx, `UPDATE chat_messages SET repeats = repeats + 1, at = now()
-				WHERE id = (SELECT id FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3
-					AND task_id = $4 AND kind IN ($5, $6) ORDER BY id DESC LIMIT 1)
-				AND kind = $7 AND content = $8`, repository, login, n, m.TaskID, MessagePoke, MessageEscalation, m.Kind, m.Content)
+			repeated, err := bumpRepeat(ctx, tx, repository, login, n, m)
 			if err != nil {
 				return nil, err
 			}
-			if repeated, err := res.RowsAffected(); err != nil || repeated > 0 {
-				if err != nil {
-					return nil, err
-				}
+			if repeated {
 				continue
 			}
 		}
 		if ids[i], err = insertChatMessage(ctx, tx, repository, login, m); err != nil {
 			return nil, err
+		}
+	}
+	// the card's own thread takes every ask too (the card door): the row
+	// lands on the binding member's thread beside the inboxes'
+	if m.Kind == MessageEscalation && m.TaskID != "" {
+		if who, n, ok, err := cardThreadOf(ctx, tx, repository, m.TaskID); err != nil {
+			return nil, err
+		} else if ok {
+			repeated, err := bumpRepeat(ctx, tx, repository, who, n, m)
+			if err != nil {
+				return nil, err
+			}
+			if !repeated {
+				cm := m
+				cm.Conversation, cm.Queued = n, false
+				if _, err := insertChatMessage(ctx, tx, repository, who, cm); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	if err := queueDeliveries(ctx, tx, repository, logins, ids, plan); err != nil {

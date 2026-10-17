@@ -790,6 +790,14 @@ func (f *accBatchChat) MarkCleared(context.Context, string, string, int64) error
 
 func (f *accBatchChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (f *accBatchChat) EnsureCardThread(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (f *accBatchChat) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
 func (f *accBatchChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
 }

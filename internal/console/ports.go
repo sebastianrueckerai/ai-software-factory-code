@@ -126,6 +126,10 @@ type Chat interface {
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	// the card's own thread (the card door): one per card, the first
+	// caller binds it, every later caller gets the same one
+	EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error)
+	CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error)
 	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
 	// compaction: the summary a thread keeps, its newest call's tokens

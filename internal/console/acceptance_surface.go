@@ -1014,6 +1014,14 @@ func (a *AcceptanceRig) MarkCleared(context.Context, string, string, int64) erro
 
 func (a *AcceptanceRig) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (a *AcceptanceRig) EnsureCardThread(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (a *AcceptanceRig) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
 func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
 }
