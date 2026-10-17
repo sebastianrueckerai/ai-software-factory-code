@@ -20,6 +20,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 // toolInput holds every tool's arguments; each tool reads its own.
@@ -64,13 +65,18 @@ type toolInput struct {
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it.
-	// Ask and Choices are an escalation's question and answers.
-	Ask        string   `json:"ask,omitempty"`
-	Choices    []string `json:"choices,omitempty"`
-	Old        string   `json:"old,omitempty"`
-	New        string   `json:"new,omitempty"`
-	BaseSHA256 string   `json:"base_sha256,omitempty"`
-	Find       string   `json:"find,omitempty"`
+	// Ask and Choices are an escalation's question and answers; Why and
+	// Info the question format's why and what-would-change-your-mind,
+	// Recommendation its suggested answer, all the writer's own.
+	Ask            string   `json:"ask,omitempty"`
+	Why            string   `json:"why,omitempty"`
+	Info           string   `json:"info,omitempty"`
+	Recommendation string   `json:"recommendation,omitempty"`
+	Choices        []string `json:"choices,omitempty"`
+	Old            string   `json:"old,omitempty"`
+	New            string   `json:"new,omitempty"`
+	BaseSHA256     string   `json:"base_sha256,omitempty"`
+	Find           string   `json:"find,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -1424,13 +1430,16 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "escalate", title: "Escalate to the members", write: true,
-		params: map[string]any{"ask": str("the question with its state and options"),
+		params: map[string]any{"ask": str("the question, with its state and its numbers"),
+			"why":            str("why the card cannot go on without a person's answer"),
+			"info":           str("the facts a reader needs, with what would change your mind"),
+			"recommendation": str("the answer you would pick and where you read it"),
 			"choices": map[string]any{"type": "array", "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
 				"description": "answers the members may press"}},
-		required: []string{"ask"},
-		about:    "Ask the project's members for a decision: a Needs you card, its choices as inbox buttons.",
+		required: []string{"ask", "why", "info"},
+		about:    "Ask the members for a decision, its why and its info with it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.escalate(in.Ask, in.Choices)
+			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
 	{name: "active_threads", title: "Read the member's threads",
@@ -1550,6 +1559,7 @@ func (t *turn) systemText() (string, error) {
 	}
 	b.WriteString(limitLines(v.Tree.Document))
 	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d KiB\n", chatRounds, chatMessageMax>>10)
+	b.WriteString("\nThe writing guide, for every word a person reads:\n" + writingguide.Guide)
 	return b.String(), nil
 }
 

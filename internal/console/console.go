@@ -243,10 +243,11 @@ type Config struct {
 	// chat's notes tools say there is none.
 	Notes Notes
 	// Escalate files the chat agent's escalation on repository as a
-	// human-lane card in Needs you, its question and choices on the
-	// inbox's poke, and answers its issue (factoryd's EscalateToHuman);
-	// nil: the escalate tool says the factory files none.
-	Escalate func(ctx context.Context, repository, question string, choices []string, by string) (int64, error)
+	// human-lane card in Needs you, its question's five parts and its
+	// choices on the inbox's poke, and answers its issue (factoryd's
+	// EscalateToHuman); nil: the escalate tool says the factory files
+	// none.
+	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.

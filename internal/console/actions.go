@@ -872,6 +872,19 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 // its webhook delivers that very comment; at the session cap the answer
 // is a grant, and its event session_granted as doGrantSession's.
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
+	return c.doAnswerValue(ctx, a, id, text, "")
+}
+
+// doAnswerValue answers card id with text. value is the clicked choice's
+// value when the answer came from a shaped question's button; a typed
+// answer's value resolves from the card's question when its words are one
+// of the question's labels. park and keep waiting record the answer and
+// leave the card waiting on its person: no comment is posted, because a
+// posted comment would start the attempt the person declined to start.
+// fund raises the card's budget by the shortfall its question names while
+// the card holds a budget refusal; past a raised cap it posts like any
+// answer, the label retrying the card.
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
 	if err := answerFits(text); err != nil {
 		return "", err
@@ -883,18 +896,43 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
+	bt, _, err := c.cfg.Tasks.BoardTask(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if value == "" && bt.Question != nil {
+		value = bt.Question.ChoiceValue(text)
+	}
+	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
+		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
+			return c.doFund(ctx, a, id, need, text)
+		}
+		return "", refuse(http.StatusConflict, "this answer needs the Fund form on the card: name the amount")
+	}
+	switch value {
+	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered,
+			map[string]any{"answer": text, "value": value})
+		log.Printf("console: %s answered the escalation of %s via %s: %s, the card stays waiting", a.s.user, t.ID, a.via, value)
+		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
+	}
 	if why := c.unfundedAnswer(ctx, t); why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
-	if err := c.answerCard(ctx, a, t, text); err != nil {
+	if err := c.answerCardValue(ctx, a, t, text, value); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
 }
 
 // answerCard posts text as the member's answer to card t's escalation; at the
-// session cap the answer is a grant, and its event session_granted.
+// session cap the answer is a grant, and its event session_granted. value,
+// when set, is the clicked choice's value and rides on the record.
 func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, text string) error {
+	return c.answerCardValue(ctx, a, t, text, "")
+}
+
+func (c *Console) answerCardValue(ctx context.Context, a actor, t factoryd.Task, text, value string) error {
 	kind := factoryd.EventQuestionAnswered
 	if c.capFactsOf(ctx, t).capped {
 		kind = factoryd.EventSessionGranted
@@ -905,7 +943,11 @@ func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, text
 	}
 	c.answerWhole(ctx, a, t, posted)
 	log.Printf("console: %s answered the escalation of %s via %s", a.s.user, t.ID, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, commentDetail(posted))
+	detail := commentDetail(posted)
+	if value != "" {
+		detail["value"] = value
+	}
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, kind, detail)
 	return nil
 }
 

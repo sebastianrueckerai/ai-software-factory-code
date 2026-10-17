@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -16,7 +17,11 @@ import (
 // (WaitingOn: "#3, #5"), in any status the issues of the
 // cards it depends on that are not done (Dependencies: "#3, #5", for the
 // face's "blocked by n" chip), and the entries ahead of it in its merge
-// queue.
+// queue. Question is the escalation's five-part question when a template
+// shaped it (nil on the older and unshaped rows); AnswersPending counts
+// the trusted answers the card's workflow has not taken: a card that
+// holds some cannot process another, so its answer box yields to the
+// liveness warning.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -26,6 +31,8 @@ type BoardTask struct {
 	WaitingOn       string
 	Dependencies    string
 	QueueAhead      int
+	Question        *HumanQuestion
+	AnswersPending  int
 }
 
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
@@ -42,21 +49,31 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
 		        (SELECT count(*) FROM merge_queue me JOIN merge_queue o ON o.project = me.project
-		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id)`
+		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id),
+		        esc.question,
+		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
+		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0))`
 
 const boardTaskFrom = `
-		 FROM tasks LEFT JOIN LATERAL (SELECT e.body, e.created_at AS at, e.choices FROM intake_events e
+		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $1 ORDER BY e.id DESC LIMIT 1) esc ON true`
 
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
 	var at sql.NullTime
-	var choices []byte
+	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending)...)
 	})
 	if err != nil {
 		return b, err
+	}
+	if len(question) > 0 {
+		q := &HumanQuestion{}
+		if err := json.Unmarshal(question, q); err != nil {
+			return b, err
+		}
+		b.Question = q
 	}
 	b.Task, b.EscalatedAt = t, at.Time
 	return b, unmarshalChoices(choices, &b.Choices)
@@ -68,7 +85,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
 		 WHERE repository = $4 AND kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
-		 ORDER BY priority DESC, finished_at DESC NULLS LAST, id`, IntakeEscalation, AlertEscalation, KindChat, repository)
+		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, IntakeEscalation, AlertEscalation, KindChat, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -125,9 +142,9 @@ func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTa
 		 WHERE repository = $3 AND status = ANY($4) AND kind NOT IN ($5, 'human')
 		   AND (finished_at > $6 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
-		   AND ($8 = '' OR COALESCE(finished_at, created_at) = $7 AND id > $8
+		   AND ($8 = '' OR COALESCE(finished_at, created_at) = $7 AND tasks.id > $8
 		       OR CASE WHEN $9 THEN COALESCE(finished_at, created_at) > $7 ELSE COALESCE(finished_at, created_at) < $7 END)
-		 ORDER BY CASE WHEN $9 THEN COALESCE(finished_at, created_at) END, COALESCE(finished_at, created_at) DESC, id
+		 ORDER BY CASE WHEN $9 THEN COALESCE(finished_at, created_at) END, COALESCE(finished_at, created_at) DESC, tasks.id
 		 LIMIT NULLIF($10, 0)`,
 		IntakeEscalation, AlertEscalation, q.Repository, q.Statuses, KindChat, q.Since, q.After.At, q.After.ID, q.Oldest, q.Limit)
 	if err != nil {

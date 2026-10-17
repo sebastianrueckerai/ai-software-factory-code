@@ -1176,7 +1176,10 @@ func TestSystemTool(t *testing.T) {
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
-			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n")
+			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n",
+		"\nThe writing guide, for every word a person reads:\n# The writing guide\n",
+		"Never use a long word where a short one will do.",
+		"No em dashes. No en dashes as punctuation.")
 	at := -1
 	for _, gate := range []string{"intake: the issue becomes a card", "session: an agent works in a sandbox",
 		"screening: a model screens an outsider's issue", "checks: the pull request's CI", "merge: factory-merge merges", "human: a human decides"} {

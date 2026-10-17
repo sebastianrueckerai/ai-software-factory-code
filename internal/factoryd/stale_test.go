@@ -113,9 +113,11 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
 	ctx := context.Background()
 	for id, want := range map[string]string{
-		"t-run":  "The card was quiet for 1 h 10 min while running: is its run gone?",
-		"t-wait": "The card was quiet for 1 h 10 min while waiting on the issue's author: is its run gone?",
+		"t-run":  "The card has sat quiet 1 h 10 min while running. Keep waiting?",
+		"t-wait": "The card has sat quiet 1 h 10 min while waiting on the issue's author. Keep waiting?",
 	} {
+		reason := "The card was quiet for 1 h 10 min while " + map[string]string{
+			"t-run": "running", "t-wait": "waiting on the issue's author"}[id] + ": is its run gone?"
 		task, _, _ := rig.store.Task(ctx, id)
 		if task.Status != "waiting-human" {
 			t.Fatalf("%s = %s, want waiting-human", id, task.Status)
@@ -126,8 +128,11 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 				anchor = &rig.store.intakeEvents[i]
 			}
 		}
-		if anchor == nil || anchor.Kind != IntakeEscalation || !strings.HasPrefix(anchor.Body, want) || anchor.CommentID != 55 {
+		if anchor == nil || anchor.Kind != IntakeEscalation || !strings.HasPrefix(anchor.Body, reason) || anchor.CommentID != 55 {
 			t.Fatalf("%s: intake events = %+v, want the escalation anchored with its reason and comment", id, rig.store.intakeEvents)
+		}
+		if anchor.Question == nil || anchor.Question.Ask != want || anchor.Question.Info == "" || len(anchor.Question.Choices) == 0 {
+			t.Fatalf("%s: the escalation's question = %+v, want the five parts and their choices", id, anchor.Question)
 		}
 		rig.recorder.mu.Lock()
 		var question string
