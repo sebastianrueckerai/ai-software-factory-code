@@ -18,7 +18,7 @@
 <caption class="visually-hidden">Timeline steps, oldest first</caption>
 <thead><tr><th scope="col">Time</th><th scope="col">Step</th><th scope="col">Supervisor</th><th scope="col">Detail</th></tr></thead>
 <tbody>
-{{range .Entries}}<tr><td>{{.Time}}</td><td>{{.Step}}</td><td>{{template "supervised" .Supervisor}}</td><td><code>{{.Detail}}</code></td></tr>
+{{range .Entries}}<tr><td{{if .Raw}} title="{{.Raw}}"{{end}}>{{.Time}}</td><td>{{.Step}}</td><td>{{template "supervised" .Supervisor}}</td><td><code>{{.Detail}}</code></td></tr>
 {{else}}<tr><td colspan="4">No steps recorded yet.</td></tr>{{end}}
 </tbody>
 </table>{{end}}

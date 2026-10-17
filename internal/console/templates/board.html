@@ -107,7 +107,7 @@
 {{define "brief-block"}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{if .IDSuffix}}{{with .Detail}}<p class="reason detail">{{.}}</p>{{end}}{{end}}{{end}}
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" data-card="{{.TaskID}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
-{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
+{{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
 {{template "brief-block" .}}
 {{template "merge-brief" .}}
 {{else}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Resource request</a>{{else}}Resource request{{end}}</h4>{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
@@ -115,14 +115,14 @@
 <p class="need-line"><b>{{.Resource.ServerType}}</b>{{if .Resource.VolumeGB}} + {{.Resource.VolumeGB}} GB volume{{end}} · {{.Resource.Purpose}}</p>
 <p class="need-line">{{lease .Resource.LeaseMinutes}} · {{eur4 .Monthly}} EUR per month, this lease {{eur4 .Resource.ReservationEUR}} EUR · {{.Project}}</p>
 {{with .Resource.BeyondEnvelope}}<p class="need-line beyond"><b>Beyond the envelope</b> {{range $i, $v := .}}{{if $i}}; {{end}}{{$v}}{{end}}</p>
-{{end}}{{end}}{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
+{{end}}{{end}}{{end}}{{if and (eq .Kind "merge") .DecisionNote}}<p class="problem" role="status">{{.DecisionNote}}</p>
 {{end}}{{if .Rerun}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/rerun">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Re-run the checks of PR #{{.PRNumber}} of {{.TaskID}}">Re-run the checks</button>
 </form>{{else if .Returns}}<div class="acts">{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
 {{end}}<div class="acts"><form method="post" action="/approvals/{{.ID}}/approve">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
+<button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
 <div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else if .Returns}}Return or close{{else}}Deny{{end}}</button>
 {{template "split" .}}</div>
@@ -135,7 +135,7 @@
 <label><input type="radio" name="action" value="reject"> {{if .Returns}}close it (closes the pull request){{else}}rejecting (closes the pull request){{end}}</label>
 </fieldset>{{end}}
 {{if .Merge.Factory}}<button type="submit" class="deny" aria-label="Close PR #{{.PRNumber}} of {{.TaskID}} and its card">Close</button>
-{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
+{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
 </form>
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if eq .Kind "merge"}}<a href="{{.PRURL}}.diff">diff</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
@@ -159,9 +159,26 @@
 {{end}}</dl>{{end}}
 
 {{define "merge-brief"}}<p class="need-line"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
+{{range $c := .Merge.Review.Criteria}}{{if eq $c.Kind "human"}}<p class="need-line">Criterion {{$c.Criterion}}: yours to judge at this merge. {{$c.Evidence}}</p>
+{{end}}{{end}}
 {{with .Merge.Recommendation}}<p class="need-line"><b>Recommendation</b> {{.}}</p>
 {{end}}{{end}}
 
+{{define "criteria"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Criteria gap</a>{{else}}Criteria gap{{end}} {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>
+{{template "brief-block" .}}
+<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.</p>
+{{with .Problem}}<p class="problem">{{.}}</p>
+{{end}}{{range .Criteria}}<fieldset class="question"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
+<p class="meta">{{if .Test}}{{.Test}}{{else}}{{.Claim}}{{end}}</p>
+{{with .Evidence}}<p class="reason">{{.}}</p>
+{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/waive" hx-post="/approvals/{{$.ID}}/waive" hx-target="#board" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
+<label for="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}">Why it no longer holds, one line</label>
+<input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}" name="reason" maxlength="2000" required>
+<button type="submit" class="deny" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
+</form>{{end}}
+</fieldset>{{end}}
+{{end}}
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}} {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 {{template "brief-block" .}}
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}

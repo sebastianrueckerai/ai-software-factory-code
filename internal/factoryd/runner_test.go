@@ -3698,6 +3698,35 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	}
 }
 
+// A card whose human answered at the call cap runs its check-in under the
+// raised cap: with the policy's calls spent and one raise granted, the
+// check-in's conversation runs where the plain cap stopped it.
+func TestRunSessionCheckinCallCapRaised(t *testing.T) {
+	runner, _, _, worker, chat, store, _ := checkinRig(t,
+		`{"findings":[{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"handover","handover":"carry on from the last note"}`)
+	task := store.tasks["t2"]
+	task.Usage.ExtraCheckin = 1
+	store.tasks["t2"] = task
+	store.checkinCalls = map[string]int{"t2": policy.DefaultCheckinCalls}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = (%+v, %v), want the conversation under the raised cap", res, err)
+	}
+	if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("check-in = %+v, want the handover the extra calls bought", res.CheckIn)
+	}
+	if chat.calls < 1 {
+		t.Fatalf("chat calls = %d, want the check-in running under the raise", chat.calls)
+	}
+	worker.mu.Lock()
+	defer worker.mu.Unlock()
+	if len(worker.texts) != 1 || worker.texts[0] != "POST /brief carry on from the last note" {
+		t.Fatalf("worker got %q, want the handover pushed as the brief", worker.texts)
+	}
+}
+
 // The share a human's answer granted widens the budget the check-in counts
 // (issue 959): the card's check-in share is spent, but TaskUsage says the
 // answer granted one more of its widths, so the check-in's conversation
@@ -3711,7 +3740,7 @@ func TestRunSessionCheckinShareGrantedByAnAnswerRuns(t *testing.T) {
 	// spent to its last cent
 	store.checkinSpent = map[string]float64{"t2": 0.03}
 	tk := store.tasks["t2"]
-	tk.Usage.ExtraCheckin = 1
+	tk.Usage.ExtraCheckinShare = 1
 	store.tasks["t2"] = tk
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
 		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,

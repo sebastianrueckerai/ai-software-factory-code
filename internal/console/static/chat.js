@@ -61,22 +61,29 @@ var chatView = (function () {
   }
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
-  // when the agent acted alone; a summary turn after /compact
+  // when the agent acted alone; a summary turn after /compact. A settled
+  // row folds to one line — its reason, then the first words of what it
+  // said — and opens on a click to the full quiet row (round 06's pick)
   function factoryHTML(m) {
     if (m.kind === "summary") {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
     }
     var esc1 = m.kind === "escalation";
     var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
-      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
     var body = saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
-    if (m.choices && m.choices.length && !esc1) {
+    if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
+    if (m.choices && m.choices.length && !esc1 && !m.settled) {
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
         return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
-    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
-      (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + "</div>";
+    var fold = "";
+    if (m.settled) fold = "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
+      "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + esc(m.reason || "seen") + "</span>" +
+      "<span class=\"ft\">" + esc(m.content) + "</span></p>";
+    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
+      (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + fold + "</div>";
   }
   function agentHTML(at, parts) {
     return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
@@ -146,15 +153,18 @@ var chatView = (function () {
     close();
     return out.join("");
   }
-  // threadHTML is a thread's log: after a compaction its rows up to the
-  // summary fold behind one line, the summary turn follows, then the rows
-  // after it (C14)
+  // threadHTML is a thread's log: the rows Clear old swept from view name
+  // their count in one line at the top; after a compaction its rows up to
+  // the summary fold behind one line, the summary turn follows, then the
+  // rows after it (C14)
   function threadHTML(msgs, login, proposals, thread) {
+    var swept = thread && thread.cleared ? "<p class=\"meta chat-cleared\">cleared: " + thread.cleared + " older " +
+      (thread.cleared === 1 ? "message" : "messages") + " out of view</p>" : "";
     var upto = thread && thread.summary ? thread.summary_upto || 0 : 0;
-    if (!upto) return historyHTML(msgs, login, proposals);
+    if (!upto) return swept + historyHTML(msgs, login, proposals);
     var old = msgs.filter(function (m) { return m.id <= upto; }), rest = msgs.filter(function (m) { return m.id > upto; });
     var at = old.length ? old[old.length - 1].at : (rest[0] || {}).at;
-    return (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
+    return swept + (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
       ", compacted</summary>" + historyHTML(old, login, proposals) + "</details>" : "") +
       factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals);
   }
@@ -193,8 +203,24 @@ var chatView = (function () {
     if (t.working) return "<span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i><span class=\"visually-hidden\">a turn in flight</span></span>";
     return "<span class=\"tmark\" aria-hidden=\"true\"></span>";
   }
+  // splitOf is thread t's split as words (the settle concept's badge):
+  // the asks still open need the member, the unread rows that are no open
+  // ask are new
+  function splitOf(t) {
+    return (t.needs_you ? t.needs_you + " needs you" : "") + (t.needs_you && t.new_rows ? " · " : "") + (t.new_rows ? t.new_rows + " new" : "");
+  }
+  // badgeHTML is the split as pills (round 06's pick): amber for the
+  // open asks, a bordered one for the new rows, either alone when only
+  // its side counts
   function badgeHTML(t) {
-    return t.unread ? "<span class=\"badge\" aria-label=\"" + esc(t.unread) + " unread\">" + esc(t.unread) + "</span>" : "";
+    if (!t.needs_you && !t.new_rows) return "";
+    var label = esc(splitOf(t));
+    if (t.needs_you && t.new_rows) {
+      return "<span class=\"bsplit\" aria-label=\"" + label + "\"><span class=\"badge\">" + esc(t.needs_you) + "</span>" +
+        "<span class=\"badge new\">" + esc(t.new_rows) + "</span></span>";
+    }
+    var n = t.needs_you || t.new_rows;
+    return "<span class=\"badge" + (t.needs_you ? "" : " new") + "\" aria-label=\"" + label + "\">" + esc(n) + "</span>";
   }
   // rowsHTML is the switcher's rows: the inbox first, the active threads,
   // then the archived under their rule; open is the open thread's number
@@ -202,10 +228,11 @@ var chatView = (function () {
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
     var archived = (list || []).filter(function (t) { return t.state === "archived"; });
     var rows = active.map(function (t) {
-      var on = t.number === open, tip = titleOf(t) + (t.unread ? ", " + t.unread + " unread" : "") + (t.working ? ", a turn in flight" : "");
-      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (t.unread ? " unread" : "") + (t.inbox ? " inbox" : "") +
+      var on = t.number === open, mark = badgeHTML(t);
+      var tip = titleOf(t) + (mark ? ", " + splitOf(t) : "") + (t.working ? ", a turn in flight" : "");
+      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (mark ? " unread" : "") + (t.inbox ? " inbox" : "") +
         "\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + on + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
-        "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (t.unread ? badgeHTML(t) : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
+        "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (mark ? mark : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
     }).join("");
     if (archived.length) {
       rows += "<div class=\"tarch\"><span class=\"tarch-l\">archived</span>" + archived.map(function (t) {
@@ -216,35 +243,48 @@ var chatView = (function () {
     }
     return rows;
   }
-  // sumHTML is the folded switcher's one row on the phone
+  // sumHTML is the folded switcher's one row on the phone, its split as
+  // the badge's pills
   function sumHTML(list, folded) {
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
-    var unread = active.reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+    var needs = active.reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
+    var fresh = active.reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
+    var sum = { needs_you: needs, new_rows: fresh };
+    var mark = badgeHTML(sum);
     var working = active.filter(function (t) { return t.working; }).length;
-    return "Threads <span class=\"n\">" + active.length + "</span>" + (unread ? " · <span class=\"badge\">" + unread + "</span> unread" : "") +
+    return "Threads <span class=\"n\">" + active.length + "</span>" + (mark ? " · " + mark : "") +
       (working ? " · <span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i></span> " + working + " working" : "") +
       "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
   }
-  // unreadOf is the sum of the threads' unread turns, the tab title's count
+  // unreadOf is the threads' split summed, the tab title's count
   function unreadOf(list) {
-    return (list || []).reduce(function (n, t) { return n + (t.unread || 0); }, 0);
+    var needs = (list || []).reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
+    var fresh = (list || []).reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
+    return (needs ? needs + " needs you" : "") + (needs && fresh ? " · " : "") + (fresh ? fresh + " new" : "");
   }
   // headHTML is the open thread's head: its title (a click renames it),
-  // its last turn or the inbox's line or the archived note, and Archive and
-  // Delete… on an active thread with rows, never on the inbox (C14)
+  // its last turn or the inbox's line or the archived note, and its acts:
+  // Clear old sweeps the old rows from view on any thread with more than
+  // one row, Archive and Delete… on an active thread with rows, never on
+  // the inbox (C14)
   function headHTML(t, now) {
     var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
+    var acts = t.messages >= 2 ? "<button type=\"button\" data-clear title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
+    if (!t.inbox && t.state !== "archived" && t.messages) {
+      acts += "<button type=\"button\" data-archive>Archive</button><button type=\"button\" class=\"danger\" data-delete>Delete…</button>";
+    }
     return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
       (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
       "</h3><span class=\"thint" + (t.inbox || t.state === "archived" ? "" : " when") + "\">" + esc(hint) + "</span>" +
-      (t.inbox || t.state === "archived" || !t.messages ? "" : "<span class=\"tacts\"><button type=\"button\" data-archive>Archive</button>" +
-        "<button type=\"button\" class=\"danger\" data-delete>Delete…</button></span>");
+      (acts ? "<span class=\"tacts\">" + acts + "</span>" : "");
   }
   // pendingOf is the escalation the thread's answer row offers: its newest
-  // row, when that is an escalation with choices (C14)
+  // ask row, while it is open — settled, the row's reason line stands in
+  // its place (the settle concept)
   function pendingOf(msgs) {
-    var m = (msgs || [])[(msgs || []).length - 1];
-    return m && m.kind === "escalation" && m.choices && m.choices.length ? m : null;
+    var m = null;
+    (msgs || []).forEach(function (x) { if (x.kind === "escalation") m = x; });
+    return m && m.choices && m.choices.length && !m.settled ? m : null;
   }
   function answerHTML(m) {
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
@@ -725,11 +765,28 @@ var chatView = (function () {
       run(open, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
+  // a settled row's fold line opens the row it stands for, and closes it
+  function toggleFold(el) {
+    var row = el.closest(".msg.settled");
+    var on = row.classList.toggle("expanded");
+    el.setAttribute("aria-expanded", on);
+  }
+  log.addEventListener("click", function (e) {
+    var f = e.target.closest("[data-fold]");
+    if (f) toggleFold(f);
+  });
+  log.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    var f = e.target.closest && e.target.closest("[data-fold]");
+    if (f) { e.preventDefault(); toggleFold(f); }
+  });
 
   // load shows thread n, the current one for "": its head and its log,
-  // read marks it seen; an archived thread is read-only
+  // read marks it seen; an archived thread is read-only. keep holds the
+  // member's place: a refresh of the thread they stand in moves the log
+  // only when they sit at its end; opening lands on the newest rows
   var intro = log.innerHTML;
-  function load(n) {
+  function load(n, keep) {
     var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n));
     return fetch(url, {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + url + ": " + resp.status);
@@ -738,7 +795,8 @@ var chatView = (function () {
       open = data.conversation;
       openThread = data.thread || {number: open};
       readOnly = openThread.state === "archived";
-      log.innerHTML = data.messages.length ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
+      var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
+      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
       if (form) {
         // an archived thread's composer is one line with restore (C14)
         form.classList.toggle("arch", readOnly);
@@ -748,7 +806,8 @@ var chatView = (function () {
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
       drawHead();
-      scrollEnd(true);
+      if (keep && !held) log.scrollTop = was;
+      else scrollEnd(true);
       queueOf(open).flush();
       lock();
       return listThreads();
@@ -878,6 +937,10 @@ var chatView = (function () {
     postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer}).then(function () { return load(n); }).catch(failed);
   });
   head.addEventListener("click", function (e) {
+    if (e.target.closest("[data-clear]")) {
+      postThread("/clear", {conversation: open}).then(function () { return load(open); }).catch(failed);
+      return;
+    }
     if (e.target.closest("[data-archive]")) {
       postThread("/archive", {conversation: open}).then(function () { return load(""); }).catch(failed);
       return;
@@ -931,7 +994,16 @@ var chatView = (function () {
       add(log, "<p class=\"chat-error\">A new thread could not be started; try again.</p>");
     });
   });
-  // the list follows the factory: a turn ending elsewhere, a poke arriving
+  // the list follows the factory: a turn ending elsewhere, a poke arriving,
+  // and a settling event at once — the answer row and the badges follow
+  // over the page's one stream (the settle concept)
+  var settleEvents = {question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
+    plan_accepted: 1, plan_changes_requested: 1, plan_rejected: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
+  document.addEventListener("factoryevent", function (e) {
+    if (!settleEvents[e.detail.kind]) return;
+    listThreads();
+    if (open && !busy(open) && !document.hidden && !readOnly) load(open, true);
+  });
   setInterval(function () {
     if (!document.hidden) listThreads();
   }, 10000);

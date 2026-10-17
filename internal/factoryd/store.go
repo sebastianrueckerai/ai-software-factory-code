@@ -93,6 +93,9 @@ type Task struct {
 	Lane, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// PlanRevision is the plan revision the card's first session ran
+	// against (roadmap 291); 0 while the card has not started.
+	PlanRevision int
 	// Rung is the model rung the card starts on (RungCheap, RungFrontier,
 	// "" for the ladder's start) and Size its card size, both from its
 	// filing (roadmap 222, item 5).
@@ -161,6 +164,9 @@ type TaskUsage struct {
 	ExtraAttempts int           // one per human answer
 	// PosterAttempts are the ExtraAttempts the issue author's answers bought
 	PosterAttempts int
+	// ExtraCheckin widens the check-in call cap once per answer a human
+	// gave at the cap (versionCheckinRaise)
+	ExtraCheckin int
 	// LastUncounted: the last session got no model answer and took no
 	// attempt, so an answer after it buys agent time alone
 	// (versionSessionLadder)
@@ -169,13 +175,13 @@ type TaskUsage struct {
 	// when its agent time ran short (versionPlannerRetry); non-zero once
 	// granted
 	RetryTime time.Duration
-	// ExtraCheckin is how many shares of the check-in budget a human's
-	// answers to its spend stop granted on top of the policy's
+	// ExtraCheckinShare is how many shares of the check-in budget a
+	// human's answers to its share stop granted on top of the policy's
 	// (versionCheckinGrant, issue 959): the card's share is CheckinShareOf
-	// its budget times 1+ExtraCheckin, so the stretch an answer buys can
-	// run its own check-in moments while the card's own budget stays the
-	// cap and an unspent share stops no card that was never answered.
-	ExtraCheckin int
+	// its budget times 1+ExtraCheckinShare, so the stretch an answer buys
+	// can run its own check-in moments while the card's own budget stays
+	// the cap and an unspent share stops no card that was never answered.
+	ExtraCheckinShare int
 }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
@@ -447,6 +453,12 @@ type Store interface {
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// SetTaskPlanRevision records the plan revision a card first runs
+	// against; the guard makes it once.
+	SetTaskPlanRevision(ctx context.Context, id string, revision int) error
+	// UpdatePlanCardBrief replaces a not-yet-started card's stored brief
+	// with its card's text of the plan's newest revision.
+	UpdatePlanCardBrief(ctx context.Context, id, objective string) error
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -496,6 +508,14 @@ type Store interface {
 	// the recording rule's ledger, unless it has them already, and reports
 	// whether it did.
 	PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error)
+	// PlanCatches are a plan task's catches, revision, kind and idx order.
+	PlanCatches(ctx context.Context, id string) ([]PlanCatch, error)
+	// The spec's verdict as data (the spec-intake concept, pieces 7 and
+	// 8): verdict rows on the plan's integration card, one per source, and
+	// the tasks that carry them.
+	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
+	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
 	// The plan's hold-outs (the spec-intake concept, piece 6): rows by
 	// round, the undecided count of one round, the human's okay or drop,
 	// the sweep of a closing round, the audit's verdict, its refused
@@ -551,6 +571,11 @@ const (
 	// ApprovalPlan is a plan revision for approvers to accept (Spec a
 	// PlanSpec).
 	ApprovalPlan = "plan"
+	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
+	// pieces 7 and 8): its cards ran out with a criterion still open; the
+	// approver grants one more bounded card or waives (Spec a
+	// criteriaSpec).
+	ApprovalCriteria = "criteria"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -706,6 +731,20 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
+// SetTaskPlanRevision records the plan revision a card first runs
+// against; the guard makes it once, the card's start (roadmap 291).
+func (s *PGStore) SetTaskPlanRevision(ctx context.Context, id string, revision int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan_revision = $2 WHERE id = $1 AND plan_revision = 0`, id, revision)
+	return err
+}
+
+// UpdatePlanCardBrief replaces a not-yet-started card's stored brief with
+// its card's text of the plan's newest revision (roadmap 291).
+func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2 WHERE id = $1`, id, objective)
+	return err
+}
+
 func defaultKind(kind string) string {
 	if kind == "" {
 		return "agent"
@@ -715,20 +754,20 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, last_uncounted, extra_checkin, repro_command, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at, rung, size`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.LastUncounted, &t.Usage.ExtraCheckin, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -855,8 +894,8 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
-		last_uncounted = $7, retry_time_ns = $8, extra_checkin = $9 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckin)
+		last_uncounted = $7, retry_time_ns = $8, extra_checkin = $9, extra_checkin_share = $10 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckin, u.ExtraCheckinShare)
 	return oneRow(res, err, "task "+id)
 }
 

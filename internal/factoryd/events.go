@@ -41,6 +41,14 @@ const (
 	// thread (roadmap 239): the actor is the member, detail {"thread",
 	// "messages"}, the thread's number and the rows that went.
 	EventChatThreadDeleted = "chat_thread_deleted"
+	// EventCriterionDecided records an approver's grant or waiver on a
+	// plan's criterion (the spec-intake concept, pieces 7 and 8): detail
+	// {"approval", "criteria", "verb"} or {"criterion", "verdict"}.
+	EventCriterionDecided = "criterion_decided"
+	// EventPlanClosed records a plan's close: every criterion met or
+	// waived (the spec-intake concept, piece 8): detail {"criteria"}. A
+	// quiet record, no poke.
+	EventPlanClosed = "plan_closed"
 )
 
 // StepEvent is the timeline step every event is recorded under.

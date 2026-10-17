@@ -9,7 +9,6 @@ import (
 	"slices"
 	"strconv"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -52,7 +51,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	}
 	a := button(r)
 	a.repository = t.p.Repository
-	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, rows[i].At)
+	note, err := c.resolveChoice(ctx, a, rows[i].TaskID, choice, rows[i])
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
@@ -72,21 +71,15 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// answerKinds are the events that settle an escalation: an answer on any
-// venue, or factoryd's withdrawal of the question. The first one after
-// the escalation wins.
-var answerKinds = []string{factoryd.EventQuestionAnswered, factoryd.EventSessionGranted, factoryd.EventMergeApproved, factoryd.EventMergeDenied,
-	factoryd.EventPlanAccepted, factoryd.EventPlanChangesRequested, factoryd.EventPlanRejected, factoryd.EventCardClosed, factoryd.EventQuestionWithdrawn}
-
 // resolveChoice decides card id with choice as its state asks: a pending
 // merge approves on Approve, or runs a factory pull request's red checks
 // again on Re-run the checks, and a pending plan accepts on Accept, each
 // under the role its board button and chat tool need, a waiting
 // question takes the choice as the member's answer, a human-lane
-// escalation closes with it. A card answered since the escalation asked
-// at asked, its question withdrawn, or waiting no more, says so: the
-// first answer wins.
-func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, asked time.Time) (string, error) {
+// escalation closes with it. A card settled since its escalation row m
+// asked, by an answer, the question's withdrawal or the wait guard,
+// says so: the first answer wins.
+func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, m factoryd.ChatMessage) (string, error) {
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	switch {
 	case err != nil:
@@ -98,15 +91,18 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the card's events")
 	}
-	if i := slices.IndexFunc(events, func(e factoryd.Event) bool { return slices.Contains(answerKinds, e.Kind) && !e.At.Before(asked) }); i >= 0 {
-		if e := events[i]; e.Kind == factoryd.EventQuestionWithdrawn {
-			return fmt.Sprintf("#%d needs no answer: its question is withdrawn because %v.", t.IssueNumber, e.Detail["reason"]), nil
-		}
-		return fmt.Sprintf("#%d is answered already: %s by %s.", t.IssueNumber, strings.ReplaceAll(events[i].Kind, "_", " "), events[i].Actor), nil
-	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the approval requests")
+	}
+	s := factoryd.SettleOf(m, events, t.Status == "waiting-human", factoryd.ApprovalWaits(pending, id))
+	switch {
+	case s.Event.ID != 0 && s.Event.Kind == factoryd.EventQuestionWithdrawn:
+		return fmt.Sprintf("#%d needs no answer: its question is withdrawn because %v.", t.IssueNumber, s.Event.Detail["reason"]), nil
+	case s.Event.ID != 0 && s.Event.Kind != factoryd.EventApprovalRequested:
+		return fmt.Sprintf("#%d is answered already: %s by %s.", t.IssueNumber, strings.ReplaceAll(s.Event.Kind, "_", " "), s.Event.Actor), nil
+	case !s.Open:
+		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
 	}
 	for _, q := range pending {
 		switch {

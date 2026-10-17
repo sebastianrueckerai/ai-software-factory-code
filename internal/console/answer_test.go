@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
+	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -127,7 +130,7 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 		{"t-p", "Plan #20 waits for your acceptance: revision 1, 3 cards.", "Accept"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox}); err != nil {
+			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
 			t.Fatal(err)
 		}
 		if code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
@@ -259,7 +262,7 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 		Content: "PR #9 of #5 waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.",
-		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox}); err != nil {
+		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
 		t.Fatal(err)
 	}
 	r.fg.calls = nil
@@ -273,4 +276,202 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	g.replies = [][]string{{call(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
 	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL rerun_checks t-m #9 by sebastian"})
+}
+
+// The settle rule's table (the notification-settling concept, section 3):
+// the first settling event at or after an ask row settles it with its
+// word, actor and time, the wait guard settles it as moved on, a newer
+// request supersedes an approval but not a question, and a repeat's
+// bumped clock sets a re-asked row open again.
+func TestSettleOf(t *testing.T) {
+	at := time.Date(2026, 10, 17, 14, 0, 0, 0, time.UTC)
+	ask := factoryd.ChatMessage{ID: 10, At: at, Kind: factoryd.MessageEscalation, TaskID: "t-e", Content: "#13 needs you: Use a replica?"}
+	approval := factoryd.ChatMessage{ID: 10, At: at, Kind: factoryd.MessageEscalation, TaskID: "t-m", BirthKind: factoryd.EventApprovalRequested}
+	ev := func(id int64, min int, kind, actor string) factoryd.Event {
+		return factoryd.Event{ID: id, At: at.Add(time.Duration(min) * time.Minute), Kind: kind, Actor: actor}
+	}
+	open := factoryd.PokeSettle{Open: true}
+	for _, tt := range []struct {
+		name                 string
+		m                    factoryd.ChatMessage
+		events               []factoryd.Event
+		cardWaits, apprWaits bool
+		want                 factoryd.PokeSettle
+	}{
+		{"an open question", ask, nil, true, false, open},
+		{"a newer request leaves the question open", ask, []factoryd.Event{ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}, true, true, open},
+		{"an answered question", ask, []factoryd.Event{ev(12, 1, factoryd.EventQuestionAnswered, "sebastian")}, true, false,
+			factoryd.PokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "sebastian")}},
+		{"an answer before the row settles nothing", ask, []factoryd.Event{ev(5, -1, factoryd.EventQuestionAnswered, "bob")}, true, false, open},
+		{"an answer on the row's own minute settles", ask, []factoryd.Event{ev(7, 0, factoryd.EventQuestionAnswered, "bob")}, false, false,
+			factoryd.PokeSettle{Word: "answered", By: "bob", At: at, Event: ev(7, 0, factoryd.EventQuestionAnswered, "bob")}},
+		{"a withdrawn question", ask, []factoryd.Event{ev(12, 1, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider)}, false, false,
+			factoryd.PokeSettle{Word: "withdrawn", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider)}},
+		{"an answer on another venue", ask, []factoryd.Event{ev(12, 1, factoryd.EventCardClosed, "sebastian")}, false, false,
+			factoryd.PokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventCardClosed, "sebastian")}},
+		{"a granted session", ask, []factoryd.Event{ev(12, 1, factoryd.EventSessionGranted, factoryd.FactoryDecider)}, false, false,
+			factoryd.PokeSettle{Word: "answered", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventSessionGranted, factoryd.FactoryDecider)}},
+		{"a task ended", ask, []factoryd.Event{ev(12, 1, factoryd.EventTaskEnded, factoryd.FactoryDecider)}, false, false,
+			factoryd.PokeSettle{Word: "moved on", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventTaskEnded, factoryd.FactoryDecider)}},
+		{"the wait guard moves a row on", ask, []factoryd.Event{ev(11, 1, factoryd.EventCardMoved, "the agent")}, false, false,
+			factoryd.PokeSettle{Word: "moved on", At: at.Add(time.Minute)}},
+		{"the wait guard with no event at all", ask, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
+		{"the first settling event wins", ask, []factoryd.Event{ev(14, 2, factoryd.EventMergeApproved, "sebastian"), ev(12, 1, factoryd.EventQuestionAnswered, "bob")}, false, false,
+			factoryd.PokeSettle{Word: "answered", By: "bob", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "bob")}},
+		{"a tie reads the smaller id first", ask, []factoryd.Event{ev(13, 1, factoryd.EventQuestionAnswered, "bob"), ev(12, 1, factoryd.EventMergeDenied, "sebastian")}, false, false,
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
+		{"a bumped row asks again", factoryd.ChatMessage{ID: 10, At: at.Add(3 * time.Minute), Kind: factoryd.MessageEscalation, TaskID: "t-e", Repeats: 1},
+			[]factoryd.Event{ev(12, 1, factoryd.EventQuestionAnswered, "bob")}, true, false, open},
+		{"an open approval on its pending request", approval, nil, false, true, open},
+		{"an approval whose request is gone moved on", approval, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
+		{"an approved merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeApproved, "sebastian")}, false, true,
+			factoryd.PokeSettle{Word: "approved", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeApproved, "sebastian")}},
+		{"a denied merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeDenied, "sebastian")}, false, true,
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
+		{"plan changes requested", approval, []factoryd.Event{ev(12, 1, factoryd.EventPlanChangesRequested, "sebastian")}, false, true,
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventPlanChangesRequested, "sebastian")}},
+		{"a superseding request", approval, []factoryd.Event{ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}, false, true,
+			factoryd.PokeSettle{Word: "superseded", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := factoryd.SettleOf(tt.m, tt.events, tt.cardWaits, tt.apprWaits)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("settleOf =\n%+v\nwant\n%+v", got, tt.want)
+			}
+		})
+	}
+	equal(t, "an escalation's family is a question whatever the join found", factoryd.AskFamily(ask), "question")
+	equal(t, "an approval row's family", factoryd.AskFamily(approval), "approval")
+	equal(t, "a poke-kind row takes its family from the event",
+		factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventQuestionAsked}), "question")
+	equal(t, "an inform's family", factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded}), "")
+	equal(t, "a row with no birth kind is an inform", factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke}), "")
+}
+
+// The chat renders each poke row's derived state (the
+// notification-settling concept): a settled ask carries its reason line,
+// an inform recedes once the thread was read, an open ask stays bare, and
+// the switcher's badge splits into the asks that need the member and the
+// rows that are new.
+func TestChatSettlesRows(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	say := func(m factoryd.ChatMessage) {
+		t.Helper()
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: Use a replica?",
+		Choices: []string{"Yes", "No"}, TaskID: "t-e", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#11 needs you: rebase?",
+		Choices: []string{"Yes", "No"}, TaskID: "t-r", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#11 started.", TaskID: "t-r", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
+		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	for _, e := range []factoryd.Event{
+		{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventCardMoved, Actor: "the agent", Via: factoryd.ViaFactoryd, Detail: map[string]any{"lane": "done"}},
+		{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventQuestionAnswered, Actor: "sebastian", Via: factoryd.ViaButton},
+	} {
+		if _, err := r.events.Record(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := func() factoryd.ChatConversation {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
+		var out []factoryd.ChatConversation
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(rec.Code, err)
+		}
+		i := slices.IndexFunc(out, func(th factoryd.ChatConversation) bool { return th.Inbox })
+		if i < 0 {
+			t.Fatalf("the list = %+v, want the inbox", out)
+		}
+		return out[i]
+	}
+	equal(t, "the unread inbox's split", []int64{list().NeedsYou, list().NewRows, list().Unread}, []int64{1, 3, 4})
+	read := func() []factoryd.ChatMessage {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+		}
+		var answer chatGetAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer.Messages
+	}
+	var reason = regexp.MustCompile(`^(answered by sebastian|moved on) · \d\d:\d\d$`)
+	msgs := read()
+	equal(t, "the settled asks and the open one", []bool{msgs[0].Settled, msgs[1].Settled, msgs[2].Settled, msgs[3].Settled},
+		[]bool{true, true, false, false})
+	for i, want := range []string{"answered by sebastian", "moved on", "", ""} {
+		if got := msgs[i].Reason; want == "" && got != "" || want != "" && (!reason.MatchString(got) || !strings.HasPrefix(got, want)) {
+			t.Errorf("row %d's reason = %q, want %q at HH:MM", i, got, want)
+		}
+	}
+	equal(t, "the inbox's split after the read", []int64{list().NeedsYou, list().NewRows, list().Unread}, []int64{1, 0, 0})
+	msgs = read()
+	equal(t, "the read inform recedes with its word, the open ask stays bare",
+		[]bool{msgs[2].Settled, msgs[2].Reason == "seen", msgs[3].Settled, msgs[3].Reason == ""}, []bool{true, true, false, true})
+}
+
+// Clear old (the chat's sweep): the marker hides the thread's old rows
+// from the member's view, the record keeps them, and an open ask stays
+// whatever the marker says, so nothing that needs the member disappears.
+func TestChatClearsOldRows(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	say := func(m factoryd.ChatMessage) {
+		t.Helper()
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#14 needs you: rebase?",
+		Choices: []string{"Yes", "No"}, TaskID: "t-r", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
+		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
+		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() chatGetAnswer {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+		}
+		var answer chatGetAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	answer := read()
+	answer = read() // the seen marker passes the plain row, it settles too
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{3, 0})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
+		t.Fatalf("POST clear = %d: %s", code, body)
+	}
+	answer = read()
+	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{1, 2})
+	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
+		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
+	}
 }

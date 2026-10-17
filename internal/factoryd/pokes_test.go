@@ -82,6 +82,7 @@ func TestPokeOf(t *testing.T) {
 				t.Fatalf("the writer reads no %s event", tt.e.Kind)
 			}
 			tt.want.Role = "assistant"
+			tt.want.BirthKind = tt.e.Kind
 			if tt.e.Kind != EventAutonomyChanged {
 				tt.want.TaskID = tt.e.TaskID
 			}
@@ -157,7 +158,7 @@ func TestPGStorePokes(t *testing.T) {
 		}
 		got := rows[0]
 		want := ChatMessage{ID: got.ID, At: got.At, Conversation: threads[0].Number, Role: "assistant", Kind: MessageEscalation,
-			Content: "#603 needs you: Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
+			BirthKind: asked.Kind, Content: "#603 needs you: Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s's poke = %+v,\nwant %+v", login, got, want)
 		}

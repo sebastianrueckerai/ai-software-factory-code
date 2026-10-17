@@ -428,7 +428,8 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.events.mu.Unlock()
 	r.chat.mu.Lock()
 	r.chat.msgs, r.chat.started, r.chat.proposals, r.chat.next = map[string][]factoryd.ChatMessage{}, nil, nil, int64(len(s.chat))
-	r.chat.titles, r.chat.seen, r.chat.summaries, r.chat.compacts = nil, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
+	r.chat.titles, r.chat.seen, r.chat.cleared, r.chat.summaries, r.chat.compacts =
+		nil, map[string]int64{}, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
 	r.chat.inboxes, r.chat.archived = nil, map[string]bool{}
 	for _, n := range s.archived {
 		r.chat.archived[fmt.Sprint("sf/code sebastian ", n)] = true

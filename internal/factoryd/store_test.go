@@ -83,15 +83,16 @@ type fakeStore struct {
 	// createFails fails that many CreateTask calls
 	createFails int
 	// createCalls counts every CreateTask call, failed or not
-	createCalls int
-	deps        map[string][]string // task → the tasks it depends on
-	plans       map[string][]PlanRevision
-	questions   map[string][]PlanQuestion // by "task revision"
-	kinds       map[string][]string       // each question's kind beside it, by "task revision"
-	catches     map[string][]string       // the recording rule's ledger, by "task revision kind finder"
-	holdouts    map[string][]Holdout      // the hold-out rows, idx order, by task
-	queue       []queueEntry              // the merge queues, oldest first
-	holds       map[string]RollHold
+	createCalls      int
+	deps             map[string][]string // task → the tasks it depends on
+	plans            map[string][]PlanRevision
+	questions        map[string][]PlanQuestion     // by "task revision"
+	kinds            map[string][]string           // each question's kind beside it, by "task revision"
+	catches          map[string][]string           // the recording rule's ledger, by "task revision kind finder"
+	criteriaVerdicts map[string][]CriterionVerdict // rows by task, every source's
+	holdouts         map[string][]Holdout          // the hold-out rows, idx order, by task
+	queue            []queueEntry                  // the merge queues, oldest first
+	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
 	// project + "/" + routine
 	routineStates map[string]RoutineState
@@ -258,6 +259,22 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) SetTaskPlanRevision(ctx context.Context, id string, revision int) error {
+	if t, ok := s.tasks[id]; ok && t.PlanRevision == 0 {
+		t.PlanRevision = revision
+		s.tasks[id] = t
+	}
+	return nil
+}
+
+func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
+	if t, ok := s.tasks[id]; ok {
+		t.Objective = objective
+		s.tasks[id] = t
+	}
+	return nil
 }
 
 func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
@@ -1293,15 +1310,15 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckin: 1}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckin: 1, ExtraCheckinShare: 2}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != usage {
 		t.Fatalf("usage = %+v, want %+v", got.Usage, usage)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Usage.ExtraCheckin != 1 {
-		t.Fatalf("extra_checkin = %d, want 1: the granted check-in share persists on the row", got.Usage.ExtraCheckin)
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage.ExtraCheckinShare != 2 {
+		t.Fatalf("extra_checkin_share = %d, want 2: the granted check-in share persists on the row", got.Usage.ExtraCheckinShare)
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
@@ -2692,6 +2709,56 @@ func (s *fakeStore) PutPlanCatches(ctx context.Context, id string, revision int,
 	}
 	s.catches[k] = slices.Clone(details)
 	return true, nil
+}
+
+func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error {
+	if s.criteriaVerdicts == nil {
+		s.criteriaVerdicts = map[string][]CriterionVerdict{}
+	}
+	replaced := map[string]bool{}
+	for _, v := range rows {
+		replaced[v.Criterion] = true
+	}
+	var out []CriterionVerdict
+	for _, v := range s.criteriaVerdicts[taskID] {
+		if v.Source != source || !replaced[v.Criterion] {
+			out = append(out, v)
+		}
+	}
+	for _, v := range rows {
+		v.Source, v.DecidedBy = source, by
+		out = append(out, v)
+	}
+	s.criteriaVerdicts[taskID] = out
+	return nil
+}
+
+func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
+	return s.criteriaVerdicts[taskID], nil
+}
+
+func (s *fakeStore) CriteriaVerdictTasks(ctx context.Context) ([]string, error) {
+	var ids []string
+	for id := range s.criteriaVerdicts {
+		ids = append(ids, id)
+	}
+	return ids, nil
+}
+
+func (s *fakeStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, error) {
+	var out []PlanCatch
+	for k, details := range s.catches {
+		var cID string
+		var rev int
+		var kind, finder string
+		if _, err := fmt.Sscanf(k, "%s %d %s %s", &cID, &rev, &kind, &finder); err != nil || cID != id {
+			continue
+		}
+		for _, d := range details {
+			out = append(out, PlanCatch{TaskID: id, Revision: rev, Kind: kind, Finder: finder, Detail: d})
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {

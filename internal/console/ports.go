@@ -101,6 +101,10 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	// ChatAsks are login's ask rows on repository, every thread's, the
+	// settle rule's read for the switcher's badge (the
+	// notification-settling concept)
+	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
@@ -115,6 +119,9 @@ type Chat interface {
 	OpenConversation(ctx context.Context, repository, login string, n int64) error
 	RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error)
 	MarkSeen(ctx context.Context, repository, login string, n int64) error
+	// Clear old sweeps the thread's old rows from the member's view: the
+	// marker rides the seen marker's table, the record keeps the rows
+	MarkCleared(ctx context.Context, repository, login string, n int64) error
 	StartQueued(ctx context.Context, repository, login string, id int64) error
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took

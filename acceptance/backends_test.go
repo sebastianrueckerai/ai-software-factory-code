@@ -706,6 +706,28 @@ func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
+	return nil
+}
+
+func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
+	return nil
+}
+
+func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CriteriaVerdictTasks(context.Context) ([]string, error) { return nil, nil }
+
+func (s *acceptanceStore) PlanCatches(context.Context, string) ([]factoryd.PlanCatch, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) AddTaskDeps(_ context.Context, id string, dependsOn []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

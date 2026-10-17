@@ -519,6 +519,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
+	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
+	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	final, err := run.program()
 	run.endTrips()
@@ -578,6 +580,12 @@ func drainSignals(ctx workflow.Context) {
 // the old branch until no workflow started before the change is still
 // running (temporal workflow list --query 'ExecutionStatus="Running"').
 const (
+	// versionCheckinSpend (change id "checkin-spend"): a spent check-in's
+	// answer verifies the open pull request's head again instead of buying
+	// a session, which would stop at the same cap before any model call;
+	// histories recorded before it answered by buying, so the new branch
+	// is gated and the old runs keep their answer-buys-session wait.
+	versionCheckinSpend workflow.Version = 1
 	// versionSignalsDrained: terminal signals are acted on at every
 	// decision point, change requests are coalesced, pull request signals
 	// count only for the task's own PR, a terminal session error finishes
@@ -1023,9 +1031,14 @@ const (
 	// is one); the criteria's findings go on the approval card, for the
 	// human. A run from before asks its approval without the gate.
 	versionCriteriaGate workflow.Version = 1
+	// versionCheckinRaise (change id "checkin-raise"): an answer to a
+	// check-in stopped at its call cap buys the card one more turn of
+	// the cap (TaskUsage.ExtraCheckin), and the budget's share still
+	// refuses on spent money.
+	versionCheckinRaise workflow.Version = 1
 	// versionCheckinGrant (change id "checkin-grant", issue 959): the
-	// answer to a check-in's spend stop grants the card one more share of
-	// the check-in budget beside its attempt (TaskUsage.ExtraCheckin
+	// answer to a check-in's share stop grants the card one more share of
+	// the check-in budget beside its attempt (TaskUsage.ExtraCheckinShare
 	// widens the runner's share), so a long card stops once per human
 	// answer and not once per check-in moment; the call cap and the card's
 	// own budget stay the caps they were. A run from before the change
@@ -1135,7 +1148,9 @@ type taskRun struct {
 	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
-	checkinGrant      workflow.Version // the answer to a check-in spend stop grants a share (versionCheckinGrant)
+	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
+	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
+	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1440,7 +1455,31 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
-			case AtCheckinSpend(st.Question):
+			case t.checkinRaise >= versionCheckinRaise && atCheckinCallCap(st.Question):
+				// the call cap's stop: the answer buys the card the
+				// wider cap beside the session, and that session runs
+				// instead of stopping at the same cap before any model
+				// call; placed before the spend case, for a call-cap
+				// stop is a spend stop too
+				u.ExtraCheckin++
+				buy()
+			case t.checkinSpend >= versionCheckinSpend && st.PR.Number != 0 && atCheckinSpend(st.Question):
+				// a spent check-in's answer verifies again, as the gate's
+				// stop does, but with no session: a bought one would stop
+				// at the same cap before any model call, so the answer
+				// rides the findings the review weighs instead
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				v := t.verify(st.Head)
+				if v.final != "" {
+					return t.finish(v.final, v.reason)
+				}
+				apply(v)
+			case t.checkinGrant >= versionCheckinGrant && AtCheckinShareStop(st.Question):
+				// the share stop (issue 959): the answer grants the card
+				// one more share of the check-in budget beside the
+				// session it buys, so the next check-in moment runs where
+				// this one stopped the card; a run from before the change
+				// replays its answer-buys-session wait below, unanswered
 				t.grantCheckin(&u, true)
 				buy()
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
@@ -1764,7 +1803,26 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			t.grantCheckin(&u, res.CheckIn.ReasonKind == CheckSpend && res.CheckIn.Reason == CheckinShareSpent)
+			// the call cap's stop grants the card its wider cap with the
+			// session (versionCheckinRaise) and falls through to buy(),
+			// never the verify break: the conversation the raise buys
+			// runs where the cap stopped it
+			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
+				u.ExtraCheckin++
+			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
+				// a spent check-in with the pull request open verifies the
+				// head it judged below, like a dropped check-in: a bought
+				// session would stop at the same cap before any model call
+				// while the head sits waiting on the approval
+				res.Commit = startRef
+				break
+			} else if t.checkinGrant >= versionCheckinGrant && res.CheckIn.ReasonKind == CheckSpend && res.CheckIn.Reason == CheckinShareSpent {
+				// the share stop (issue 959): the answer grants the card
+				// one more share of the check-in budget beside the session
+				// it buys (versionCheckinGrant), so the next check-in
+				// moment runs where this one stopped the card
+				t.grantCheckin(&u, true)
+			}
 			buy()
 			continue
 		case OutcomeCheckinDropped:
@@ -2130,17 +2188,17 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
-// grantCheckin is the share of the check-in budget an answer to its spend
+// grantCheckin is the share of the check-in budget an answer to its share
 // stop buys beside the attempt (versionCheckinGrant, issue 959): one more
 // of the policy's CheckinShareOf widths, so the stretch the answer pays
 // for can run its own check-in moments and a long card stops once per
 // human answer, not once per check-in moment. The card's own budget and
-// the check-in call cap stay the caps they were; an answer to the call
-// cap's stop buys nothing here. The usage is recorded with the attempt
-// the same answer buys.
+// the check-in call cap stay the caps they were; the call cap's stop buys
+// its own raise (versionCheckinRaise) and grants nothing here. The usage
+// is recorded with the attempt the same answer buys.
 func (t *taskRun) grantCheckin(u *TaskUsage, share bool) {
 	if share && t.checkinGrant >= versionCheckinGrant {
-		u.ExtraCheckin++
+		u.ExtraCheckinShare++
 	}
 }
 

@@ -72,6 +72,9 @@ type Tasks interface {
 	PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
+	// CriteriaVerdicts are task's criteria verdict rows (the spec-intake
+	// concept, pieces 7 and 8), every source's, in criterion order.
+	CriteriaVerdicts(ctx context.Context, taskID string) ([]factoryd.CriterionVerdict, error)
 	// Dependencies are the tasks task id depends on, those not done
 	// first; Dependents those that depend on it.
 	Dependencies(ctx context.Context, id string) ([]factoryd.Dependency, error)
@@ -155,7 +158,16 @@ type Config struct {
 	// DecideHoldout stores a writer's okay or drop of one hold-out of a
 	// plan's newest revision (factoryd.DecideHoldout).
 	DecideHoldout func(ctx context.Context, taskID string, round, idx int, verb, by string) error
-	RejectPlan    func(ctx context.Context, taskID, by, why string) error
+	// GrantCriteria records an approver's grant of one more bounded card
+	// for a plan's open criteria (factoryd.GrantCriteria); DecideCriterion
+	// records their waiver of one criterion with their one-line reason
+	// (factoryd.DecideCriterion); RecordHumanCriteria records the
+	// approver's met on every human criterion of the plan whose
+	// integration card's merge they approved (factoryd.RecordHumanCriteria).
+	GrantCriteria       func(ctx context.Context, id, by string, approval int64) (int, error)
+	DecideCriterion     func(ctx context.Context, id, cid, verdict, by, reason string) error
+	RecordHumanCriteria func(ctx context.Context, taskID, approver string) (int, error)
+	RejectPlan          func(ctx context.Context, taskID, by, why string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
@@ -254,6 +266,9 @@ type Config struct {
 	// Forgejo's dependencies as it does a plan's; an issue already as asked
 	// is left alone (factoryd's Forgejo.SetIssueDependency).
 	SetIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error
+	// Messengers carries the Telegram webhook (roadmap 145); nil and the
+	// console answers no /messengers route.
+	Messengers *Messengers
 }
 
 // Console is the console's http.Handler.
@@ -323,6 +338,9 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
+		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level"},
+		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
+		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
 			http.StripPrefix("/static/", http.FileServerFS(static)).ServeHTTP(w, r)
 		}, "", "the static files"},
@@ -366,7 +384,12 @@ type postRoute struct {
 func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
+	messengers := func() bool { return c.cfg.Messengers != nil }
 	return []postRoute{
+		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
+		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
+		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
+		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
@@ -387,6 +410,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
+		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},
 		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
@@ -397,6 +421,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
 		{"POST /projects/{name}/chat/rename", http.HandlerFunc(c.chatRename), nil},
 		{"POST /projects/{name}/chat/seen", http.HandlerFunc(c.chatSeen), nil},
+		{"POST /projects/{name}/chat/clear", http.HandlerFunc(c.chatClear), nil},
 		{"POST /projects/{name}/chat/archive", http.HandlerFunc(c.chatArchive), nil},
 		{"POST /projects/{name}/chat/delete", http.HandlerFunc(c.chatDelete), nil},
 		{"POST /projects/{name}/chat/answer", http.HandlerFunc(c.chatAnswer), nil},
@@ -746,6 +771,9 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {
+	if m, ok := data.(map[string]any); ok {
+		m["Messengers"] = c.cfg.Messengers != nil // the layout links the notifications panel
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("console: render %s: %v", name, err)

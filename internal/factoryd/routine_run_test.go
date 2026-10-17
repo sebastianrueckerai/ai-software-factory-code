@@ -206,7 +206,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Fatalf("runs %+v, want run 1 filed and open", runs)
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: "#71 needs you: Weekly bump of the pinned outside inputs.", TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00"}}
+		Content: "#71 needs you: Weekly bump of the pinned outside inputs.", TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventRoutineRan}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
@@ -273,7 +273,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			var pokes []fakePoke
 			if tt.poke != "" {
 				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00"}}}
+					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00", BirthKind: EventRoutineRan}}}
 			}
 			if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
 				t.Fatalf("pokes %+v,\nwant %+v", got, pokes)
@@ -404,7 +404,7 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 		t.Fatalf("run %+v", run)
 	}
 	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: `Filed #71 "Audit: bug hunt and architecture review".`, TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges"}}
+		Content: `Filed #71 "Audit: bug hunt and architecture review".`, TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventRoutineRan}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}
@@ -498,7 +498,7 @@ func TestRoutineRunReports(t *testing.T) {
 		var pokes []fakePoke
 		if tell == policy.TellInbox {
 			pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-				Content: "Revert and drift report\n\nThe reverts and the drift of the week.", Decider: "routine drift · run 1 · every Monday 07:00"}}}
+				Content: "Revert and drift report\n\nThe reverts and the drift of the week.", Decider: "routine drift · run 1 · every Monday 07:00", BirthKind: EventRoutineRan}}}
 		}
 		if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
 			t.Fatalf("%s: pokes %+v,\nwant %+v", tell, got, pokes)

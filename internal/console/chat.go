@@ -205,6 +205,21 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
 		return
 	}
+	t.settleRows(ctx, msgs, th.SeenUpto)
+	// the member's Clear old swept the rows up to their marker from view;
+	// an open ask stays whatever the marker says, and the record keeps
+	// every row
+	if th.ClearedUpto > 0 {
+		kept := make([]factoryd.ChatMessage, 0, len(msgs))
+		for _, m := range msgs {
+			if m.ID <= th.ClearedUpto && !(factoryd.AskFamily(m) != "" && !m.Settled) {
+				th.Cleared++
+				continue
+			}
+			kept = append(kept, m)
+		}
+		msgs = kept
+	}
 	if err := c.cfg.Chat.MarkSeen(ctx, repo, login, t.conv); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
 	}
@@ -235,6 +250,107 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(answer); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", login, repo, err)
+	}
+}
+
+// askFacts reads the settle rule's wait facts for each card named: the
+// board's Needs-you fact, the card's status waiting-human, with its
+// events. A card in a final state settled its asks already, so its
+// events are not read.
+func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, map[string][]factoryd.Event) {
+	waits, events := map[string]bool{}, map[string][]factoryd.Event{}
+	for _, id := range ids {
+		k, _, err := c.cfg.Tasks.Task(ctx, id)
+		if err != nil {
+			log.Printf("console: the card %s: %v", id, err)
+		}
+		waits[id] = err == nil && k.Status == "waiting-human"
+		if err != nil || factoryd.Final(k.Status) {
+			continue
+		}
+		if evs, err := c.cfg.Events.TaskEvents(ctx, id, startEvents); err != nil {
+			log.Printf("console: the events of %s: %v", id, err)
+		} else {
+			events[id] = evs
+		}
+	}
+	return waits, events
+}
+
+// settleRows stamps each poke row's derived state onto the log (the
+// notification-settling concept): an ask past its settling event or its
+// wait facts gets its reason line, a poke the member has read recedes.
+// Nothing is written; the state derives at read, seenUpto the thread's
+// seen marker before this read.
+func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seenUpto int64) {
+	pending, err := t.c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		log.Printf("console: the approval requests: %v", err)
+	}
+	var ids []string
+	for _, m := range msgs {
+		if m.Kind == factoryd.MessageEscalation && m.TaskID != "" && !slices.Contains(ids, m.TaskID) {
+			ids = append(ids, m.TaskID)
+		}
+	}
+	waits, events := askFacts(ctx, t.c, ids)
+	for i, m := range msgs {
+		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
+			continue
+		}
+		if factoryd.AskFamily(m) == "" {
+			if msgs[i].Settled = m.ID <= seenUpto; msgs[i].Settled {
+				msgs[i].Reason = "seen"
+			}
+			continue
+		}
+		if s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
+			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
+		}
+	}
+}
+
+// settleCounts splits each thread's unread turns for the switcher's badge
+// (the notification-settling concept): the asks still open are its
+// needs-you side, the unread rows past the seen marker that are no open
+// ask its new side. A read that fails leaves the counts as they fall.
+func (c *Console) settleCounts(ctx context.Context, repository, login string, list []factoryd.ChatConversation) {
+	asks, err := c.cfg.Chat.ChatAsks(ctx, repository, login)
+	if err != nil {
+		log.Printf("console: the asks of %s on %s: %v", login, repository, err)
+		return
+	}
+	for i := range list {
+		list[i].NewRows = list[i].Unread
+	}
+	if len(asks) == 0 {
+		return
+	}
+	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		log.Printf("console: the approval requests: %v", err)
+	}
+	var ids []string
+	for _, m := range asks {
+		if !slices.Contains(ids, m.TaskID) {
+			ids = append(ids, m.TaskID)
+		}
+	}
+	waits, events := askFacts(ctx, c, ids)
+	for _, m := range asks {
+		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Number == m.Conversation })
+		if i < 0 {
+			continue
+		}
+		if factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
+			list[i].NeedsYou++
+			if m.ID > list[i].SeenUpto {
+				list[i].NewRows--
+			}
+		}
+	}
+	for i := range list {
+		list[i].NewRows = max(list[i].NewRows, 0)
 	}
 }
 
@@ -869,6 +985,26 @@ func (c *Console) chatNew(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// chatClear answers POST /projects/{name}/chat/clear: sweeps the open
+// thread's old rows from the member's view, the marker its newest row, and
+// answers 204. The record keeps every row; an open ask stays in view.
+func (c *Console) chatClear(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	if _, err := t.thread(r, false); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if err := c.cfg.Chat.MarkCleared(r.Context(), t.p.Repository, t.a.s.user, t.conv); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot clear the conversation", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // chatConversations answers GET /projects/{name}/chat/conversations: the
 // member's threads on the project, the inbox first (made here the first
 // time), then the active by their last message, the archived last, each
@@ -893,6 +1029,7 @@ func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	for i := range list {
 		list[i].Working = c.turns.working(threadKey(t.p.Repository, t.a.s.user, list[i].Number))
 	}
+	c.settleCounts(r.Context(), t.p.Repository, t.a.s.user, list)
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(list); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)

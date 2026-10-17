@@ -1725,7 +1725,7 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 
 // The answer to the check-in's spend stop buys the stretch its own
 // check-in moments (issue 959): beside the attempt, the answer grants the
-// card one more share of the check-in budget — TaskUsage.ExtraCheckin,
+// card one more share of the check-in budget — TaskUsage.ExtraCheckinShare,
 // which widens the share the runner counts — so a long card that spent
 // its share stops once per human answer, not once per check-in moment,
 // and the card's own budget stays the cap. Without the grant the next
@@ -1750,7 +1750,7 @@ func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
 	if len(h.escalated) != 1 {
 		t.Fatalf("escalations = %q, want the one re-asked stop and no second spend stop", h.escalated)
 	}
-	if u := h.usage[len(h.usage)-1]; u.ExtraCheckin != 1 {
+	if u := h.usage[len(h.usage)-1]; u.ExtraCheckinShare != 1 {
 		t.Fatalf("usage = %+v, want the answer's grant of one more check-in share recorded", u)
 	}
 }
@@ -1782,15 +1782,15 @@ func TestWorkflowCheckSpendAnswerInTheLoopGrantsTheShare(t *testing.T) {
 		if len(h.sessions) != 2 || h.sessions[1].Attempt != 2 {
 			t.Fatalf("%s: sessions = %+v, want the answered session to run, attempt 2", name, h.sessions)
 		}
-		if !slices.Equal(h.escalated, []string{checkinSpendStop}) {
+		if !slices.Equal(h.escalated, []string{checkinShareStop}) {
 			t.Fatalf("%s: escalations = %q, want the one spend stop", name, h.escalated)
 		}
 		want := 1
 		if pinned {
 			want = 0
 		}
-		if u := h.usage[len(h.usage)-1]; u.ExtraCheckin != want {
-			t.Fatalf("%s: usage = %+v, want ExtraCheckin %d", name, u, want)
+		if u := h.usage[len(h.usage)-1]; u.ExtraCheckinShare != want {
+			t.Fatalf("%s: usage = %+v, want ExtraCheckinShare %d", name, u, want)
 		}
 	}
 }
@@ -1851,6 +1851,146 @@ func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 					name, len(h.sessions), reviewed, steps, h.usage, want.sessions, want.reviewed, want.steps, want.usage)
 			}
 		}
+	}
+}
+
+// A run restarted on a check-in stopped at its spent budget takes the
+// answer as the gate's stop does, by verifying the head again: no session
+// starts, for a bought one would stop at the same cap before any call.
+func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	reviewed := []string{}
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			reviewed = append(reviewed, commit)
+			return Review{}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if len(h.sessions) != 0 || !slices.Equal(reviewed, []string{"c2"}) {
+		t.Fatalf("sessions = %d, reviewed = %q; want no session and the head c2 alone reviewed", len(h.sessions), reviewed)
+	}
+}
+
+// An answer to a check-in stopped at its call cap buys the card extra
+// check-in calls beside the session: the next session runs instead of
+// stopping at the same cap before any model call, and a card with no
+// pull request leaves the loop.
+func TestCheckinCallCapAnswerBuysExtraCalls(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+		ReasonKind: CheckSpend, Reason: "check-in call cap reached",
+		Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}}), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more check-in round", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want the stopped one and the one the answer bought", len(h.sessions))
+	}
+	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
+		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
+	}
+}
+
+// A run restarted on a check-in stopped at its call cap with no pull
+// request does the same: the answer buys the wider cap beside the
+// session, and the session runs.
+func TestCheckinCallCapResumeBuysExtraCalls(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
+		Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more check-in round", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
+		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
+	}
+}
+
+// A run restarted on a check-in stopped at its call cap with the pull
+// request open takes the grant too, never the spend case's verify of the
+// open head: the answer records the wider cap beside the session it buys,
+// and that session runs.
+func TestCheckinCallCapResumeWithOpenPRBuysExtraCalls(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
+		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more check-in round", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v: the answer buys the session, not a verify of c2", steps, want)
+	}
+	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
+		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
+	}
+}
+
+// A check-in stopped at its call cap with the pull request open grants
+// the card the wider cap beside the session (versionCheckinRaise): the
+// answer buys the session, never the spend case's verify of the head,
+// and the conversation the raise buys runs.
+func TestCheckinCallCapLiveWithOpenPRGrantsAndBuys(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: "check-in call cap reached",
+			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		pushed("s3", "c2")})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+			}
+			return Review{}, nil
+		})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more check-in round", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.sessions) != 3 {
+		t.Fatalf("sessions = %d, want three: the work, the stopped check-in's own and the one the answer bought", len(h.sessions))
+	}
+	if want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards",
+		"session 3 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v: the answer buys the session, no verify of c1", steps, want)
+	}
+	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
+		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
 	}
 }
 
@@ -3653,6 +3793,48 @@ func TestWorkflowDeadCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 	}
 	if !slices.Equal(h.escalated, []string{"check-in: dead: the session died with its work unpushed twice"}) {
 		t.Fatalf("escalations = %q, want the dead moment named", h.escalated)
+	}
+}
+
+// A check-in stopped at its spent budget with the pull request open waits
+// for a human, and the answer verifies the head the check-in judged again,
+// like a dropped check-in: no session is bought, for it would stop at the
+// same cap before any model call while the head sits green.
+func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: "the check-in's share of the budget is spent",
+			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+			}
+			return Review{}, nil
+		})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want two: the work and the spent check-in's own", len(h.sessions))
+	}
+	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInGate {
+		t.Fatalf("the second session's ask = %+v, want the gate moment over the review's finding", h.sessions[1].CheckInAsk)
+	}
+	if !slices.Equal(h.escalated, []string{"check-in: spend_above_policy: the check-in's share of the budget is spent"}) {
+		t.Fatalf("escalations = %q, want the spend stop alone", h.escalated)
+	}
+	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c1 after 1 cards", "approval c1"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v: the answer verifies the same head again", steps, want)
 	}
 }
 

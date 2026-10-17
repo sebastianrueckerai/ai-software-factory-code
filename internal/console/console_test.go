@@ -253,6 +253,8 @@ type fakeTasks struct {
 	questions map[string][]factoryd.PlanQuestion
 	// holdouts are the plans' hold-out rows by task, idx order
 	holdouts map[string][]factoryd.Holdout
+	// criteria are the criteria verdict rows by task
+	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
 	read     func(s *fakeTasks, id string)
 }
@@ -389,6 +391,12 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 		}
 	}
 	return factoryd.ErrNoHoldout
+}
+
+func (s *fakeTasks) CriteriaVerdicts(_ context.Context, taskID string) ([]factoryd.CriterionVerdict, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.criteria[taskID], nil
 }
 
 func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, error) {
@@ -2649,6 +2657,27 @@ func TestTimelineShowsTheSupervisorsAction(t *testing.T) {
 		"<td>checks</td><td></td>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("timeline lacks %q", want)
+		}
+	}
+}
+
+// The steps table reads its time as the gates table reads its start,
+// seconds in UTC, with the raw stamp as the cell's title; a stamp that
+// does not parse stays as it is on the wire.
+func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_start","time":"2026-10-17T12:41:47.048126987Z","attempt":1}
+{"step":"session_end","time":"not a time","outcome":"pushed"}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	for _, want := range []string{
+		`<td title="2026-10-17T12:41:47.048126987Z">2026-10-17 12:41:47</td>`,
+		`<td>not a time</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the steps table lacks %s", want)
 		}
 	}
 }

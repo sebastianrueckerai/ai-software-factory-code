@@ -53,6 +53,15 @@ type ChatMessage struct {
 	// came again after it (74's rule: repeats only count).
 	TaskID  string `json:"task_id,omitempty"`
 	Repeats int    `json:"repeats,omitempty"`
+	// BirthKind is the kind of the event that wrote a poke, which tells
+	// the row's family in the settle rule (the notification-settling
+	// concept); "" for a row no event wrote.
+	BirthKind string `json:"birth_kind,omitempty"`
+	// Settled and Reason are the console's read of a poke row at render:
+	// the row wants nothing any more, an ask with its reason line. They
+	// are derived, never stored.
+	Settled bool   `json:"settled,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -161,7 +170,10 @@ const (
 // its number, title, state, whether it is the member's inbox and their
 // current thread, its first and last message's times (the thread's own
 // when it has none), its rows, and its unread turns after the member's
-// seen marker. Working is the console's: a turn runs on it now.
+// seen marker. Working is the console's: a turn runs on it now. NeedsYou
+// and NewRows are the console's too: the settle rule's split of the
+// unread turns, the open asks and the rest (the notification-settling
+// concept).
 type ChatConversation struct {
 	Number   int64     `json:"number"`
 	Title    string    `json:"title"`
@@ -173,6 +185,14 @@ type ChatConversation struct {
 	Messages int64     `json:"messages"`
 	Unread   int64     `json:"unread"`
 	Working  bool      `json:"working,omitempty"`
+	NeedsYou int64     `json:"needs_you,omitempty"`
+	NewRows  int64     `json:"new_rows,omitempty"`
+	SeenUpto int64     `json:"-"`
+	// ClearedUpto is the member's cleared marker: the console's Clear old
+	// swept the rows up to it from view, the record keeps them. Cleared is
+	// the console's count of the rows the marker hid on this read.
+	ClearedUpto int64 `json:"-"`
+	Cleared     int64 `json:"cleared,omitempty"`
 	// Summary is the thread's running summary of its rows up to
 	// SummaryUpto, which compaction keeps (roadmap 239); "" before the
 	// first, and Compactions counts them.
@@ -193,7 +213,8 @@ const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS N
 
 const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
-	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `)
+	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
+	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0)
 	FROM chat_conversations c
 	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
 	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
@@ -202,7 +223,7 @@ const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread)
+	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}
@@ -213,7 +234,7 @@ func scanConversation(scan func(...any) error) (ChatConversation, error) {
 // then the active by their last message, newest first, the archived last.
 func (s *PGStore) Conversations(ctx context.Context, repository, login string) ([]ChatConversation, error) {
 	rows, err := s.db.QueryContext(ctx, conversationSelect+`
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
 		ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.conversation DESC`, repository, login)
 	if err != nil {
 		return nil, err
@@ -233,7 +254,7 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 // Conversation is login's thread n on repository; false for none.
 func (s *PGStore) Conversation(ctx context.Context, repository, login string, n int64) (ChatConversation, bool, error) {
 	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.conversation = $3
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id`, repository, login, n).Scan)
+		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id`, repository, login, n).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatConversation{}, false, nil
 	}
@@ -372,6 +393,19 @@ func (s *PGStore) MarkSeen(ctx context.Context, repository, login string, n int6
 	return err
 }
 
+// MarkCleared moves login's cleared marker of thread n on repository to
+// its newest row: the console's Clear old sweeps the thread's old rows
+// from the member's view, the record keeps them. An open ask never leaves
+// with the sweep; the console's read keeps it whatever the marker says.
+func (s *PGStore) MarkCleared(ctx context.Context, repository, login string, n int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_seen (repository, login, conversation, last_seen_message_id, cleared_message_id)
+		VALUES ($1, $2, $3, (SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3),
+			(SELECT coalesce(max(id), 0) FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3))
+		ON CONFLICT (repository, login, conversation) DO UPDATE
+		SET cleared_message_id = greatest(chat_seen.cleared_message_id, excluded.cleared_message_id)`, repository, login, n)
+	return err
+}
+
 // InboxTitle is the inbox thread's title until the member renames it.
 const InboxTitle = "Inbox"
 
@@ -467,24 +501,28 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind).Scan(&id)
 	return id, err
 }
 
 // StartQueued lands queued row id in its place: the row takes the next
 // id, after every row of the turns before it, and is queued no longer.
+// The row's pending delivery rows follow it to the landing id, so a
+// notification born mid-turn still names a row the console shows.
 func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
-		WHERE id = $1 AND repository = $2 AND login = $3 AND queued`, id, repository, login)
+	_, err := s.db.ExecContext(ctx, `WITH landed AS (
+		UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
+		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id)
+		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1`, id, repository, login)
 	return err
 }
 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -496,7 +534,7 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {
@@ -512,6 +550,28 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 				return nil, err
 			}
 		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+// ChatAsks are login's ask rows on repository, every thread's, oldest
+// first: the poke rows about a card that waits for a person, whose state
+// the settle rule derives at read (the notification-settling concept).
+func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind FROM chat_messages
+		WHERE repository = $1 AND login = $2 AND kind = $3 AND task_id <> '' ORDER BY id`, repository, login, MessageEscalation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatMessage
+	for rows.Next() {
+		var m ChatMessage
+		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind); err != nil {
+			return nil, err
+		}
+		m.Kind = MessageEscalation
 		out = append(out, m)
 	}
 	return out, rows.Err()

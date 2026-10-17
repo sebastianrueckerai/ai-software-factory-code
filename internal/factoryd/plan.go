@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
 	"path"
@@ -68,6 +69,7 @@ const (
 const (
 	CatchQuestion   = "question"
 	CatchSelfAttack = "self_attack"
+	CatchCriterion  = "criterion"
 	FinderPlanner   = "planner"
 )
 
@@ -118,6 +120,10 @@ type PlanCriterion struct {
 	Claim    string `json:"claim,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
+	// Replaces names the id this criterion revises (piece 10): a changed
+	// criterion files under a new id that carries the old one here, so the
+	// revision record holds the pair and no id ever changes meaning.
+	Replaces string `json:"replaces,omitempty"`
 }
 
 // PlanItem is one acceptance item of a card: the test it names and the
@@ -852,7 +858,11 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		cited := citations(p)
 		b.WriteString("\n| # | id | kind | names | cited by |\n|---|---|---|---|---|\n")
 		for i, k := range p.Criteria {
-			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", i+1, cell(k.ID), cell(k.Kind), cell(criterionNames(k)), cell(strings.Join(cited[k.ID], ", ")))
+			id := cell(k.ID)
+			if k.Replaces != "" {
+				id += " (replaces " + cell(k.Replaces) + ")"
+			}
+			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", i+1, id, cell(k.Kind), cell(criterionNames(k)), cell(strings.Join(cited[k.ID], ", ")))
 		}
 	}
 	if len(p.Questions) > 0 {
@@ -959,6 +969,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
@@ -2007,6 +2018,21 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
+	// the revision this one changes, when there is one: the amendment
+	// rules judge the pair (piece 10)
+	var old Plan
+	prev, ok, err := r.store.PlanRevision(ctx, taskID, 0)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if ok {
+		if err := json.Unmarshal(prev.Plan, &old); err != nil {
+			return PlanResult{}, terminalError("plan %s revision %d: %v", taskID, prev.Revision, err)
+		}
+		if found := revisionFindings(old, p); len(found) > 0 {
+			return PlanResult{Findings: found}, nil
+		}
+	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
 		return PlanResult{}, err
@@ -2015,9 +2041,132 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
+	if ok && n > prev.Revision {
+		r.recordCriteria(ctx, taskID, n, old, p)
+		r.restartChildren(ctx, t, n, p)
+	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha})
 	return PlanResult{Revision: n, SHA256: sha}, nil
+}
+
+// revisionFindings judges an amendment against the revision it changes
+// (piece 10): an id never changes meaning, so a changed criterion files
+// under a new id that names the old one in replaces. A removed
+// criterion's citation goes with it; the coverage rules carry that.
+func revisionFindings(old, next Plan) []string {
+	prev := map[string]PlanCriterion{}
+	for _, c := range old.Criteria {
+		prev[c.ID] = c
+	}
+	var found []string
+	for _, c := range next.Criteria {
+		if o, ok := prev[c.ID]; ok && c != o {
+			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
+		}
+		if c.Replaces == "" {
+			continue
+		}
+		if _, ok := prev[c.Replaces]; !ok {
+			found = append(found, "criterion "+c.ID+": replaces "+c.Replaces+", an id the previous revision does not hold")
+		}
+	}
+	return found
+}
+
+// recordCriteria writes the revision's records (the recording rule): one
+// catch per criterion the revision adds, removes or revises under a new
+// id, the churn join's old id, new id and time (piece 10).
+func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int, old, next Plan) {
+	prev := map[string]bool{}
+	for _, c := range old.Criteria {
+		prev[c.ID] = true
+	}
+	held := map[string]bool{}
+	for _, c := range next.Criteria {
+		held[c.ID] = true
+	}
+	var details []string
+	for _, c := range next.Criteria {
+		switch {
+		case prev[c.ID]:
+		case c.Replaces != "":
+			details = append(details, c.ID+" replaces "+c.Replaces)
+		default:
+			details = append(details, c.ID+" added")
+		}
+	}
+	for id := range prev {
+		if !held[id] && replacesNothing(next, id) {
+			details = append(details, id+" removed")
+		}
+	}
+	slices.Sort(details)
+	if len(details) == 0 {
+		return
+	}
+	if _, err := r.store.PutPlanCatches(ctx, taskID, revision, CatchCriterion, FinderPlanner, details); err != nil {
+		log.Printf("plan %s revision %d: its criteria records: %v", taskID, revision, err)
+	}
+}
+
+func replacesNothing(p Plan, id string) bool {
+	for _, c := range p.Criteria {
+		if c.Replaces == id {
+			return false
+		}
+	}
+	return true
+}
+
+// restartChildren runs the restart rules a new revision carries (piece
+// 10): the checks re-ran with the filing, every card that never started
+// takes the new revision's brief, a card the new plan drops ends closed
+// with its issue, a started card keeps its branch (the merge check holds
+// it there) and a final card never reopens.
+func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Plan) {
+	cards, err := r.store.PlanCards(ctx, t.ID)
+	if err != nil {
+		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
+		return
+	}
+	edges := planEdges(p)
+	order := planOrder(p, edges)
+	place := map[string]int{}
+	card := map[string]PlanCard{}
+	for i, c := range order {
+		place[c.Key] = i + 1
+		card[c.Key] = c
+	}
+	issue := map[string]int64{}
+	for _, k := range cards {
+		issue[k.PlanKey] = k.IssueNumber
+	}
+	of := fmt.Sprintf("plan #%d", t.IssueNumber)
+	for _, k := range cards {
+		if Final(k.Status) || k.PlanRevision > 0 {
+			continue
+		}
+		c, ok := card[k.PlanKey]
+		if !ok {
+			if err := r.Finish(ctx, k.ID, "closed", fmt.Sprintf("the plan's revision %d drops the card %s", revision, k.PlanKey)); err != nil {
+				log.Printf("card %s: the plan's revision %d drops it: %v", k.ID, revision, err)
+			}
+			continue
+		}
+		var deps []Dependency
+		for _, d := range dependsOn(order, edges, c.Key) {
+			deps = append(deps, Dependency{Issue: issue[d], Key: d})
+		}
+		spec := ""
+		if c.Role == RoleIntegration {
+			spec = specBlock(p)
+		}
+		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec))
+		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, r.untrusted(t, c.Title)+"\n\n"+body); err != nil {
+			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
+		}
+	}
 }
 
 // PlanFileHandler answers the gateway's file_plan tool: the running

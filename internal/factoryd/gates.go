@@ -138,6 +138,12 @@ type Review struct {
 	Verdicts map[string]CheckVerdict `json:"verdicts,omitempty"`
 	Claims   []Claim                 `json:"claims,omitempty"`
 	Dropped  []Dropped               `json:"dropped,omitempty"`
+	// Criteria are the plan's criteria verdicts (the spec-intake concept,
+	// piece 7), answered only by the review that sees the whole feature:
+	// the integration card's, or a delta card's. Behaviours are the
+	// feature's behaviours the same review notes.
+	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
+	Behaviours []string           `json:"behaviours,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto (rulings 149, 167, 169): the
@@ -577,6 +583,9 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, a
 // commentOnce posts body on the pull request unless it is there already:
 // a re-gate of the same note says nothing new.
 func (r *Runner) commentOnce(ctx context.Context, t Task, repo Repo, pr int64, body string) {
+	if r.forgejo == nil {
+		return
+	}
 	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		log.Printf("task %s: comments of #%d: %v", t.ID, pr, err)
@@ -848,6 +857,9 @@ type reviewInput struct {
 	Concurrency string            `json:"concurrency"`
 	Gates       reviewGates       `json:"gates"`
 	LastReview  *Review           `json:"last_review,omitempty"`
+	// Criteria is the plan's criteria block when this review answers the
+	// plan's criteria, "" when it does not.
+	Criteria string `json:"criteria,omitempty"`
 }
 
 // reviewPartInput is the call on each later part: of the whole change only
@@ -912,6 +924,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	}
 	last := found[0]
 	last.Summary, last.Adjudicated, last.Claims, last.Dropped = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil
+	last.Criteria, last.Behaviours = nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -976,6 +989,20 @@ func parseReview(content string) Review {
 		}
 	}
 	rv.Findings, rv.Claims = findings, claims
+	var criteria []CriterionVerdict
+	for _, v := range rv.Criteria {
+		if v.Criterion = strings.TrimSpace(v.Criterion); v.Criterion != "" {
+			criteria = append(criteria, v)
+		}
+	}
+	rv.Criteria = criteria
+	var behaviours []string
+	for _, b := range rv.Behaviours {
+		if b = strings.TrimSpace(b); b != "" && len(behaviours) < maxReviewFindings {
+			behaviours = append(behaviours, b)
+		}
+	}
+	rv.Behaviours = behaviours
 	return rv
 }
 
@@ -1016,6 +1043,9 @@ func combineReviews(parts []Review) Review {
 	rv.Summary = strings.Join(summaries, "\n\n")
 	if asked {
 		rv.StrictImprovement = &strict
+	}
+	if len(parts) > 0 {
+		rv.Criteria, rv.Behaviours = parts[0].Criteria, parts[0].Behaviours
 	}
 	return rv
 }
@@ -1074,6 +1104,14 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	criteria := r.criteriaContext(ctx, t)
+	if criteria != nil {
+		whole, err := r.wholeFeatureDiff(ctx, t, repo, criteria.plan, diff)
+		if err != nil {
+			return Review{}, err
+		}
+		diff = whole
+	}
 	var rv Review
 	read := ""
 	files, parts, why := diffParts(diff, "review", pinned.Limits.ReviewDiffBytes())
@@ -1090,9 +1128,15 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		if len(parts) > 1 {
 			first.Part, first.Files, first.Names = partLabel(parts, 0, len(files)), fileList(parts), othersOf(parts, 0)
 		}
+		if criteria != nil {
+			first.Criteria = criteriaBlock(criteria.plan)
+		}
 		var answers []Review
 		for i, part := range parts {
 			prompt, in := reviewPromptFor(gates), any(first)
+			if i == 0 && criteria != nil {
+				prompt += reviewCriteria
+			}
 			if i > 0 {
 				prompt, in = reviewPartPrompt, reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
 					Part: partLabel(parts, i, len(files)), Files: first.Files, Names: othersOf(parts, i), LastFindings: lastFindings[i]}
@@ -1116,6 +1160,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		if rv.Note == "" {
 			rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
+			if criteria != nil {
+				findings := len(rv.Findings)
+				r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
+				if len(rv.Findings) > findings && rv.Verdict == "approve" {
+					rv.Verdict = "concerns"
+				}
+			}
 			read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(files), "file", "files"), kib(len(diff)))
 		}
 	}
@@ -1156,6 +1207,17 @@ func reviewComment(model, commit string, rv Review, read string) string {
 	for _, d := range rv.Dropped {
 		fmt.Fprintf(&b, "\n- Dropped by code, the repository contradicts it (%s): %s", d.Evidence, d.Finding)
 	}
+	for _, v := range rv.Criteria {
+		verdict := v.Verdict
+		if verdict == "" {
+			verdict = "the human approves the merge"
+		}
+		fix := ""
+		if v.Fix == "planner" {
+			fix = " (handed to the planner)"
+		}
+		fmt.Fprintf(&b, "\n- Criterion %s: **%s**. %s%s", v.Criterion, verdict, v.Evidence, fix)
+	}
 	fmt.Fprintf(&b, "\n\n%s", read)
 	return b.String()
 }
@@ -1170,6 +1232,13 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
+	}
+	// a card the plan has passed never asks for its merge (piece 10): it
+	// fails with the reason, its branch stays for the plan's re-run
+	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+		return err
+	} else if stale {
+		return terminalError("the plan moved to revision %d, the card ran against revision %d", newest, started)
 	}
 	g := in.Gates.Policy
 	if g.Factory {
@@ -1286,6 +1355,20 @@ func lastAttempt(ctx context.Context) bool {
 	return info.RetryPolicy != nil && info.RetryPolicy.MaximumAttempts > 0 && info.Attempt >= info.RetryPolicy.MaximumAttempts
 }
 
+// staleRevision names the plan's newest revision past the one the task
+// started against (piece 10): the card cannot merge until the plan is
+// re-run. stale is false for every task that is no started plan card.
+func (r *Runner) staleRevision(ctx context.Context, t Task) (newest, started int, stale bool, err error) {
+	if t.Source != SourcePlan || t.Parent == "" || t.PlanRevision == 0 {
+		return 0, 0, false, nil
+	}
+	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
+	if err != nil || !ok {
+		return 0, 0, false, err
+	}
+	return rev.Revision, t.PlanRevision, rev.Revision > t.PlanRevision, nil
+}
+
 func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
@@ -1293,6 +1376,13 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	}
 	if st.Merged {
 		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+	}
+	// the merge refuses a card the plan has passed (piece 10), the
+	// auto-merge's path and a request opened before the revision landed
+	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+		return MergeResult{}, err
+	} else if stale {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan moved to revision %d, the card ran against revision %d", newest, started)), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil

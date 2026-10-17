@@ -631,6 +631,9 @@ func (a *AcceptanceRig) PlanHoldouts(context.Context, string) ([]factoryd.Holdou
 }
 
 func (a *AcceptanceRig) PlanCards(context.Context, string) ([]factoryd.Task, error) { return nil, nil }
+func (a *AcceptanceRig) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
 
 func (a *AcceptanceRig) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
 	return nil, nil
@@ -809,6 +812,18 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
+func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []factoryd.ChatMessage
+	for _, m := range a.msgs {
+		if m.Repository == repository && m.Login == login && m.Kind == factoryd.MessageEscalation && m.TaskID != "" {
+			out = append(out, m.ChatMessage)
+		}
+	}
+	return out, nil
+}
+
 func (a *AcceptanceRig) CurrentConversation(context.Context, string, string) (int64, error) {
 	return 1, nil
 }
@@ -981,6 +996,8 @@ func (a *AcceptanceRig) RenameConversation(context.Context, string, string, int6
 }
 
 func (a *AcceptanceRig) MarkSeen(context.Context, string, string, int64) error { return nil }
+
+func (a *AcceptanceRig) MarkCleared(context.Context, string, string, int64) error { return nil }
 
 func (a *AcceptanceRig) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 

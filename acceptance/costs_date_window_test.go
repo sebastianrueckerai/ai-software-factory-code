@@ -288,6 +288,10 @@ func (s *acceptTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
+	return nil, nil
+}
+
 func (s *acceptTasks) Dependencies(_ context.Context, _ string) ([]factoryd.Dependency, error) {
 	return nil, nil
 }
@@ -626,6 +630,8 @@ func (f *acceptChat) RenameConversation(context.Context, string, string, int64, 
 
 func (f *acceptChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (f *acceptChat) MarkCleared(context.Context, string, string, int64) error { return nil }
+
 func (f *acceptChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
@@ -667,6 +673,10 @@ func (f *acceptChat) NewConversation(_ context.Context, repository, login string
 	}
 	f.convs[repository+" "+login] = highest + 1
 	return highest + 1, nil
+}
+
+func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+	return nil, nil
 }
 
 func (f *acceptChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {

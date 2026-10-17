@@ -70,13 +70,19 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // AtSessionCap: escalation is the card of a task at its session cap.
 func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
 
-// checkinSpendStop heads the card of a check-in stopped on its spend
-// above policy: the card's check-in share is spent.
-const checkinSpendStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
+// checkinShareStop heads the card of a check-in stopped on its spent
+// share of the budget, not its call cap: the share a human's answer
+// grants one more width of (versionCheckinGrant). A card with a green
+// head answers by verifying the head again (versionCheckinSpend), which
+// the lifecycle asks first.
+const checkinShareStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
 
-// AtCheckinSpend: escalation is the card of a check-in's spend stop, whose
-// answer grants the card one more check-in share (versionCheckinGrant).
-func AtCheckinSpend(escalation string) bool { return strings.HasPrefix(escalation, checkinSpendStop) }
+// AtCheckinShareStop: escalation is the card of a check-in's share stop,
+// whose answer grants the card one more check-in share
+// (versionCheckinGrant).
+func AtCheckinShareStop(escalation string) bool {
+	return strings.HasPrefix(escalation, checkinShareStop)
+}
 
 // atGateStop: escalation is the gate supervisor's stop of one of the
 // verification's gates (actOnGate), not of a session or the screening.
@@ -92,6 +98,29 @@ func atQueueLeft(escalation string) bool { return strings.HasPrefix(escalation, 
 // start, not a session's.
 func atReproStart(escalation string) bool {
 	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
+}
+
+// checkinSpendAsk opens the question a check-in stopped at its spent
+// budget asks (checkinBlock in the runner).
+const checkinSpendAsk = "check-in: " + CheckSpend + ": "
+
+// checkinCallCapStop is the reason a check-in stopped at its call cap,
+// the one stop whose answer buys the card a wider cap.
+const checkinCallCapStop = "check-in call cap reached"
+
+// atCheckinSpend: escalation is a check-in stopped at its spent budget,
+// its call cap or the budget's share: the answer verifies the head again,
+// no session, for one would stop at the same cap before any model call.
+func atCheckinSpend(escalation string) bool {
+	return strings.HasPrefix(escalation, checkinSpendAsk)
+}
+
+// atCheckinCallCap: escalation is a check-in stopped at its call cap,
+// not the budget's share (versionCheckinRaise): the answer buys the card
+// one more turn of the cap, for the session it buys would stop at the
+// same cap before any model call.
+func atCheckinCallCap(escalation string) bool {
+	return atCheckinSpend(escalation) && strings.Contains(escalation, checkinCallCapStop)
 }
 
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of

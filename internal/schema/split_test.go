@@ -86,13 +86,14 @@ func TestSplitStatementsSkipsEmptyPieces(t *testing.T) {
 	}
 }
 
-var leadingKeyword = regexp.MustCompile(`^(?i)(CREATE|ALTER|INSERT|UPDATE|DELETE|DROP|COMMENT|GRANT|WITH)\b`)
+var leadingKeyword = regexp.MustCompile(`^(?i)(CREATE|ALTER|INSERT|UPDATE|DELETE|DROP|COMMENT|GRANT|WITH|DO)\b`)
 
 // Every statement of every migration file starts with a SQL keyword: no
 // comment fragment can ever reach the database. WITH counts because a CTE
 // wrapping a data-modifying statement (0014_task_capabilities) is a
 // statement in its own right; a comment's tail ("a card's activity line")
-// never does.
+// never does. DO counts because a backfill's unmatched-row warning loop
+// (20261021100000_settling_birth_kind) is a PL/pgSQL statement of its own.
 func TestEveryMigrationFileSplitsIntoRealStatements(t *testing.T) {
 	filesWalked := 0
 	for _, set := range sets {

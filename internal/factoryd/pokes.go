@@ -45,6 +45,16 @@ var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "da
 var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardMoved: "moved", EventPlanStarted: "started",
 	EventPlanAccepted: "accepted", EventCardRetried: "retried", EventSessionGranted: "granted"}
 
+// PokeDelivery is a poke's messenger half (roadmap 145): the member level
+// its row asks (empty for a row that never leaves the factory), the
+// members whose derived default is needs-you (the resolved notify list),
+// and whether the project's file allows delivery.
+type PokeDelivery struct {
+	RowLevel string
+	Derived  []string
+	On       bool
+}
+
 // PokeStore is what the poke writer reads and writes.
 type PokeStore interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -52,10 +62,15 @@ type PokeStore interface {
 	// at most limit.
 	PokeEvents(ctx context.Context, limit int) ([]Event, error)
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	// PokeRecipients are a poke's recipients on repository: base plus every
+	// member whose explicit level row (needs-you or all) joins them.
+	PokeRecipients(ctx context.Context, repository string, base []string) ([]string, error)
 	// Poke writes m into the inbox thread of each of logins on repository,
-	// queued where queued says so, and moves the cursor past event id, in
-	// one transaction; it answers each login's new row, 0 for a repeat.
-	Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error)
+	// queued where queued says so, one pending delivery row per connection
+	// whose member's level passes plan's row level, and moves the cursor
+	// past event id, in one transaction; it answers each login's new row,
+	// 0 for a repeat.
+	Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage, plan PokeDelivery) ([]int64, error)
 }
 
 // Line is the chat's one line of writers on each thread (roadmap 263), the
@@ -114,7 +129,11 @@ func (p *Poker) Pass(ctx context.Context) error {
 			if ok {
 				to = pokeTo(tree, e.Repository)
 			}
-			if err := p.poke(ctx, e, to, m); err != nil {
+			plan := PokeDelivery{RowLevel: deliveryLevel(m), Derived: to, On: true}
+			if _, c, found := tree.ProjectOf(e.Repository); found {
+				plan.On = c.MessengersOn()
+			}
+			if err := p.poke(ctx, e, to, m, plan); err != nil {
 				return err
 			}
 		}
@@ -126,7 +145,14 @@ func (p *Poker) Pass(ctx context.Context) error {
 
 // poke writes m into the inbox of each of logins behind a turn in flight
 // there and moves the cursor past event e.
-func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessage) error {
+func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessage, plan PokeDelivery) error {
+	if plan.On && len(logins) > 0 {
+		joined, err := p.Store.PokeRecipients(ctx, e.Repository, logins)
+		if err != nil {
+			return err
+		}
+		logins = joined
+	}
 	queued, ids := make([]bool, len(logins)), make([]int64, len(logins))
 	var lands []func(...int64)
 	defer func() {
@@ -143,12 +169,26 @@ func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessag
 		queued[i], land = p.Line.Behind(e.Repository, login, n)
 		lands = append(lands, land)
 	}
-	got, err := p.Store.Poke(ctx, e.ID, e.Repository, logins, queued, m)
+	got, err := p.Store.Poke(ctx, e.ID, e.Repository, logins, queued, m, plan)
 	if err != nil {
 		return err
 	}
 	copy(ids, got)
 	return nil
+}
+
+// deliveryLevel is the member level a poke's row asks for its messenger
+// copy: every ask that needs a person, and the informs of a finished or
+// failed card or plan; the rest stays in the inbox.
+func deliveryLevel(m ChatMessage) string {
+	if m.Kind == MessageEscalation {
+		return LevelNeedsYou
+	}
+	switch m.BirthKind {
+	case EventTaskEnded, EventAllChildrenDone:
+		return LevelAll
+	}
+	return ""
 }
 
 // pokeTo are the members a poke on repository tells: its project's
@@ -166,7 +206,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	ref := cardRef(e, t)
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
-	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID}
+	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID, BirthKind: e.Kind}
 	switch e.Kind {
 	case EventQuestionAsked:
 		m.Kind = MessageEscalation
@@ -284,7 +324,7 @@ func (s *PGStore) PokeEvents(ctx context.Context, limit int) ([]Event, error) {
 		AND kind = ANY($1) ORDER BY id LIMIT $2`, pokeKinds, limit)
 }
 
-func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage) ([]int64, error) {
+func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins []string, queued []bool, m ChatMessage, plan PokeDelivery) ([]int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -316,6 +356,9 @@ func (s *PGStore) Poke(ctx context.Context, id int64, repository string, logins 
 		if ids[i], err = insertChatMessage(ctx, tx, repository, login, m); err != nil {
 			return nil, err
 		}
+	}
+	if err := queueDeliveries(ctx, tx, repository, logins, ids, plan); err != nil {
+		return nil, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_poke_cursor SET event_id = greatest(event_id, $1)`, id); err != nil {
 		return nil, err

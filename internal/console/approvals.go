@@ -15,6 +15,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
+// criterionRow is one criterion of a criteria approval card: the
+// criterion, its standing verdict and the evidence behind it.
+type criterionRow struct {
+	factoryd.PlanCriterion
+	Verdict  string
+	Evidence string
+}
+
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
 	factoryd.ApprovalRequest
@@ -25,6 +33,10 @@ type approvalCard struct {
 	Monthly  float64
 	Merge    factoryd.MergeSpec
 	Resource cloudres.ResourceSpec
+	// a plan's criteria gap: the spec, and the open criteria with their
+	// standing verdicts
+	CriteriaSpec factoryd.CriteriaSpec
+	Criteria     []criterionRow
 	// a plan: its revision, the summary and the cards in filing order
 	PlanSpec    factoryd.PlanSpec
 	PlanSummary string
@@ -113,11 +125,47 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		if err = c.planOf(ctx, &k); err != nil {
 			k.Problem = "the plan could not be read; see the factoryd log"
 		}
+	case factoryd.ApprovalCriteria:
+		err = c.criteriaOf(ctx, &k)
 	}
 	if err != nil {
 		log.Printf("console: approval request %d: %v", a.ID, err)
 	}
 	return k
+}
+
+// criteriaOf fills the criteria gap card k from its request's spec: the
+// plan's criteria with their standing verdicts (the approver's row over
+// the review's), the open ones the grant or a waiver answers.
+func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
+	if err := json.Unmarshal(k.Spec, &k.CriteriaSpec); err != nil {
+		return fmt.Errorf("spec: %w", err)
+	}
+	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
+	if err != nil || !ok {
+		return fmt.Errorf("revision %d of %s: found %v, %v", k.CriteriaSpec.Revision, k.TaskID, ok, err)
+	}
+	var p factoryd.Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
+	}
+	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, k.CriteriaSpec.Task)
+	if err != nil {
+		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
+	}
+	for _, c := range p.Criteria {
+		verdict, evidence := "", ""
+		for _, v := range rows {
+			if v.Criterion == c.ID && (v.Source == "approver" || verdict == "") {
+				verdict, evidence = v.Verdict, v.Evidence
+				if v.Source == "approver" {
+					break
+				}
+			}
+		}
+		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: verdict, Evidence: evidence})
+	}
+	return nil
 }
 
 // planOf fills plan card k from its request's revision.
@@ -194,6 +242,15 @@ func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
 		_, err := c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
+		return err
+	})
+}
+
+// waive records the member's waiver of one criterion of the criteria
+// request the path names, with their one-line reason (doWaive).
+func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
+		_, err := c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
 		return err
 	})
 }

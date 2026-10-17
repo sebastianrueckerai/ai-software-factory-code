@@ -1532,6 +1532,17 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
+	case factoryd.ApprovalCriteria:
+		if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
+			return "", err
+		}
+		n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.s.user, q.ID)
+		if err != nil {
+			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
+			return "", refuse(http.StatusInternalServerError, "the grant could not be recorded; see the factoryd log")
+		}
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
+		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
 	case factoryd.ApprovalMerge:
 		// a running card with a pending merge request runs its split
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
@@ -1553,12 +1564,26 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			}
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
 		}
+		// a card the plan has passed cannot merge (roadmap 291): the
+		// request opened before the revision landed
+		if t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanRevision > 0 {
+			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.Parent, 0); err == nil && ok && rev.Revision > t.PlanRevision {
+				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
+			}
+		}
 		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 			return "", &forgejoRefusal{"submit the approving review", err}
 		}
 		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.s.user); err != nil {
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, "your approving review is on the pull request, but the task's workflow could not be signalled; approve again")
+		}
+		if c.cfg.RecordHumanCriteria != nil {
+			if n, err := c.cfg.RecordHumanCriteria(ctx, q.TaskID, a.s.user); err != nil {
+				log.Printf("console: %s approved PR #%d of %s, the human criteria failed to record: %v", a.s.user, q.PRNumber, q.TaskID, err)
+			} else if n > 0 {
+				c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"pr": q.PRNumber, "criteria": n, "verb": "met"})
+			}
 		}
 		log.Printf("console: %s approved PR #%d of %s at %s via %s", a.s.user, q.PRNumber, q.TaskID, spec.HeadSHA, a.via)
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"pr": q.PRNumber})
@@ -1591,6 +1616,12 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Denied the resource.", nil
+	case factoryd.ApprovalCriteria:
+		if err := c.decide(ctx, a, q, "denied", note); err != nil {
+			return "", err
+		}
+		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
+		return "Denied the grant; waive a criterion instead if it should not hold.", nil
 	case factoryd.ApprovalMerge:
 	default:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
@@ -1638,6 +1669,35 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	}
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"pr": q.PRNumber, "action": action})
 	return fmt.Sprintf("Denied pull request #%d (%s).", q.PRNumber, strings.ReplaceAll(action, "_", " ")), nil
+}
+
+// doWaive records the member's waiver of criterion cid of the plan of
+// criteria approval request id, with their one-line reason: the criterion
+// no longer holds the plan open.
+func (c *Console) doWaive(ctx context.Context, a actor, id int64, cid, reason string) (string, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" || len(reason) > 2000 {
+		return "", refuse(http.StatusBadRequest, "a one-line reason of up to 2000 characters is required")
+	}
+	q, err := c.pendingRequest(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if q.Kind != factoryd.ApprovalCriteria {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which waives nothing", q.ID, q.Kind))
+	}
+	switch err := c.cfg.DecideCriterion(ctx, q.TaskID, cid, "waived", a.s.user, reason); {
+	case errors.Is(err, factoryd.ErrNoCriterion):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s; reload the board.", cid))
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
+	case err != nil:
+		log.Printf("console: %s waives %s of %s: %v", a.s.user, cid, q.TaskID, err)
+		return "", refuse(http.StatusInternalServerError, "the waiver could not be recorded; see the factoryd log")
+	}
+	log.Printf("console: %s waived criterion %s of %s via %s", a.s.user, cid, q.TaskID, a.via)
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criterion": cid, "verdict": "waived"})
+	return fmt.Sprintf("Criterion %s waived.", cid), nil
 }
 
 // doRerun runs the red checks of a factory pull request card again
