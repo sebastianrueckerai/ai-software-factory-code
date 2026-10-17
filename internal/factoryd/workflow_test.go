@@ -3495,3 +3495,272 @@ func TestWorkflowBeforeReviewRemarkConcernsWithoutFindingsCostASession(t *testin
 		t.Fatalf("final = %q, sessions = %+v; want the second session sent back with the summary as its finding", final, h.sessions)
 	}
 }
+
+// deadSessions answers RunSession one minute in, in order, recording each
+// input: the delay lets a signal land while a session runs, so the next
+// round's top drains it before the next input is built.
+func deadSessions(h *workflowHarness, results ...SessionResult) {
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
+}
+
+// A session that ran and ended without a push is the dead moment: the next
+// session's check-in asks about the stop — the dead session as the ask's
+// parent, the stop reason on it, no findings waiting — while the dead
+// session's stop lines ride beside it. A session whose own check-in already
+// ran hands its stop lines on without a second ask, and the moment
+// dissolves: no ask and no note ride the third input.
+func TestWorkflowDeadSessionGetsCheckin(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	note := "the branch holds the schema change; finish the migration on top"
+	deadSessions(h,
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped", Commit: "c1w", LastMessage: "tests still fail",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped again",
+			Findings: []string{"previous session ended unfinished: stopped"},
+			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: note,
+				Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	ask := h.sessions[1].CheckInAsk
+	if ask == nil || ask.Moment != CheckInDead || ask.ParentSession != "s1" || ask.Stop != "stopped" || len(ask.Findings) != 0 {
+		t.Fatalf("the dead ask = %+v, want the dead moment, s1 as parent and s1's stop on it", ask)
+	}
+	want := []string{"previous session ended unfinished: stopped", "the branch holds c1w; the gates have not judged it", "the agent's last message: tests still fail"}
+	if !slices.Equal(h.sessions[1].Findings, want) {
+		t.Fatalf("the dead session's brief = %q, want %q", h.sessions[1].Findings, want)
+	}
+	if h.sessions[2].CheckInAsk != nil || h.sessions[2].Handover != "" {
+		t.Fatalf("third session = %+v, want no second dead ask and no note: s2's check-in already ran", h.sessions[2])
+	}
+	if !slices.Equal(h.sessions[2].Findings, []string{"previous session ended unfinished: stopped"}) {
+		t.Fatalf("third session's findings = %q, want s2's stop lines alone: its check-in replaced the handover lines", h.sessions[2].Findings)
+	}
+	var handover *recordedStep
+	for i := range h.recorded {
+		if h.recorded[i].step == "handover" {
+			handover = &h.recorded[i]
+		}
+	}
+	if handover == nil || handover.detail["handover"] != note || handover.detail["session"] != "s2" {
+		t.Fatalf("handover steps = %+v, want s2's dead-moment note on the timeline", h.recorded)
+	}
+}
+
+// A dead-moment check-in that needs a human stops the round before another
+// session is bought: the ask names the dead moment when the check-in gave
+// no reason kind, and no third session runs.
+func TestWorkflowDeadCheckinHumanStopsBeforeTheConversation(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	deadSessions(h,
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "the session died with its work unpushed twice",
+			Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}))
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want two: the dead session and the check-in's own", len(h.sessions))
+	}
+	if !slices.Equal(h.escalated, []string{"check-in: dead: the session died with its work unpushed twice"}) {
+		t.Fatalf("escalations = %q, want the dead moment named", h.escalated)
+	}
+}
+
+// A dead-moment check-in that refuses runs the round on: its session was
+// sent back with the first session's stop lines and an empty handover
+// brief, and the dead moment dissolves into those stop lines — the next
+// input takes them with no ask.
+func TestWorkflowDeadCheckinRefusedRunsOn(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	deadSessions(h,
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped", Commit: "c1w", LastMessage: "tests still fail",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped again",
+			Findings: []string{"previous session ended unfinished: stopped"},
+			CheckIn: &CheckInOutcome{Decision: CheckHandover,
+				Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInDead {
+		t.Fatalf("the dead ask = %+v, want it riding the refused session", h.sessions[1].CheckInAsk)
+	}
+	want := []string{"previous session ended unfinished: stopped", "the branch holds c1w; the gates have not judged it", "the agent's last message: tests still fail"}
+	if !slices.Equal(h.sessions[1].Findings, want) {
+		t.Fatalf("the refused session's brief = %q, want %q", h.sessions[1].Findings, want)
+	}
+	if h.sessions[2].CheckInAsk != nil {
+		t.Fatalf("third session's ask = %+v, want none: no stale dead moment survives the refused check-in", h.sessions[2].CheckInAsk)
+	}
+	if !slices.Equal(h.sessions[2].Findings, []string{"previous session ended unfinished: stopped"}) {
+		t.Fatalf("third session's findings = %q, want the second session's stop lines alone", h.sessions[2].Findings)
+	}
+}
+
+// A dead session and fresh gate findings in the same round ask once: the
+// gate moment wins — the findings need judging — and the dead session's
+// stop lines ride the ask's findings as the session's own. The pull
+// request from the first session's push is what makes the change requests
+// count; the second one lands while the dead session runs. Its check-in
+// did not run (the runner skips it when it cannot), so the round is dead
+// under the plan's rule.
+func TestWorkflowGateAskWinsOverDead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	change1 := "reviewer sebastian requested changes: rename it"
+	change2 := "reviewer sebastian requested changes: rename the page"
+	deadSessions(h,
+		pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped",
+			Findings: []string{"previous session ended unfinished: stopped"}},
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+			Reason: "the change request conflicts with the card's guardrails",
+			Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}}))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+	h.signalAfter(100*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename the page"})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.sessions) != 3 {
+		t.Fatalf("sessions = %d, want three", len(h.sessions))
+	}
+	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInGate {
+		t.Fatalf("the second session's ask = %+v, want the gate moment from the first change request", h.sessions[1].CheckInAsk)
+	}
+	ask := h.sessions[2].CheckInAsk
+	if ask == nil || ask.Moment != CheckInGate || ask.ParentSession != "s2" ||
+		!slices.Equal(ask.Findings, []CheckFinding{{Text: change1, Source: "changes"}, {Text: change2, Source: "changes"}, {Text: "previous session ended unfinished: stopped", Source: "session"}}) {
+		t.Fatalf("the third session's ask = %+v, want the gate moment over the dead one, both change requests and the stop lines", ask)
+	}
+	if !slices.Equal(h.escalated, []string{"check-in: goal_conflict: the change request conflicts with the card's guardrails"}) {
+		t.Fatalf("escalations = %q", h.escalated)
+	}
+}
+
+// A mid-session handover rides the next session's brief when no ask goes
+// with it: the note the check-in's model wrote reaches the pod as the
+// brief's handover section, not as a finding. The first session's push
+// opens the pull request whose change request buys the second session at
+// the gate; the note's session runs ask-less, so the third carries the
+// note.
+func TestWorkflowMidSessionHandoverRidesTheBrief(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	note := "the pod dies at the next restart: continue from the branch"
+	change := "reviewer sebastian requested changes: rename it"
+	deadSessions(h,
+		pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped", Commit: "c2w",
+			LastMessage: "the migration is half applied",
+			Findings:    []string{"previous session ended unfinished: stopped"},
+			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: note,
+				Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
+		t.Fatalf("final = %q after %d sessions", final, len(h.sessions))
+	}
+	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInGate {
+		t.Fatalf("the second session's ask = %+v, want the gate moment from the change request", h.sessions[1].CheckInAsk)
+	}
+	if h.sessions[2].Handover != note {
+		t.Fatalf("third session's handover = %q, want the mid-session note riding the brief", h.sessions[2].Handover)
+	}
+	if h.sessions[2].CheckInAsk != nil {
+		t.Fatalf("third session's ask = %+v, want none: the handover needs no check-in", h.sessions[2].CheckInAsk)
+	}
+	if !slices.Equal(h.sessions[2].Findings, []string{change, "previous session ended unfinished: stopped"}) {
+		t.Fatalf("third session's findings = %q, want the change request and the stop lines without the note", h.sessions[2].Findings)
+	}
+}
+
+// A mid-session handover whose next session carries an ask is timeline
+// only: the ask crowds the note out of the brief, the handover step holds
+// it for the ask's round to read, and the handover lines the note
+// replaces do not ride either. The pull request from the first session's
+// push makes both change requests count; the second lands while the
+// note's session runs. That session is ask-less — the second session's
+// check-in ran at the gate and refused — so without the ask the note
+// would ride.
+func TestWorkflowMidSessionHandoverBeforeAnAskIsTimelineOnly(t *testing.T) {
+	cfg := testWorkflowConfig
+	cfg.MaxSessions = 4
+	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	h.taskConfig = askTaskConfig()
+	note := "stay on the branch: the change request renames the page"
+	change1 := "reviewer sebastian requested changes: rename it"
+	change2 := "reviewer sebastian requested changes: rename the page"
+	deadSessions(h,
+		pushed("s1", "c1"),
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped",
+			Findings: []string{"previous session ended unfinished: stopped"},
+			CheckIn: &CheckInOutcome{Decision: CheckHandover,
+				Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Summary: "stopped again", Commit: "c3w",
+			LastMessage: "the page still renders",
+			Findings:    []string{"previous session ended unfinished: stopped"},
+			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: note,
+				Record: &CheckInRecord{Moment: CheckInSession, Session: "s3", ParentSession: "s2"}}},
+		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict,
+			Reason: "the change request asks for a rename the card forbids",
+			Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}}))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(90*time.Second, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+	h.signalAfter(3*time.Minute, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename the page"})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.sessions) != 4 {
+		t.Fatalf("sessions = %d, want four", len(h.sessions))
+	}
+	if h.sessions[2].CheckInAsk != nil {
+		t.Fatalf("the note session's ask = %+v, want none", h.sessions[2].CheckInAsk)
+	}
+	ask := h.sessions[3].CheckInAsk
+	if ask == nil || ask.Moment != CheckInGate {
+		t.Fatalf("the fourth session's ask = %+v, want the gate moment", ask)
+	}
+	if h.sessions[3].Handover != "" {
+		t.Fatalf("fourth session's handover = %q, want none: an ask crowds the note out to the timeline", h.sessions[3].Handover)
+	}
+	if !slices.Equal(h.sessions[3].Findings, []string{change1, change2, "previous session ended unfinished: stopped"}) {
+		t.Fatalf("fourth session's findings = %q, want the change requests and the stop lines without the handover lines the note replaced", h.sessions[3].Findings)
+	}
+	var handover *recordedStep
+	for i := range h.recorded {
+		if h.recorded[i].step == "handover" {
+			handover = &h.recorded[i]
+		}
+	}
+	if handover == nil || handover.detail["handover"] != note || handover.detail["session"] != "s3" {
+		t.Fatalf("handover steps = %+v, want s3's note on the timeline for the ask's round to read", h.recorded)
+	}
+}

@@ -36,6 +36,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -2754,5 +2755,30 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	r.cfg.Prices = nil
 	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap"); err != nil || why != "" {
 		t.Fatalf("no prices: (%q, %v), want funded", why, err)
+	}
+}
+
+// A session that pushed goes to verification even when its check-in's
+// decision raced the finish, and a mid-session handover that ended the
+// session on a trip names the trip in its summary with the record riding:
+// the outcome's own shape decides, the check-in rides beside it.
+func TestSessionResultPushBeatsCheckin(t *testing.T) {
+	ride := &CheckInOutcome{Decision: CheckHuman, Reason: "a human decides the merge",
+		Record: &CheckInRecord{Moment: CheckInSession, Session: "s1"}}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{
+		result: &harness.Result{Success: true, Summary: "pushed branch factory/t1 at c1"},
+		commit: "c1", agentText: "done", checkIn: ride})
+	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.Summary != "pushed branch factory/t1 at c1" || res.CheckIn != ride {
+		t.Fatalf("pushed under a check-in: %+v, want verification of c1 with the record riding", res)
+	}
+	res = sessionResult(sessionSpec{id: "s2"}, sessionOutcome{
+		trip: &Trip{Kind: TripSameFailure, Detail: "the build stays red"}, commit: "c-wip",
+		agentText: "the branch holds the work",
+		checkIn: &CheckInOutcome{Decision: CheckHandover, Handover: "stamp the rows, do not drop the check",
+			Record: &CheckInRecord{Moment: CheckInSession, Session: "s2", ParentSession: "s1"}}})
+	if res.Outcome != OutcomeNoPush || res.Summary != "check-in: handover after same_failure" ||
+		res.Trip != string(TripSameFailure) || res.Commit != "c-wip" ||
+		res.LastMessage != "the branch holds the work" || res.CheckIn == nil {
+		t.Fatalf("mid-session handover on a trip: %+v", res)
 	}
 }

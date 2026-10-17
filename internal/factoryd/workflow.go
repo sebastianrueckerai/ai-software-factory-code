@@ -1085,6 +1085,7 @@ type taskRun struct {
 	keepWork          workflow.Version
 	judged            []string // the heads a verification took up (versionKeepWork)
 	gateFindings      bool     // findings wait for the check-in of the next session (plan D); not rebuilt by Reconcile
+	deadFrom          string   // the session that ended without a push and without a check-in (plan E); not rebuilt by Reconcile
 	lastGates         GateResults
 	checkinVerdicts   []map[string]CheckVerdict // every check-in's verdicts, the priors the guards read
 	answerScreening   workflow.Version
@@ -1193,6 +1194,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// reviewer asked for — for the check-in's ask.
 	var findings, own []string
 	var sources []string
+	var handoverNote string // a mid-session check-in's note, riding the next ask-less brief (plan E)
 	setFindings := func(fs []string, from string) {
 		findings, sources = fs, slices.Repeat([]string{from}, len(fs))
 	}
@@ -1575,17 +1577,26 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
-		checkinComing := t.gateFindings && t.cfg.Task.CheckIn > 0
-		if checkinComing {
-			in.CheckInAsk = t.checkinAsk(parent, slices.Concat(findings, own),
-				append(slices.Clone(sources), slices.Repeat([]string{"session"}, len(own))...), t.lastGates)
-		}
+		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
+		var gates *GateResults
 		if len(t.reviews) > 0 {
 			g := t.lastGates
-			in.LastGates = &g
+			gates = &g
+		}
+		in.LastGates = gates
+		if checkinPending {
+			switch {
+			case t.gateFindings:
+				in.CheckInAsk = t.checkinAsk(parent, slices.Concat(findings, own),
+					append(slices.Clone(sources), slices.Repeat([]string{"session"}, len(own))...), t.lastGates)
+			default:
+				in.CheckInAsk = t.deadAsk(reason, gates)
+			}
+		} else {
+			in.Handover = handoverNote
 		}
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, in)
-		t.gateFindings = false
+		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
@@ -1682,11 +1693,26 @@ func (t *taskRun) lifecycle() (string, error) {
 		// them, and an earlier session's lines are stale. One that never
 		// started has no lines of its own; a pushed one's commit goes to
 		// verification, whose apply drops them.
+		midNote := res.CheckIn != nil && res.CheckIn.Record != nil && res.CheckIn.Record.Moment == CheckInSession
 		if !res.StartFailed {
 			own = res.Findings
-			if !checkinComing {
+			if !checkinPending && !midNote {
 				// the check-in's handover replaces these
 				own = slices.Concat(own, t.handoverLines(res))
+			}
+			if res.CheckIn == nil {
+				// the check-in did not run: the round ended dead, and its
+				// stop reason asks the next session's check-in (plan E)
+				switch res.Outcome {
+				case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeWallClock:
+					t.deadFrom = res.SessionID
+				case OutcomeDayCap:
+					if res.Capped == nil || res.Capped.Allowed {
+						t.deadFrom = res.SessionID
+					}
+				}
+			} else if midNote {
+				handoverNote = res.CheckIn.Handover
 			}
 		}
 		if dayCapped {
@@ -1716,7 +1742,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		case OutcomeCheckinHuman:
-			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, "gate")+": "+res.Reason, nil)); final != "" {
+			var moment string
+			if res.CheckIn.Record != nil {
+				moment = res.CheckIn.Record.Moment
+			}
+			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
 			buy()
@@ -1853,6 +1883,12 @@ func (t *taskRun) checkinAsk(parent string, findings, sources []string, g GateRe
 		ask.Review = &vs[0]
 	}
 	return ask
+}
+
+// deadAsk is the dead moment's ask (plan E): no findings wait, the stop
+// reason is what the last session stopped on, and the handover is the ask.
+func (t *taskRun) deadAsk(stop string, gates *GateResults) *CheckInAsk {
+	return &CheckInAsk{Moment: CheckInDead, ParentSession: t.deadFrom, Stop: stop, Gates: gates}
 }
 
 // recordCheckin keeps a check-in on the timeline beside the review it
