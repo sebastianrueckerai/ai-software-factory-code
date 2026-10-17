@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -1081,6 +1082,53 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer, but a session still cannot start: %s", t.IssueNumber, eur, to, short))
 	}
 	return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f and posted your note as the answer; the card resumes.", t.IssueNumber, eur, to), nil
+}
+
+// doChatFund raises the project's chat task's monthly budget by eur, the
+// approver's answer to the chat-budget-spent ask: the pulse and the chat
+// stand still until the raise or the month's turn, and one store
+// transaction raises budget_eur — the event row is the raise's audit
+// trail as a card's is. The next month's chat task starts at the
+// policy's monthly budget again, so the raise is this month's alone.
+func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur float64, note string) error {
+	note = strings.TrimSpace(note)
+	switch {
+	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
+		return refuse(http.StatusBadRequest, "an amount in EUR above zero is required")
+	}
+	if err := answerFits(note); err != nil {
+		return err
+	}
+	p, ok, err := c.projectOf(ctx, name)
+	switch {
+	case err != nil:
+		log.Printf("console: the projects: %v", err)
+		return refuse(http.StatusInternalServerError, "cannot read the projects")
+	case !ok:
+		return refuse(http.StatusNotFound, "There is no project "+name+".")
+	}
+	t, ok, err := c.cfg.Tasks.Task(ctx, factoryd.ChatTaskID(p.Name, time.Now()))
+	switch {
+	case err != nil:
+		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
+		return refuse(http.StatusInternalServerError, "cannot read the chat task")
+	case !ok || t.Kind != factoryd.KindChat || t.Status != "running":
+		return refuse(http.StatusConflict, "the project's chat has spent no budget: its task starts with the chat's or the pulse's first turn of the month")
+	case t.SpentEUR < t.BudgetEUR:
+		return refuse(http.StatusConflict, fmt.Sprintf("the chat's budget of €%.2f is not spent: it needs no raise", t.BudgetEUR))
+	}
+	from, to, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		return refuse(http.StatusNotFound, "There is no project "+name+".")
+	case err != nil:
+		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
+		return refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
+	}
+	log.Printf("console: %s raised the chat of %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, p.Repository, eur, from, to, a.via, note)
+	c.record(ctx, a, p.Repository, t.ID, 0, factoryd.EventChatFunded,
+		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
+	return nil
 }
 
 // doClose closes card id's issue as the member, its note commented first

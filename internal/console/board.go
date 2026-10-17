@@ -1142,7 +1142,10 @@ func (f boardFilter) query() string {
 // UTC month (the chat's part apart) against its month cap, and its GitHub
 // export's state word.
 type statusLine struct {
-	Project                   string
+	Project string
+	// Filter is the board's own, which the panel's forms carry back so
+	// an action keeps the view (the cards' forms carry their card's).
+	Filter                    boardFilter
 	State                     string
 	Working, Waiting, NeedYou int
 	Spend                     factoryd.ProjectSpend
@@ -1157,6 +1160,19 @@ type statusLine struct {
 	// ("↻ bump in 20 min"), "" for none.
 	RoutineCell string
 	RoutineHeld bool
+	// ChatSpent: the project's chat task spent its monthly budget, which
+	// stands the pulse and the chat until a raise (the Fund the chat
+	// form) or the month's turn; ChatTask is its task id. Approver: the
+	// viewer may fund it.
+	ChatSpent bool
+	ChatTask  string
+	Approver  bool
+	// PulseCell is the strip's cell for the newest pulse's age once older
+	// than two minutes ("pulse 4 h old"); PulseFrozen marks one past the
+	// backoff on a project with an event in the last hour — stale, not
+	// quiet (the warn class).
+	PulseCell   string
+	PulseFrozen bool
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -2264,8 +2280,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		arrange(&d, f)
 	}
 	if shown.Name != "" {
-		c.statusLine(ctx, v, shown, &d)
+		// the pulse first: its age is one of the strip's cells
 		d.Pulse = c.pulseOf(r, shown)
+		c.statusLine(ctx, v, f, shown, &d)
 		if c.cfg.Routines != nil {
 			c.placeGhosts(ctx, &d)
 		}
@@ -2320,10 +2337,11 @@ func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter,
 
 // statusLine completes the board's status line with the project's state
 // word, its spend this UTC month (its chat's included) and its month cap:
-// its file's budget.month_eur, else the policy's.
-func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Project, d *boardData) {
+// its file's budget.month_eur, else the policy's; the spent state of its
+// chat's monthly budget, and the age of its newest pulse once stale.
+func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p factoryd.Project, d *boardData) {
 	s := &d.Status
-	s.Project = p.Name
+	s.Project, s.Filter = p.Name, f
 	switch {
 	case s.NeedYou > 0:
 		s.State = "waiting on you"
@@ -2344,6 +2362,28 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, p factoryd.Proje
 	if s.TodayEUR, err = c.cfg.Costs.DaySpend(ctx, time.Now().UTC()); err != nil {
 		log.Printf("console: the spend today: %v", err)
 		d.Problems = append(d.Problems, "the spend today could not be read")
+	}
+	s.Approver = v.approves(p.Repository)
+	if t, ok, err := c.cfg.Tasks.Task(ctx, factoryd.ChatTaskID(p.Name, time.Now())); err != nil {
+		log.Printf("console: the chat task of %s: %v", p.Repository, err)
+		d.Problems = append(d.Problems, "the chat's budget could not be read")
+	} else if ok && t.Kind == factoryd.KindChat && t.Status == "running" && t.SpentEUR >= t.BudgetEUR {
+		s.ChatSpent, s.ChatTask = true, t.ID
+	}
+	if d.Pulse != nil {
+		if age := time.Since(d.Pulse.At); age > 2*time.Minute {
+			s.PulseCell = "pulse " + coarse(age) + " old"
+			// stale past the backoff means the pulse stopped computing:
+			// a project with events in the last hour should have one
+			// fresher, a quiet one may not
+			if age > 20*time.Minute && c.cfg.Events != nil {
+				if es, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, 0, 1); err != nil {
+					log.Printf("console: the events of %s: %v", p.Repository, err)
+				} else if len(es) > 0 && time.Since(es[0].At) < time.Hour {
+					s.PulseFrozen = true
+				}
+			}
+		}
 	}
 	if c.cfg.Mirrors == nil {
 		return
@@ -2829,6 +2869,21 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason")); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+}
+
+// chatFund raises the project's chat task's monthly budget (doChatFund),
+// the approver's answer to the spent-chat-budget ask.
+func (c *Console) chatFund(w http.ResponseWriter, r *http.Request) {
+	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
+		return
+	}
+	if err := c.doChatFund(r.Context(), button(r), r.PathValue("name"), eur, r.PostFormValue("reason")); err != nil {
 		c.fail(w, r, err)
 		return
 	}

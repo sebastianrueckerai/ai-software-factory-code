@@ -37,6 +37,7 @@ const (
 	pulseFallback = time.Minute
 	pulseActive   = time.Hour
 	pulseBackoff  = 15 * time.Minute // the longest wait after failed computations
+	pulseAskWait  = time.Hour        // how long a chat budget's ask stands before it may repeat
 	pulseSentence = 140              // characters
 	pulseBullet   = 100
 	pulseTokens   = 1024
@@ -75,6 +76,12 @@ type Pulser struct {
 	// and its last PulseEvents events, and whether a card on it waits on
 	// a human (the console's PulseContext).
 	Context func(ctx context.Context, p Project) (text string, waiting bool, err error)
+	// asked is when each chat task's budget-spent ask last went out
+	// (budgetAsk): repeats wait for pulseAskWait, so the pulser's backing
+	// off on a spent budget counts on the inbox's row instead of writing
+	// it anew.
+	asked   map[string]time.Time
+	askedMu sync.Mutex
 }
 
 // Run watches each project agents work on until ctx ends, reading the
@@ -233,6 +240,7 @@ func (pl *Pulser) compute(ctx context.Context, p Project) error {
 		return fmt.Errorf("its chat task: %w", err)
 	}
 	if task.SpentEUR >= task.BudgetEUR {
+		pl.budgetAsk(ctx, p, task)
 		return fmt.Errorf("the chat task's budget of €%.2f is spent", task.BudgetEUR)
 	}
 	pl.event(ctx, p, EventPulseComputing, nil)
@@ -272,6 +280,27 @@ func (pl *Pulser) event(ctx context.Context, p Project, kind string, detail map[
 	if _, err := pl.Store.Record(ctx, Event{Repository: p.Repository, Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
 		log.Printf("pulse of %s: event %s: %v", p.Name, kind, err)
 	}
+}
+
+// budgetAsk asks the inbox that chat task t spent its monthly budget,
+// which stands the pulse and the chat until a raise or the month's turn:
+// the event the Poker turns into the inbox's row, delivered at the
+// needs-you level. Within pulseAskWait the ask stands, its repeats
+// counting on the row (74's rule) instead of writing it anew, so a
+// restart's single repeat is the worst it costs.
+func (pl *Pulser) budgetAsk(ctx context.Context, p Project, t Task) {
+	now := time.Now()
+	pl.askedMu.Lock()
+	if at, ok := pl.asked[t.ID]; ok && now.Sub(at) < pulseAskWait {
+		pl.askedMu.Unlock()
+		return
+	}
+	if pl.asked == nil {
+		pl.asked = map[string]time.Time{}
+	}
+	pl.asked[t.ID] = now
+	pl.askedMu.Unlock()
+	pl.event(ctx, p, EventChatBudgetSpent, map[string]any{"budget_eur": t.BudgetEUR})
 }
 
 func pulsePrompt(name string) string {

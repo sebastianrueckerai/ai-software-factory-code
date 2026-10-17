@@ -36,7 +36,7 @@ const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
-	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan}
+	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
@@ -178,8 +178,9 @@ func (p *Poker) poke(ctx context.Context, e Event, logins []string, m ChatMessag
 }
 
 // deliveryLevel is the member level a poke's row asks for its messenger
-// copy: every ask that needs a person, and the informs of a finished or
-// failed card or plan; the rest stays in the inbox.
+// copy: every ask that needs a person, a chat budget spent among them,
+// and the informs of a finished or failed card or plan; the rest stays
+// in the inbox.
 func deliveryLevel(m ChatMessage) string {
 	if m.Kind == MessageEscalation {
 		return LevelNeedsYou
@@ -187,6 +188,8 @@ func deliveryLevel(m ChatMessage) string {
 	switch m.BirthKind {
 	case EventTaskEnded, EventAllChildrenDone:
 		return LevelAll
+	case EventChatBudgetSpent:
+		return LevelNeedsYou
 	}
 	return ""
 }
@@ -255,6 +258,9 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
+	case EventChatBudgetSpent:
+		budget, _ := e.Detail["budget_eur"].(float64)
+		m.Content = fmt.Sprintf("The chat's monthly budget of €%.2f is spent: the pulse and the chat stand until it is raised (Fund the chat on the board) or the month turns.", budget)
 	case EventRoutineRan:
 		if str("poke") == "" {
 			return m, false

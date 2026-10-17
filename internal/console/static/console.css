@@ -378,6 +378,10 @@ form.move button { padding: 0 6px; }
 .escalation form.fund label { margin: 0; }
 .escalation form.fund input[type=number] { width: 7rem; }
 .escalation form.fund button { height: 28px; background: none; color: var(--text); border-color: var(--btn-line); }
+.sp form.fund { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; margin-top: 8px; }
+.sp form.fund label { margin: 0; }
+.sp form.fund input[type=number] { width: 7rem; }
+.sp form.fund button { height: 28px; background: none; color: var(--text); border-color: var(--btn-line); }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 4px 0; font-size: 13px; }
 .facts dt { color: var(--text-muted); font-weight: 400; font-size: 12.5px; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
