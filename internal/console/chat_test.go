@@ -49,6 +49,11 @@ type fakeChat struct {
 	// cards are the bound card threads (the card door) by repository and
 	// task
 	cards map[string]boundThread
+	// watches are the stored card watches and timers the stored one-shot
+	// timers: the watch_card, unwatch_card and set_timer tools' rows
+	// (the timers concept)
+	watches []storedWatch
+	timers  []storedTimer
 	// summaries are the threads' compactions by repository, login and
 	// thread; tokens the newest call's tokens by thread reference, which a
 	// test sets, and totals its calls' sums
@@ -74,6 +79,21 @@ type fakeProposal struct {
 type boundThread struct {
 	login string
 	n     int64
+}
+
+// storedWatch is a fakeChat watch row: the member's thread that watches
+// the card.
+type storedWatch struct {
+	repository, login, taskID string
+	conversation              int64
+}
+
+// storedTimer is a fakeChat timer row: the thread it wakes, its due time
+// and its note.
+type storedTimer struct {
+	repository, login, note, taskID string
+	conversation                    int64
+	due                             time.Time
 }
 
 // spendRow is a ledger row of a task of repository on day, chat when the
@@ -186,6 +206,41 @@ func (f *fakeChat) CardThreadFor(_ context.Context, repository, taskID string) (
 	defer f.mu.Unlock()
 	b, ok := f.cards[repository+" "+taskID]
 	return b.login, b.n, ok, nil
+}
+
+func (f *fakeChat) AddChatWatch(_ context.Context, repository, login string, conversation int64, taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.watches {
+		if w.repository == repository && w.login == login && w.taskID == taskID {
+			f.watches[i].conversation = conversation
+			return nil
+		}
+	}
+	f.watches = append(f.watches, storedWatch{repository, login, taskID, conversation})
+	return nil
+}
+
+func (f *fakeChat) RemoveChatWatch(_ context.Context, repository, login, taskID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.watches {
+		if w.repository == repository && w.login == login && w.taskID == taskID {
+			f.watches = append(f.watches[:i], f.watches[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeChat) AddChatTimer(_ context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n := len(f.watches) + len(f.timers); n >= factoryd.WakeTimersMax {
+		return fmt.Errorf("%w: it holds %d of %d, end one first.", factoryd.ErrChatWakeCap, n, factoryd.WakeTimersMax)
+	}
+	f.timers = append(f.timers, storedTimer{repository, login, note, taskID, conversation, due})
+	return nil
 }
 
 func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {
@@ -943,12 +998,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset"}},
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)

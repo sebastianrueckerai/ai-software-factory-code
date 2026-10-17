@@ -844,6 +844,16 @@ func (f *accBatchChat) ProjectConversations(context.Context, string) ([]factoryd
 	return nil, nil
 }
 
+func (f *accBatchChat) AddChatWatch(context.Context, string, string, int64, string) error { return nil }
+
+func (f *accBatchChat) RemoveChatWatch(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+
+func (f *accBatchChat) AddChatTimer(context.Context, string, string, int64, time.Time, string, string) error {
+	return nil
+}
+
 func (f *accBatchChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
 	return nil, nil
 }

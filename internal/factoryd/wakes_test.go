@@ -55,7 +55,8 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	for _, table := range []string{"events", "tasks", "chat_messages", "chat_conversations", "chat_wake_cursor", "chat_wake_state"} {
+	for _, table := range []string{"events", "tasks", "chat_messages", "chat_conversations", "chat_watches", "chat_timers",
+		"chat_wake_cursor", "chat_wake_state"} {
 		if _, err := s.db.ExecContext(t.Context(), `TRUNCATE `+table+` CASCADE`); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
 		}

@@ -525,6 +525,140 @@ func threadTitle(content string) string {
 	return textutil.Truncate(strings.Join(strings.Fields(content), " "), 80)
 }
 
+// ChatWatch is a member's stored subscription on a card: the card's
+// moves wake the watching thread (the timers concept).
+type ChatWatch struct {
+	Repository   string
+	Login        string
+	Conversation int64
+	TaskID       string
+}
+
+// ChatTimer is a stored one-shot timer: the Waker wakes its thread with
+// its note when it comes due and the row is gone, so a rearm is a new
+// row. TaskID binds it to a card, whose end takes it with the watch.
+type ChatTimer struct {
+	ID           int64
+	Repository   string
+	Login        string
+	Conversation int64
+	DueAt        time.Time
+	Note         string
+	TaskID       string
+}
+
+// wakeCapped is the refusal of an add past a project's cap of watches
+// and timers: it names the count, so the tool's answer carries it.
+func wakeCapped(n int) error {
+	return fmt.Errorf("%w: it holds %d of %d, end one first.", ErrChatWakeCap, n, WakeTimersMax)
+}
+
+// AddChatWatch stores login's watch of taskID on the thread
+// conversation, the row it already has for the card when there is one.
+func (s *PGStore) AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error {
+	// a watch the member already holds replaces itself, so it never meets
+	// the cap
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM chat_watches WHERE repository = $1)
+		+ (SELECT count(*) FROM chat_timers WHERE repository = $1)
+		- count(*) FROM chat_watches WHERE repository = $1 AND login = $2 AND task_id = $3`,
+		repository, login, taskID).Scan(&n); err != nil {
+		return err
+	}
+	if n >= WakeTimersMax {
+		return wakeCapped(n)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_watches (repository, login, conversation, task_id)
+		VALUES ($1, $2, $3, $4) ON CONFLICT (repository, login, task_id) DO UPDATE SET conversation = excluded.conversation`,
+		repository, login, conversation, taskID)
+	return err
+}
+
+// RemoveChatWatch ends login's watch of taskID and says whether there
+// was one.
+func (s *PGStore) RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_watches WHERE repository = $1 AND login = $2 AND task_id = $3`,
+		repository, login, taskID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// AddChatTimer stores a one-shot timer that wakes the thread
+// conversation with its note at due, bound to taskID's card when it is
+// not empty.
+func (s *PGStore) AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM chat_watches WHERE repository = $1)
+		+ (SELECT count(*) FROM chat_timers WHERE repository = $1)`, repository).Scan(&n); err != nil {
+		return err
+	}
+	if n >= WakeTimersMax {
+		return wakeCapped(n)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_timers (repository, login, conversation, due_at, note, task_id)
+		VALUES ($1, $2, $3, $4, $5, nullif($6, ''))`, repository, login, conversation, due, note, taskID)
+	return err
+}
+
+// DueChatTimers answers repository's timers due by now, the oldest
+// first.
+func (s *PGStore) DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, repository, login, conversation, due_at, note, coalesce(task_id, '')
+		FROM chat_timers WHERE repository = $1 AND due_at <= $2 ORDER BY due_at, id`, repository, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ts []ChatTimer
+	for rows.Next() {
+		var t ChatTimer
+		if err := rows.Scan(&t.ID, &t.Repository, &t.Login, &t.Conversation, &t.DueAt, &t.Note, &t.TaskID); err != nil {
+			return nil, err
+		}
+		ts = append(ts, t)
+	}
+	return ts, rows.Err()
+}
+
+// DeleteChatTimer takes repository's timer id, the fired row.
+func (s *PGStore) DeleteChatTimer(ctx context.Context, repository string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM chat_timers WHERE repository = $1 AND id = $2`, repository, id)
+	return err
+}
+
+// ChatWatchesFor answers repository's watches of taskID's card, the
+// oldest first.
+func (s *PGStore) ChatWatchesFor(ctx context.Context, repository, taskID string) ([]ChatWatch, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository, login, conversation, task_id
+		FROM chat_watches WHERE repository = $1 AND task_id = $2 ORDER BY id`, repository, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ws []ChatWatch
+	for rows.Next() {
+		var w ChatWatch
+		if err := rows.Scan(&w.Repository, &w.Login, &w.Conversation, &w.TaskID); err != nil {
+			return nil, err
+		}
+		ws = append(ws, w)
+	}
+	return ws, rows.Err()
+}
+
+// DeleteChatWatchesOfTask ends every watch of taskID's card on
+// repository and takes the timers bound to the card with them.
+func (s *PGStore) DeleteChatWatchesOfTask(ctx context.Context, repository, taskID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chat_watches WHERE repository = $1 AND task_id = $2`, repository, taskID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM chat_timers WHERE repository = $1 AND task_id = $2`, repository, taskID)
+	return err
+}
+
 // AddChatMessage appends m to login's thread m.Conversation on
 // repository, their current one for 0, and answers its id; the thread's
 // row is made with its first message's title when it has none, the

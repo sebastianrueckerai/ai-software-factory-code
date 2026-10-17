@@ -1026,6 +1026,18 @@ func (a *AcceptanceRig) CardThreadFor(context.Context, string, string) (string, 
 	return "", 0, false, nil
 }
 
+func (a *AcceptanceRig) AddChatWatch(context.Context, string, string, int64, string) error {
+	return nil
+}
+
+func (a *AcceptanceRig) RemoveChatWatch(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+
+func (a *AcceptanceRig) AddChatTimer(context.Context, string, string, int64, time.Time, string, string) error {
+	return nil
+}
+
 func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
 }

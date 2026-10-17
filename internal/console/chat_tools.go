@@ -32,6 +32,7 @@ type toolInput struct {
 	Text       string `json:"text,omitempty"`
 	Question   int    `json:"question,omitempty"`
 	Note       string `json:"note,omitempty"`
+	Minutes    int    `json:"minutes,omitempty"`
 	Action     string `json:"action,omitempty"`
 	Revision   int    `json:"revision,omitempty"`
 	SHA256     string `json:"sha256,omitempty"`
@@ -1477,6 +1478,23 @@ var tools = []chatTool{
 		about: "Clears the board's view controls to the default and closes the drawer.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(toolInput{}, true) },
 	},
+	{name: "watch_card", title: "Watch a card",
+		params:   map[string]any{"task_id": taskParam},
+		required: []string{"task_id"},
+		about:    "Watch a card: its moves wake this thread.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.watchCard(in); return s, nil, err }},
+	{name: "unwatch_card", title: "End a watch",
+		params:   map[string]any{"task_id": taskParam},
+		required: []string{"task_id"},
+		about:    "End this thread's watch on a card.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.unwatchCard(in); return s, nil, err }},
+	{name: "set_timer", title: "Set a timer",
+		params: map[string]any{"minutes": map[string]any{"type": "integer", "description": "the minutes from now, 1 to 1440", "minimum": 1, "maximum": 1440},
+			"note":    str("the note the wake carries, 1 to 200 characters"),
+			"task_id": str("the card this timer dies with, its task id or issue number")},
+		required: []string{"minutes", "note"},
+		about:    "Set a one-shot timer that wakes this thread with its note.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)

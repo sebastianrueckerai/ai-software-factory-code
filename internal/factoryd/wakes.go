@@ -28,6 +28,10 @@ type WakeStore interface {
 	CreateTask(ctx context.Context, t Task) error
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error)
+	DeleteChatTimer(ctx context.Context, repository string, id int64) error
+	ChatWatchesFor(ctx context.Context, repository, taskID string) ([]ChatWatch, error)
+	DeleteChatWatchesOfTask(ctx context.Context, repository, taskID string) error
 	WakeEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	WakeCursor(ctx context.Context, repository string) (int64, error)
 	SetWakeCursor(ctx context.Context, repository string, id int64) error
@@ -61,7 +65,15 @@ const (
 	wakeCooldown = 60 * time.Second
 	// wakeBatch bounds the events one read takes.
 	wakeBatch = 100
+	// WakeTimersMax is a project's cap across watches and timers, the
+	// runaway self-scheduling guard: an add past it is refused with the
+	// count (ErrChatWakeCap).
+	WakeTimersMax = 16
 )
+
+// ErrChatWakeCap is a project's watches-and-timers cap: the adding store
+// call returns it wrapped with the count.
+var ErrChatWakeCap = errors.New("this project's watches and timers are full")
 
 // wakeKinds are the events the Waker reads: the asks, and the card and
 // task moves the watches and the heartbeat judge.
@@ -102,11 +114,19 @@ type pendingAsk struct {
 	key string
 }
 
-// passProject wakes one project on its new events. A batch nothing new
-// asks from only moves the cursor. The turn mark, the cooldown and a
-// dead chat budget each hold the cursor back, so their cause stays and a
-// later pass takes it.
+// passProject wakes one project: a due timer fires on its own thread,
+// the heartbeat wakes the inbox when nothing else moved, then the new
+// events wake the watched cards and the asks. A batch nothing new wakes
+// from only moves the cursor. The turn mark, the cooldown and a dead
+// chat budget each hold a wake and the cursor back, so their cause stays
+// and a later pass takes it.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+	if err := w.fireTimer(ctx, v, name, p, now); err != nil {
+		return err
+	}
+	if err := w.heartbeat(ctx, v, name, p, now); err != nil {
+		return err
+	}
 	after, err := w.Store.WakeCursor(ctx, p.Repository)
 	if err != nil {
 		return err
@@ -120,42 +140,80 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	}
 	newest := events[len(events)-1].ID
 	var pending []pendingAsk
+	var watched []pendingCard
+	moved := map[string]bool{}
 	for _, e := range events {
+		if e.Kind == EventTaskEnded {
+			// the card is gone however its end was filed: its watches and
+			// bound timers go with it
+			if err := w.Store.DeleteChatWatchesOfTask(ctx, p.Repository, e.TaskID); err != nil {
+				return err
+			}
+		}
 		if e.Via == ViaChat {
 			continue // the agent's own doing wakes nobody
 		}
-		if e.Kind != EventQuestionAsked || p.Autonomy != policy.AutonomyAutonomous {
+		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
+			sum := sha256.Sum256([]byte(askSentence(e)))
+			key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+			if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
+				return err
+			} else if done {
+				continue
+			}
+			pending = append(pending, pendingAsk{e, key})
 			continue
 		}
-		sum := sha256.Sum256([]byte(askSentence(e)))
-		key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
-		if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
-			return err
-		} else if done {
-			continue
+		if (e.Kind == EventCardMoved || e.Kind == EventTaskStatus) && p.Autonomy != policy.AutonomyManual && !moved[e.TaskID] {
+			moved[e.TaskID] = true // one wake judges a card per batch
+			watches, err := w.Store.ChatWatchesFor(ctx, p.Repository, e.TaskID)
+			if err != nil {
+				return err
+			}
+			if len(watches) == 0 {
+				continue
+			}
+			if marked, err := w.markedWithin(ctx, p.Repository, "card:"+e.TaskID, time.Minute, now); err != nil {
+				return err
+			} else if marked {
+				continue // the card woke its watchers within the minute
+			}
+			watched = append(watched, pendingCard{e, watches[0]})
 		}
-		pending = append(pending, pendingAsk{e, key})
 	}
-	if len(pending) == 0 {
+	if len(pending) == 0 && len(watched) == 0 {
 		return w.Store.SetWakeCursor(ctx, p.Repository, newest)
 	}
-	for _, gap := range []struct {
-		key    string
-		within time.Duration
-	}{{"turn", wakeTurnGap}, {"cooldown", wakeCooldown}} {
-		if marked, err := w.markedWithin(ctx, p.Repository, gap.key, gap.within, now); err != nil {
-			return err
-		} else if marked {
-			return nil
-		}
+	if held, err := w.held(ctx, p.Repository, now); err != nil {
+		return err
+	} else if held {
+		return nil
 	}
-	chat := v.Document.ChatOf(p)
-	task, err := w.Store.EnsureChatTask(ctx, name, p.Repository, chat.MonthlyEUR, now)
+	task, live, err := w.chatTask(ctx, v, name, p, now)
 	if err != nil {
 		return err
 	}
-	if task.SpentEUR >= task.BudgetEUR {
-		return w.askBudget(ctx, p.Repository, task, now)
+	if !live {
+		if len(pending) > 0 {
+			return w.askBudget(ctx, p.Repository, task, now) // the ask path owns the month-cap card
+		}
+		return nil // a raised cap lets the next pass wake
+	}
+	if len(watched) > 0 {
+		c := watched[0]
+		if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
+			log.Printf("wake %s: %v", name, err)
+			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+		}
+		for _, key := range []string{"card:" + c.e.TaskID, "turn"} {
+			if err := w.Store.WakeMark(ctx, p.Repository, key, now); err != nil {
+				return err
+			}
+		}
+		if len(pending) == 0 && len(watched) == 1 {
+			return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+		}
+		return nil // the rest of the batch stays for the next pass
 	}
 	logins := pokeTo(v.Tree, p.Repository)
 	if len(logins) == 0 {
@@ -178,6 +236,142 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		return err
 	}
 	return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+}
+
+// pendingCard is one watched card's move of a batch, with the watch its
+// wake turns on.
+type pendingCard struct {
+	e     Event
+	watch ChatWatch
+}
+
+// fireTimer wakes the oldest due timer's own thread with its note, then
+// the row is gone: one timer at a time, never combined with anything. A
+// held turn or cooldown, and a dead chat budget, each leave the row for a
+// later pass.
+func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+	due, err := w.Store.DueChatTimers(ctx, p.Repository, now)
+	if err != nil || len(due) == 0 {
+		return err
+	}
+	t := due[0]
+	if held, err := w.held(ctx, p.Repository, now); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
+	if _, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
+		return err
+	} else if !live {
+		return nil // the ask path owns the month-cap card; the row waits
+	}
+	if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
+		log.Printf("wake %s: %v", name, err)
+		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+	}
+	if err := w.Store.DeleteChatTimer(ctx, p.Repository, t.ID); err != nil {
+		return err
+	}
+	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+}
+
+// heartbeat wakes the project agent's inbox thread when nothing else
+// woke it: every hour while work sits open, every day otherwise, on
+// projects at assisted and above. A pulse that says a card waits on a
+// human holds it — the needs-you card already has the member's eye — and
+// so do a held turn, a dead chat budget and a missing member.
+func (w *Waker) heartbeat(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+	if w.Pulse == nil || p.Autonomy == policy.AutonomyManual {
+		return nil
+	}
+	workOpen, waitingHuman, err := w.Pulse(ctx, p.Repository)
+	if err != nil || waitingHuman {
+		return err
+	}
+	key, within := "hb:idle", 24*time.Hour
+	if workOpen {
+		key, within = "hb:open", time.Hour
+	}
+	if marked, err := w.markedWithin(ctx, p.Repository, key, within, now); err != nil {
+		return err
+	} else if marked {
+		return nil
+	}
+	if held, err := w.held(ctx, p.Repository, now); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
+	if _, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
+		return err
+	} else if !live {
+		return nil
+	}
+	logins := pokeTo(v.Tree, p.Repository)
+	if len(logins) == 0 {
+		return nil
+	}
+	conv, err := w.Store.EnsureInbox(ctx, p.Repository, logins[0])
+	if err != nil {
+		return err
+	}
+	if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_heartbeat", heartbeatText(name, workOpen)); err != nil {
+		log.Printf("wake %s: %v", name, err)
+		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+	}
+	for _, k := range []string{key, "turn"} {
+		if err := w.Store.WakeMark(ctx, p.Repository, k, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// held says a turn or the cooldown holds repository's wakes back.
+func (w *Waker) held(ctx context.Context, repository string, now time.Time) (bool, error) {
+	for _, gap := range []struct {
+		key    string
+		within time.Duration
+	}{{"turn", wakeTurnGap}, {"cooldown", wakeCooldown}} {
+		if marked, err := w.markedWithin(ctx, repository, gap.key, gap.within, now); err != nil {
+			return false, err
+		} else if marked {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// chatTask is the project's chat task, live when its budget is not
+// spent.
+func (w *Waker) chatTask(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) (Task, bool, error) {
+	chat := v.Document.ChatOf(p)
+	task, err := w.Store.EnsureChatTask(ctx, name, p.Repository, chat.MonthlyEUR, now)
+	if err != nil {
+		return task, false, err
+	}
+	return task, task.SpentEUR < task.BudgetEUR, nil
+}
+
+// timerText is the timer's wake: its note, then what the turn does with
+// it.
+func timerText(t ChatTimer) string {
+	return "Timer: " + t.Note + ". Run the check it stood for, then set a new timer if the thing still needs watching."
+}
+
+// heartbeatText is the heartbeat's wake: the cadence it woke on, then
+// the turn's charge, which the agent's own read of the board carries.
+func heartbeatText(name string, workOpen bool) string {
+	if workOpen {
+		return "The hourly heartbeat on " + name + ": work sits open and no event woke you. Read the board and keep it moving."
+	}
+	return "The daily heartbeat on " + name + ": the board is idle. Look for what to start or improve, then act."
+}
+
+// cardText is the watched card's wake: the card, then the turn's charge.
+func (w *Waker) cardText(ctx context.Context, e Event) string {
+	t, _, _ := w.Store.Task(ctx, e.TaskID)
+	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
 }
 
 // askBudget files the month-cap card once for the month of a dead chat

@@ -134,6 +134,11 @@ type Chat interface {
 	// caller binds it, every later caller gets the same one
 	EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error)
 	CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error)
+	// the thread's own subscriptions (the timers concept): its watches of
+	// cards and its one-shot timers, which the Waker wakes it on
+	AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error
+	RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error)
+	AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error
 	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
