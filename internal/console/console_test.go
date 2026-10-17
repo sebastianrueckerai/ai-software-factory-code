@@ -2143,7 +2143,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		"This month: 1.5000 EUR used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
 		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
-		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
+		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/resources lacks %q", want)
@@ -2495,7 +2495,7 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 	if i3 < 0 || i2 < i3 || i1 < i2 {
 		t.Fatalf("alerts not newest first: %d %d %d", i3, i2, i1)
 	}
-	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts">Alerts</a>`,
+	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts" aria-current="page">Alerts</a>`,
 		"<td>the attempt ended before the supervisor looked</td>",
 		`action="/alerts/3/verdict"`, `value="real"`, "real problem", `value="noise"`} {
 		if !strings.Contains(page, want) {

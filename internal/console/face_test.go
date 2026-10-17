@@ -478,6 +478,57 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	}
 }
 
+// The top bar (C23): the eight destinations sit in three groups, the open
+// page's link alone carries aria-current, New task is the bar's one
+// bordered word with the phone's "+" beside its word, and the menu sheet
+// repeats every destination as a row with the logout last, so a narrow
+// bar never hides Board behind a second press.
+func TestTopBarSparseNav(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	get := func(target string) string {
+		rec := r.do(httptest.NewRequest(http.MethodGet, target, nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", target, rec.Code, rec.Body.String())
+		}
+		return rec.Body.String()
+	}
+	board := get("/")
+	for _, want := range []string{
+		`<a href="/" aria-current="page">Board</a>`,
+		`class="ng ng-work"`, `class="ng ng-ref"`, `class="ng ng-gov"`,
+		`<a class="act" href="/tasks/new"><span class="w">New task</span><span class="p">+</span></a>`,
+		`<details class="menu">`, `<summary>`,
+		`<a class="s-work" href="/" aria-current="page">Board</a>`,
+		`<a class="s-ref" href="/projects">Projects</a>`,
+		`<a class="s-gov" href="/alerts">Alerts</a>`,
+		`<form method="post" action="/logout" class="logout s-out">`,
+	} {
+		if !strings.Contains(board, want) {
+			t.Errorf("the board's bar lacks %s", want)
+		}
+	}
+	if i, j := strings.Index(board, `class="ng ng-ref"`), strings.Index(board, `class="ng ng-gov"`); i > j {
+		t.Error("the reference group sits after governance")
+	}
+	for target, want := range map[string][2]string{
+		"/alerts":     {`<a href="/alerts" aria-current="page">Alerts</a>`, `href="/" aria-current="page"`},
+		"/projects":   {`<a href="/projects" aria-current="page">Projects</a>`, `href="/" aria-current="page"`},
+		"/tasks/new":  {`<a class="act" href="/tasks/new" aria-current="page">`, `href="/" aria-current="page"`},
+		"/costs":      {`<a href="/costs" aria-current="page">Costs</a>`, `href="/" aria-current="page"`},
+		"/policy":     {`<a href="/policy" aria-current="page">Policy</a>`, `href="/" aria-current="page"`},
+		"/resources":  {`<a href="/resources" aria-current="page">Resources</a>`, `href="/" aria-current="page"`},
+	} {
+		body := get(target)
+		if !strings.Contains(body, want[0]) {
+			t.Errorf("GET %s lacks %s", target, want[0])
+		}
+		if strings.Contains(body, want[1]) {
+			t.Errorf("GET %s marks %s current", target, want[1])
+		}
+	}
+}
+
 // <html> carries the dark theme, the header the theme selector (C15) with
 // the moon pressed, the head applies the stored theme before the
 // stylesheet with a script that is not deferred, so a light page never

@@ -63,6 +63,14 @@ var funcs = template.FuncMap{
 	// switch is whether the top bar shows the project select: the board
 	// page's data has the projects, the other pages' has none
 	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },
+	// cur marks the bar's destination whose page is open (C23): the open
+	// page's word alone carries the cyan
+	"cur": func(page, dest string) template.HTMLAttr {
+		if page == dest {
+			return ` aria-current="page"`
+		}
+		return ""
+	},
 	"gaugeClass": func(spent, cap float64) string {
 		switch {
 		case cap > 0 && spent > cap:
@@ -1197,6 +1205,7 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
+	Page  string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
@@ -2087,7 +2096,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
+	d := boardData{User: v.user, CSRF: v.csrf, Page: "board", Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
 	if v.policyOK {
 		d.PolicyVersion, d.PolicyCommit, d.PolicyTreeURL = v.policy.ID, v.policy.Commit, c.configTree(v.policy.Commit)
 	}

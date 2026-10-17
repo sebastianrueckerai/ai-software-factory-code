@@ -131,13 +131,34 @@ pre { background: var(--bg-panel); border: 1px solid var(--line); color: var(--t
 .reason, .need p { line-height: 1.45; }
 kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid var(--btn-line); border-bottom-width: 2px; border-radius: 3px; color: var(--text); font-size: 11.5px; text-align: center; }
 
-/* the top bar: one quiet 44 px row */
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 44px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
+/* the top bar (C23): sparse words in three groups on one 44 px row, the
+   open page's word cyan with a short underline, New task the only
+   bordered word; under 1200 the tail groups fold into a More menu, on
+   the phone Board and the bordered + stay in the bar and Menu opens the
+   sheet of 44 px rows */
+header { position: relative; z-index: 15; display: flex; align-items: center; gap: 0 18px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
 header .home { color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 header .home:hover { color: var(--accent); }
-header nav { display: flex; align-self: stretch; flex: 1; gap: 0; }
-header nav a { display: flex; align-items: center; padding: 0 9px; color: var(--text-muted); font-size: 13px; text-decoration: none; white-space: nowrap; transition: color .12s; }
+header nav { display: flex; align-self: stretch; flex: 1; gap: 0 24px; min-width: 0; }
+header nav .ng { display: flex; align-self: stretch; gap: 0 2px; }
+header nav a { display: flex; align-items: center; padding: 0 8px; color: var(--text-muted); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; text-decoration: none; white-space: nowrap; transition: color .12s; }
 header nav a:hover { color: var(--text); }
+header nav a[aria-current=page] { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 7px; }
+header nav .act { margin: auto 0; height: 24px; padding: 0 10px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); }
+header nav .act .p { display: none; }
+/* the More menu under 1200, the Menu sheet on the phone */
+.menu { display: none; position: relative; align-self: stretch; }
+.menu summary { display: flex; align-items: center; padding: 0 10px; color: var(--text-muted); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; cursor: pointer; list-style: none; white-space: nowrap; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary:hover { color: var(--text); }
+.menu .p { display: none; }
+.menu .sheet { position: absolute; top: 100%; right: 0; min-width: 230px; padding: 4px 0 6px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }
+.menu .sg + .sg { margin-top: 10px; }
+.menu .sheet a { display: flex; align-items: center; height: 44px; padding: 0 18px; color: var(--text); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; text-decoration: none; white-space: nowrap; }
+.menu .sheet a:hover { background: var(--bg-hover); }
+.menu .sheet a[aria-current=page] { color: var(--accent); }
+.menu .s-out { display: none; margin: 10px 0 0; padding: 0 10px 4px 18px; }
+.menu .s-out button { width: 100%; height: 36px; padding: 0 12px; border-color: var(--btn-line); color: var(--text); font-size: 13px; }
 .logout button { height: 24px; padding: 0 8px; border-color: transparent; color: var(--text-muted); font-size: 13px; }
 .logout button:hover { color: var(--text); border-color: var(--btn-line); }
 /* the theme selector (C15): moon and sun in a thin frame, a 1 px outline
@@ -894,22 +915,40 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   /* the phone's order: Needs you, In progress, Queued, Done */
   .lane.five #needs-you { order: -2; }
   .lane.five .column:nth-child(3) { order: -1; }
-  header.top { gap: 10px; }
+  header.top { gap: 0 10px; }
   header nav a { padding: 0 6px; }
+}
+/* under 1200 the reference and governance groups leave the bar for the
+   More menu, which then holds the six folded destinations */
+@media (max-width: 1199px) {
+  header nav .ng-ref, header nav .ng-gov { display: none; }
+  .menu { display: block; }
+  .menu .sheet .g-work { display: none; }
 }
 /* the phone: one column, the chat first, the board below as stacked
    sections, the drawer over the whole screen */
 @media (max-width: 899px) {
   body:has(#screen) { height: auto; display: block; }
   body:has(#screen) > main { display: block; }
-  header.top { gap: 10px; padding: 6px 12px; }
-  header nav { flex-wrap: wrap; flex-basis: 100%; }
-  .theme-switch::before { width: 44px; height: 44px; }
-  [data-theme=light] .theme-switch::before { transform: translateX(44px); }
-  .theme-switch button { width: 44px; height: 44px; }
-  .theme-switch svg { width: 22px; height: 22px; }
-  header nav a { height: 32px; padding: 0 10px 0 0; }
-  .switch { flex: 1; min-width: 0; }
+  header.top { gap: 0 8px; padding: 0 10px; }
+  header .home { display: none; }
+  header nav { gap: 0 8px; }
+  header nav a { padding: 0 5px; font-size: 13px; }
+  header nav .act { padding: 0 8px; }
+  header nav .act .w { display: none; }
+  header nav .act .p { display: inline; }
+  .menu summary { padding: 0 8px; font-size: 13px; }
+  .menu .w { display: none; }
+  .menu .p { display: inline; }
+  .menu .sheet { position: fixed; left: 0; right: 0; top: 44px; min-width: 0; }
+  .menu .sheet .g-work { display: block; }
+  .menu .s-out { display: flex; }
+  .logout { display: none; }
+  .theme-switch::before { width: 34px; height: 30px; }
+  [data-theme=light] .theme-switch::before { transform: translateX(34px); }
+  .theme-switch button { width: 34px; height: 30px; }
+  .theme-switch svg { width: 18px; height: 18px; }
+  .switch { flex: 0 1 auto; max-width: 40%; min-width: 0; }
   .switch select { width: 100%; max-width: none; }
   .status { margin: 10px 12px 0; }
   .pulse-row { align-items: flex-start; flex-wrap: wrap; gap: 8px 10px; padding: 12px 14px; }

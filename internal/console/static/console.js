@@ -158,6 +158,21 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   });
 })();
 
+// Top bar menu (C23): the More sheet closes on a click outside or the
+// Escape key, which returns the focus to its summary.
+(function () {
+  var menu = document.querySelector("details.menu");
+  if (!menu) return;
+  document.addEventListener("click", function (e) {
+    if (menu.open && !menu.contains(e.target)) menu.removeAttribute("open");
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || !menu.open) return;
+    menu.removeAttribute("open");
+    menu.querySelector("summary").focus();
+  });
+})();
+
 // Theme selector (C15): the moon sets dark, the default, the sun sets
 // light; the choice is remembered in localStorage, which theme.js applies
 // before the first paint. aria-pressed names the theme in force.
