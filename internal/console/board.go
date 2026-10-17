@@ -2247,7 +2247,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		if a.Project != shown.Repository {
 			continue
 		}
-		k := c.approvalCard(ctx, a, v.byID, v.csrf, d.Approver)
+		k := c.approvalCard(ctx, a, actor{s: current(r), via: factoryd.ViaButton}, v.byID, v.csrf, d.Approver)
 		k.Filter, k.Writer = f, d.Writes
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
@@ -3130,7 +3130,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
-				m := c.approvalCard(ctx, a, v.byID, v.csrf, v.approves(a.Project))
+				m := c.approvalCard(ctx, a, actor{s: current(r), via: factoryd.ViaButton}, v.byID, v.csrf, v.approves(a.Project))
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.Writer = true // the drawer's route already asked for a writer
 				d.Merge = &m

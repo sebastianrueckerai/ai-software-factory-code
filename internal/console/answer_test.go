@@ -294,7 +294,10 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 
 	g.replies = [][]string{{call(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
-	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL rerun_checks t-m #9 by sebastian"})
+	// the card's read of the head's current checks (#1013) lands between:
+	// the tool describes the card before it acts
+	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
+		"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "SIGNAL rerun_checks t-m #9 by sebastian"})
 }
 
 // The settle rule's table (the notification-settling concept, section 3):
