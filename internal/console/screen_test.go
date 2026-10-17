@@ -904,11 +904,12 @@ func TestApprovalFormsKeepTheBoard(t *testing.T) {
 	}
 }
 
-// The merge item on the four-column board is brief: the headline with the
-// risk and migration chips, the model review's verdict and summary on one
-// line, the recommendation on one line, Approve, Deny and a Details link
-// to the drawer; the migration files, the earlier reviews, the audit and
-// "why a human" live in the drawer's Reviews and audit (item 4).
+// The merge item on the four-column board carries the five-part ask on
+// single lines: the headline with the risk and migration chips, why a
+// human, the model review's verdict and summary, the recommendation,
+// Approve, Deny and a Details link to the drawer; the migration files,
+// the earlier reviews, the audit and the facts wall live in the drawer's
+// Reviews and audit (item 4).
 func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -916,8 +917,9 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`<p class="need-line"><b>Model review</b> approve: adds the column safely</p>`,
-		`<p class="need-line"><b>Recommendation</b> Adds the column; merge it.</p>`,
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
 		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`,
 		`<form method="post" action="/approvals/4/deny" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
