@@ -446,16 +446,16 @@ func main() {
 		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update,
 			Store: store, TelegramName: telegram.Name}
 	}
-	if id, secret, token, guild := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
-		optionalSecret("DISCORD_BOT_TOKEN"), env("DISCORD_GUILD_ID", ""); id != "" || secret != "" || token != "" || guild != "" {
-		if id == "" || secret == "" || token == "" || guild == "" {
-			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN and DISCORD_GUILD_ID together")
+	if id, secret, token := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
+		optionalSecret("DISCORD_BOT_TOKEN"); id != "" || secret != "" || token != "" {
+		if id == "" || secret == "" || token == "" {
+			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN together")
 		} else {
 			if messengers == nil {
 				messengers = &console.Messengers{Store: store}
 			}
 			discord = &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
-				GuildID: guild, PublicURL: publicURL, Store: store}
+				PublicURL: publicURL, Store: store}
 			messengers.Discord = &console.DiscordConnect{AuthorizeURL: discord.AuthorizeURL, Connect: discord.Connect}
 		}
 	}
