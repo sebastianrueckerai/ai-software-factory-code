@@ -4,7 +4,7 @@
   "description": "More than 5 % of a service's requests answered 5xx, on average over the last 5 minutes (the server spans of factoryd, its console included, and of the gateway, by service; the probes are not traced). At least three requests must have failed in the window: one failure on a quiet service is a share above 5 %, but no storm.",
   "ruleType": "threshold_rule",
   "schemaVersion": "v2alpha1",
-  "version": "v6",
+  "version": "v5",
   "disabled": false,
   "labels": {"severity": "critical"},
   "annotations": {"summary": "share of the service's requests that answered 5xx, in %"},
