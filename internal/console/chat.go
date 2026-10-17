@@ -290,7 +290,9 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 			continue
 		}
 		if askFamily(m) == "" {
-			msgs[i].Settled = m.ID <= seenUpto
+			if msgs[i].Settled = m.ID <= seenUpto; msgs[i].Settled {
+				msgs[i].Reason = "seen"
+			}
 			continue
 		}
 		if s := settleOf(m, events[m.TaskID], waits[m.TaskID], approvalWaits(pending, m.TaskID)); !s.Open {

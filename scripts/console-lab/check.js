@@ -18,7 +18,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 
 // contrastEl are the C14 parts' text, measured on the rendered page in
 // both themes (design/rounds/02-multi-chat/check.js)
-const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, " +
+const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, .msg.settled .fold, " +
   ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
   ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
   ".doc-path, .doc-facts, .doc-refused, .doc-dot, .doc-base, .doc-note, .doc-confirm-q, .doc-new-l, .doc-discard, #doc-new, " +
@@ -889,7 +889,7 @@ async function text(page) {
       const first = p.page.locator("#thread-rows .trow").first();
       if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
       if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
-      const badge = first.locator(".badge");
+      const badge = first.locator(".badge, .bsplit").first();
       if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
         fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
       const title = await p.page.title();

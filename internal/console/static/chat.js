@@ -62,8 +62,8 @@ var chatView = (function () {
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
   // when the agent acted alone; a summary turn after /compact. A settled
-  // row recedes: no needs-you mark, no buttons, its reason line in the
-  // decider's pattern (the settle concept)
+  // row folds to one line — its reason, then the first words of what it
+  // said — and opens on a click to the full quiet row (round 06's pick)
   function factoryHTML(m) {
     if (m.kind === "summary") {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
@@ -78,8 +78,12 @@ var chatView = (function () {
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
         return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
+    var fold = "";
+    if (m.settled) fold = "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
+      "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + esc(m.reason || "seen") + "</span>" +
+      "<span class=\"ft\">" + esc(m.content) + "</span></p>";
     return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
-      (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + "</div>";
+      (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + fold + "</div>";
   }
   function agentHTML(at, parts) {
     return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
@@ -202,9 +206,18 @@ var chatView = (function () {
   function splitOf(t) {
     return (t.needs_you ? t.needs_you + " needs you" : "") + (t.needs_you && t.new_rows ? " · " : "") + (t.new_rows ? t.new_rows + " new" : "");
   }
+  // badgeHTML is the split as pills (round 06's pick): amber for the
+  // open asks, a bordered one for the new rows, either alone when only
+  // its side counts
   function badgeHTML(t) {
-    var split = splitOf(t);
-    return split ? "<span class=\"badge" + (t.needs_you ? "" : " new") + "\" aria-label=\"" + esc(split) + "\">" + esc(split) + "</span>" : "";
+    if (!t.needs_you && !t.new_rows) return "";
+    var label = esc(splitOf(t));
+    if (t.needs_you && t.new_rows) {
+      return "<span class=\"bsplit\" aria-label=\"" + label + "\"><span class=\"badge\">" + esc(t.needs_you) + "</span>" +
+        "<span class=\"badge new\">" + esc(t.new_rows) + "</span></span>";
+    }
+    var n = t.needs_you || t.new_rows;
+    return "<span class=\"badge" + (t.needs_you ? "" : " new") + "\" aria-label=\"" + label + "\">" + esc(n) + "</span>";
   }
   // rowsHTML is the switcher's rows: the inbox first, the active threads,
   // then the archived under their rule; open is the open thread's number
@@ -227,14 +240,16 @@ var chatView = (function () {
     }
     return rows;
   }
-  // sumHTML is the folded switcher's one row on the phone
+  // sumHTML is the folded switcher's one row on the phone, its split as
+  // the badge's pills
   function sumHTML(list, folded) {
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
     var needs = active.reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
     var fresh = active.reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
-    var split = (needs ? needs + " needs you" : "") + (needs && fresh ? " · " : "") + (fresh ? fresh + " new" : "");
+    var sum = { needs_you: needs, new_rows: fresh };
+    var mark = badgeHTML(sum);
     var working = active.filter(function (t) { return t.working; }).length;
-    return "Threads <span class=\"n\">" + active.length + "</span>" + (split ? " · <span class=\"badge" + (needs ? "" : " new") + "\">" + esc(split) + "</span>" : "") +
+    return "Threads <span class=\"n\">" + active.length + "</span>" + (mark ? " · " + mark : "") +
       (working ? " · <span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i></span> " + working + " working" : "") +
       "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
   }
@@ -741,6 +756,21 @@ var chatView = (function () {
       b.remove();
       run(open, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
+  });
+  // a settled row's fold line opens the row it stands for, and closes it
+  function toggleFold(el) {
+    var row = el.closest(".msg.settled");
+    var on = row.classList.toggle("expanded");
+    el.setAttribute("aria-expanded", on);
+  }
+  log.addEventListener("click", function (e) {
+    var f = e.target.closest("[data-fold]");
+    if (f) toggleFold(f);
+  });
+  log.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter" && e.key !== " ") return;
+    var f = e.target.closest && e.target.closest("[data-fold]");
+    if (f) { e.preventDefault(); toggleFold(f); }
   });
 
   // load shows thread n, the current one for "": its head and its log,
