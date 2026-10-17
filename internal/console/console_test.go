@@ -2241,7 +2241,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		"This month: 1.5000 EUR used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
 		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
-		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
+		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/resources lacks %q", want)
@@ -2540,14 +2540,14 @@ func TestTimelineDurationsTable(t *testing.T) {
 	}
 	// the longest is the first session: 20 min, 1200 s
 	want := []string{
-		`intake |  | 2026-09-28 10:00:00 | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
-		`session | 1 | 2026-09-28 10:01:00 | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
-		`session | 2 | 2026-09-28 10:22:00 | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
-		`checks | 2 | 2026-09-28 10:30:05 | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
+		`intake |  | <time>2026-09-28 10:00:00</time> | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
+		`session | 1 | <time>2026-09-28 10:01:00</time> | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
+		`session | 2 | <time>2026-09-28 10:22:00</time> | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
+		`checks | 2 | <time>2026-09-28 10:30:05</time> | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
 		`job test | 2 |  | 4 min 18 s | success, queued 30 s | <meter min="0" max="1200" value="258">4 min 18 s</meter>`,
 		`job vet | 2 |  | 2 min 26 s | success | <meter min="0" max="1200" value="146">2 min 26 s</meter>`,
-		`reproduction | 2 | 2026-09-28 10:37:10 | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
-		`approval | 2 | ` + since.UTC().Format("2006-01-02 15:04:05") + ` | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
+		`reproduction | 2 | <time>2026-09-28 10:37:10</time> | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
+		`approval | 2 | <time>` + since.UTC().Format("2006-01-02 15:04:05") + `</time> | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
 	}
 	if !slices.Equal(rows, want) {
 		t.Fatalf("gate rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
@@ -2593,7 +2593,7 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 	if i3 < 0 || i2 < i3 || i1 < i2 {
 		t.Fatalf("alerts not newest first: %d %d %d", i3, i2, i1)
 	}
-	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts">Alerts</a>`,
+	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts" aria-current="page">Alerts</a>`,
 		"<td>the attempt ended before the supervisor looked</td>",
 		`action="/alerts/3/verdict"`, `value="real"`, "real problem", `value="noise"`} {
 		if !strings.Contains(page, want) {
@@ -2671,7 +2671,7 @@ func TestTimelineCommissioningEndsAtLive(t *testing.T) {
 	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"commissioned","time":"2026-09-28T10:01:44Z","started":"2026-09-28T10:00:00Z","live":"2026-09-28T10:01:35Z","server_type":"cx23"}
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
-	if !strings.Contains(body, "<td>commissioning</td><td></td><td>2026-09-28 10:00:00</td><td>1 min 35 s</td><td>cx23</td>") {
+	if !strings.Contains(body, "<td>commissioning</td><td></td><td><time>2026-09-28 10:00:00</time></td><td>1 min 35 s</td><td>cx23</td>") {
 		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }
@@ -2773,7 +2773,7 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
 	for _, want := range []string{
-		`<td title="2026-10-17T12:41:47.048126987Z">2026-10-17 12:41:47</td>`,
+		`<td title="2026-10-17T12:41:47.048126987Z"><time>2026-10-17 12:41:47</time></td>`,
 		`<td>not a time</td>`,
 	} {
 		if !strings.Contains(body, want) {

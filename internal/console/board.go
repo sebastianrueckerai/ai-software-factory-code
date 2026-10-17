@@ -63,6 +63,14 @@ var funcs = template.FuncMap{
 	// switch is whether the top bar shows the project select: the board
 	// page's data has the projects, the other pages' has none
 	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },
+	// cur marks the bar's destination whose page is open (C23): the open
+	// page's word alone carries the cyan
+	"cur": func(page, dest string) template.HTMLAttr {
+		if page == dest {
+			return ` aria-current="page"`
+		}
+		return ""
+	},
 	"gaugeClass": func(spent, cap float64) string {
 		switch {
 		case cap > 0 && spent > cap:
@@ -1197,6 +1205,7 @@ type boardData struct {
 	CSRF  string
 	Filed string
 	Note  string // what the human's last action did
+	Page  string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
@@ -2089,7 +2098,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
+	d := boardData{User: v.user, CSRF: v.csrf, Page: "board", Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
 	if v.policyOK {
 		d.PolicyVersion, d.PolicyCommit, d.PolicyTreeURL = v.policy.ID, v.policy.Commit, c.configTree(v.policy.Commit)
 	}
@@ -2249,7 +2258,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if a.Project != shown.Repository {
 			continue
 		}
-		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver)
+		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver, true)
 		k.Filter, k.Writer = f, d.Writes
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
@@ -3132,7 +3141,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
-				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project))
+				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project), false)
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.Writer = true // the drawer's route already asked for a writer
 				d.Merge = &m

@@ -26,8 +26,11 @@ import (
 func columnItems(t *testing.T, body, title string) []string {
 	t.Helper()
 	var out []string
+	// an escalation article shares its face's data-card, which the
+	// face's place marks: drop the article's copy before the walk
+	esc := regexp.MustCompile(`(<article class="card escalation" id="need-[^"]+") data-card="[^"]*"`)
 	re := regexp.MustCompile(`<article class="card approval[^"]*" data-card="[^"]*" aria-labelledby="approval-(\d+)"|data-card="([^"]+)"`)
-	for _, m := range re.FindAllStringSubmatch(col(t, body, title), -1) {
+	for _, m := range re.FindAllStringSubmatch(esc.ReplaceAllString(col(t, body, title), "$1"), -1) {
 		if m[1] != "" {
 			out = append(out, "approval "+m[1])
 		} else {
@@ -107,8 +110,10 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
-			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {
-				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`"`))
+			// an escalation article shares its face's data-card; the
+			// face alone carries it with a place, which names one column
+			if id[0] == 't' && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
+				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`" data-place="`))
 			}
 		}
 	}
@@ -643,12 +648,18 @@ func TestDrawerActivity(t *testing.T) {
 		t.Errorf("the activity's tables are not the timeline page's:\n%s\nwant\n%s", got, tables(page))
 	}
 	for _, want := range []string{
-		`<tr><td>session</td><td>1</td><td>2026-10-11 10:00:00</td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
-		`<tr><td title="2026-10-11T10:05:00Z">2026-10-11 10:05:00</td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td>session</td><td>1</td><td><time>2026-10-11 10:00:00</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
+		`<tr><td title="2026-10-11T10:05:00Z"><time>2026-10-11 10:05:00</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)
 		}
+	}
+	// the <time> cells keep to one line only through the stylesheet's
+	// nowrap rule; the wrapper and the rule stand together
+	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
+	if !strings.Contains(css, "td time { white-space: nowrap; }") {
+		t.Error("console.css lacks td time { white-space: nowrap; }")
 	}
 	r.c.cfg.Timelines = failingObjects{}
 	failed := drawer(t, r, ck, "t-run", "activity")
