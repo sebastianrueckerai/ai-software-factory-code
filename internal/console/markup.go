@@ -12,6 +12,7 @@ import (
 	"html/template"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -62,4 +63,10 @@ func askline(text string) string {
 		text = text[:i]
 	}
 	return strings.TrimSpace(text)
+}
+
+// faceLine is one part of a need as the board's face shows it: its first
+// line, held under n bytes. The drawer carries the whole text.
+func faceLine(s string, n int) string {
+	return textutil.Truncate(askline(s), n)
 }
