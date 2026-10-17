@@ -113,6 +113,11 @@ func TestNotificationsPanel(t *testing.T) {
 	if strings.Contains(page, "sf/code") || strings.Contains(page, "demo-app") {
 		t.Fatalf("the panel lists a project bob cannot read:\n%s", page)
 	}
+	// a venue the instance never configured says so, dim, with no control
+	// that could look like it works
+	if !strings.Contains(page, "no discord configured") || strings.Contains(page, "/messengers/discord/start") {
+		t.Fatalf("the unconfigured discord row does not say so:\n%s", page)
+	}
 
 	// a set level shows in place of the default
 	fm.levels["demo/demo"] = factoryd.LevelAll
@@ -129,6 +134,21 @@ func TestNotificationsPanel(t *testing.T) {
 		c.ServeHTTP(rec, req)
 		return rec
 	}
+
+	// an instance with no venue at all still shows the panel: both rows
+	// name what is missing, and the venue's post refuses
+	c = seat(&Messengers{Store: fm})
+	page = get(c, "/notifications", bk)
+	if !strings.Contains(page, "no telegram configured") || !strings.Contains(page, "no discord configured") {
+		t.Fatalf("the panel of a bare instance misses the unconfigured lines:\n%s", page)
+	}
+	if strings.Contains(page, ">Connect<") || strings.Contains(page, "t.me/") || strings.Contains(page, "/messengers/discord/start") {
+		t.Fatalf("a bare instance carries a control that looks like it works:\n%s", page)
+	}
+	if rec := send(c, "/notifications/telegram/code", url.Values{"csrf": {bs.csrf}}); rec.Code != http.StatusNotFound {
+		t.Fatalf("the telegram code post on a bare instance = %d, want 404", rec.Code)
+	}
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot"})
 	rec = send(c, "/notifications/telegram/code", url.Values{"csrf": {bs.csrf}})
 	code := strings.Repeat("c", 22)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/notifications?code="+code || fm.codes != 1 {
@@ -136,6 +156,10 @@ func TestNotificationsPanel(t *testing.T) {
 	}
 	if page = get(c, "/notifications?code="+code, bk); !strings.Contains(page, "https://t.me/factorybot?start="+code) {
 		t.Fatalf("the panel misses the start link:\n%s", page)
+	}
+	// both connect links leave the console open in its tab
+	if !strings.Contains(page, `" target="_blank" rel="noopener">Open Telegram`) {
+		t.Fatalf("the telegram link replaces the console tab:\n%s", page)
 	}
 
 	// a connection shows and a disconnect takes it
@@ -177,7 +201,7 @@ func TestNotificationsPanel(t *testing.T) {
 	// address and a Disconnect, and a connected telegram keeps its own row
 	c = seat(&Messengers{Store: fm, TelegramName: "factorybot", Discord: &DiscordConnect{}})
 	page = get(c, "/notifications", bk)
-	for _, want := range []string{"telegram", "not connected", "discord", "/messengers/discord/start"} {
+	for _, want := range []string{"telegram", "not connected", "discord", `/messengers/discord/start" target="_blank"`} {
 		if !strings.Contains(page, want) {
 			t.Fatalf("the panel of an unconnected member misses %q:\n%s", want, page)
 		}

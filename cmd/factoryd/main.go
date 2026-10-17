@@ -459,9 +459,13 @@ func main() {
 			messengers.Discord = &console.DiscordConnect{AuthorizeURL: discord.AuthorizeURL, Connect: discord.Connect}
 		}
 	}
-	if messengers != nil {
+	if telegram != nil || discord != nil {
 		sender := &factoryd.Sender{Store: store, Telegram: telegram, Discord: discord, PublicURL: publicURL, Lists: lists}
 		go sender.Loop(ctx, 5*time.Second)
+	} else {
+		// no venue configured: the panel still shows, naming what is
+		// missing, instead of the console dropping it outright
+		messengers = &console.Messengers{Store: store}
 	}
 	consoleHandler, err := console.New(console.Config{
 		PublicURL:        publicURL,
