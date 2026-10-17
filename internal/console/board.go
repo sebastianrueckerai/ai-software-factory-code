@@ -26,6 +26,9 @@ import (
 )
 
 var funcs = template.FuncMap{
+	// markup is the writer's markdown as HTML, for the drawer's question
+	// text; askline is a text's first line, what a card's face shows
+	"markup": markup, "askline": askline,
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
 	// servers is n with the noun in its number: 1 server, 2 servers
 	"servers": func(n int) string {
@@ -1968,7 +1971,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			if k.Stale {
 				k.StaleText = "nothing for over " + minutes(time.Since(lastAt(e.At)))
 			}
-			if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
+			// a shaped question's face carries its ask alone — its why
+			// belongs to the drawer, never the board
+			if k.Question != nil && strings.HasPrefix(k.Status, "waiting") {
+				k.Activity, k.WaitingForActivity = askline(k.Question.Ask), true
+			} else if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
 				k.Activity = reason()
 				k.WaitingForActivity = true
 			}
@@ -1978,7 +1985,9 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		if k.Stale {
 			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
 		}
-		if k.Reason != "" {
+		if k.Question != nil {
+			k.Activity = askline(k.Question.Ask)
+		} else if k.Reason != "" {
 			k.Activity = reason()
 		}
 	}

@@ -3,11 +3,14 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // Telegram's webhook route (roadmap 145): an empty access rule, the
@@ -145,6 +148,19 @@ func TestDiscordConnect(t *testing.T) {
 	rec = do("/messengers/discord/callback?code=abc&state="+url.QueryEscape(state), ck)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("the refused connect = %d", rec.Code)
+	}
+
+	// a member sharing no server with the bot is told to join it
+	cfg.Messengers.Discord.Connect = func(_ context.Context, _, _ string) error {
+		return fmt.Errorf("the dm: %w", factoryd.ErrNoSharedServer)
+	}
+	c, err = New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = do("/messengers/discord/callback?code=abc&state="+url.QueryEscape(state), ck)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "Join the factory's Discord server first") {
+		t.Fatalf("the connect without a shared server = %d %s", rec.Code, rec.Body.String())
 	}
 
 	// without the configuration the routes are not there

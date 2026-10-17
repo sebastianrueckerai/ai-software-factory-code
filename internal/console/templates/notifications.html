@@ -10,14 +10,21 @@
 {{if or .TelegramName $tg}}<tr>
 <th scope="row">telegram</th>
 <td>{{if $tg}}<i class="lamp on" aria-hidden="true"></i>connected <span class="addr">{{$tg}}</span>{{else}}<i class="lamp" aria-hidden="true"></i><span class="dim">not connected</span>{{end}}</td>
-<td class="act">{{if $tg}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="telegram"><button type="submit">Disconnect</button></form>{{else if $code}}<a href="https://t.me/{{.TelegramName}}?start={{$code}}" rel="noopener">Open Telegram and tap Start to connect</a>{{else}}<form method="post" action="/notifications/telegram/code" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Connect</button></form>{{end}}</td>
+<td class="act">{{if $tg}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="telegram"><button type="submit">Disconnect</button></form>{{else if $code}}<a href="https://t.me/{{.TelegramName}}?start={{$code}}" target="_blank" rel="noopener">Open Telegram and tap Start to connect</a>{{else}}<form method="post" action="/notifications/telegram/code" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Connect</button></form>{{end}}</td>
+</tr>{{else}}<tr>
+<th scope="row">telegram</th>
+<td><i class="lamp" aria-hidden="true"></i><span class="dim">no telegram configured</span></td>
+<td class="act"></td>
 </tr>{{end}}
 {{if or .Discord $dc}}<tr>
 <th scope="row">discord</th>
 <td>{{if $dc}}<i class="lamp on" aria-hidden="true"></i>connected <span class="addr">{{$dc}}</span>{{else}}<i class="lamp" aria-hidden="true"></i><span class="dim">not connected</span>{{end}}</td>
-<td class="act">{{if $dc}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="discord"><button type="submit">Disconnect</button></form>{{else}}<a href="/messengers/discord/start">Connect</a>{{end}}</td>
+<td class="act">{{if $dc}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="discord"><button type="submit">Disconnect</button></form>{{else}}<a href="/messengers/discord/start" target="_blank" rel="noopener">Connect</a>{{end}}</td>
+</tr>{{else}}<tr>
+<th scope="row">discord</th>
+<td><i class="lamp" aria-hidden="true"></i><span class="dim">no discord configured</span></td>
+<td class="act"></td>
 </tr>{{end}}
-{{if and (not .TelegramName) (not $tg) (not .Discord) (not $dc)}}<tr><td colspan="3">No connection yet.</td></tr>{{end}}
 </tbody>
 </table>
 </section>

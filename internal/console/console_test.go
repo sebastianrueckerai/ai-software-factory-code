@@ -1817,12 +1817,14 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
 		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
 		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
-		// the merge request: the PR, the chips, the review in brief
+		// the merge request: the PR, the chips, the five-part ask — why a
+		// human, the model review, the recommendation
 		`<article class="card approval" data-card="t-m"`,
 		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9">PR #9</a>`,
 		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
-		`<p class="need-line"><b>Model review</b> approve: adds the column safely</p>`,
-		`<p class="need-line"><b>Recommendation</b> Adds the column; merge it.</p>`,
+		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
+		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
 		`<a href="#card=t-m:reviews" class="details">Details</a>`,
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,

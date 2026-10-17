@@ -14,9 +14,10 @@ import (
 	"time"
 )
 
-// Discord is the factory's other venue (roadmap 145): a member connects
-// through OAuth2 in the browser and the bind is their DM channel. The
-// client secret and the bot token never reach a log or an error.
+// Discord is the factory's other venue (roadmap 145): a member of the
+// factory's server connects through OAuth2 in the browser and the bind
+// is their DM channel. The client secret and the bot token never reach
+// a log or an error.
 
 // discordClient is the API client every Discord call goes out on.
 var discordClient = &http.Client{Timeout: 15 * time.Second}
@@ -26,7 +27,6 @@ type Discord struct {
 	ClientID     string
 	ClientSecret string
 	BotToken     string
-	GuildID      string
 	PublicURL    string
 	BaseURL      string
 	Store        *PGStore
@@ -45,22 +45,27 @@ func (e *DiscordError) Error() string {
 	return fmt.Sprintf("discord: %d: %s", e.Status, e.Message)
 }
 
-// AuthorizeURL is the page the member's browser opens: identify and
-// guilds.join, returning to the console's callback.
+// AuthorizeURL is the page the member's browser opens: identify alone,
+// the least the DM needs, returning to the console's callback.
 func (d *Discord) AuthorizeURL(state string) string {
 	q := url.Values{
 		"client_id":     {d.ClientID},
 		"redirect_uri":  {d.PublicURL + "/messengers/discord/callback"},
 		"response_type": {"code"},
-		"scope":         {"identify guilds.join"},
+		"scope":         {"identify"},
 		"state":         {state},
 	}
 	return "https://discord.com/oauth2/authorize?" + q.Encode()
 }
 
+// ErrNoSharedServer marks the connect of a member who shares no server
+// with the bot: the DM cannot open until they join the factory's server.
+var ErrNoSharedServer = errors.New("no server shared with the bot")
+
 // Connect finishes the flow: the code becomes the member's user token,
-// which joins them to the factory's guild and opens their DM channel.
-// The bind is that channel, and the token leaves with the return.
+// which opens their DM channel, the member already sharing the factory's
+// server with the bot. The bind is that channel, and the token leaves
+// with the return.
 func (d *Discord) Connect(ctx context.Context, login, code string) error {
 	token, err := d.exchange(ctx, code)
 	if err != nil {
@@ -72,15 +77,15 @@ func (d *Discord) Connect(ctx context.Context, login, code string) error {
 	if err := d.call(ctx, "GET", "/users/@me", "", "Bearer "+token, nil, &user); err != nil {
 		return err
 	}
-	if err := d.call(ctx, "PUT", "/guilds/"+d.GuildID+"/members/"+user.ID, "", "Bot "+d.BotToken,
-		[]byte(`{"access_token":`+strconv.Quote(token)+`}`), nil); err != nil {
-		return err
-	}
 	var channel struct {
 		ID string `json:"id"`
 	}
-	if err := d.call(ctx, "POST", "/users/@me/channels", "", "Bot "+d.BotToken,
+	if err := d.call(ctx, "POST", "/users/@me/channels", "application/json", "Bot "+d.BotToken,
 		[]byte(`{"recipient_id":`+strconv.Quote(user.ID)+`}`), &channel); err != nil {
+		var de *DiscordError
+		if errors.As(err, &de) && de.Status == http.StatusForbidden {
+			return fmt.Errorf("%w: %v", ErrNoSharedServer, err)
+		}
 		return err
 	}
 	return d.Store.BindMessenger(ctx, login, VenueDiscord, channel.ID, user.ID)

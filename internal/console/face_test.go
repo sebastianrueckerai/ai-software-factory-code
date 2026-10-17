@@ -738,9 +738,11 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-ch", detail: postedDetail(1)})
 }
 
-// A shaped question renders as its ask with its why under it, its buttons
-// by value, and its info and recommendation behind the fold; a card that
-// holds answers its run has not taken warns instead of offering the box.
+// A shaped question's board card is small: the ask line and its buttons,
+// never the question's text; the drawer holds the question in full, its
+// why and info rendered as markup with the raw words behind a fold. A
+// card that holds answers its run has not taken warns instead of
+// offering the box.
 func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	question := &factoryd.HumanQuestion{
 		Ask:            "The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?",
@@ -754,29 +756,30 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 			{Value: "close", Label: "Close the card"},
 		},
 	}
-	shape := func(bt factoryd.BoardTask, url string) string {
+	page := func(bt factoryd.BoardTask, url string) string {
 		r, _ := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{bt}
 		ck, _ := r.loggedIn(t)
-		return escalationOf(t, r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String(), bt.ID)
+		return r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String()
 	}
 	bt := factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
 		Escalation: "the session cap is reached: every finding sent to a human returns unacted", Question: question}
-	esc := shape(bt, "/?project=ai-software-factory-code")
+	esc := escalationOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q")
 	for _, want := range []string{
 		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
-		`<p class="why">the session cap is reached: every finding sent to a human returns unacted</p>`,
 		`<input type="hidden" name="value" value="grant">`, `<input type="hidden" name="value" value="park">`,
 		`aria-label="Grant one session, posted on the issue as you"`,
 		`aria-label="Park it, kept off the issue: the card stays waiting"`,
 		`<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close"`,
-		`<details class="fold"><summary>What each answer does</summary>`,
-		`<p class="info">A grant buys one more session on this card. Park holds the card for a person to work with.</p>`,
-		`<p class="recommendation">Recommendation (the factory question): Grant one session</p>`,
-		`<pre class="reason detail">the session cap is reached: every finding sent to a human returns unacted</pre>`,
 	} {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the escalation lacks %q:\n%s", want, esc)
+		}
+	}
+	for _, bulky := range []string{`<div class="why">`, `<details`, `<p class="info">`, `<p class="recommendation">`,
+		`<pre class="reason detail">`, "every finding sent to a human returns unacted"} {
+		if strings.Contains(esc, bulky) {
+			t.Errorf("the board card carries %q, which belongs to the drawer:\n%s", bulky, esc)
 		}
 	}
 	if strings.Contains(esc, `name="answer" value=`) {
@@ -785,9 +788,27 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	if strings.Contains(esc, `name="value" value="keep_waiting"`) {
 		t.Errorf("the shaped card renders an extra answer:\n%s", esc)
 	}
+	if face := faceOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q"); !strings.Contains(face, `<p class="activity">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?`) ||
+		strings.Contains(face, "every finding sent to a human returns unacted") {
+		t.Errorf("the face's activity line is not the ask alone:\n%s", face)
+	}
+
+	drawer := page(bt, "/cards/t-q/drawer?tab=overview")
+	for _, want := range []string{
+		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
+		`<div class="why"><p>the session cap is reached: every finding sent to a human returns unacted</p>`,
+		`<details class="fold"><summary>What each answer does</summary>`,
+		`<div class="info"><p>A grant buys one more session on this card. Park holds the card for a person to work with.</p>`,
+		`<p class="recommendation">Recommendation (the factory question): Grant one session</p>`,
+		`<details class="fold"><summary>The raw text, for copying</summary><pre class="reason detail">the session cap is reached: every finding sent to a human returns unacted</pre></details>`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
+		}
+	}
 
 	bt.AnswersPending = 2
-	esc = shape(bt, "/?project=ai-software-factory-code")
+	esc = escalationOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q")
 	if !strings.Contains(esc, `<p class="liveness" role="status">This card holds answers its run has not taken`) {
 		t.Errorf("the card with pending answers carries no liveness warning:\n%s", esc)
 	}
