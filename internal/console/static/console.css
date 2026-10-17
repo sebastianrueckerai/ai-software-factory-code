@@ -286,6 +286,9 @@ footer#live:empty { display: none; }
 .ghosts-hidden { margin: 0 4px 6px; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .ghosts-hidden a { color: inherit; }
 .chip.routine { color: var(--text-faint); }
+/* a card the chat names lights up, so the eye finds it on the board */
+.card.lit { animation: lit 1.2s ease-in-out 2; }
+@keyframes lit { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 45% { box-shadow: 0 0 0 3px var(--accent), 0 0 16px color-mix(in srgb, var(--accent) 55%, transparent); } }
 /* a done, failed or closed card: a two-line row */
 .face.final { padding: 6px 2px 7px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
 .face.final:last-child { border-bottom: 0; }
@@ -1038,6 +1041,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .msg.poke .av { border-color: var(--need-text); color: var(--need-text); }
 .msg.poke .av::before { background: var(--need); }
 .msg.poke .who .name { color: var(--need-text); }
+.msg.poke[data-card] { cursor: pointer; }
 .esc-l { color: var(--need-text); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .msg.esc .esc-b { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--need) 38%, var(--line)); border-left: 3px solid var(--need); background: color-mix(in srgb, var(--need) 4%, var(--bg-raised)); }
 .decider { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }

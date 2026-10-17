@@ -42,7 +42,7 @@ func TestPokeOf(t *testing.T) {
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "Merge PR #612 of #603 waits for you: risk class high.", Choices: []string{"Approve"}}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your acceptance: revision 2, 6 cards.`, Choices: []string{"Accept"}}, true},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",

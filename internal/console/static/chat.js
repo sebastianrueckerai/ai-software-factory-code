@@ -17,7 +17,10 @@ var chatView = (function () {
     return s.split(/(`[^`]+`)/).map(function (part, i) {
       if (i % 2) return "<code>" + part.slice(1, -1) + "</code>";
       return part.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
-        .replace(/(^|[^&\w])#(\d+)\b/g, "$1<a href=\"#issue-$2\" class=\"cardref\" data-issue=\"$2\">#$2</a>");
+        .replace(/(^|[^&\w])(PR\s+)?#(\d+)\b/g, function (all, pre, pr, n) {
+          // "PR #969" names a pull request, not a card, so it stays text
+          return pr ? all : pre + "<a href=\"#issue-" + n + "\" class=\"cardref\" data-issue=\"" + n + "\">#" + n + "</a>";
+        });
     }).join("");
   }
   function md(text) {
@@ -82,7 +85,8 @@ var chatView = (function () {
     if (m.settled) fold = "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
       "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + esc(m.reason || "seen") + "</span>" +
       "<span class=\"ft\">" + esc(m.content) + "</span></p>";
-    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\" data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
+    return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\"" +
+      (m.task_id ? " data-card=\"" + esc(m.task_id) + "\"" : "") + " data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
       (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + fold + "</div>";
   }
   function agentHTML(at, parts) {
@@ -609,6 +613,19 @@ var chatView = (function () {
     var b = e.target.closest("[data-open-thread]");
     if (b && Number(b.dataset.openThread) !== open) load(Number(b.dataset.openThread));
   });
+  // openCard opens a card's drawer over the board and lights the card on
+  // the board, so the eye finds it where the chat named it
+  function openCard(id) {
+    location.hash = "#card=" + encodeURIComponent(id);
+    var lit = document.querySelectorAll("#board [data-card=\"" + CSS.escape(id) + "\"]");
+    for (var i = 0; i < lit.length; i++) {
+      lit[i].classList.remove("lit");
+      void lit[i].offsetWidth;
+      lit[i].classList.add("lit");
+      lit[i].scrollIntoView({block: "nearest", inline: "nearest", behavior: "smooth"});
+      (function (el) { setTimeout(function () { el.classList.remove("lit"); }, 2600); })(lit[i]);
+    }
+  }
   // #n in the model's text opens card n's drawer over the board
   document.addEventListener("click", function (e) {
     var ref = e.target.closest("a.cardref");
@@ -617,13 +634,20 @@ var chatView = (function () {
     var refs = document.querySelectorAll("#board [data-card] .ref");
     for (var i = 0; i < refs.length; i++) {
       if (refs[i].textContent.trim() === "#" + ref.dataset.issue) {
-        location.hash = "#card=" + refs[i].closest("[data-card]").dataset.card;
+        openCard(refs[i].closest("[data-card]").dataset.card);
         return;
       }
     }
     var flash = document.getElementById("flash");
     flash.textContent = "#" + ref.dataset.issue + " is not on the board.";
     flash.hidden = false;
+  });
+  // a factory row's body opens the card it is about; its buttons, links
+  // and the fold keep their own acts
+  document.addEventListener("click", function (e) {
+    if (e.target.closest("a, button, input, select, textarea, label, summary, details, form, [data-fold]")) return;
+    var row = e.target.closest(".msg.poke[data-card]");
+    if (row) openCard(row.dataset.card);
   });
   if (!form) return;
   // the queue under the input: a click on a message edits it in place

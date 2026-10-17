@@ -145,7 +145,7 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	ctx := t.Context()
 	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	for _, e := range []struct{ task, text, choice string }{
-		{"t-e", "Merge PR #9 of #13 waits for you: risk class low.", "Approve"},
+		{"t-e", "#13 waits for you: merge PR #9, low risk.", "Approve"},
 		{"t-p", "Plan #20 waits for your acceptance: revision 1, 3 cards.", "Accept"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
@@ -280,7 +280,7 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","factory":true,"red_checks":true}`)
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-		Content: "PR #9 of #5 waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.",
+		Content: "#5 waits for you: the checks of PR #9 are red, so it cannot merge; run them again, or close it with your words.",
 		Choices: []string{factoryd.ChoiceRerun}, TaskID: "t-m", Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
 		t.Fatal(err)
 	}
