@@ -117,6 +117,20 @@ func (s *PGStore) MessengerLinks(ctx context.Context, login string) ([]Messenger
 	return out, rows.Err()
 }
 
+// MessengerLinkOf is the link bound to venue's chat address, if one is.
+func (s *PGStore) MessengerLinkOf(ctx context.Context, venue, address string) (MessengerLink, bool, error) {
+	var l MessengerLink
+	err := s.db.QueryRowContext(ctx, `SELECT id, login, venue, address, venue_user, created_at FROM messenger_links WHERE venue = $1 AND address = $2`,
+		venue, address).Scan(&l.ID, &l.Login, &l.Venue, &l.Address, &l.VenueUser, &l.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return l, false, nil
+	}
+	if err != nil {
+		return l, false, err
+	}
+	return l, true, nil
+}
+
 // UnlinkMessenger drops the member's link on venue (a disconnect).
 func (s *PGStore) UnlinkMessenger(ctx context.Context, login, venue string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM messenger_links WHERE login = $1 AND venue = $2`, login, venue)

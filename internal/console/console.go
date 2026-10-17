@@ -266,6 +266,9 @@ type Config struct {
 	// Forgejo's dependencies as it does a plan's; an issue already as asked
 	// is left alone (factoryd's Forgejo.SetIssueDependency).
 	SetIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error
+	// Messengers carries the Telegram webhook (roadmap 145); nil and the
+	// console answers no /messengers route.
+	Messengers *Messengers
 }
 
 // Console is the console's http.Handler.
@@ -378,7 +381,9 @@ type postRoute struct {
 func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
+	messengers := func() bool { return c.cfg.Messengers != nil }
 	return []postRoute{
+		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},

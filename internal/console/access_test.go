@@ -69,6 +69,10 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	skipped := []string{}
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
+		if rule.need == 0 && rule.either == 0 {
+			skipped = append(skipped, p.pattern) // the webhook checks its own header secret
+			continue
+		}
 		if rule.need == member && rule.either == 0 {
 			skipped = append(skipped, p.pattern)
 			continue
@@ -90,8 +94,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 42 || !slices.Equal(skipped, []string{"POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 42 driven and only logout and the documents' save skipped", pages, skipped)
+	if pages != 42 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 42 driven and only the telegram webhook, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on

@@ -99,6 +99,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/docs/{path...}":    rMember, // docWrite judges the project's sight; Forgejo the member's commit
 
 	// POST routes
+	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
 	"POST /logout":                              rMember,
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,

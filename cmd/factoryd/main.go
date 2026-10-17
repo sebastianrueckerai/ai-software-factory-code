@@ -430,8 +430,20 @@ func main() {
 	// the console is the only listener the edge gateway reaches; the
 	// webhook and intake API above stay in-cluster
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
+	// the messengers (roadmap 145): Telegram when its bot key is seated;
+	// its webhook rides the console's public host
+	var messengers *console.Messengers
+	if key := optionalSecret("TELEGRAM_BOT_KEY"); key != "" {
+		publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
+		telegram := &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
+		if err := telegram.Boot(ctx, publicURL); err != nil {
+			log.Printf("messengers: telegram boot: %v", err)
+		}
+		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update}
+	}
 	consoleHandler, err := console.New(console.Config{
 		PublicURL:        env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world"),
+		Messengers:       messengers,
 		ForgejoURL:       forgejo.BaseURL,
 		ForgejoPublicURL: forgejo.PublicURL,
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
