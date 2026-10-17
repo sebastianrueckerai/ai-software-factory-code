@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -106,6 +107,10 @@ func (c *Console) discordCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := d.Connect(r.Context(), s.user, q.Get("code")); err != nil {
 		log.Printf("messengers: the discord connect of %s: %v", s.user, err)
+		if errors.Is(err, factoryd.ErrNoSharedServer) {
+			c.fail(w, r, refuse(http.StatusForbidden, "Join the factory's Discord server first, then connect again."))
+			return
+		}
 		c.fail(w, r, refuse(http.StatusBadGateway, "Discord refused the connect. Try again in a minute."))
 		return
 	}

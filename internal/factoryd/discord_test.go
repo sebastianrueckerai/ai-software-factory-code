@@ -16,14 +16,15 @@ import (
 )
 
 // Discord's connect flow (roadmap 145) against a fake API: the authorize
-// page asks for identify and guilds.join and returns to the console; the
-// callback's code becomes the member's DM channel after the guild gains
-// them, the bind replaces an earlier one, and a refused call never names
-// the client secret or the bot token.
+// page asks for identify only and returns to the console; the callback's
+// code becomes the member's DM channel, the bind replaces an earlier
+// one, a member sharing no server with the bot is told to join, and a
+// refused call never names the client secret or the bot token.
 func TestDiscord(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
-	dms, joins, msgs := 0, 0, 0
+	refuseDM := false
+	dms, msgs := 0, 0
 	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -36,16 +37,17 @@ func TestDiscord(t *testing.T) {
 			calls = append(calls, "identify "+r.Header.Get("Authorization"))
 			fmt.Fprint(w, `{"id":"42","username":"ste"}`)
 		case r.Method == "PUT" && r.URL.Path == "/guilds/g-1/members/42":
-			b, _ := io.ReadAll(r.Body)
-			joins++
-			calls = append(calls, fmt.Sprintf("join %v %s %d", r.Header.Get("Authorization"), strings.TrimSpace(string(b)), joins))
-			if joins > 1 {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			w.WriteHeader(http.StatusCreated)
+			t.Errorf("the connect joins a member: %s %s", r.Method, r.URL.Path)
 		case r.Method == "POST" && r.URL.Path == "/users/@me/channels":
 			b, _ := io.ReadAll(r.Body)
+			if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+				t.Errorf("dm create content type %q, want application/json", ct)
+			}
+			if refuseDM {
+				w.WriteHeader(http.StatusForbidden)
+				fmt.Fprint(w, `{"message":"Missing Access"}`)
+				return
+			}
 			dms++
 			calls = append(calls, fmt.Sprintf("dm %v %s", r.Header.Get("Authorization"), strings.TrimSpace(string(b))))
 			fmt.Fprintf(w, `{"id":"dm-%d"}`, dms)
@@ -79,7 +81,7 @@ func TestDiscord(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 
-	d := &Discord{ClientID: "cid", ClientSecret: "s3cret", BotToken: "bot-token", GuildID: "g-1",
+	d := &Discord{ClientID: "cid", ClientSecret: "s3cret", BotToken: "bot-token",
 		BaseURL: api.URL, PublicURL: "https://console.example", Store: s}
 	u, err := url.Parse(d.AuthorizeURL("st-1"))
 	if err != nil {
@@ -89,7 +91,7 @@ func TestDiscord(t *testing.T) {
 	if u.Scheme+"://"+u.Host+u.Path != "https://discord.com/oauth2/authorize" ||
 		q.Get("client_id") != "cid" || q.Get("response_type") != "code" ||
 		q.Get("redirect_uri") != "https://console.example/messengers/discord/callback" ||
-		q.Get("scope") != "identify guilds.join" || q.Get("state") != "st-1" {
+		q.Get("scope") != "identify" || q.Get("state") != "st-1" {
 		t.Fatalf("the authorize page = %q", d.AuthorizeURL("st-1"))
 	}
 
@@ -102,11 +104,9 @@ func TestDiscord(t *testing.T) {
 	}
 	equalStrings(t, "the first connect", calls, []string{
 		`token authorization_code abc`, "identify Bearer user-token",
-		`join Bot bot-token {"access_token":"user-token"} 1`,
 		`dm Bot bot-token {"recipient_id":"42"}`})
 
-	// a second connect replaces the link, and a member already in the
-	// guild joins no more
+	// a second connect replaces the link
 	mu.Lock()
 	calls = nil
 	mu.Unlock()
@@ -118,8 +118,20 @@ func TestDiscord(t *testing.T) {
 	}
 	equalStrings(t, "the second connect", calls, []string{
 		`token authorization_code zzz`, "identify Bearer user-token",
-		`join Bot bot-token {"access_token":"user-token"} 2`,
 		`dm Bot bot-token {"recipient_id":"42"}`})
+
+	// a member sharing no server with the bot is told to join it, not
+	// to retry
+	mu.Lock()
+	calls = nil
+	refuseDM = true
+	mu.Unlock()
+	if err = d.Connect(ctx, "sebastian", "abc"); !errors.Is(err, ErrNoSharedServer) {
+		t.Fatalf("the dm without a shared server = %v", err)
+	}
+	mu.Lock()
+	refuseDM = false
+	mu.Unlock()
 
 	// a notification carries the card's link, its ref edits it, and a
 	// rate limit names its wait

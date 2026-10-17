@@ -121,7 +121,7 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 		name = d.Repository
 	}
 	text := clip(name+": "+d.Content, capOf(d.Venue))
-	cardURL := s.PublicURL + "/cards/" + d.TaskID
+	cardURL := s.PublicURL + "/#card=" + d.TaskID
 	var ref string
 	switch d.Venue {
 	case VenueTelegram:
@@ -210,7 +210,7 @@ func (s *Sender) editPass(ctx context.Context, names map[string]string) {
 			name = d.Repository
 		}
 		text := clip(name+": "+d.Content+" · "+ReasonLine(settled), capOf(d.Venue))
-		cardURL := s.PublicURL + "/cards/" + d.TaskID
+		cardURL := s.PublicURL + "/#card=" + d.TaskID
 		var editErr error
 		switch d.Venue {
 		case VenueTelegram:

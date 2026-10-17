@@ -228,10 +228,10 @@ func TestSender(t *testing.T) {
 	}
 
 	equalStrings(t, "the first pass", called(), []string{
-		"editMessageText 1 77 demo: the card asks a question · moved on · 12:00 Open the card https://console.example/cards/T-gone",
-		"sendMessage 1 demo: the run finished Open the card https://console.example/cards/T-7",
-		`say {"components":[{"components":[{"label":"Open the card","style":5,"type":2,"url":"https://console.example/cards/T-7"}],"type":1}],"content":"demo: the run finished"}`,
-		"sendMessage 5 demo: the card asks a question Open the card https://console.example/cards/T-1"})
+		"editMessageText 1 77 demo: the card asks a question · moved on · 12:00 Open the card https://console.example/#card=T-gone",
+		"sendMessage 1 demo: the run finished Open the card https://console.example/#card=T-7",
+		`say {"components":[{"components":[{"label":"Open the card","style":5,"type":2,"url":"https://console.example/#card=T-7"}],"type":1}],"content":"demo: the run finished"}`,
+		"sendMessage 5 demo: the card asks a question Open the card https://console.example/#card=T-1"})
 	if state, _, _ := row(bob, "1"); state != "sent" {
 		t.Fatalf("bob's row = %s", state)
 	}
