@@ -2498,6 +2498,7 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64) string {
 
 type timelineEntry struct {
 	Time       string
+	Raw        string // Time as the timeline wrote it, the cell's title
 	Step       string
 	Detail     string
 	Reason     string
@@ -2525,6 +2526,9 @@ func (c *Console) readTimeline(ctx context.Context, taskID string) ([]map[string
 func entry(m map[string]any) timelineEntry {
 	e := timelineEntry{}
 	e.Time, _ = m["time"].(string)
+	if at, err := time.Parse(time.RFC3339, e.Time); err == nil {
+		e.Raw, e.Time = e.Time, at.UTC().Format("2006-01-02 15:04:05")
+	}
 	e.Step, _ = m["step"].(string)
 	e.Reason, _ = m["reason"].(string)
 	switch e.Step {
