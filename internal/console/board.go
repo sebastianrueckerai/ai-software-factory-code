@@ -1175,6 +1175,7 @@ type boardData struct {
 	Query       string   // the filter as a URL query for the poll's hx-get
 	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
 	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
+	Messengers  bool     // the layout's notifications link
 	ToggleQuery string   // the filter with the other view
 	ClearQuery  string   // the filter without the find, the ×'s link (C13)
 	whole       []column // the columns before the find narrowed them, the status panel's
@@ -2051,7 +2052,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r)}
+	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
 	if v.policyOK {
 		d.PolicyVersion, d.PolicyCommit, d.PolicyTreeURL = v.policy.ID, v.policy.Commit, c.configTree(v.policy.Commit)
 	}

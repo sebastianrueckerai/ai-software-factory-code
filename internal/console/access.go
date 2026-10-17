@@ -74,6 +74,7 @@ var accessTable = map[string]accessRule{
 	// GET routes
 	"GET /static/":                            {},
 	"GET /login":                              {},
+	"GET /notifications":                      rMember,
 	"GET /messengers/discord/start":           rMember,
 	"GET /messengers/discord/callback":        rMember,
 	"GET /auth/callback":                      {},
@@ -102,6 +103,9 @@ var accessTable = map[string]accessRule{
 
 	// POST routes
 	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
+	"POST /notifications/telegram/code":         rMember,
+	"POST /notifications/disconnect":            rMember,
+	"POST /notifications/level":                 rMember, // follows() judges the project's sight, as the stream does
 	"POST /logout":                              rMember,
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,

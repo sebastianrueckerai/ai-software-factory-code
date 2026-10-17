@@ -12,12 +12,26 @@ import (
 
 // Messengers is the messengers' console half (roadmap 145): Telegram's
 // webhook (the header secret it signs its calls with, and Update for one
-// update's bytes, factoryd's Telegram.Update) and Discord's OAuth2
-// connect. A nil Discord seats no Discord routes.
+// update's bytes, factoryd's Telegram.Update), Discord's OAuth2 connect
+// and the notifications panel's store and bot name. A nil Discord seats
+// no Discord routes; a nil Store seats no panel.
 type Messengers struct {
-	Secret  string
-	Update  func(ctx context.Context, body []byte) error
-	Discord *DiscordConnect
+	Secret       string
+	Update       func(ctx context.Context, body []byte) error
+	Discord      *DiscordConnect
+	Store        MessengerStore
+	TelegramName string
+}
+
+// MessengerStore is the panel's half of the messenger tables: the codes
+// and the connections, and the member's notify levels. The PGStore
+// carries it.
+type MessengerStore interface {
+	IssueMessengerCode(ctx context.Context, login string) (string, error)
+	MessengerLinks(ctx context.Context, login string) ([]factoryd.MessengerLink, error)
+	UnlinkMessenger(ctx context.Context, login, venue string) error
+	NotifyLevelsOf(ctx context.Context, login string) (map[string]string, error)
+	SetNotifyLevel(ctx context.Context, login, repository, level string) error
 }
 
 // DiscordConnect is the console's handle on Discord's OAuth2 flow: the
@@ -95,7 +109,7 @@ func (c *Console) discordCallback(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadGateway, "Discord refused the connect. Try again in a minute."))
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, "/notifications", http.StatusSeeOther)
 }
 
 // discordState is the OAuth2 state of one session: a MAC under the

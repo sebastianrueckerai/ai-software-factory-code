@@ -338,6 +338,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
+		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level"},
 		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
 		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
@@ -386,6 +387,9 @@ func (c *Console) postRoutes() []postRoute {
 	messengers := func() bool { return c.cfg.Messengers != nil }
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
+		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
+		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
+		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
@@ -767,6 +771,9 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {
+	if m, ok := data.(map[string]any); ok {
+		m["Messengers"] = c.cfg.Messengers != nil // the layout links the notifications panel
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("console: render %s: %v", name, err)

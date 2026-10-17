@@ -127,9 +127,9 @@ func TestDiscordConnect(t *testing.T) {
 		t.Fatalf("the forged state = %d, connect %q", rec.Code, gotLogin)
 	}
 
-	// the right state binds the code to the member and returns to the console
+	// the right state binds the code to the member and returns to the panel
 	rec = do("/messengers/discord/callback?code=abc&state="+url.QueryEscape(state), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/notifications" {
 		t.Fatalf("the callback = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 	if gotLogin != "bob" || gotCode != "abc" {

@@ -443,7 +443,8 @@ func main() {
 		if err := telegram.Boot(ctx, publicURL); err != nil {
 			log.Printf("messengers: telegram boot: %v", err)
 		}
-		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update}
+		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update,
+			Store: store, TelegramName: telegram.Name}
 	}
 	if id, secret, token, guild := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
 		optionalSecret("DISCORD_BOT_TOKEN"), env("DISCORD_GUILD_ID", ""); id != "" || secret != "" || token != "" || guild != "" {
@@ -451,7 +452,7 @@ func main() {
 			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN and DISCORD_GUILD_ID together")
 		} else {
 			if messengers == nil {
-				messengers = &console.Messengers{}
+				messengers = &console.Messengers{Store: store}
 			}
 			discord = &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
 				GuildID: guild, PublicURL: publicURL, Store: store}
