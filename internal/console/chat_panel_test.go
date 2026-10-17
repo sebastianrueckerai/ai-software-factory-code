@@ -228,7 +228,7 @@ console.log(JSON.stringify({
 			`<button type="button" class="linkbtn restore" data-restore="1">restore</button></span></div>`},
 		{"sum", `Threads <span class="n">3</span> · <span class="bsplit" aria-label="1 needs you · 1 new"><span class="badge">1</span><span class="badge new">1</span></span> · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
 			`<span class="chev" aria-hidden="true">⌃</span>`},
-		{"unread", "1 needs you · 1 new"},
+		{"unread", "2"},
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
