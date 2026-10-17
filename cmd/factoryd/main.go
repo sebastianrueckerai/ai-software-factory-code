@@ -194,14 +194,7 @@ func main() {
 		// table the gateway's hold math prices a call with
 		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 		ProjectsUser: projectsUser(),
-	}, store, kube, forgejo, completion, objects, &factoryd.SupervisorModel{
-		GatewayURL: gatewayURL,
-		Token:      gatewayToken,
-		Budget: factoryd.TokenBudget{
-			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
-			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
-		},
-	})
+	}, store, kube, forgejo, completion, objects, supervisorModel(gatewayURL, gatewayToken))
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
@@ -536,6 +529,9 @@ func main() {
 	}
 	go (&factoryd.Pulser{Store: store, Bus: eventBus, Model: operator, Context: consoleHandler.PulseContext}).Run(ctx)
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
+	// the needs-you cards' briefs: one small model call each, a pass after
+	// they file, so filing never waits on the writer
+	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)
 	consoleServer := &http.Server{
 		Addr:              *consoleAddr,
 		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", consoleHandler),
@@ -882,7 +878,21 @@ func envDuration(name string, def time.Duration) time.Duration {
 	return def
 }
 
+// supervisorModel is factoryd's model client for the runner and the
+// needs-you cards' brief writer: one constructor, one configuration.
+func supervisorModel(gatewayURL, gatewayToken string) *factoryd.SupervisorModel {
+	return &factoryd.SupervisorModel{
+		GatewayURL: gatewayURL,
+		Token:      gatewayToken,
+		Budget: factoryd.TokenBudget{
+			AnswerTokens:   envInt("SUPERVISOR_ANSWER_TOKENS", 2048),
+			HeadroomTokens: envInt("SUPERVISOR_HEADROOM_TOKENS", 16384),
+		},
+	}
+}
+
 func envInt(name string, def int) int {
+
 	if v := os.Getenv(name); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
