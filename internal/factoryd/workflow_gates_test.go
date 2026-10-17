@@ -39,13 +39,14 @@ type gateHarness struct {
 	mu           sync.Mutex    // what the mocks record: the review and the audit run beside other activities, and a cancelled call still finishes in the test env
 	audits       []AuditResult // in order, the last repeating; empty: clear
 	auditErr     error
-	auditGates   []GateResults // the gates each GateAudit call was given
-	screened     int           // Screen calls
-	judged       []string      // JudgeScreening verdicts
-	merge        []MergeResult // in order, the last repeating
-	mergeErrs    []error       // Merge's error per call, in order; nil or short = none
-	reported     []string      // ReportMergeFailure reasons
-	exhausted    int           // ReportMergeRetriesExhausted calls
+	auditGates   []GateResults   // the gates each GateAudit call was given
+	screened     int             // Screen calls
+	judged       []string        // JudgeScreening verdicts
+	merge        []MergeResult   // in order, the last repeating
+	mergeErrs    []error         // Merge's error per call, in order; nil or short = none
+	rollout      []RolloutResult // in order, the last repeating; empty: confirmed, nothing live
+	reported     []string        // ReportMergeFailure reasons
+	exhausted    int             // ReportMergeRetriesExhausted calls
 	// policyDelay is how long GatePolicy takes; reviewErr fails ModelReview
 	policyDelay   time.Duration
 	reviewErr     error

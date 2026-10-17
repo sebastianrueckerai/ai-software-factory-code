@@ -213,12 +213,15 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityAwaitSessionGap:   func(ctx context.Context, taskID string) error { return nil },
 		ActivityAwaitRollHold:     func(ctx context.Context, taskID string) error { return nil },
 		ActivityClearRollHold:     func(ctx context.Context, taskID string, merged bool) error { return nil },
-		ActivityProviderWait:      func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
-		ActivityAlertPreCheck:     func(ctx context.Context, taskID string) (bool, error) { return true, nil },
-		ActivityAttemptFunded:     func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
-		ActivitySessionFunded:     func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
-		ActivitySessionAnswered:   func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
-		ActivityDayResume:         func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
+		ActivityAwaitRollout: func(ctx context.Context, taskID string, pr int64, bound time.Duration) (RolloutResult, error) {
+			return RolloutResult{}, nil
+		},
+		ActivityProviderWait:    func(ctx context.Context, taskID string, w ProviderWait) error { return nil },
+		ActivityAlertPreCheck:   func(ctx context.Context, taskID string) (bool, error) { return true, nil },
+		ActivityAttemptFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
+		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
+		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
+		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
 		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},

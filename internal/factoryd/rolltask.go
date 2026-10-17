@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	"go.temporal.io/sdk/activity"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -1034,4 +1036,122 @@ func (r *Runner) ownCommit(ctx context.Context, fork Repo, head, parent string, 
 		cur = parents[0]
 	}
 	return false, nil
+}
+
+// RolloutResult is what a roll's wait for its rollout answers:
+// Confirmed once every image its merge changed runs on its Deployment
+// and is available, Live the Deployments that went live.
+type RolloutResult struct {
+	Confirmed bool
+	Live      []string
+}
+
+// AwaitRollout is a roll's last wait (ruling 178): after its merge it
+// waits until the merge's rollout is confirmed — for every roll target
+// whose pinned reference the merge changed, read on the merge commit
+// against its first parent as the roll watcher judges it, its
+// Deployment carries the reference and is available after Flux applied
+// it — or the bound passes, when it answers Confirmed: false. A
+// transient error keeps the wait; a factoryd that stops has the next
+// one take the wait over from its heartbeat.
+func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, bound time.Duration) (RolloutResult, error) {
+	_, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return RolloutResult{}, err
+	}
+	if r.rollouts == nil {
+		return RolloutResult{}, terminalError("no deployment reader for the rollout wait")
+	}
+	until := r.clock().Add(bound)
+	for {
+		confirmed, names, err := r.rolloutConfirmed(ctx, repo, pr)
+		if err != nil {
+			if !r.clock().Before(until) {
+				return RolloutResult{}, err
+			}
+			log.Printf("roll %s: rollout: %v", taskID, err)
+		} else if confirmed {
+			slices.Sort(names)
+			return RolloutResult{Confirmed: true, Live: names}, nil
+		}
+		now := r.clock()
+		if !now.Before(until) {
+			return RolloutResult{}, nil
+		}
+		activity.RecordHeartbeat(ctx)
+		if err := r.pause(ctx, min(rollPoll, until.Sub(now))); err != nil {
+			return RolloutResult{}, err
+		}
+	}
+}
+
+// rolloutConfirmed reads whether pull request pr's merge is rolled out
+// on the factory's own Deployments: confirmed once every roll target
+// whose pinned reference the merge changed — its file on the merge
+// commit against the merge's first parent — is carried by its
+// Deployment and is available after Flux applied it. names are the
+// Deployments that went live; a merge Forgejo has not answered yet is
+// simply not confirmed yet.
+func (r *Runner) rolloutConfirmed(ctx context.Context, repo Repo, pr int64) (confirmed bool, names []string, err error) {
+	state, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return false, nil, err
+	}
+	if !state.Merged || state.MergeCommit == "" {
+		return false, nil, nil
+	}
+	parents, err := r.forgejo.CommitParents(ctx, repo.Owner, repo.Name, state.MergeCommit)
+	if err != nil {
+		return false, nil, err
+	}
+	if len(parents) == 0 {
+		return false, nil, fmt.Errorf("merge %s of pull request %d has no parent", state.MergeCommit, pr)
+	}
+	pending := map[string][]rollChange{}
+	for _, t := range RollTargets {
+		now, err := r.rollRefAt(ctx, repo, state.MergeCommit, t)
+		if err != nil {
+			return false, nil, err
+		}
+		before, err := r.rollRefAt(ctx, repo, parents[0], t)
+		if err != nil {
+			return false, nil, err
+		}
+		if before != now {
+			pending[t.Deployment] = append(pending[t.Deployment], rollChange{target: t, ref: now})
+		}
+	}
+	live := []string{}
+	for dep, changes := range pending {
+		d, err := r.rollouts.Deployment(ctx, r.cfg.FactoryNamespace, dep)
+		if err != nil {
+			return false, nil, err
+		}
+		ready := true
+		for _, c := range changes {
+			ready = ready && d.carries(c.ref)
+		}
+		applied, ok := d.applied()
+		if !ok {
+			return false, nil, fmt.Errorf("deployment %s has no kustomize-controller entry", dep)
+		}
+		liveAt, ok := d.live()
+		if ready && ok && !liveAt.Before(applied) {
+			live = append(live, dep)
+		}
+	}
+	return len(live) == len(pending), live, nil
+}
+
+// rollRefAt is a roll target's pinned reference in its file at ref.
+func (r *Runner) rollRefAt(ctx context.Context, repo Repo, ref string, t RollTarget) (string, error) {
+	raw, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, ref, t.File)
+	if err != nil {
+		return "", err
+	}
+	pinned, _, err := pinnedRef(raw, t.Image)
+	if err != nil {
+		return "", fmt.Errorf("%s at %s: %w", t.File, ref, err)
+	}
+	return pinned, nil
 }

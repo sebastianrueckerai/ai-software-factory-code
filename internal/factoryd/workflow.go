@@ -117,6 +117,7 @@ const (
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
 	ActivityAwaitRollHold               = "AwaitRollHold"
 	ActivityClearRollHold               = "ClearRollHold"
+	ActivityAwaitRollout                = "AwaitRollout"
 	ActivityProviderWait                = "ProviderWait"
 	ActivityAlertPreCheck               = "AlertPreCheck"
 	ActivityAttemptFunded               = "AttemptFunded"
@@ -490,6 +491,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answerSlice = workflow.GetVersion(ctx, "answer-slice", workflow.DefaultVersion, versionAnswerSlice)
 	run.rollGap = workflow.GetVersion(ctx, "roll-gap", workflow.DefaultVersion, versionRollNoGap)
 	run.rollQueue = workflow.GetVersion(ctx, "roll-no-queue", workflow.DefaultVersion, versionRollNoQueue)
+	run.rollout = workflow.GetVersion(ctx, "roll-rollout", workflow.DefaultVersion, versionRollout)
 	run.cheapTurn = workflow.GetVersion(ctx, "cheap-turn", workflow.DefaultVersion, versionCheapTurn)
 	run.providerWait = workflow.GetVersion(ctx, "provider-wait", workflow.DefaultVersion, versionProviderWait)
 	run.planAnswers = workflow.GetVersion(ctx, "plan-answers", workflow.DefaultVersion, versionPlanAnswers)
@@ -793,6 +795,13 @@ const (
 	// a roll that waits, and it merges without a sync (only rolls touch
 	// k8s/*.yaml, one roll task is open per repository).
 	versionRollNoQueue workflow.Version = 1
+	// versionRollout (change id "roll-rollout", ruling 178): a roll's
+	// merge is not its end. The run waits for the rollout the merge
+	// brings — every image the merge changed live on its Deployment
+	// (AwaitRollout) — and finishes done naming what went live; a rollout
+	// the task's wall-clock cap passes unconfirmed fails the roll naming
+	// the rollout, the cap its backstop.
+	versionRollout workflow.Version = 1
 	// versionCheapTurn (change id "cheap-turn", roadmap 222, item 4): at
 	// the queue's turn a sync that moved the head without touching a file
 	// of the pull request runs no second checks stage; the approval comes
@@ -1117,6 +1126,7 @@ type taskRun struct {
 	answerSlice       workflow.Version
 	rollGap           workflow.Version
 	rollQueue         workflow.Version
+	rollout           workflow.Version // a roll's end waits its rollout confirmed (versionRollout)
 	cheapTurn         workflow.Version
 	// checkedHead is the head whose checks hold for the synced head the
 	// cheap turn merges (versionCheapTurn); "" when the merged head's own
@@ -1398,6 +1408,12 @@ func (t *taskRun) lifecycle() (string, error) {
 		case t.v16 >= versionStages && t.isReport(st):
 			return t.report(st.Stronger, 0)
 		case st.Merged:
+			// a healed run of a roll whose pull request merged waits its
+			// rollout like a run that merged it (versionRollout): the
+			// wait needs the pull request and the roll's marks
+			if st.Roll {
+				t.pr, t.rolling = st.PR, true
+			}
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
 			return t.finish("failed", "completion resumed after an interrupted run")
@@ -3684,11 +3700,55 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // decides it again (one found closing is finished at once), so no task is
 // left running or closing with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
+	if final == "done" && t.rolling && t.rollout >= versionRollout {
+		final, reason = t.awaitRollout(reason)
+	}
 	ctx := workflow.WithActivityOptions(t.ctx, finishOptions())
 	if err := workflow.ExecuteActivity(ctx, ActivityFinish, t.taskID, final, reason).Get(t.ctx, nil); err != nil {
 		return "", err
 	}
 	return final, nil
+}
+
+// awaitRollout is a roll's last wait (ruling 178): after its merge the
+// run waits until the rollout is confirmed — every image the merge
+// changed runs on its Deployment and is available — and finishes done
+// naming what went live. A rollout the task's wall-clock cap passes
+// unconfirmed fails the roll naming the rollout, the cap its backstop;
+// an error the wait cannot outlive ends it done with the merge's
+// reason: the merge went through, and no retry of the wait changes
+// that.
+func (t *taskRun) awaitRollout(reason string) (final, why string) {
+	ctx := workflow.WithActivityOptions(t.ctx, rolloutWaitOptions(t.cfg.WallClockCap))
+	var res RolloutResult
+	if err := workflow.ExecuteActivity(ctx, ActivityAwaitRollout, t.taskID, t.pr.Number, t.cfg.WallClockCap).Get(t.ctx, &res); err != nil {
+		workflow.GetLogger(t.ctx).Warn("await rollout", "task", t.taskID, "error", err)
+		return "done", reason
+	}
+	switch {
+	case !res.Confirmed:
+		return "failed", reason + "; rollout not confirmed within the wall-clock cap"
+	case len(res.Live) == 0:
+		return "done", reason + "; rollout confirmed: the merge changed no image"
+	}
+	return "done", reason + "; rollout live: " + strings.Join(res.Live, ", ")
+}
+
+// rolloutWaitOptions bound a roll's rollout wait by the task's
+// wall-clock cap and rollWaitSlack; it heartbeats every poll, and a
+// factoryd that stops (the rollout's own restart) has the next one
+// retry it.
+func rolloutWaitOptions(bound time.Duration) workflow.ActivityOptions {
+	return workflow.ActivityOptions{
+		StartToCloseTimeout: bound + rollWaitSlack,
+		HeartbeatTimeout:    time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumInterval:        time.Minute,
+			MaximumAttempts:        10,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	}
 }
 
 // finishOptions are the short activities' options: MaximumAttempts 0 is
