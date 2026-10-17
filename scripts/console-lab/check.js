@@ -28,6 +28,10 @@ const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .re
 const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.ghost .held, .card.ghost .run, .card.ghost .acts button, " +
   ".chip.routine, .cell.routine";
 
+// notifyEl are the messenger panel's text (roadmap 145, C19), measured
+// as contrastEl is
+const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr, .notify caption, .notify td.act a, .notify td.act button, .notify select";
+
 // labID is issue's task id in the lab, as lab_test.go's labID makes it.
 const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issue).digest("hex").slice(0, 12);
 
@@ -956,6 +960,22 @@ async function text(page) {
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
   }
+  // the panel on the phone: the rows stack, every target reaches 44 px, no horizontal scroll
+  await seed("busy");
+  {
+    const pp = await open(browser, { width: 390, height: 844 });
+    await pp.page.goto(base + "/notifications", { waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    if (!(await pp.page.locator(".notify thead").first().isHidden())) fails.push("phone: the panel's headers still show at 390");
+    const stacked = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify tbody tr")).map((tr) => getComputedStyle(tr).display));
+    if (stacked.length !== 5 || stacked.includes("table-row")) fails.push("phone: the panel's rows do not stack: " + JSON.stringify(stacked));
+    const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act a, .notify td.act button, .notify td.act select"))
+      .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 16) || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
+    if (small.length) fails.push("phone: panel targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+    const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
+    if (psw > 390) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + ")");
+    await pp.ctx.close();
+  }
   // the phone: 44 px targets for the C14 controls and the theme selector, no horizontal scroll
   for (const sc of ["threads", "escalation"]) {
     await seed(sc);
@@ -1004,15 +1024,39 @@ async function text(page) {
     }
     await pp.ctx.close();
   }
+  // the messenger panel (roadmap 145, C19): both tables' words, a lamp on
+  // every state — cyan for connected and a set level, amber for
+  // needs-you, an unlit socket for off and not connected; the phone's
+  // rows stack and every target reaches 44 px
+  await seed("busy");
+  {
+    const np = await open(browser, { width: 1440, height: 900 });
+    await np.page.goto(base + "/notifications", { waitUntil: "load" });
+    await np.page.waitForTimeout(600);
+    const words = await np.page.evaluate(() => document.body.innerText);
+    for (const w of ["Connections", "telegram", "connected", "@sebastian", "Disconnect", "discord", "not connected", "Connect",
+      "Level per project", "default:", "off", "needs-you", "all", "Save"]) if (!words.includes(w)) fails.push("panel: misses " + JSON.stringify(w));
+    const lamps = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify .lamp")).map((l) => l.className.trim()));
+    if (lamps.length !== 5) fails.push("panel: " + lamps.length + " lamps, want 5 (two venues, three projects): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp on")) fails.push("panel: no lit cyan lamp (a connected venue, a set level): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp needs-you")) fails.push("panel: no amber lamp (a needs-you default): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp")) fails.push("panel: no unlit lamp (not connected, off): " + JSON.stringify(lamps));
+    const sizes = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify .lamp")).map((l) => [l.className.trim(), l.offsetWidth, l.offsetHeight]));
+    const big = sizes.filter((s) => s[1] > 11 || s[2] > 11);
+    if (big.length) fails.push("panel: a lamp is not the 8px square: " + big.map((s) => s.join(" ")).join("; "));
+    const tails = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act")).map((td) => Math.round(td.getBoundingClientRect().right - td.querySelector("button, a").getBoundingClientRect().right)));
+    if (tails.some((g) => g > 24)) fails.push("panel: the act controls leave an empty tail to the row's rule: " + tails.join(","));
+    await np.ctx.close();
+  }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
-    for (const [sc, act, sel] of [["threads", "delete", contrastEl], ["escalation", "palette", contrastEl], ["assisted", "level", contrastEl],
-      ["poke", "", contrastEl], ["busy", "docs", contrastEl], ["busy", "", ghostEl], ["fire", "", ghostEl]]) {
+    for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["escalation", "palette", contrastEl, ""], ["assisted", "level", contrastEl, ""],
+      ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
       await cp.ctx.addInitScript((t) => localStorage.setItem("theme", t), theme);
-      await cp.page.goto(base + "/", { waitUntil: "load" });
+      await cp.page.goto(base + (pg || "/"), { waitUntil: "load" });
       if ((await cp.page.evaluate(() => document.documentElement.dataset.theme)) !== theme) fails.push("contrast: the page is not in the " + theme + " theme");
       await cp.page.waitForTimeout(600);
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();

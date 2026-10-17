@@ -16,7 +16,7 @@ const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
 const tall = { width: 1440, height: 2600 };
 const phone = { width: 390, height: 844 };
-const pages = ["costs", "alerts", "resources", "projects", "policy"];
+const pages = ["costs", "alerts", "resources", "projects", "policy", "notifications"];
 
 const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").trim().split(/=(.*)/s);
 
@@ -127,6 +127,8 @@ async function main() {
         }
         // the phone is one column: the chat first, the board below it
         await shot("phone-390.png", phone, "/", doIt);
+        // the messenger panel's stacked rows on the phone (C19), once a theme
+        if (s === "busy") await shot("notifications-390.png", phone, "/notifications");
         // the C14 faces that open on a click: the level control's menu and its
         // confirm, the command palette, the delete warning
         if (s === "assisted") {

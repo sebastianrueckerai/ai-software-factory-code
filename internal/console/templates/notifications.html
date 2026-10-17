@@ -1,28 +1,35 @@
 {{template "head" .}}
 <h2>Notifications</h2>
 
-<section aria-labelledby="connections">
+{{$csrf := .CSRF}}{{$code := .Code}}{{$tg := ""}}{{range .Links}}{{if eq .Venue "telegram"}}{{$tg = .Address}}{{end}}{{end}}{{$dc := ""}}{{range .Links}}{{if eq .Venue "discord"}}{{$dc = .Address}}{{end}}{{end}}
+<section class="notify" aria-labelledby="connections">
 <h3 id="connections">Connections</h3>
-{{if .TelegramName}}{{if .Code}}<p class="code">Open <a href="https://t.me/{{.TelegramName}}?start={{.Code}}" rel="noopener">Telegram</a> and tap Start to connect.</p>
-{{else}}<form method="post" action="/notifications/telegram/code" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Connect Telegram</button></form>
-{{end}}{{end}}
-{{if .Discord}}<p><a href="/messengers/discord/start">Connect Discord</a></p>
-{{end}}
-{{if .Links}}<ul>
-{{range .Links}}<li>{{.Venue}} ({{.Address}})<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="venue" value="{{.Venue}}"><button type="submit">Disconnect</button></form></li>
-{{end}}</ul>
-{{else}}<p>No connection yet.</p>
-{{end}}
+<table>
+<thead><tr><th scope="col">Venue</th><th scope="col">State</th><th scope="col">Act</th></tr></thead>
+<tbody>
+{{if or .TelegramName $tg}}<tr>
+<th scope="row">telegram</th>
+<td>{{if $tg}}<i class="lamp on" aria-hidden="true"></i>connected <span class="addr">{{$tg}}</span>{{else}}<i class="lamp" aria-hidden="true"></i><span class="dim">not connected</span>{{end}}</td>
+<td class="act">{{if $tg}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="telegram"><button type="submit">Disconnect</button></form>{{else if $code}}<a href="https://t.me/{{.TelegramName}}?start={{$code}}" rel="noopener">Open Telegram and tap Start to connect</a>{{else}}<form method="post" action="/notifications/telegram/code" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><button type="submit">Connect</button></form>{{end}}</td>
+</tr>{{end}}
+{{if or .Discord $dc}}<tr>
+<th scope="row">discord</th>
+<td>{{if $dc}}<i class="lamp on" aria-hidden="true"></i>connected <span class="addr">{{$dc}}</span>{{else}}<i class="lamp" aria-hidden="true"></i><span class="dim">not connected</span>{{end}}</td>
+<td class="act">{{if $dc}}<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="venue" value="discord"><button type="submit">Disconnect</button></form>{{else}}<a href="/messengers/discord/start">Connect</a>{{end}}</td>
+</tr>{{end}}
+{{if and (not .TelegramName) (not $tg) (not .Discord) (not $dc)}}<tr><td colspan="3">No connection yet.</td></tr>{{end}}
+</tbody>
+</table>
 </section>
 
-<section aria-labelledby="levels">
+<section class="notify" aria-labelledby="levels">
 <h3 id="levels">Level per project</h3>
 <table>
 <caption>The level you set for each project you read, with the default of needs-you where the project pings you, else off.</caption>
 <thead><tr><th scope="col">Project</th><th scope="col">Now</th><th scope="col">Set</th></tr></thead>
 <tbody>
-{{range .Projects}}{{$p := .}}<tr><th scope="row">{{.Name}}</th><td>{{if .Level}}<strong>{{.Level}}</strong>{{else}}default: {{.Default}}{{end}}</td>
-<td><form method="post" action="/notifications/level" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="project" value="{{.Name}}"><select name="level">{{range $l := $.Levels}}<option value="{{$l}}"{{if eq $l $p.Level}} selected{{end}}>{{$l}}</option>{{end}}</select> <button type="submit">Save</button></form></td></tr>
+{{range .Projects}}{{$p := .}}<tr><th scope="row">{{.Name}}</th><td>{{if .Level}}<i class="lamp{{if eq .Level "needs-you"}} needs-you{{else if eq .Level "all"}} on{{end}}" aria-hidden="true"></i>{{.Level}}{{else}}<i class="lamp{{if eq .Default "needs-you"}} needs-you{{end}}" aria-hidden="true"></i><span class="dim">default: {{.Default}}</span>{{end}}</td>
+<td class="act"><form method="post" action="/notifications/level" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="project" value="{{.Name}}"><label class="visually-hidden" for="level-{{$p.Repository}}">Level of {{.Name}}</label><select id="level-{{$p.Repository}}" name="level">{{range $l := $.Levels}}<option value="{{$l}}"{{if or (eq $l $p.Level) (and (not $p.Level) (eq $l $p.Default))}} selected{{end}}>{{$l}}</option>{{end}}</select> <button type="submit">Save</button></form></td></tr>
 {{else}}<tr><td colspan="3">No project you read.</td></tr>{{end}}
 </tbody>
 </table>
