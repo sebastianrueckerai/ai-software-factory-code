@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"testing"
@@ -73,5 +74,100 @@ func TestAllTheTimesRulesRequireAFullWindow(t *testing.T) {
 	}
 	if seen != 3 {
 		t.Fatalf("%d all-the-times rules, want the two roll rules and ci-queue-p95", seen)
+	}
+}
+
+// The 5xx-rate rule measures a share, and a share alone has no floor:
+// one failed request among the eighteen a Saturday-evening factory
+// serves is 5.5555... %, above the target, and the rule filed a
+// human-work card for a blip every handler is built to ride out
+// (2026-10-17, 1 of 18). A storm is not one request: the rule counts
+// at least three failures in the window, folded into its formula as a
+// gate that is 0 below the floor and 1 above it — the sign of
+// A - 2.5, a half a count never lands on — because a formula knows
+// arithmetic and abs but no ternary. The evaluation is rolling, so
+// the formula's A and B are the window's totals in one division (the
+// storm of 2026-10-16 fired at 8 of 141, 5.6737... %), and the floor
+// sees every failure the window saw.
+func Test5xxRateRuleRequiresThreeFailures(t *testing.T) {
+	data, err := os.ReadFile("../../k8s/alerts/5xx-rate.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var r struct {
+		Condition struct {
+			CompositeQuery struct {
+				Queries []struct {
+					Type string `json:"type"`
+					Spec struct {
+						Name       string `json:"name"`
+						Expression string `json:"expression"`
+					} `json:"spec"`
+				} `json:"queries"`
+			} `json:"compositeQuery"`
+			SelectedQueryName string `json:"selectedQueryName"`
+			Thresholds        struct {
+				Spec []struct {
+					Target    float64 `json:"target"`
+					Op        string  `json:"op"`
+					MatchType string  `json:"matchType"`
+				} `json:"spec"`
+			} `json:"thresholds"`
+		} `json:"condition"`
+		Evaluation struct {
+			Kind string `json:"kind"`
+		} `json:"evaluation"`
+	}
+	if err := json.Unmarshal(data, &r); err != nil {
+		t.Fatalf("k8s/alerts/5xx-rate.json: %v", err)
+	}
+
+	// The formula as provisioned, pinned: editing it is a decision this
+	// test exists to force.
+	const want = "(A * 100 / B) * ((A - 2.5) / abs(A - 2.5) + 1) / 2"
+	var formula string
+	for _, q := range r.Condition.CompositeQuery.Queries {
+		if q.Type == "builder_formula" {
+			formula = q.Spec.Expression
+		}
+	}
+	if formula != want {
+		t.Errorf("F1 = %q, want %q (a share that is 0 below three failures in the window)", formula, want)
+	}
+
+	// What the pinned formula computes: the share, times a gate that is
+	// 0 while A < 3 and 1 once A >= 3 (A is a count, never 2.5).
+	gatedShare := func(a, b float64) float64 {
+		return (a * 100 / b) * (((a - 2.5) / math.Abs(a-2.5)) + 1) / 2
+	}
+	// The firing of 2026-10-17 and its neighbour, both below the floor.
+	for _, c := range [][2]float64{{1, 18}, {2, 18}} {
+		if share := gatedShare(c[0], c[1]); share > 5 {
+			t.Errorf("share of %v failures among %v = %v, want the floor to hold it at 0", c[0], c[1], share)
+		}
+	}
+	// The storm of 2026-10-16, 8 of 141, still fires.
+	if share := gatedShare(8, 141); share <= 5 {
+		t.Errorf("share of 8 failures among 141 = %v, want the 5.67 %% of the storm, above the target", share)
+	}
+	// Three failures on a quiet service is a storm a share may name.
+	if share := gatedShare(3, 18); share <= 5 {
+		t.Errorf("share of 3 failures among 18 = %v, want 16.7 %%, above the target", share)
+	}
+
+	// The threshold itself is unchanged: the floor edits the share's
+	// reach, not what a storm means.
+	th := r.Condition.Thresholds.Spec[0]
+	if r.Condition.SelectedQueryName != "F1" || th.Target != 5 || th.Op != "1" || th.MatchType != "3" {
+		t.Errorf("selectedQueryName %q, target %v, op %q, matchType %q, want F1, 5, op \"1\", matchType \"3\"",
+			r.Condition.SelectedQueryName, th.Target, th.Op, th.MatchType)
+	}
+
+	// The floor rides on the evaluation rolling the window into one
+	// sample (the formula's A is the window's total); a timewise rule
+	// would gate each minute alone, and a drip of two failures a minute
+	// would never reach the floor.
+	if r.Evaluation.Kind != "rolling" {
+		t.Errorf("evaluation.kind = %q, want \"rolling\"", r.Evaluation.Kind)
 	}
 }
