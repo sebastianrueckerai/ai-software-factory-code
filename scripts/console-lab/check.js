@@ -28,6 +28,10 @@ const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .re
 const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.ghost .held, .card.ghost .run, .card.ghost .acts button, " +
   ".chip.routine, .cell.routine";
 
+// notifyEl are the messenger panel's text (roadmap 145, C19), measured
+// as contrastEl is
+const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr, .notify caption, .notify td.act a, .notify td.act button, .notify select";
+
 // labID is issue's task id in the lab, as lab_test.go's labID makes it.
 const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issue).digest("hex").slice(0, 12);
 
@@ -676,7 +680,8 @@ async function text(page) {
       if ((await p.page.locator("#board .column > .col-menu").count()) !== 3) fails.push("menus: not three column menus");
     }
     if (sc === "busy") {
-      // the routines (C16): a ghost at the foot of Needs you and of Queued, the control in the
+      // the routines (C16): every ghost at the foot of Queued, Needs you holds only the
+      // filed card (the 2026-10-17 ruling), the control in the
       // board's head, the strip's cell, the chip, the routine's drawer, Skip once
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
@@ -685,11 +690,14 @@ async function text(page) {
         const kids = Array.from(c.querySelectorAll(":scope > .cards > article.card")), ghost = (k) => k.classList.contains("ghost");
         return { title: c.querySelector("h3").firstChild.textContent.trim(), first: kids.findIndex(ghost), last: kids.map((k) => !ghost(k)).lastIndexOf(true) };
       }));
-      for (const t of ["Needs you", "Queued"]) {
-        const f = feet.find((x) => x.title === t);
-        if (!f || f.first < 0) fails.push("routines: no ghost in " + t);
-        else if (f.first < f.last) fails.push("routines: a ghost of " + t + " sits above its last card");
+      for (const f of feet) {
+        if (f.title === "Queued") {
+          if (f.first < 0) fails.push("routines: no ghost in Queued");
+          else if (f.first < f.last) fails.push("routines: a ghost of Queued sits above its last card");
+        } else if (f.first >= 0) fails.push("routines: a ghost stands in " + f.title + ", not only Queued");
       }
+      const apprRef = p.page.locator('#needs-you [data-card="' + labID(607) + '"] .ref');
+      if (!(await apprRef.count()) || (await apprRef.first().innerText()).trim() !== "#607") fails.push("busy: the approval card carries no ref #607");
       const radios = await p.page.locator("#board .board-head details.col-menu input[type=radio][name=routines]").count();
       if (radios !== 3) fails.push("routines: the control has " + radios + " radios named routines, not 3");
       const period = await p.page.evaluate(() => {
@@ -746,7 +754,7 @@ async function text(page) {
         ["within 2 hours", async () => { await ctl.locator("input[name=within]").fill("2"); await ctl.locator("select[name=unit]").selectOption("hours"); },
           { routines: "within", within: "2", unit: "hours" }, soon, "1 routine hidden"],
         ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: "all" }, all, ""],
-        ["choosing none", () => ctl.locator("input[name=routines][value=none]").check(), { routines: "none" }, "", "1 routine hidden | 3 routines hidden"],
+        ["choosing none", () => ctl.locator("input[name=routines][value=none]").check(), { routines: "none" }, "", "4 routines hidden"],
         ["a number of 3 under none", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
           { routines: "within", within: "3", unit: "days" }, soon, "1 routine hidden"],
       ]) {
@@ -897,11 +905,33 @@ async function text(page) {
       await first.click();
       await p.page.waitForTimeout(600);
       const log = await p.page.locator("#chat").innerText();
-      for (const w of ["#600 is done", "needs you", "Merge PR #612 of #606 waits for you", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
+      for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
       if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      // the merge ask's numbers: the PR stays text, the card's ref is the
+      // link; the link and the row's body open the card's drawer and
+      // light the card. The ask sits settled here, so its fold opens the
+      // row first.
+      if (await p.page.locator('#chat-log a.cardref[data-issue="612"]').count()) fails.push("poke: the PR number is a card link");
+      const askRow = p.page.locator('#chat-log .msg.esc[data-card="' + labID(606) + '"]').first();
+      const askFold = askRow.locator("[data-fold]");
+      if (await askFold.count()) await askFold.click();
+      await p.page.waitForTimeout(150);
+      const ref = askRow.locator('a.cardref[data-issue="606"]');
+      if (!(await ref.count())) fails.push("poke: the card's ref is no link");
+      await ref.first().click();
+      await p.page.waitForTimeout(400);
+      let hash = decodeURIComponent(await p.page.evaluate(() => location.hash));
+      if (hash !== "#card=" + labID(606)) fails.push('poke: the ref link opens no drawer, hash "' + hash + '"');
+      if (!(await p.page.locator('#board [data-card="' + labID(606) + '"].lit').count())) fails.push("poke: the ref link lights no card");
+      await p.page.keyboard.press("Escape");
+      await askRow.locator(".said").first().click();
+      await p.page.waitForTimeout(300);
+      hash = decodeURIComponent(await p.page.evaluate(() => location.hash));
+      if (hash !== "#card=" + labID(606)) fails.push('poke: the row body opens no drawer, hash "' + hash + '"');
+      await p.page.keyboard.press("Escape");
       // Clear old (the sweep): a shrunk log holds the member's scroll over
       // a background refresh, the sweep takes the settled rows from view,
       // the open ask stays with its buttons, and the cleared line counts
@@ -929,6 +959,22 @@ async function text(page) {
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
+  }
+  // the panel on the phone: the rows stack, every target reaches 44 px, no horizontal scroll
+  await seed("busy");
+  {
+    const pp = await open(browser, { width: 390, height: 844 });
+    await pp.page.goto(base + "/notifications", { waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    if (!(await pp.page.locator(".notify thead").first().isHidden())) fails.push("phone: the panel's headers still show at 390");
+    const stacked = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify tbody tr")).map((tr) => getComputedStyle(tr).display));
+    if (stacked.length !== 5 || stacked.includes("table-row")) fails.push("phone: the panel's rows do not stack: " + JSON.stringify(stacked));
+    const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act a, .notify td.act button, .notify td.act select"))
+      .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 16) || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
+    if (small.length) fails.push("phone: panel targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+    const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
+    if (psw > 390) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + ")");
+    await pp.ctx.close();
   }
   // the phone: 44 px targets for the C14 controls and the theme selector, no horizontal scroll
   for (const sc of ["threads", "escalation"]) {
@@ -978,15 +1024,39 @@ async function text(page) {
     }
     await pp.ctx.close();
   }
+  // the messenger panel (roadmap 145, C19): both tables' words, a lamp on
+  // every state — cyan for connected and a set level, amber for
+  // needs-you, an unlit socket for off and not connected; the phone's
+  // rows stack and every target reaches 44 px
+  await seed("busy");
+  {
+    const np = await open(browser, { width: 1440, height: 900 });
+    await np.page.goto(base + "/notifications", { waitUntil: "load" });
+    await np.page.waitForTimeout(600);
+    const words = await np.page.evaluate(() => document.body.innerText);
+    for (const w of ["Connections", "telegram", "connected", "@sebastian", "Disconnect", "discord", "not connected", "Connect",
+      "Level per project", "default:", "off", "needs-you", "all", "Save"]) if (!words.includes(w)) fails.push("panel: misses " + JSON.stringify(w));
+    const lamps = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify .lamp")).map((l) => l.className.trim()));
+    if (lamps.length !== 5) fails.push("panel: " + lamps.length + " lamps, want 5 (two venues, three projects): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp on")) fails.push("panel: no lit cyan lamp (a connected venue, a set level): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp needs-you")) fails.push("panel: no amber lamp (a needs-you default): " + JSON.stringify(lamps));
+    if (!lamps.includes("lamp")) fails.push("panel: no unlit lamp (not connected, off): " + JSON.stringify(lamps));
+    const sizes = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify .lamp")).map((l) => [l.className.trim(), l.offsetWidth, l.offsetHeight]));
+    const big = sizes.filter((s) => s[1] > 11 || s[2] > 11);
+    if (big.length) fails.push("panel: a lamp is not the 8px square: " + big.map((s) => s.join(" ")).join("; "));
+    const tails = await np.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act")).map((td) => Math.round(td.getBoundingClientRect().right - td.querySelector("button, a").getBoundingClientRect().right)));
+    if (tails.some((g) => g > 24)) fails.push("panel: the act controls leave an empty tail to the row's rule: " + tails.join(","));
+    await np.ctx.close();
+  }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
-    for (const [sc, act, sel] of [["threads", "delete", contrastEl], ["escalation", "palette", contrastEl], ["assisted", "level", contrastEl],
-      ["poke", "", contrastEl], ["busy", "docs", contrastEl], ["busy", "", ghostEl], ["fire", "", ghostEl]]) {
+    for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["escalation", "palette", contrastEl, ""], ["assisted", "level", contrastEl, ""],
+      ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
       await cp.ctx.addInitScript((t) => localStorage.setItem("theme", t), theme);
-      await cp.page.goto(base + "/", { waitUntil: "load" });
+      await cp.page.goto(base + (pg || "/"), { waitUntil: "load" });
       if ((await cp.page.evaluate(() => document.documentElement.dataset.theme)) !== theme) fails.push("contrast: the page is not in the " + theme + " theme");
       await cp.page.waitForTimeout(600);
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();

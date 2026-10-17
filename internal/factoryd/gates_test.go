@@ -852,8 +852,8 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 		content string
 		choices []string
 	}{
-		{true, "PR #9 of #36 waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.", []string{ChoiceRerun}},
-		{false, "Merge PR #9 of #36 waits for you: risk class high.", []string{"Approve"}},
+		{true, "#36 waits for you: the checks of PR #9 are red, so it cannot merge; run them again, or close it with your words.", []string{ChoiceRerun}},
+		{false, "#36 waits for you: merge PR #9, high risk.", []string{"Approve"}},
 	} {
 		r, store, _ := newGateRunner(t, task, &gateForgejo{})
 		rows := &fakeEventRecorder{}

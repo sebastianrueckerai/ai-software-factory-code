@@ -229,10 +229,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		m.Kind = MessageEscalation
 		switch str("kind") {
 		case ApprovalMerge:
-			m.Content = fmt.Sprintf("Merge PR #%d of %s waits for you: risk class %s.", num("pr"), ref, str("class"))
+			m.Content = fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class"))
 			m.Choices = []string{"Approve"}
 			if rerun, _ := e.Detail["rerun"].(bool); rerun {
-				m.Content = fmt.Sprintf("PR #%d of %s waits for you: its checks are red, so it cannot merge; run them again, or close it with your words.", num("pr"), ref)
+				m.Content = fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr"))
 				m.Choices = []string{ChoiceRerun}
 			}
 		case ApprovalPlan:

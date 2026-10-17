@@ -286,6 +286,9 @@ footer#live:empty { display: none; }
 .ghosts-hidden { margin: 0 4px 6px; color: var(--text-faint); font: 11.5px var(--font-mono); }
 .ghosts-hidden a { color: inherit; }
 .chip.routine { color: var(--text-faint); }
+/* a card the chat names lights up, so the eye finds it on the board */
+.card.lit { animation: lit 1.2s ease-in-out 2; }
+@keyframes lit { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 45% { box-shadow: 0 0 0 3px var(--accent), 0 0 16px color-mix(in srgb, var(--accent) 55%, transparent); } }
 /* a done, failed or closed card: a two-line row */
 .face.final { padding: 6px 2px 7px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: none; box-shadow: none; }
 .face.final:last-child { border-bottom: 0; }
@@ -1056,6 +1059,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .msg.poke .av { border-color: var(--need-text); color: var(--need-text); }
 .msg.poke .av::before { background: var(--need); }
 .msg.poke .who .name { color: var(--need-text); }
+.msg.poke[data-card] { cursor: pointer; }
 .esc-l { color: var(--need-text); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .msg.esc .esc-b { padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--need) 38%, var(--line)); border-left: 3px solid var(--need); background: color-mix(in srgb, var(--need) 4%, var(--bg-raised)); }
 .decider { margin: 4px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
@@ -1129,6 +1133,17 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .compacted { margin: 0 0 16px; }
 .compacted > summary { color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .compacted[open] > summary { margin-bottom: 10px; }
+/* the notifications panel (C19): one monospaced readout, a square lamp
+   on every state — cyan for connected and a level the member set, amber
+   for needs-you, an unlit socket for off and not connected */
+.notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); white-space: normal; }
+.notify td.act { width: 100%; text-align: right; }
+.notify td.act form.inline { white-space: nowrap; }
+.notify .dim { color: var(--text-muted); }
+.notify .addr { color: var(--text-faint); }
+.lamp { display: inline-block; width: 8px; height: 8px; margin: 0 7px 1px 0; border: 1px solid var(--line-strong); border-radius: 1px; vertical-align: baseline; }
+.lamp.on { background: var(--accent); border-color: var(--accent); }
+.lamp.needs-you { background: var(--need); border-color: var(--need); }
 @media (max-width: 899px) {
   .chat.with-threads { display: flex; flex-direction: column; }
   .ttable { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1147,6 +1162,13 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .lvlpop [data-lvl] { min-height: 44px; }
   .cmds { gap: 8px; }
   .palette button { height: 44px; }
+  .notify thead { display: none; }
+  .notify tr { display: block; padding: 6px 0; }
+  .notify th[scope=row], .notify td { display: block; border-bottom: 0; padding: 3px 0; }
+  .notify td.act a { display: inline-flex; align-items: center; min-height: 44px; }
+  .notify td.act form.inline { display: flex; gap: 8px; }
+  .notify td.act form.inline button { height: 44px; }
+  .notify td.act select { flex: 1; height: 44px; min-width: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

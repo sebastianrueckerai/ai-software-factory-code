@@ -105,8 +105,18 @@ func TestNotificationsPanel(t *testing.T) {
 	if !strings.Contains(page, "demo") || !strings.Contains(page, "default: needs-you") {
 		t.Fatalf("the panel misses demo's default:\n%s", page)
 	}
+	// the select rests on the effective level, so an untouched Save keeps
+	// the derived default instead of silently turning it off
+	if !strings.Contains(page, `value="needs-you" selected`) {
+		t.Fatalf("the select does not rest on the derived default:\n%s", page)
+	}
 	if strings.Contains(page, "sf/code") || strings.Contains(page, "demo-app") {
 		t.Fatalf("the panel lists a project bob cannot read:\n%s", page)
+	}
+	// a venue the instance never configured says so, dim, with no control
+	// that could look like it works
+	if !strings.Contains(page, "no discord configured") || strings.Contains(page, "/messengers/discord/start") {
+		t.Fatalf("the unconfigured discord row does not say so:\n%s", page)
 	}
 
 	// a set level shows in place of the default
@@ -124,6 +134,21 @@ func TestNotificationsPanel(t *testing.T) {
 		c.ServeHTTP(rec, req)
 		return rec
 	}
+
+	// an instance with no venue at all still shows the panel: both rows
+	// name what is missing, and the venue's post refuses
+	c = seat(&Messengers{Store: fm})
+	page = get(c, "/notifications", bk)
+	if !strings.Contains(page, "no telegram configured") || !strings.Contains(page, "no discord configured") {
+		t.Fatalf("the panel of a bare instance misses the unconfigured lines:\n%s", page)
+	}
+	if strings.Contains(page, ">Connect<") || strings.Contains(page, "t.me/") || strings.Contains(page, "/messengers/discord/start") {
+		t.Fatalf("a bare instance carries a control that looks like it works:\n%s", page)
+	}
+	if rec := send(c, "/notifications/telegram/code", url.Values{"csrf": {bs.csrf}}); rec.Code != http.StatusNotFound {
+		t.Fatalf("the telegram code post on a bare instance = %d, want 404", rec.Code)
+	}
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot"})
 	rec = send(c, "/notifications/telegram/code", url.Values{"csrf": {bs.csrf}})
 	code := strings.Repeat("c", 22)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/notifications?code="+code || fm.codes != 1 {
@@ -131,6 +156,10 @@ func TestNotificationsPanel(t *testing.T) {
 	}
 	if page = get(c, "/notifications?code="+code, bk); !strings.Contains(page, "https://t.me/factorybot?start="+code) {
 		t.Fatalf("the panel misses the start link:\n%s", page)
+	}
+	// both connect links leave the console open in its tab
+	if !strings.Contains(page, `" target="_blank" rel="noopener">Open Telegram`) {
+		t.Fatalf("the telegram link replaces the console tab:\n%s", page)
 	}
 
 	// a connection shows and a disconnect takes it
@@ -164,5 +193,38 @@ func TestNotificationsPanel(t *testing.T) {
 		if rec = send(c, "/notifications/level", form); rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
 			t.Fatalf("the refused level post %v = %d", form, rec.Code)
 		}
+	}
+
+	// the instrument panel (C19): one row per venue the console carries or
+	// the member connected, the state said in words beside its lamp; discord
+	// not connected reads as a row with its connect link, connected as the
+	// address and a Disconnect, and a connected telegram keeps its own row
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot", Discord: &DiscordConnect{}})
+	page = get(c, "/notifications", bk)
+	for _, want := range []string{"telegram", "not connected", "discord", `/messengers/discord/start" target="_blank"`} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the panel of an unconnected member misses %q:\n%s", want, page)
+		}
+	}
+	fm.links = []factoryd.MessengerLink{
+		{Venue: factoryd.VenueTelegram, Address: "@sebastian", VenueUser: "42"},
+		{Venue: factoryd.VenueDiscord, Address: "dexter"},
+	}
+	if page = get(c, "/notifications", bk); !strings.Contains(page, "@sebastian") || !strings.Contains(page, "dexter") {
+		t.Fatalf("the panel misses a connected address:\n%s", page)
+	}
+	if strings.Count(page, "Disconnect") != 2 {
+		t.Fatalf("the panel carries %d Disconnects, want one per connected venue:\n%s", strings.Count(page, "Disconnect"), page)
+	}
+	if strings.Contains(page, "not connected") {
+		t.Fatalf("a connected venue still says not connected:\n%s", page)
+	}
+
+	// a link outlives its venue's config: the row stays, and with it the
+	// console's only disconnect for that venue
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot"})
+	fm.links = []factoryd.MessengerLink{{Venue: factoryd.VenueDiscord, Address: "carl"}}
+	if page = get(c, "/notifications", bk); !strings.Contains(page, "carl") || strings.Count(page, "Disconnect") != 1 {
+		t.Fatalf("a link past its venue's config hides from the panel:\n%s", page)
 	}
 }
