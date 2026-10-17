@@ -1989,6 +1989,49 @@ func TestChatBudgetSpentAndGatewayFailure(t *testing.T) {
 	}
 }
 
+// A turn on a spent chat budget asks the inbox of it (chatAsk) once an
+// hour: the event the Poker turns into the needs-you row the Fund the
+// chat form answers. Repeats within the hour write no second row; an
+// hour past the ask, one turn writes one.
+func TestChatAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	if _, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	id := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
+	r.tasks.mu.Lock()
+	r.tasks.tasks[len(r.tasks.tasks)-1].SpentEUR = 5
+	r.tasks.mu.Unlock()
+	asks := func() []factoryd.Event {
+		var rows []factoryd.Event
+		for _, e := range r.events.all() {
+			if e.Kind == factoryd.EventChatBudgetSpent {
+				rows = append(rows, e)
+			}
+		}
+		return rows
+	}
+	for _, message := range []string{"hello", "again"} {
+		if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}}); len(events) == 0 {
+			t.Fatalf("the turn %q made no stream", message)
+		}
+	}
+	if rows := asks(); len(rows) != 1 || rows[0].Repository != "sf/code" || rows[0].Actor != factoryd.FactoryDecider ||
+		rows[0].Via != factoryd.ViaFactoryd || !reflect.DeepEqual(rows[0].Detail, map[string]any{"budget_eur": float64(5)}) {
+		t.Fatalf("the spent budget's asks: %+v, want the one row of the ask", rows)
+	}
+	r.c.chatAsksMu.Lock()
+	r.c.chatAsks[id] = time.Now().Add(-chatAskWait - time.Second)
+	r.c.chatAsksMu.Unlock()
+	if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"once more"}}); len(events) == 0 {
+		t.Fatal("the turn past the hour made no stream")
+	}
+	if rows := asks(); len(rows) != 2 {
+		t.Fatalf("an hour past the ask: %d rows, want 2", len(rows))
+	}
+}
+
 // The agent's tools are policy.ChatTools, which the config check knows.
 func TestChatToolsArePolicys(t *testing.T) {
 	var names []string
