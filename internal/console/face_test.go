@@ -353,6 +353,17 @@ func TestCardFaceCSS(t *testing.T) {
 	if !strings.Contains(css, ".face > p { margin: 0; }") {
 		t.Error("console.css lacks .face > p { margin: 0; }")
 	}
+	// an approval face's brief holds at one line and its five parts at
+	// four, as .card .reason holds a reason; the rules sit inside a
+	// lane's column, so the drawer shows the parts whole
+	for _, rule := range []string{
+		".column .approval .brief { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }",
+		".column .approval .why, .column .approval .info, .column .approval .finding, .column .approval .recommendation { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }",
+	} {
+		if !strings.Contains(css, rule) {
+			t.Errorf("console.css lacks %s", rule)
+		}
+	}
 }
 
 // An accent is a chip with its name and the card's left edge and changes

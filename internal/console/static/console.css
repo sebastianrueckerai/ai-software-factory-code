@@ -353,6 +353,12 @@ form.move button { padding: 0 6px; }
 .need .info b, .approval .info b { color: var(--text); font-weight: 600; }
 .need .recommendation, .approval .recommendation { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text); }
 .need .finding, .approval .finding { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
+/* an approval's lane face holds its parts as .card .reason holds a
+   reason: the brief at one line, the why, the info, a finding and the
+   recommendation at four; the drawer, outside a lane's column, shows
+   them whole */
+.column .approval .brief { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
+.column .approval .why, .column .approval .info, .column .approval .finding, .column .approval .recommendation { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .fold { margin: 6px 0 0; font-size: 12px; }
 .fold > summary { cursor: pointer; color: var(--text-faint); }
 .fold > summary:hover, .fold > summary:focus-visible { color: var(--text-muted); }
