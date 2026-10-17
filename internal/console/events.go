@@ -330,7 +330,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	// look reads the board once; its first read learns the faces
 	var counters, faces string
 	look := func(events bool) error {
-		d, err := c.boardOf(r, f)
+		d, err := c.boardOf(r, f, button(r))
 		if err != nil {
 			log.Printf("console: the stream of %s reads no board: %v", p.Repository, err)
 			return nil

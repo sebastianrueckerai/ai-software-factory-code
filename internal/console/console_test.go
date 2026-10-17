@@ -2113,6 +2113,7 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	}
 
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	r.fg.calls = nil
 	got := item()
 	for _, want := range []string{`action="/approvals/4/approve"`, "checks healed after a re-run"} {
 		if !strings.Contains(got, want) {
@@ -2123,6 +2124,28 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 		if strings.Contains(got, not) {
 			t.Errorf("the healed card shows %q:\n%s", not, got)
 		}
+	}
+	// the button path reads the head's current checks as the viewer who
+	// asked for the board (#1013), the one forge call the read makes
+	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+}
+
+// A red-checks card whose head's current checks cannot be read keeps the
+// red face and says so (#1013): a failed read fails closed, and the card
+// names it instead of failing silently.
+func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.failAPI = true
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if !strings.Contains(body, "The head's current checks could not be read") {
+		t.Errorf("the card does not say the head's checks were unread:\n%s", body)
+	}
+	if strings.Contains(body, "checks healed after a re-run") || strings.Contains(body, `action="/approvals/4/approve"`) {
+		t.Errorf("the unread card offers an approve or says the checks healed:\n%s", body)
 	}
 }
 

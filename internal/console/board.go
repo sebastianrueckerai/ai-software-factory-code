@@ -1526,7 +1526,7 @@ func (c *Console) readBoard(w http.ResponseWriter, r *http.Request, f boardFilte
 		http.Error(w, "view must be "+viewWide+" or none", http.StatusBadRequest)
 		return boardData{}, false
 	}
-	d, err := c.boardOf(r, f)
+	d, err := c.boardOf(r, f, button(r))
 	switch {
 	case errors.Is(err, errNoProject):
 		http.Error(w, "no project "+f.Project+" takes agent tasks", http.StatusNotFound)
@@ -1660,10 +1660,10 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
 		return
 	}
-	d, err := c.boardOf(r, f)
+	d, err := c.boardOf(r, f, button(r))
 	if errors.Is(err, errNoProject) {
 		f.Project = ""
-		d, err = c.boardOf(r, f)
+		d, err = c.boardOf(r, f, button(r))
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
@@ -2083,8 +2083,10 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 // human sees it. The five columns are the default, the human lane folded
 // into Needs you; the wide view puts the lanes of the project's process
 // first in the fixed order backlog, plan, ready, then the state columns,
-// under the human lane.
-func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
+// under the human lane. act is the actor whose board read this is — the
+// button's or the chat's — which its approval cards read the head's
+// checks as (#1013).
+func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
 	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
@@ -2247,7 +2249,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 		if a.Project != shown.Repository {
 			continue
 		}
-		k := c.approvalCard(ctx, a, actor{s: current(r), via: factoryd.ViaButton}, v.byID, v.csrf, d.Approver)
+		k := c.approvalCard(ctx, a, act, v.byID, v.csrf, d.Approver)
 		k.Filter, k.Writer = f, d.Writes
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
@@ -3130,7 +3132,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 		for _, a := range v.pending {
 			if a.TaskID == bt.ID && a.Kind == factoryd.ApprovalMerge {
-				m := c.approvalCard(ctx, a, actor{s: current(r), via: factoryd.ViaButton}, v.byID, v.csrf, v.approves(a.Project))
+				m := c.approvalCard(ctx, a, button(r), v.byID, v.csrf, v.approves(a.Project))
 				m.Filter, m.IDSuffix = k.Filter, "-d"
 				m.Writer = true // the drawer's route already asked for a writer
 				d.Merge = &m

@@ -579,9 +579,10 @@ const boardListed = 25
 
 // boardText is project p's board in the wide view as the session's member
 // sees it, for the agent: each column with its cards, the human lane, the
-// escalations and the approval requests waiting.
-func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardData, error) {
-	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide})
+// escalations and the approval requests waiting. a is the chat's actor,
+// whose member its approval cards read a healed head's checks as.
+func (c *Console) boardText(r *http.Request, p factoryd.Project, a actor) (string, boardData, error) {
+	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide}, a)
 	if errors.Is(err, errNoProject) {
 		return "Project " + p.Name + " takes no agent cards: it has no board.", d, nil
 	}
@@ -1006,7 +1007,7 @@ var tools = []chatTool{
 	{name: "board", title: "Read the board",
 		about: "The project's board: each column's cards, the human lane, the escalations and the approval requests.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, _, err := t.c.boardText(t.r, t.p)
+			s, _, err := t.c.boardText(t.r, t.p, t.a)
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},

@@ -35,8 +35,12 @@ type approvalCard struct {
 	// Healed: a merge request opened on red checks whose recorded head's
 	// checks are green now (#1013: a re-run healed them), so the card
 	// offers its Approve again and says so.
-	Healed   bool
-	Resource cloudres.ResourceSpec
+	Healed bool
+	// HeadUnread: the head's current checks could not be read (#1013), so
+	// the card shows the face its frozen spec gives it, which may be
+	// stale; the card says so rather than fail silently.
+	HeadUnread bool
+	Resource   cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, and the open criteria with their
 	// standing verdicts
 	CriteriaSpec factoryd.CriteriaSpec
@@ -125,11 +129,12 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
 		err = json.Unmarshal(a.Spec, &k.Merge)
 		// a red request whose head's checks are green now (#1013) merges
-		// again; a read that fails leaves the red face, whose refusal
-		// still names the remedies
+		// again; a read that fails leaves the red face, which says so —
+		// its refusal still names the remedies
 		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
 			if green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA); gerr != nil {
 				log.Printf("console: approval request %d: %v", a.ID, gerr)
+				k.HeadUnread = true
 			} else {
 				k.Healed = green
 			}
