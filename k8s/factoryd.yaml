@@ -565,8 +565,6 @@ spec:
           valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_client_secret, optional: true}}
         - name: DISCORD_BOT_TOKEN
           valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_bot_token, optional: true}}
-        - name: DISCORD_GUILD_ID
-          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_guild_id, optional: true}}
         # factory-registry-read: a read:package token, member of org sf's
         # team factory-registry-read (packages read, no repository); the
         # roller reads main CI's images with it and can overwrite no tag
