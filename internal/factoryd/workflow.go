@@ -1429,6 +1429,17 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
+			case st.PR.Number != 0 && atCheckinSpend(st.Question):
+				// a spent check-in's answer verifies again, as the gate's
+				// stop does, but with no session: a bought one would stop
+				// at the same cap before any model call, so the answer
+				// rides the findings the review weighs instead
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				v := t.verify(st.Head)
+				if v.final != "" {
+					return t.finish(v.final, v.reason)
+				}
+				apply(v)
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
 				// here from the first stage, change requests back to the agent
@@ -1749,6 +1760,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
 				return t.finish(final, why)
+			}
+			// a spent check-in with the pull request open verifies the
+			// head it judged below, like a dropped check-in: a bought
+			// session would stop at the same cap before any model call
+			// while the head sits waiting on the approval
+			if res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
+				res.Commit = startRef
+				break
 			}
 			buy()
 			continue

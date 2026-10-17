@@ -1782,6 +1782,35 @@ func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 	}
 }
 
+// A run restarted on a check-in stopped at its spent budget takes the
+// answer as the gate's stop does, by verifying the head again: no session
+// starts, for a bought one would stop at the same cap before any call.
+func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
+		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	reviewed := []string{}
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			reviewed = append(reviewed, commit)
+			return Review{}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if want := []string{"pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v", steps, want)
+	}
+	if len(h.sessions) != 0 || !slices.Equal(reviewed, []string{"c2"}) {
+		t.Fatalf("sessions = %d, reviewed = %q; want no session and the head c2 alone reviewed", len(h.sessions), reviewed)
+	}
+}
+
 // A change request answering a restarted gate's escalation goes back to the
 // agent, as the live gate's does: no verification of c2, the next session
 // is attempt 2 with the request, and nothing is bought below the cap.
@@ -3581,6 +3610,48 @@ func TestWorkflowDeadCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 	}
 	if !slices.Equal(h.escalated, []string{"check-in: dead: the session died with its work unpushed twice"}) {
 		t.Fatalf("escalations = %q, want the dead moment named", h.escalated)
+	}
+}
+
+// A check-in stopped at its spent budget with the pull request open waits
+// for a human, and the answer verifies the head the check-in judged again,
+// like a dropped check-in: no session is bought, for it would stop at the
+// same cap before any model call while the head sits green.
+func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: "check-in call cap reached",
+			Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+	reviews := 0
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			if reviews++; reviews == 1 {
+				return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+			}
+			return Review{}, nil
+		})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want two: the work and the spent check-in's own", len(h.sessions))
+	}
+	if h.sessions[1].CheckInAsk == nil || h.sessions[1].CheckInAsk.Moment != CheckInGate {
+		t.Fatalf("the second session's ask = %+v, want the gate moment over the review's finding", h.sessions[1].CheckInAsk)
+	}
+	if !slices.Equal(h.escalated, []string{"check-in: spend_above_policy: check-in call cap reached"}) {
+		t.Fatalf("escalations = %q, want the spend stop alone", h.escalated)
+	}
+	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c1 after 1 cards", "approval c1"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v: the answer verifies the same head again", steps, want)
 	}
 }
 

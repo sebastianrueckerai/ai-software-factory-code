@@ -86,6 +86,17 @@ func atReproStart(escalation string) bool {
 	return strings.HasPrefix(escalation, startRefused) && strings.Contains(escalation, thenRepro)
 }
 
+// checkinSpendAsk opens the question a check-in stopped at its spent
+// budget asks (checkinBlock in the runner).
+const checkinSpendAsk = "check-in: " + CheckSpend + ": "
+
+// atCheckinSpend: escalation is a check-in stopped at its spent budget,
+// its call cap or the budget's share: the answer verifies the head again,
+// no session, for one would stop at the same cap before any model call.
+func atCheckinSpend(escalation string) bool {
+	return strings.HasPrefix(escalation, checkinSpendAsk)
+}
+
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
 // findings, the newest, each at most maxCardLine.
 const (
