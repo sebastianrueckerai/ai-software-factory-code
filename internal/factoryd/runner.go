@@ -1442,9 +1442,10 @@ const startRefused = "the sandbox cannot start at "
 // The ways on a start failure's escalation: a code or plan session's, and
 // a split's, which a split of the pull request starts again.
 const (
-	thenAnswer = "then answer to start a session again, or close the card"
-	thenSplit  = "then split the pull request again, or approve or deny it"
-	thenRepro  = "then answer to run the reproduction again, or close the card"
+	thenAnswer   = "then answer to start a session again, or close the card"
+	thenSplit    = "then split the pull request again, or approve or deny it"
+	thenRepro    = "then answer to run the reproduction again, or close the card"
+	thenCriteria = "then answer to run the criteria gate again, or close the card"
 )
 
 // escalation is the failure's escalation reason, then the way on: its

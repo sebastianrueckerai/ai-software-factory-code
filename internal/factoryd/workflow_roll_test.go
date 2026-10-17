@@ -55,7 +55,7 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	if len(*commits) != 1 || len(g.sessions) != 0 {
 		t.Fatalf("RollCommit calls %v, sessions %v", *commits, g.sessions)
 	}
-	if want := []string{"policy", "repro r1", "review r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) || g.approvals[0].Gates.Policy.Class != "high" {
@@ -84,7 +84,7 @@ func TestWorkflowRollFoldsANewHeadBeforeItsMerge(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r2", "review r2", "approval r2", "merge"}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "policy", "repro r2", "review r2", "criteria r2", "approval r2", "merge"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 || len(g.sessions) != 0 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -108,7 +108,7 @@ func TestWorkflowRollReviewsAfterChecks(t *testing.T) {
 	if len(*commits) != 1 || len(g.reviewGates) != 1 || !g.reviewGates[0].ChecksPassed {
 		t.Fatalf("RollCommit calls %v, review gates %+v: want one review after green checks", *commits, g.reviewGates)
 	}
-	if want := []string{"policy", "repro r1", "review r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -141,7 +141,7 @@ func TestWorkflowRollHealAdoptsItsPullRequest(t *testing.T) {
 	if final := g.run(t); final != "failed" || !strings.Contains(g.finals[0][1], "closed without merge") {
 		t.Fatalf("final = %q %v", final, g.finals)
 	}
-	if len(*commits) != 1 || len(g.sessions) != 0 || !slices.Equal(g.steps, []string{"policy", "repro r1", "review r1", "approval r1"}) {
+	if len(*commits) != 1 || len(g.sessions) != 0 || !slices.Equal(g.steps, []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1"}) {
 		t.Fatalf("RollCommit calls %v, steps %v", *commits, g.steps)
 	}
 }
@@ -158,7 +158,7 @@ func TestWorkflowRollFoldOnAnUnmovedHeadIsNoFinding(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "policy", "repro r1", "review r1", "approval r1", "merge"}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -188,7 +188,7 @@ func TestWorkflowRollMergesWithoutAGap(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "merge", "merge", "merge"}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge", "merge", "merge"}
 	if !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
@@ -212,7 +212,7 @@ func TestWorkflowRollFoldDuringTheGapWaitStopsTheMerge(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "policy", "repro r2", "review r2", "approval r2", "gap", "merge", "settle"}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "gap", "policy", "repro r2", "review r2", "criteria r2", "approval r2", "gap", "merge", "settle"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 2 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -230,7 +230,7 @@ func TestWorkflowRollMergesAfterItsGapWithoutAFold(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "repro r1", "review r1", "approval r1", "gap", "merge", "settle"}
+	want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "gap", "merge", "settle"}
 	if !slices.Equal(g.steps, want) || len(*commits) != 1 {
 		t.Fatalf("steps = %v, want %v; RollCommit calls %v", g.steps, want, *commits)
 	}
@@ -334,7 +334,7 @@ func TestWorkflowRollTakesNoQueueTurn(t *testing.T) {
 	if len(*commits) != 1 {
 		t.Fatalf("RollCommit calls %v", *commits)
 	}
-	if want := []string{"policy", "repro r1", "review r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro r1", "review r1", "criteria r1", "approval r1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }

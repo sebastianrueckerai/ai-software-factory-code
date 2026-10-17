@@ -113,7 +113,7 @@ func TestWorkflowAutoMergesWithoutACard(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover}) || !slices.Equal(g.autoNotes, []string{"9 c1"}) || len(g.approvals) != 0 {

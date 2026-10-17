@@ -335,7 +335,7 @@ func TestQueueOneAtATime(t *testing.T) {
 		if want := []time.Duration{0, 3 * time.Minute}; !slices.Equal(q.enters, want) {
 			t.Fatalf("EnterQueue at %v, want %v: the second at the first's queue_left", q.enters, want)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if q.requested[0].Sub(q.started) != 3*time.Minute {
@@ -395,7 +395,7 @@ func TestSyncSkipsTheRecheckWithoutAFileInCommon(t *testing.T) {
 	if !slices.Equal(q.checks, []string{"c1"}) {
 		t.Fatalf("checks ran on %v, want c1 alone", q.checks)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria m1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 		t.Fatalf("steps = %v, want %v", q.steps, want)
 	}
 	if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) || !slices.Equal(q.checkedHeads, []string{"c1"}) || !q.approvals[0].Gates.ChecksPassed {
@@ -417,7 +417,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 		if !slices.Equal(q.checks, []string{"c1", "m1"}) {
 			t.Fatalf("checks ran on %v, want [c1 m1]", q.checks)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria m1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) || !q.approvals[0].Gates.ChecksPassed {
@@ -452,7 +452,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 		if len(q.leaves) != 2 || q.leaves[0] != "checks findings went back to the agent" {
 			t.Fatalf("leaves = %q", q.leaves)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "leave", "policy", "repro c2", "review c2", "sync c2", "approval c2", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "leave", "policy", "repro c2", "review c2", "sync c2", "criteria c2", "approval c2", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 	})
@@ -520,7 +520,7 @@ func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 	if len(q.approvals) != 1 || q.approvals[0].Commit != "m1" || q.approvals[0].RedChecks || !q.approvals[0].Gates.ChecksPassed {
 		t.Fatalf("approvals = %+v, want one request on m1, green, no red checks", q.approvals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria m1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 		t.Fatalf("steps = %v, want %v", q.steps, want)
 	}
 	if !slices.Equal(q.merges, []string{"9 m1 sebastian"}) {
@@ -601,7 +601,7 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 		if want := []string{"9 c1 " + AutoApprover, "9 c1-rerun " + AutoApprover}; !slices.Equal(q.merges, want) {
 			t.Fatalf("merges = %v, want %v", q.merges, want)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "merge", "withdraw", "sync c1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "merge", "withdraw", "sync c1", "criteria c1-rerun", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if len(q.approvals) != 0 || len(q.sessions) != 1 || !slices.Equal(q.checkedHeads, []string{"", ""}) {
@@ -631,7 +631,7 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 		if len(q.reruns) != 0 || !slices.Equal(q.checks, []string{"c1", "m1"}) {
 			t.Fatalf("reruns %v, checks on %v; want main's merge checked, no re-run", q.reruns, q.checks)
 		}
-		if want := []string{"policy", "repro c1", "review c1", "sync c1", "approval c1", "merge", "withdraw", "sync c1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "merge", "withdraw", "sync c1", "criteria m1", "approval m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
 			t.Fatalf("steps = %v, want %v", q.steps, want)
 		}
 		if !slices.Equal(q.merges, []string{"9 c1 sebastian", "9 m1 sebastian"}) || !slices.Equal(q.approvals[1].WhyHuman, q.approvals[0].WhyHuman) || len(q.sessions) != 1 {
@@ -1069,7 +1069,7 @@ func TestQueueNoneUnchanged(t *testing.T) {
 	if len(q.enters)+len(q.syncs)+len(q.leaves) != 0 {
 		t.Fatalf("queue activities ran: enters %v, syncs %v, leaves %v", q.enters, q.syncs, q.leaves)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(q.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(q.steps, want) {
 		t.Fatalf("steps = %v, want %v", q.steps, want)
 	}
 }

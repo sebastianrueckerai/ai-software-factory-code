@@ -26,6 +26,7 @@ const (
 	GatePolicy        = manual.GatePolicy
 	GateMigration     = manual.GateMigration
 	GateReproduction  = manual.GateReproduction
+	GateCriteria      = manual.GateCriteria
 	GateReview        = manual.GateReview
 	GateApproval      = manual.GateApproval
 	GateMerge         = manual.GateMerge
@@ -43,7 +44,7 @@ const (
 // by name.
 var StepGates = map[string]string{
 	"intake": GateIntake, "session_end": GateSession, "checks": GateChecks,
-	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction,
+	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction, "gate_criteria": GateCriteria,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
 	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
 	"audit": GateAudit, "dependencies_done": GateDependencies, "queue_turn": GateMergeQueue,
@@ -60,6 +61,7 @@ var activityGates = map[string]string{
 	ActivityGatePolicy:       GatePolicy,
 	ActivityGateMigration:    GateMigration,
 	ActivityGateReproduction: GateReproduction,
+	ActivityGateCriteria:     GateCriteria,
 	ActivityModelReview:      GateReview,
 	ActivityRequestApproval:  GateApproval,
 	ActivityMerge:            GateMerge,
@@ -99,7 +101,7 @@ const SignalGateBound = "gate_bound"
 // supervisedGates are the long gates (ruling 162): a short gate's attempt
 // times out before any supervisor answer could arrive, so its gate_bound
 // alert is its record.
-var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityModelReview, ActivityGateAudit, ActivityMerge}
+var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityGateCriteria, ActivityModelReview, ActivityGateAudit, ActivityMerge}
 
 // GateTrip is one gate_bound alert of a machine gate's activity run: the
 // run is the activity the workflow scheduled (its id), across attempts.

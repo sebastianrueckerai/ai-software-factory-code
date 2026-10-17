@@ -315,8 +315,9 @@ func TestPlanGuideCriteria(t *testing.T) {
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 			"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
-			"kind test names a test by name with its inputs and the numbers it expects, a test bash check runs; " +
-			"kind invariant names a suite, for example go test ./..., and carries no inputs; " +
+			"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: " +
+			"no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
+			"kind invariant names its suite as go test <suite> passes, for example go test ./..., and carries no inputs; " +
 			"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 			"kind human names a claim only a person settles, with the evidence the approver will see.",
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item.",

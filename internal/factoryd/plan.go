@@ -885,8 +885,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
-		"kind test names a test by name with its inputs and the numbers it expects, a test bash check runs; " +
-		"kind invariant names a suite, for example go test ./..., and carries no inputs; " +
+		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
+		"kind invariant names its suite as go test <suite> passes, for example go test ./..., and carries no inputs; " +
 		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
@@ -2213,6 +2213,21 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 	return err
 }
 
+// acceptedPlan is plan task parent's accepted plan revision, as stored;
+// child names the card the revision's findings name. A read that fails is
+// a terminal one.
+func (r *Runner) acceptedPlan(ctx context.Context, parent, child string) (Plan, error) {
+	rev, ok, err := r.store.PlanRevision(ctx, parent, 0)
+	if err != nil || !ok {
+		return Plan{}, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))
+	}
+	var p Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return Plan{}, terminalError("plan %s revision %d: %v", parent, rev.Revision, err)
+	}
+	return p, nil
+}
+
 // planOf is plan card t's section "The spec and the plan" (its plan's
 // issue text and the accepted plan's summary), its role and its plan
 // row's directories, and the pull request of a split's card; "" and none
@@ -2225,13 +2240,9 @@ func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []
 	if err != nil {
 		return "", "", nil, 0, err
 	}
-	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
-	if err != nil || !ok {
-		return "", "", nil, 0, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
-	}
-	var p Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return "", "", nil, 0, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
+	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	if err != nil {
+		return "", "", nil, 0, err
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {

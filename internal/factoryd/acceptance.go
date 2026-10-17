@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,13 +63,9 @@ func (r *Runner) planAcceptance(ctx context.Context, t Task) ([]string, error) {
 	if t.Source != SourcePlan || t.Parent == "" {
 		return nil, nil
 	}
-	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
-	if err != nil || !ok {
-		return nil, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
-	}
-	var p Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return nil, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
+	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	if err != nil {
+		return nil, err
 	}
 	for _, c := range p.Cards {
 		if c.Key == t.PlanKey {

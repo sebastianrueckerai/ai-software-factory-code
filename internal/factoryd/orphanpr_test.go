@@ -385,7 +385,7 @@ func TestFactoryPRCardRunsItsGatesFromRunning(t *testing.T) {
 			if final := g.run(t); final != "done" {
 				t.Fatalf("final = %q, finals %v", final, g.finals)
 			}
-			if want := []string{"policy", "repro c7", "review c7", "approval c7", "merge"}; !slices.Equal(g.steps, want) {
+			if want := []string{"policy", "repro c7", "review c7", "criteria c7", "approval c7", "merge"}; !slices.Equal(g.steps, want) {
 				t.Fatalf("steps = %v, want %v: the linked pull request runs the gates", g.steps, want)
 			}
 			if !slices.Equal(g.states, []string{"running", "in-review"}) {

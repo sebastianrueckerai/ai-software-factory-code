@@ -9,6 +9,7 @@ const (
 	GatePolicy        = "policy"
 	GateMigration     = "migration"
 	GateReproduction  = "reproduction"
+	GateCriteria      = "criteria"
 	GateReview        = "review"
 	GateApproval      = "approval"
 	GateMerge         = "merge"
@@ -77,6 +78,8 @@ func GateMeaning(gate string) string {
 		return "schema migrations flagged for review"
 	case GateReproduction:
 		return "the issue's reproduction command against the fix"
+	case GateCriteria:
+		return "the plan's criteria tests against the assembled feature"
 	case GateReview:
 		return "a model reviews the diff"
 	case GateAudit:
