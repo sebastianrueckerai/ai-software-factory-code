@@ -130,6 +130,35 @@ func (t *Telegram) send(ctx context.Context, chat, text string) error {
 	return t.call(ctx, "sendMessage", map[string]any{"chat_id": chat, "text": text}, nil)
 }
 
+// Send writes one notification to chat with the card's link button and
+// returns the sent message's ref.
+func (t *Telegram) Send(ctx context.Context, chat, text, cardURL string) (string, error) {
+	var res struct {
+		MessageID int64 `json:"message_id"`
+	}
+	if err := t.call(ctx, "sendMessage", map[string]any{
+		"chat_id": chat, "text": text, "reply_markup": telegramButton(cardURL)}, &res); err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(res.MessageID, 10), nil
+}
+
+// Edit rewrites a sent notification, keeping its button.
+func (t *Telegram) Edit(ctx context.Context, chat, ref, text, cardURL string) error {
+	id, err := strconv.ParseInt(ref, 10, 64)
+	if err != nil {
+		return err
+	}
+	return t.call(ctx, "editMessageText", map[string]any{
+		"chat_id": chat, "message_id": id, "text": text, "reply_markup": telegramButton(cardURL)}, nil)
+}
+
+// telegramButton is the one link button every notification carries: a
+// link to the card, never answer buttons (the ruling of 2026-10-17).
+func telegramButton(cardURL string) map[string]any {
+	return map[string]any{"inline_keyboard": [][]map[string]string{{{"text": "Open the card", "url": cardURL}}}}
+}
+
 // call posts one Bot API method; out, when not nil, takes the call's
 // result. Errors never name the token.
 func (t *Telegram) call(ctx context.Context, method string, payload, out any) error {

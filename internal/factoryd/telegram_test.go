@@ -35,8 +35,21 @@ func TestTelegram(t *testing.T) {
 			calls = append(calls, fmt.Sprintf("setWebhook %v %v", payload["url"], payload["secret_token"]))
 			fmt.Fprint(w, `{"ok":true,"result":true}`)
 		case strings.HasSuffix(r.URL.Path, "/sendMessage"):
-			calls = append(calls, fmt.Sprintf("sendMessage %v %v", payload["chat_id"], payload["text"]))
+			line := fmt.Sprintf("sendMessage %v %v", payload["chat_id"], payload["text"])
+			if markup, ok := payload["reply_markup"].(map[string]any); ok {
+				btn := markup["inline_keyboard"].([]any)[0].([]any)[0].(map[string]any)
+				line += fmt.Sprintf(" %v %v", btn["text"], btn["url"])
+			}
+			calls = append(calls, line)
 			fmt.Fprint(w, `{"ok":true,"result":{"message_id":11}}`)
+		case strings.HasSuffix(r.URL.Path, "/editMessageText"):
+			line := fmt.Sprintf("editMessageText %v %v %v", payload["chat_id"], payload["message_id"], payload["text"])
+			if markup, ok := payload["reply_markup"].(map[string]any); ok {
+				btn := markup["inline_keyboard"].([]any)[0].([]any)[0].(map[string]any)
+				line += fmt.Sprintf(" %v %v", btn["text"], btn["url"])
+			}
+			calls = append(calls, line)
+			fmt.Fprint(w, `{"ok":true,"result":true}`)
 		default:
 			t.Errorf("the unexpected call %s", r.URL.Path)
 		}
@@ -124,6 +137,19 @@ func TestTelegram(t *testing.T) {
 	if links, _ = s.MessengerLinks(ctx, "sebastian"); len(links) != 0 {
 		t.Fatalf("after the stop = %+v", links)
 	}
+
+	// a notification carries the card's link, and its ref edits it later
+	n = mark()
+	ref, err := tg.Send(ctx, "4242", "api: the card asks a question", "https://console.example/cards/T-1")
+	if err != nil || ref != "11" {
+		t.Fatalf("the send = %q, %v", ref, err)
+	}
+	if err := tg.Edit(ctx, "4242", ref, "api: answered by sebastian", "https://console.example/cards/T-1"); err != nil {
+		t.Fatal(err)
+	}
+	equalStrings(t, "the notification", took(n), []string{
+		"sendMessage 4242 api: the card asks a question Open the card https://console.example/cards/T-1",
+		"editMessageText 4242 11 api: answered by sebastian Open the card https://console.example/cards/T-1"})
 
 	// a refused call never names the token
 	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

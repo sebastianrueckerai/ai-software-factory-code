@@ -34,10 +34,11 @@ type Discord struct {
 }
 
 // DiscordError is one refused call: its HTTP status and Discord's own
-// words, with the secrets already gone.
+// words, with the secrets already gone, and a rate limit's wait.
 type DiscordError struct {
-	Status  int
-	Message string
+	Status     int
+	Message    string
+	RetryAfter int
 }
 
 func (e *DiscordError) Error() string {
@@ -104,6 +105,32 @@ func (d *Discord) exchange(ctx context.Context, code string) (string, error) {
 	return out.AccessToken, nil
 }
 
+// Send writes one notification to the channel with the card's link
+// button and returns the sent message's ref.
+func (d *Discord) Send(ctx context.Context, channel, text, cardURL string) (string, error) {
+	var res struct {
+		ID string `json:"id"`
+	}
+	if err := d.call(ctx, "POST", "/channels/"+channel+"/messages", "application/json", "Bot "+d.BotToken,
+		[]byte(`{"components":`+discordButton(cardURL)+`,"content":`+strconv.Quote(text)+`}`), &res); err != nil {
+		return "", err
+	}
+	return res.ID, nil
+}
+
+// Edit rewrites a sent notification, keeping its button.
+func (d *Discord) Edit(ctx context.Context, channel, ref, text, cardURL string) error {
+	return d.call(ctx, "PATCH", "/channels/"+channel+"/messages/"+ref, "application/json", "Bot "+d.BotToken,
+		[]byte(`{"components":`+discordButton(cardURL)+`,"content":`+strconv.Quote(text)+`}`), nil)
+}
+
+// discordButton is the one link button every notification carries, as
+// the components row around it: a link to the card, never answer
+// buttons (the ruling of 2026-10-17).
+func discordButton(cardURL string) string {
+	return `[{"components":[{"label":"Open the card","style":5,"type":2,"url":` + strconv.Quote(cardURL) + `}],"type":1}]`
+}
+
 // call makes one API call, auth as the Authorization header; any 2xx
 // answer does, and out takes a JSON body. Errors never name the secrets.
 func (d *Discord) call(ctx context.Context, method, path, contentType, auth string, body []byte, out any) error {
@@ -136,6 +163,9 @@ func (d *Discord) call(ctx context.Context, method, path, contentType, auth stri
 	}
 	if res.StatusCode/100 != 2 {
 		e := &DiscordError{Status: res.StatusCode}
+		if wait, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil {
+			e.RetryAfter = wait
+		}
 		var words struct {
 			Message string `json:"message"`
 		}
