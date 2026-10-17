@@ -10,6 +10,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
 func parentTask() Task {
@@ -448,5 +449,23 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 				t.Fatalf("RunReport = %+v, %v, comments %q; want the provider's refusal, no comment", res, err, hub.comments)
 			}
 		})
+	}
+}
+
+// The writing guide rides in the context of every step that writes text a
+// person reads (the question format's context rule): the check-in's
+// statement (checkin_test.go holds that pin) and each report session's
+// guide. A work session's env carries none: its pod sets REPORT_GUIDE
+// only where the spec's report is set, which no coding session's is
+// (agent-worker's env test holds that pin).
+func TestWritingGuideRidesWithHumanFacingSteps(t *testing.T) {
+	if writingguide.Guide == "" {
+		t.Fatal("the writing guide is empty")
+	}
+	for _, source := range []string{SourceScreening, SourcePresort, "webhook"} {
+		guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(source)
+		if !strings.Contains(guide, writingguide.Guide) {
+			t.Errorf("the %s guide carries no writing guide", source)
+		}
 	}
 }

@@ -1752,3 +1752,17 @@ func TestLoadEnvReadsTheContextCap(t *testing.T) {
 		t.Fatal("a malformed CONTEXT_TOKENS was accepted")
 	}
 }
+
+// The writing guide rides only with a report session's REPORT_GUIDE: a
+// coding session's env carries no guide at all (the question format's
+// context rule), for its words reach no person.
+func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
+	setRequiredEnv(t)
+	e, err := loadEnv()
+	if err != nil {
+		t.Fatalf("loadEnv: %v", err)
+	}
+	if e.report != "" {
+		t.Fatalf("a coding session carries guide %q; work sessions get none", e.report)
+	}
+}
