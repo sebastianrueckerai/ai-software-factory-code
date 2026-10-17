@@ -154,3 +154,28 @@ func TestDiscord(t *testing.T) {
 		t.Fatalf("the refused connect = %v", err)
 	}
 }
+
+// recordingTrips notes the URL of the one call it serves.
+type recordingTrips struct{ url string }
+
+func (f *recordingTrips) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.url = r.URL.String()
+	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`{}`)), Header: http.Header{}}, nil
+}
+
+// The default REST base carries the /api prefix: Discord serves its API
+// under discord.com/api and its browser pages under discord.com. A fake
+// server in a test carries its own path and cannot catch a wrong default.
+func TestDiscordDefaultBase(t *testing.T) {
+	trips := &recordingTrips{}
+	d := &Discord{Client: &http.Client{Transport: trips}}
+	var out struct {
+		ID string `json:"id"`
+	}
+	if err := d.call(context.Background(), "GET", "/users/@me", "", "Bearer x", nil, &out); err != nil {
+		t.Fatal(err)
+	}
+	if trips.url != "https://discord.com/api/users/@me" {
+		t.Fatalf("the default base = %s", trips.url)
+	}
+}

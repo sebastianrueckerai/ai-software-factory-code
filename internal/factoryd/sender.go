@@ -169,7 +169,7 @@ func (s *Sender) sendFailure(ctx context.Context, d Delivery, err error) {
 	case status/100 == 4: // wrong in a way a retry cannot fix
 		s.Store.FailDelivery(ctx, d.ID, err.Error())
 	default: // the venue is down or busy
-		if d.Tries >= len(sendBackoff)-1 {
+		if d.Tries >= len(sendBackoff) {
 			s.Store.FailDelivery(ctx, d.ID, err.Error())
 			return
 		}
@@ -206,8 +206,14 @@ func (s *Sender) editPass(ctx context.Context, names map[string]string) {
 		var editErr error
 		switch d.Venue {
 		case VenueTelegram:
+			if s.Telegram == nil { // the venue left the config; the row ages out
+				continue
+			}
 			editErr = s.Telegram.Edit(ctx, d.Address, d.Ref, text, cardURL)
 		case VenueDiscord:
+			if s.Discord == nil {
+				continue
+			}
 			editErr = s.Discord.Edit(ctx, d.Address, d.Ref, text, cardURL)
 		}
 		if editErr != nil {

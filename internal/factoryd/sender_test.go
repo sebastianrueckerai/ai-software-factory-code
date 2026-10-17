@@ -22,8 +22,9 @@ import (
 // row whose ask settled before its send says nothing; a member who no
 // longer writes the project loses their level and their row; the venue's
 // rate limit defers without a try; a refused chat unlinks; a busy venue
-// backs off and then fails closed; a sent ask edits to its reason once
-// the settle rule closes it.
+// backs off through the whole ladder before it fails closed; a sent ask
+// edits to its reason once the settle rule closes it, and skips the edit
+// without a panic when its venue left the config.
 func TestSender(t *testing.T) {
 	var mu sync.Mutex
 	var calls []string
@@ -39,7 +40,7 @@ func TestSender(t *testing.T) {
 			case "2":
 				w.WriteHeader(http.StatusTooManyRequests)
 				fmt.Fprint(w, `{"ok":false,"error_code":429,"description":"Too Many Requests: retry after 7","parameters":{"retry_after":7}}`)
-			case "3", "3b":
+			case "3", "3b", "3c":
 				w.WriteHeader(http.StatusInternalServerError)
 				fmt.Fprint(w, `{"ok":false,"description":"boom"}`)
 			case "4":
@@ -173,10 +174,11 @@ func TestSender(t *testing.T) {
 	}
 
 	when := time.Date(2026, 10, 17, 12, 0, 0, 0, time.UTC)
-	bob, alice, carla, dana, eric, gina, hana, frank, ira :=
+	bob, alice, carla, dana, eric, gina, hana, judy, karl, frank, ira :=
 		bind("bob", VenueTelegram, "1"), bind("alice", VenueTelegram, "2"), bind("carla", VenueTelegram, "3"),
 		bind("dana", VenueTelegram, "3b"), bind("eric", VenueTelegram, "4"), bind("gina", VenueDiscord, "d-9"),
-		bind("hana", VenueTelegram, "5"), bind("frank", VenueTelegram, "6"), bind("ira", VenueTelegram, "7")
+		bind("hana", VenueTelegram, "5"), bind("judy", VenueTelegram, "3c"), bind("karl", VenueTelegram, "8"),
+		bind("frank", VenueTelegram, "6"), bind("ira", VenueTelegram, "7")
 	if err := s.SetNotifyLevel(ctx, "frank", "sf/other", "all"); err != nil {
 		t.Fatal(err)
 	}
@@ -208,12 +210,18 @@ func TestSender(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE notify_deliveries SET tries = 5 WHERE message_id = $1 AND link_id = $2`, stumble, dana); err != nil {
 		t.Fatal(err)
 	}
+	// judy's row enters on its fifth try: the last rung is still owed
+	rung := msg("sf/code", "the run stumbled", MessagePoke, "T-8", when)
+	queue(rung, judy)
+	if _, err := s.db.ExecContext(ctx, `UPDATE notify_deliveries SET tries = 4 WHERE message_id = $1 AND link_id = $2`, rung, judy); err != nil {
+		t.Fatal(err)
+	}
 
 	sd := &Sender{Store: s, PublicURL: "https://console.example",
 		Telegram: &Telegram{Token: "bot-key", BaseURL: api.URL},
 		Discord:  &Discord{BotToken: "bot-token", BaseURL: discordAPI.URL},
 		Lists: func(context.Context) (string, map[string][]string, error) {
-			return "", map[string][]string{"sf/code": {"bob", "alice", "carla", "dana", "eric", "gina", "hana", "ira"}, "sf/other": {"bob"}}, nil
+			return "", map[string][]string{"sf/code": {"bob", "alice", "carla", "dana", "eric", "gina", "hana", "judy", "ira"}, "sf/other": {"bob"}}, nil
 		}}
 	if err := sd.Pass(ctx); err != nil {
 		t.Fatal(err)
@@ -235,6 +243,9 @@ func TestSender(t *testing.T) {
 	}
 	if state, tries, why := row(dana, ""); state != "failed" || tries != 6 || why == "" {
 		t.Fatalf("the failed row = %s %d %q", state, tries, why)
+	}
+	if state, tries, _ := row(judy, ""); state != "pending" || tries != 5 || next(judy).Before(time.Now().Add(39*time.Minute)) {
+		t.Fatalf("the fifth try = %s %d %v", state, tries, next(judy))
 	}
 	if links, _ := s.MessengerLinks(ctx, "eric"); len(links) != 0 {
 		t.Fatal("eric's link survived the refused chat")
@@ -293,6 +304,20 @@ func TestSender(t *testing.T) {
 	}
 	if n := len(called()); n != 4 {
 		t.Fatalf("the held row sent: %d calls", n)
+	}
+
+	// a sent ask whose venue left the config skips its edit; the sender
+	// loop has no request boundary to catch a panic for
+	karlAsk := msg("sf/code", "the card asks a question", MessageEscalation, "T-gone", when)
+	queue(karlAsk, karl)
+	if _, err := s.db.ExecContext(ctx, `UPDATE notify_deliveries SET state = 'sent', ref = '88', sent_at = now() WHERE message_id = $1`, karlAsk); err != nil {
+		t.Fatal(err)
+	}
+	naked := &Sender{Store: s, PublicURL: "https://console.example"}
+	naked.editPass(ctx, map[string]string{"sf/code": "demo"})
+	var karlEdited interface{}
+	if err := s.db.QueryRowContext(ctx, `SELECT edited_at FROM notify_deliveries WHERE ref = '88'`).Scan(&karlEdited); err != nil || karlEdited != nil {
+		t.Fatalf("the skipped edit = %v, %v", karlEdited, err)
 	}
 
 	// the text cut keeps whole runes

@@ -136,7 +136,7 @@ func discordButton(cardURL string) string {
 func (d *Discord) call(ctx context.Context, method, path, contentType, auth string, body []byte, out any) error {
 	base := d.BaseURL
 	if base == "" {
-		base = "https://discord.com"
+		base = "https://discord.com/api"
 	}
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 	if err != nil {
