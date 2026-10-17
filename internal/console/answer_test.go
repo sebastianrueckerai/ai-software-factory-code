@@ -420,6 +420,6 @@ func TestChatSettlesRows(t *testing.T) {
 	}
 	equal(t, "the inbox's split after the read", []int64{list().NeedsYou, list().NewRows, list().Unread}, []int64{1, 0, 0})
 	msgs = read()
-	equal(t, "the read inform recedes, the open ask stays bare",
-		[]bool{msgs[2].Settled, msgs[2].Reason == "", msgs[3].Settled, msgs[3].Reason == ""}, []bool{true, true, false, true})
+	equal(t, "the read inform recedes with its word, the open ask stays bare",
+		[]bool{msgs[2].Settled, msgs[2].Reason == "seen", msgs[3].Settled, msgs[3].Reason == ""}, []bool{true, true, false, true})
 }
