@@ -63,10 +63,12 @@ const (
 )
 
 // The recording rule's first catch kinds (the spec-intake concept,
-// roadmap 285): a question's finder is the planner.
+// roadmap 285): a question's finder is the planner. A self-attack
+// question's catch kind is its origin (piece 5).
 const (
-	CatchQuestion = "question"
-	FinderPlanner = "planner"
+	CatchQuestion   = "question"
+	CatchSelfAttack = "self_attack"
+	FinderPlanner   = "planner"
 )
 
 // The plan's own caps: the report's transport cap (maxReport) never cuts a
@@ -84,10 +86,20 @@ const (
 
 // Plan is the planner's answer: one fenced json block of its last message.
 type Plan struct {
+	Spec      *Spec           `json:"spec,omitempty"`
 	Summary   string          `json:"summary"`
 	Criteria  []PlanCriterion `json:"criteria,omitempty"`
 	Cards     []PlanCard      `json:"cards"`
 	Questions []PlanQuestion  `json:"questions,omitempty"`
+}
+
+// Spec is the spec the planning session drafts (the spec-intake
+// concept, piece 5): the outcome in a few sentences and a glossary that
+// names each component once, the members' confirmation question carries
+// it and the criteria beside it.
+type Spec struct {
+	Outcome  string   `json:"outcome"`
+	Glossary []string `json:"glossary,omitempty"`
 }
 
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
@@ -121,10 +133,13 @@ type PlanItem struct {
 
 // PlanQuestion is an open point the spec leaves to the member, with the
 // choices the planner offers; the store adds the member's answer, "" until
-// it is given.
+// it is given. Origin self_attack marks a question the planner's own
+// attack on its draft found (piece 5); the catch ledger carries it as the
+// self-attack's kind.
 type PlanQuestion struct {
 	Text       string    `json:"text"`
 	Choices    []string  `json:"choices"`
+	Origin     string    `json:"origin,omitempty"`
 	Answer     string    `json:"-"`
 	AnsweredBy string    `json:"-"`
 	AnsweredAt time.Time `json:"-"`
@@ -316,13 +331,14 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 	for _, c := range p.Cards {
 		out = append(out, cardFindings(c, limits, bound)...)
 	}
+	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
 	return p, append(out, questionFindings(p.Questions)...)
 }
 
 // questionFindings are the findings on a plan's questions: 0 to 5, each
-// with a text of 1 to 300 characters and 2 to 5 distinct choices of 1 to
-// 60.
+// with a text of 1 to 300 characters, 2 to 5 distinct choices of 1 to 60
+// and an origin of self_attack or none.
 func questionFindings(qs []PlanQuestion) []string {
 	var out []string
 	if len(qs) > maxQuestions {
@@ -331,6 +347,9 @@ func questionFindings(qs []PlanQuestion) []string {
 	for i, q := range qs {
 		add := func(format string, args ...any) {
 			out = append(out, fmt.Sprintf("plan: question %d: "+format, append([]any{i + 1}, args...)...))
+		}
+		if q.Origin != "" && q.Origin != CatchSelfAttack {
+			add("origin %q, want self_attack or none", q.Origin)
 		}
 		switch n := utf8.RuneCountInString(q.Text); {
 		case n == 0:
@@ -430,6 +449,18 @@ func citations(p Plan) map[string][]string {
 // card, every card but the foundation cites one, and the integration
 // card's items are the criteria, one item per criterion by id. A plan
 // without criteria (a split's) passes the citation rules; a shape without
+// specFindings are the spec block's findings: a spec plan (a plan this
+// process gives an integration card) drafts the spec the members confirm
+// (piece 5), the outcome in a few sentences and a glossary that names
+// each component once. A split or a plan before the concept carries no
+// spec and asks for none.
+func specFindings(p Plan, shape policy.PlanShape) []string {
+	if !shape.Integration || (p.Spec != nil && strings.TrimSpace(p.Spec.Outcome) != "") {
+		return nil
+	}
+	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}
+}
+
 // an integration card does not ask for criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
@@ -762,12 +793,33 @@ func cell(s string) string {
 // marker: the summary and one row per card in filing order, with its issue
 // once filed (issues by key) and, when t's spec has a Deploy line, the
 // deploy owner's mark, and each brief in a details block.
+// specBlock is the plan's spec as the plan's comment and the integration
+// card's body carry it: the outcome, then the glossary line by line; ""
+// when the plan carries no spec.
+func specBlock(p Plan) string {
+	if p.Spec == nil {
+		return ""
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Spec: %s", strings.TrimSpace(p.Spec.Outcome))
+	if len(p.Spec.Glossary) > 0 {
+		b.WriteString("\nGlossary:")
+		for _, g := range p.Spec.Glossary {
+			fmt.Fprintf(&b, "\n- %s", g)
+		}
+	}
+	return b.String()
+}
+
 func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
 	fmt.Fprintf(&b, "factoryd: plan revision %d of task %s, written by the planner. An approver accepts it on the factory console; "+
 		"a comment here asks the planner for a new revision; closing the issue ends the plan.\n\n%s\n\n", revision, t.ID, strings.TrimSpace(p.Summary))
+	if s := specBlock(p); s != "" {
+		b.WriteString(s + "\n\n")
+	}
 	head, rule := "| # | key | role | title | size | depends on | issue |", "|---|---|---|---|---|---|---|"
 	if needed {
 		head, rule = head+" deploy |", rule+"---|"
@@ -860,15 +912,21 @@ func cardFacts(c PlanCard) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), accepted by approver, with the issues of the cards it
-// depends on (deps, their keys by issue).
-func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependency) string {
+// depends on (deps, their keys by issue). The integration card carries
+// the plan's spec (piece 7: its brief already does), spec the rendered
+// spec block or "".
+func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependency, spec string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
-	return fmt.Sprintf("Card %s of %s (%d of %d), accepted by %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
+	body := fmt.Sprintf("Card %s of %s (%d of %d), accepted by %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
 		c.Key, of, i, n, approver, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
+	if spec != "" {
+		body += "\n\nThe spec of the whole feature:\n" + spec
+	}
+	return body
 }
 
 // planGuide is the planner's guide: the spec is the issue, the answer a
@@ -877,12 +935,16 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 // ValidatePlan's findings, not this prose (roadmap 186).
 func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	g := "You are the planner. " +
-		"The issue's text is the spec of an application to build in this repository. Read it and the repository: " +
-		"every card follows the repository's conventions. Split the work into the cards of a plan. " +
+		"The issue's text tells what to build. Read it and the repository: " +
+		"every card follows the repository's conventions. " +
+		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
+		"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria. " +
+		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
 		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
@@ -914,6 +976,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"directories: paths relative to the repository's root, guidance for the card's agent; " +
 		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none. " +
 		"size: small, medium or large; anything bigger is two cards. " +
+		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
+		"and turn each finding into a question with origin self_attack. " +
 		"questions: open points the spec leaves to the member; their answers come back to you with your last plan, " +
 		"and a plan with open questions cannot be accepted until they are answered. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
@@ -1141,13 +1205,44 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 	if err != nil {
 		return false, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices)
-		SELECT $1, $2, i, q->>'text', q->'choices' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
+		SELECT $1, $2, i, q->>'text', q->'choices', 'question' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
 	if err != nil {
 		return false, err
 	}
 	n, err := res.RowsAffected()
 	return n > 0, err
+}
+
+// PutPlanConfirmation appends the confirmation question to revision's
+// questions, after the planner's: kind confirmation, the index after the
+// last question the revision holds, nothing when it has it already (an
+// activity retry).
+func (s *PGStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q PlanQuestion) (int, bool, error) {
+	choices, err := json.Marshal(q.Choices)
+	if err != nil {
+		return 0, false, err
+	}
+	var idx int
+	err = s.db.QueryRowContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
+		SELECT $1, $2, COALESCE(MAX(idx), 0) + 1, $3, $4, 'confirmation' FROM plan_questions WHERE task_id = $1 AND revision = $2
+		HAVING NOT EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND kind = 'confirmation')
+		RETURNING idx`, id, revision, q.Text, choices).Scan(&idx)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return idx, true, nil
+}
+
+// PlanConfirmationAnswered tells whether any of plan task id's revisions
+// had its confirmation question answered: asked until answered once.
+func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool, error) {
+	var answered bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND answer IS NOT NULL)`, id).Scan(&answered)
+	return answered, err
 }
 
 // PutPlanCatches stores revision's hole catches of one kind and finder,
@@ -1912,6 +2007,9 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
 		return PlanRef{}, err
 	}
+	if err := r.askConfirmation(ctx, t, rev.Revision, p); err != nil {
+		return PlanRef{}, err
+	}
 	comment, err := r.postPlan(ctx, t, repo, rev.Revision, p, nil)
 	if err != nil {
 		return PlanRef{}, err
@@ -1950,14 +2048,15 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 // askQuestions stores revision's questions of plan task t, sanitised as
 // the plan's comment is (a clicked choice is posted as the member's
 // comment), records one question_asked row each when it stored them, and
-// writes them to the recording rule's ledger as the planner's catches.
+// writes them to the recording rule's ledger as the planner's catches: a
+// self-attack question's catch carries the attack's kind (piece 5).
 func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
 	if len(qs) == 0 {
 		return nil
 	}
 	asked := make([]PlanQuestion, len(qs))
 	for i, q := range qs {
-		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices))}
+		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin}
 		for j, c := range q.Choices {
 			asked[i].Choices[j] = r.untrusted(t, c)
 		}
@@ -1965,18 +2064,76 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
 		return err
 	}
-	texts := make([]string, len(asked))
-	for i, q := range asked {
-		texts[i] = q.Text
+	var plain, attacks []string
+	for _, q := range asked {
+		if q.Origin == CatchSelfAttack {
+			attacks = append(attacks, q.Text)
+		} else {
+			plain = append(plain, q.Text)
+		}
 	}
-	if _, err := r.store.PutPlanCatches(ctx, t.ID, revision, CatchQuestion, FinderPlanner, texts); err != nil {
-		return err
+	if len(plain) > 0 {
+		if _, err := r.store.PutPlanCatches(ctx, t.ID, revision, CatchQuestion, FinderPlanner, plain); err != nil {
+			return err
+		}
+	}
+	if len(attacks) > 0 {
+		if _, err := r.store.PutPlanCatches(ctx, t.ID, revision, CatchSelfAttack, FinderPlanner, attacks); err != nil {
+			return err
+		}
 	}
 	for i, q := range asked {
 		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
 			map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": i + 1})
 	}
 	return nil
+}
+
+// askConfirmation appends the confirmation question to revision's stored
+// questions (the spec-intake concept, piece 5): the spec and the criteria
+// shown to the members in Needs you, an okay fixes the criteria, an
+// answer with changes carries them to the next planner round, a comment
+// on the issue starts one too. Asked until answered once: a revision
+// after the answer asks nothing, one a comment replaced asks again. A
+// plan without criteria carries no spec to confirm.
+func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
+	if len(p.Criteria) == 0 {
+		return nil
+	}
+	if answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID); err != nil || answered {
+		return err
+	}
+	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Choices: []string{"okay"}}
+	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
+	if err != nil || !inserted {
+		return err
+	}
+	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
+		map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": idx, "kind": "confirmation"})
+	return nil
+}
+
+// confirmationQuestion is the confirmation question's text: what an
+// answer does, the spec inline, the criteria by id and kind, and where
+// the whole plan reads.
+func confirmationQuestion(revision int, p Plan) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: answer okay to confirm them, or answer with what changes; the criteria are fixed only when this is answered.",
+		revision)
+	if p.Spec != nil {
+		if o := strings.TrimSpace(p.Spec.Outcome); o != "" {
+			fmt.Fprintf(&b, "\nOutcome: %s", o)
+		}
+		if len(p.Spec.Glossary) > 0 {
+			fmt.Fprintf(&b, "\nGlossary: %s", strings.Join(p.Spec.Glossary, "; "))
+		}
+	}
+	ids := make([]string, len(p.Criteria))
+	for i, c := range p.Criteria {
+		ids[i] = c.ID + " (" + c.Kind + ")"
+	}
+	fmt.Fprintf(&b, "\nCriteria: %s.\nThe whole plan is in the plan's comment on this issue.", strings.Join(ids, ", "))
+	return b.String()
 }
 
 // postPlan puts revision's comment on the plan's issue, sanitised, with
@@ -2084,7 +2241,11 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
 		}
 		title := r.untrusted(t, c.Title)
-		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps))
+		spec := ""
+		if c.Role == RoleIntegration {
+			spec = specBlock(p)
+		}
+		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,

@@ -86,6 +86,7 @@ type fakeStore struct {
 	deps        map[string][]string // task → the tasks it depends on
 	plans       map[string][]PlanRevision
 	questions   map[string][]PlanQuestion // by "task revision"
+	kinds       map[string][]string       // each question's kind beside it, by "task revision"
 	catches     map[string][]string       // the recording rule's ledger, by "task revision kind finder"
 	queue       []queueEntry              // the merge queues, oldest first
 	holds       map[string]RollHold
@@ -2470,9 +2471,42 @@ func (s *fakeStore) PutPlanQuestions(ctx context.Context, id string, revision in
 	}
 	if s.questions == nil {
 		s.questions = map[string][]PlanQuestion{}
+		s.kinds = map[string][]string{}
 	}
 	s.questions[k] = slices.Clone(qs)
+	s.kinds[k] = make([]string, len(qs))
+	for i := range s.kinds[k] {
+		s.kinds[k][i] = CatchQuestion
+	}
 	return true, nil
+}
+
+func (s *fakeStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q PlanQuestion) (int, bool, error) {
+	k := fmt.Sprintf("%s %d", id, revision)
+	if slices.Contains(s.kinds[k], "confirmation") {
+		return 0, false, nil
+	}
+	if s.questions == nil {
+		s.questions = map[string][]PlanQuestion{}
+		s.kinds = map[string][]string{}
+	}
+	s.questions[k] = append(s.questions[k], q)
+	s.kinds[k] = append(s.kinds[k], "confirmation")
+	return len(s.questions[k]), true, nil
+}
+
+func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool, error) {
+	for k, kinds := range s.kinds {
+		if !strings.HasPrefix(k, id+" ") {
+			continue
+		}
+		for i, kind := range kinds {
+			if kind == "confirmation" && s.questions[k][i].Answer != "" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 func (s *fakeStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
