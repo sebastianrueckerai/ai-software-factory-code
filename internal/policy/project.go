@@ -217,6 +217,10 @@ type ProjectConfig struct {
 	// Audit runs the process's audit stage on the project's pull
 	// requests (ruling 188); absent: it does not.
 	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`
+	// Messengers forbids delivery on Telegram and Discord (roadmap 145):
+	// a notification line leaves the factory for the venue's servers.
+	// Absent or true: delivery is on.
+	Messengers *bool `yaml:"messengers,omitempty" json:"messengers,omitempty"`
 	// Notify are the Forgejo users told about the project's cards; empty:
 	// the project's approvers.
 	Notify []string `yaml:"notify,omitempty" json:"notify"`
@@ -644,3 +648,7 @@ func checkProjects(projects map[string]ProjectConfig) error {
 	}
 	return errors.Join(errs...)
 }
+
+// MessengersOn reports whether the project's notifications may leave on
+// the messengers (roadmap 145): the file's switch, true without one.
+func (c ProjectConfig) MessengersOn() bool { return c.Messengers == nil || *c.Messengers }

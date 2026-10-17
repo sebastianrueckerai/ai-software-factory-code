@@ -11,8 +11,9 @@ import (
 )
 
 // The threads (roadmap 239): one row per conversation with its title,
-// state, inbox flag and current pointer; the seen marker; the lazy inbox;
-// the hard delete's count. Hand-derived from the plan's data model.
+// state, inbox flag and current pointer; the seen and clear markers; the
+// lazy inbox; the hard delete's count. Hand-derived from the plan's data
+// model.
 func TestPGStoreChatThreads(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_threads"))
 	if err != nil {
@@ -74,6 +75,28 @@ func TestPGStoreChatThreads(t *testing.T) {
 	}
 	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.Unread != 0 {
 		t.Errorf("thread 1 after it was read = %+v, %v, %v, want no unread", th, ok, err)
+	}
+
+	// clear: the member's sweep of thread 1's rows in view; the marker
+	// sits at the thread's newest row, a row that lands after it stays in
+	// view, and a second sweep takes that row in
+	if err := s.MarkCleared(ctx, repo, login, 1); err != nil {
+		t.Fatal(err)
+	}
+	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.ClearedUpto != 4 {
+		t.Errorf("thread 1 after the sweep = %+v, %v, %v, want the marker at its newest row 4", th, ok, err)
+	}
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "Later still.", Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 4 {
+		t.Errorf("the marker = %d after a late row, want it unmoved at 4", th.ClearedUpto)
+	}
+	if err := s.MarkCleared(ctx, repo, login, 1); err != nil {
+		t.Fatal(err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 5 {
+		t.Errorf("the marker after the second sweep = %d, want 5", th.ClearedUpto)
 	}
 
 	// a queued message and a queued poke wait as queued, the poke keeping
@@ -178,10 +201,11 @@ func TestPGStoreChatThreads(t *testing.T) {
 	}
 
 	// the hard delete removes the member's rows, the thread and the seen
-	// marker, and answers the count (the event is the console's to write)
+	// marker (the sweep's marker rides it), and answers the count (the
+	// event is the console's to write)
 	gone, err := s.DeleteConversation(ctx, repo, login, 1)
-	if err != nil || gone != 3 {
-		t.Fatalf("DeleteConversation = %d, %v, want 3 rows gone", gone, err)
+	if err != nil || gone != 4 {
+		t.Fatalf("DeleteConversation = %d, %v, want 4 rows gone", gone, err)
 	}
 	if _, err := s.DeleteConversation(ctx, repo, login, n); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleting the inbox = %v, want ErrNotFound: the inbox stays", err)

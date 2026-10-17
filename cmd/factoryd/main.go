@@ -430,8 +430,42 @@ func main() {
 	// the console is the only listener the edge gateway reaches; the
 	// webhook and intake API above stay in-cluster
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
+	// the messengers (roadmap 145): Telegram when its bot key is seated,
+	// Discord when its application is; their routes ride the console's
+	// public host
+	publicURL := env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world")
+	lists := consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now)
+	var messengers *console.Messengers
+	var telegram *factoryd.Telegram
+	var discord *factoryd.Discord
+	if key := optionalSecret("TELEGRAM_BOT_KEY"); key != "" {
+		telegram = &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
+		if err := telegram.Boot(ctx, publicURL); err != nil {
+			log.Printf("messengers: telegram boot: %v", err)
+		}
+		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update,
+			Store: store, TelegramName: telegram.Name}
+	}
+	if id, secret, token, guild := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
+		optionalSecret("DISCORD_BOT_TOKEN"), env("DISCORD_GUILD_ID", ""); id != "" || secret != "" || token != "" || guild != "" {
+		if id == "" || secret == "" || token == "" || guild == "" {
+			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_BOT_TOKEN and DISCORD_GUILD_ID together")
+		} else {
+			if messengers == nil {
+				messengers = &console.Messengers{Store: store}
+			}
+			discord = &factoryd.Discord{ClientID: id, ClientSecret: secret, BotToken: token,
+				GuildID: guild, PublicURL: publicURL, Store: store}
+			messengers.Discord = &console.DiscordConnect{AuthorizeURL: discord.AuthorizeURL, Connect: discord.Connect}
+		}
+	}
+	if messengers != nil {
+		sender := &factoryd.Sender{Store: store, Telegram: telegram, Discord: discord, PublicURL: publicURL, Lists: lists}
+		go sender.Loop(ctx, 5*time.Second)
+	}
 	consoleHandler, err := console.New(console.Config{
-		PublicURL:        env("CONSOLE_PUBLIC_URL", "https://console.aisoftwarefactory.world"),
+		PublicURL:        publicURL,
+		Messengers:       messengers,
 		ForgejoURL:       forgejo.BaseURL,
 		ForgejoPublicURL: forgejo.PublicURL,
 		ClientID:         mustEnv("CONSOLE_CLIENT_ID"),
@@ -439,7 +473,7 @@ func main() {
 		SessionKey:       []byte(consoleSessionKey),
 		Sessions:         store,
 		Tasks:            store,
-		Writers:          consoleWriters(store, forgejo.Writers, kube.Namespace(), time.Now),
+		Writers:          lists,
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,

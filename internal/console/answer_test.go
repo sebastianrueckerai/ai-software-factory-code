@@ -290,62 +290,62 @@ func TestSettleOf(t *testing.T) {
 	ev := func(id int64, min int, kind, actor string) factoryd.Event {
 		return factoryd.Event{ID: id, At: at.Add(time.Duration(min) * time.Minute), Kind: kind, Actor: actor}
 	}
-	open := pokeSettle{Open: true}
+	open := factoryd.PokeSettle{Open: true}
 	for _, tt := range []struct {
 		name                 string
 		m                    factoryd.ChatMessage
 		events               []factoryd.Event
 		cardWaits, apprWaits bool
-		want                 pokeSettle
+		want                 factoryd.PokeSettle
 	}{
 		{"an open question", ask, nil, true, false, open},
 		{"a newer request leaves the question open", ask, []factoryd.Event{ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}, true, true, open},
 		{"an answered question", ask, []factoryd.Event{ev(12, 1, factoryd.EventQuestionAnswered, "sebastian")}, true, false,
-			pokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "sebastian")}},
+			factoryd.PokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "sebastian")}},
 		{"an answer before the row settles nothing", ask, []factoryd.Event{ev(5, -1, factoryd.EventQuestionAnswered, "bob")}, true, false, open},
 		{"an answer on the row's own minute settles", ask, []factoryd.Event{ev(7, 0, factoryd.EventQuestionAnswered, "bob")}, false, false,
-			pokeSettle{Word: "answered", By: "bob", At: at, Event: ev(7, 0, factoryd.EventQuestionAnswered, "bob")}},
+			factoryd.PokeSettle{Word: "answered", By: "bob", At: at, Event: ev(7, 0, factoryd.EventQuestionAnswered, "bob")}},
 		{"a withdrawn question", ask, []factoryd.Event{ev(12, 1, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider)}, false, false,
-			pokeSettle{Word: "withdrawn", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider)}},
+			factoryd.PokeSettle{Word: "withdrawn", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionWithdrawn, factoryd.FactoryDecider)}},
 		{"an answer on another venue", ask, []factoryd.Event{ev(12, 1, factoryd.EventCardClosed, "sebastian")}, false, false,
-			pokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventCardClosed, "sebastian")}},
+			factoryd.PokeSettle{Word: "answered", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventCardClosed, "sebastian")}},
 		{"a granted session", ask, []factoryd.Event{ev(12, 1, factoryd.EventSessionGranted, factoryd.FactoryDecider)}, false, false,
-			pokeSettle{Word: "answered", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventSessionGranted, factoryd.FactoryDecider)}},
+			factoryd.PokeSettle{Word: "answered", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventSessionGranted, factoryd.FactoryDecider)}},
 		{"a task ended", ask, []factoryd.Event{ev(12, 1, factoryd.EventTaskEnded, factoryd.FactoryDecider)}, false, false,
-			pokeSettle{Word: "moved on", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventTaskEnded, factoryd.FactoryDecider)}},
+			factoryd.PokeSettle{Word: "moved on", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventTaskEnded, factoryd.FactoryDecider)}},
 		{"the wait guard moves a row on", ask, []factoryd.Event{ev(11, 1, factoryd.EventCardMoved, "the agent")}, false, false,
-			pokeSettle{Word: "moved on", At: at.Add(time.Minute)}},
-		{"the wait guard with no event at all", ask, nil, false, false, pokeSettle{Word: "moved on", At: at}},
+			factoryd.PokeSettle{Word: "moved on", At: at.Add(time.Minute)}},
+		{"the wait guard with no event at all", ask, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
 		{"the first settling event wins", ask, []factoryd.Event{ev(14, 2, factoryd.EventMergeApproved, "sebastian"), ev(12, 1, factoryd.EventQuestionAnswered, "bob")}, false, false,
-			pokeSettle{Word: "answered", By: "bob", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "bob")}},
+			factoryd.PokeSettle{Word: "answered", By: "bob", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventQuestionAnswered, "bob")}},
 		{"a tie reads the smaller id first", ask, []factoryd.Event{ev(13, 1, factoryd.EventQuestionAnswered, "bob"), ev(12, 1, factoryd.EventMergeDenied, "sebastian")}, false, false,
-			pokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
 		{"a bumped row asks again", factoryd.ChatMessage{ID: 10, At: at.Add(3 * time.Minute), Kind: factoryd.MessageEscalation, TaskID: "t-e", Repeats: 1},
 			[]factoryd.Event{ev(12, 1, factoryd.EventQuestionAnswered, "bob")}, true, false, open},
 		{"an open approval on its pending request", approval, nil, false, true, open},
-		{"an approval whose request is gone moved on", approval, nil, false, false, pokeSettle{Word: "moved on", At: at}},
+		{"an approval whose request is gone moved on", approval, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
 		{"an approved merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeApproved, "sebastian")}, false, true,
-			pokeSettle{Word: "approved", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeApproved, "sebastian")}},
+			factoryd.PokeSettle{Word: "approved", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeApproved, "sebastian")}},
 		{"a denied merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeDenied, "sebastian")}, false, true,
-			pokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeDenied, "sebastian")}},
 		{"plan changes requested", approval, []factoryd.Event{ev(12, 1, factoryd.EventPlanChangesRequested, "sebastian")}, false, true,
-			pokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventPlanChangesRequested, "sebastian")}},
+			factoryd.PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventPlanChangesRequested, "sebastian")}},
 		{"a superseding request", approval, []factoryd.Event{ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}, false, true,
-			pokeSettle{Word: "superseded", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}},
+			factoryd.PokeSettle{Word: "superseded", By: factoryd.FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventApprovalRequested, factoryd.FactoryDecider)}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := settleOf(tt.m, tt.events, tt.cardWaits, tt.apprWaits)
+			got := factoryd.SettleOf(tt.m, tt.events, tt.cardWaits, tt.apprWaits)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("settleOf =\n%+v\nwant\n%+v", got, tt.want)
 			}
 		})
 	}
-	equal(t, "an escalation's family is a question whatever the join found", askFamily(ask), "question")
-	equal(t, "an approval row's family", askFamily(approval), "approval")
+	equal(t, "an escalation's family is a question whatever the join found", factoryd.AskFamily(ask), "question")
+	equal(t, "an approval row's family", factoryd.AskFamily(approval), "approval")
 	equal(t, "a poke-kind row takes its family from the event",
-		askFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventQuestionAsked}), "question")
-	equal(t, "an inform's family", askFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded}), "")
-	equal(t, "a row with no birth kind is an inform", askFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke}), "")
+		factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventQuestionAsked}), "question")
+	equal(t, "an inform's family", factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded}), "")
+	equal(t, "a row with no birth kind is an inform", factoryd.AskFamily(factoryd.ChatMessage{Kind: factoryd.MessagePoke}), "")
 }
 
 // The chat renders each poke row's derived state (the
@@ -422,4 +422,56 @@ func TestChatSettlesRows(t *testing.T) {
 	msgs = read()
 	equal(t, "the read inform recedes with its word, the open ask stays bare",
 		[]bool{msgs[2].Settled, msgs[2].Reason == "seen", msgs[3].Settled, msgs[3].Reason == ""}, []bool{true, true, false, true})
+}
+
+// Clear old (the chat's sweep): the marker hides the thread's old rows
+// from the member's view, the record keeps them, and an open ask stays
+// whatever the marker says, so nothing that needs the member disappears.
+func TestChatClearsOldRows(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	say := func(m factoryd.ChatMessage) {
+		t.Helper()
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#14 needs you: rebase?",
+		Choices: []string{"Yes", "No"}, TaskID: "t-r", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
+		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
+		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() chatGetAnswer {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+		}
+		var answer chatGetAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	answer := read()
+	answer = read() // the seen marker passes the plain row, it settles too
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{3, 0})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
+		t.Fatalf("POST clear = %d: %s", code, body)
+	}
+	answer = read()
+	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{1, 2})
+	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
+		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
+	}
 }

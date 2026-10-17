@@ -74,6 +74,9 @@ var accessTable = map[string]accessRule{
 	// GET routes
 	"GET /static/":                            {},
 	"GET /login":                              {},
+	"GET /notifications":                      rMember,
+	"GET /messengers/discord/start":           rMember,
+	"GET /messengers/discord/callback":        rMember,
 	"GET /auth/callback":                      {},
 	"GET /{$}":                                rMember,
 	"GET /board":                              rMember,
@@ -99,6 +102,10 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/docs/{path...}":    rMember, // docWrite judges the project's sight; Forgejo the member's commit
 
 	// POST routes
+	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
+	"POST /notifications/telegram/code":         rMember,
+	"POST /notifications/disconnect":            rMember,
+	"POST /notifications/level":                 rMember, // follows() judges the project's sight, as the stream does
 	"POST /logout":                              rMember,
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,
@@ -130,6 +137,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/new":            rProject,
 	"POST /projects/{name}/chat/rename":         rProject,
 	"POST /projects/{name}/chat/seen":           rProject,
+	"POST /projects/{name}/chat/clear":          rProject,
 	"POST /projects/{name}/chat/archive":        rProject,
 	"POST /projects/{name}/chat/delete":         rProject,
 	"POST /projects/{name}/chat/answer":         rProject,

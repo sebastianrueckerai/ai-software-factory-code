@@ -180,11 +180,10 @@ func TestBriefWait(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	// the worker listens on one fixed port; where something else already
-	// holds it (a factory worker itself runs in this sandbox) the brief
-	// wait cannot run
+	// start() binds the worker's one fixed message port; inside a live
+	// worker pod that port is the pod's own, held for the session
 	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)); err != nil {
-		t.Skipf("message port %d in use: %v", harness.MessagePort, err)
+		t.Skip("the worker's message port is held: " + err.Error())
 	} else {
 		ln.Close()
 	}

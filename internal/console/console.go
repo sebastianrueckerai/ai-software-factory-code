@@ -266,6 +266,9 @@ type Config struct {
 	// Forgejo's dependencies as it does a plan's; an issue already as asked
 	// is left alone (factoryd's Forgejo.SetIssueDependency).
 	SetIssueDependency func(ctx context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error
+	// Messengers carries the Telegram webhook (roadmap 145); nil and the
+	// console answers no /messengers route.
+	Messengers *Messengers
 }
 
 // Console is the console's http.Handler.
@@ -335,6 +338,9 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
+		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level"},
+		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
+		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
 			http.StripPrefix("/static/", http.FileServerFS(static)).ServeHTTP(w, r)
 		}, "", "the static files"},
@@ -378,7 +384,12 @@ type postRoute struct {
 func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
+	messengers := func() bool { return c.cfg.Messengers != nil }
 	return []postRoute{
+		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
+		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
+		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
+		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
@@ -410,6 +421,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
 		{"POST /projects/{name}/chat/rename", http.HandlerFunc(c.chatRename), nil},
 		{"POST /projects/{name}/chat/seen", http.HandlerFunc(c.chatSeen), nil},
+		{"POST /projects/{name}/chat/clear", http.HandlerFunc(c.chatClear), nil},
 		{"POST /projects/{name}/chat/archive", http.HandlerFunc(c.chatArchive), nil},
 		{"POST /projects/{name}/chat/delete", http.HandlerFunc(c.chatDelete), nil},
 		{"POST /projects/{name}/chat/answer", http.HandlerFunc(c.chatAnswer), nil},
@@ -759,6 +771,9 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {
+	if m, ok := data.(map[string]any); ok {
+		m["Messengers"] = c.cfg.Messengers != nil // the layout links the notifications panel
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if err := c.tmpl.ExecuteTemplate(w, name, data); err != nil {
 		log.Printf("console: render %s: %v", name, err)
