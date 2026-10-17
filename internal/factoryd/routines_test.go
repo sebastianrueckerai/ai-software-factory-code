@@ -426,12 +426,14 @@ func TestViews(t *testing.T) {
 		t.Fatalf("views %+v", vs)
 	}
 	bump, audit := vs[0], vs[1]
+	// the preview queues, whatever the routine files (ruling 2026-10-17);
+	// the routine's work reaches needs-you only as its filed card, below
 	if bump.Project != "ai-software-factory-code" || bump.Routine.Name != "weekly-bump" || !bump.Next.Equal(mon0540.Add(20*time.Minute)) ||
-		bump.NextWords != "Mon 06:00" || bump.MergesLeft != 0 || !bump.Soon || bump.Lane != "needs-you" {
+		bump.NextWords != "Mon 06:00" || bump.MergesLeft != 0 || !bump.Soon || bump.Lane != "queued" {
 		t.Fatalf("the weekly bump: %+v", bump)
 	}
-	if bump.Last.Run != 1 || bump.Open == nil || bump.Open.ID != "t-1" || bump.Held {
-		t.Fatalf("the weekly bump's card: last %+v, open %v, held %v", bump.Last, bump.Open, bump.Held)
+	if bump.Last.Run != 1 || bump.Open == nil || bump.Open.ID != "t-1" || bump.Open.Status != "waiting-human" || bump.Held {
+		t.Fatalf("the weekly bump's card: last %+v, open %+v, held %v", bump.Last, bump.Open, bump.Held)
 	}
 	if audit.Routine.Name != "audit" || audit.State.Merges != 14 || audit.NextWords != "after 6 more merges" || audit.MergesLeft != 6 || !audit.Next.IsZero() ||
 		audit.Soon || audit.Lane != "queued" || audit.Open != nil || audit.Held || audit.Last.Run != 0 {
