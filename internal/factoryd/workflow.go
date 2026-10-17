@@ -1697,7 +1697,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if !res.StartFailed {
 			own = res.Findings
 			if !checkinPending && !midNote {
-				// the check-in's handover replaces these
+				// the check-in read these; its judgment replaces them
 				own = slices.Concat(own, t.handoverLines(res))
 			}
 			if res.CheckIn == nil {
