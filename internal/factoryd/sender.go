@@ -16,6 +16,14 @@ import (
 // fails closed.
 var sendBackoff = [...]time.Duration{30 * time.Second, 2 * time.Minute, 10 * time.Minute, 20 * time.Minute, 40 * time.Minute}
 
+// note logs a bookkeeping write that failed: the row keeps its state,
+// and the next pass reads it again.
+func (s *Sender) note(what string, err error) {
+	if err != nil {
+		log.Printf("messengers: %s: %v", what, err)
+	}
+}
+
 // sendLimit caps one pass's sends, editWindow is how long a sent row
 // stays editable, writersTTL is how long the writer lists stand, and
 // startEvents bounds the events a settle derivation reads.
@@ -89,23 +97,23 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 	if AskFamily(d.message()) != "" {
 		settled, err := s.settleState(ctx, d)
 		if err != nil {
-			s.Store.RetryDelivery(ctx, d.ID, sendBackoff[0], err.Error())
+			s.note("retry the settled row", s.Store.RetryDelivery(ctx, d.ID, sendBackoff[0], err.Error()))
 			return
 		}
 		if !settled.Open {
-			s.Store.DropDelivery(ctx, d.ID)
+			s.note("drop the settled row", s.Store.DropDelivery(ctx, d.ID))
 			return
 		}
 	}
 	writers, err := s.writers(ctx)
 	if err != nil {
-		s.Store.DeferDelivery(ctx, d.ID, 30*time.Second)
+		s.note("hold the row for the writer lists", s.Store.DeferDelivery(ctx, d.ID, 30*time.Second))
 		return
 	}
 	if !slices.Contains(writers[d.Repository], d.Login) {
 		log.Printf("messengers: %s writes %s no more; their level and row are gone", d.Login, d.Repository)
-		s.Store.DeleteNotifyLevel(ctx, d.Login, d.Repository)
-		s.Store.DropDelivery(ctx, d.ID)
+		s.note("drop the lost level", s.Store.DeleteNotifyLevel(ctx, d.Login, d.Repository))
+		s.note("drop the unentitled row", s.Store.DropDelivery(ctx, d.ID))
 		return
 	}
 	name := names[d.Repository]
@@ -118,17 +126,17 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 	switch d.Venue {
 	case VenueTelegram:
 		if s.Telegram == nil {
-			s.Store.DeferDelivery(ctx, d.ID, time.Minute)
+			s.note("hold the row for the unmade venue", s.Store.DeferDelivery(ctx, d.ID, time.Minute))
 			return
 		}
 		if last, ok := s.last[d.Address]; ok && time.Since(last) < time.Second {
-			s.Store.DeferDelivery(ctx, d.ID, time.Second)
+			s.note("hold the row for the chat's rate", s.Store.DeferDelivery(ctx, d.ID, time.Second))
 			return
 		}
 		ref, err = s.Telegram.Send(ctx, d.Address, text, cardURL)
 	case VenueDiscord:
 		if s.Discord == nil {
-			s.Store.DeferDelivery(ctx, d.ID, time.Minute)
+			s.note("hold the row for the unmade venue", s.Store.DeferDelivery(ctx, d.ID, time.Minute))
 			return
 		}
 		ref, err = s.Discord.Send(ctx, d.Address, text, cardURL)
@@ -140,7 +148,7 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 			}
 			s.last[d.Address] = time.Now()
 		}
-		s.Store.RecordDeliverySent(ctx, d.ID, ref)
+		s.note("mark the row sent", s.Store.RecordDeliverySent(ctx, d.ID, ref))
 		return
 	}
 	s.sendFailure(ctx, d, err)
@@ -161,19 +169,19 @@ func (s *Sender) sendFailure(ctx context.Context, d Delivery, err error) {
 		if wait == 0 {
 			wait = 30 * time.Second
 		}
-		s.Store.DeferDelivery(ctx, d.ID, wait)
+		s.note("hold the row for the venue's rate", s.Store.DeferDelivery(ctx, d.ID, wait))
 	case status == 403 || status == 404: // the chat is gone
 		log.Printf("messengers: %s's %s chat is gone: %v", d.Login, d.Venue, err)
-		s.Store.UnlinkMessenger(ctx, d.Login, d.Venue)
-		s.Store.DropDelivery(ctx, d.ID)
+		s.note("unlink the gone chat", s.Store.UnlinkMessenger(ctx, d.Login, d.Venue))
+		s.note("drop the gone chat's row", s.Store.DropDelivery(ctx, d.ID))
 	case status/100 == 4: // wrong in a way a retry cannot fix
-		s.Store.FailDelivery(ctx, d.ID, err.Error())
+		s.note("fail the row", s.Store.FailDelivery(ctx, d.ID, err.Error()))
 	default: // the venue is down or busy
 		if d.Tries >= len(sendBackoff) {
-			s.Store.FailDelivery(ctx, d.ID, err.Error())
+			s.note("fail the row", s.Store.FailDelivery(ctx, d.ID, err.Error()))
 			return
 		}
-		s.Store.RetryDelivery(ctx, d.ID, sendBackoff[d.Tries], err.Error())
+		s.note("retry the row", s.Store.RetryDelivery(ctx, d.ID, sendBackoff[d.Tries], err.Error()))
 	}
 }
 
@@ -228,7 +236,7 @@ func (s *Sender) editPass(ctx context.Context, names map[string]string) {
 				continue
 			}
 		}
-		s.Store.MarkDeliveryEdited(ctx, d.ID)
+		s.note("mark the settle edit", s.Store.MarkDeliveryEdited(ctx, d.ID))
 	}
 }
 
