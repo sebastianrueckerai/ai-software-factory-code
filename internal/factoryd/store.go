@@ -215,6 +215,11 @@ type IntakeEvent struct {
 	// Withdraws is the escalation comment an escalation_withdrawn event
 	// withdraws (IntakeEscalationWithdrawn), 0 on any other event.
 	Withdraws int64
+	// Question is the five-part question the escalation asked (the
+	// question-format concept), on an IntakeEscalation whose reason a
+	// template covers; nil on the older rows and the unshaped ones, which
+	// read as the reason text and bare choices.
+	Question *HumanQuestion
 }
 
 // changeRequestKinds are the intake event kinds that ask for changes on
@@ -820,27 +825,39 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 		}
 		choices = b
 	}
+	question := any(nil)
+	if e.Question != nil {
+		b, err := json.Marshal(e.Question)
+		if err != nil {
+			return 0, err
+		}
+		question = b
+	}
 	var id int64
 	err := s.db.QueryRowContext(ctx,
-		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled, choices, withdraws)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10) ON CONFLICT DO NOTHING RETURNING id`,
-		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled, choices, e.Withdraws).Scan(&id)
+		`INSERT INTO intake_events (task_id, kind, author, body, delivery_id, comment_id, trusted, signalled, choices, withdraws, question)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11::jsonb) ON CONFLICT DO NOTHING RETURNING id`,
+		e.TaskID, e.Kind, e.Author, e.Body, e.DeliveryID, e.CommentID, e.Trusted, e.Signalled, choices, e.Withdraws, question).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}
 	return id, err
 }
 
+// intakeColumns are the intake_events columns the reads select, in scan
+// order.
+const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices, withdraws, question`
+
 func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices, withdraws
+		`SELECT `+intakeColumns+`
 		 FROM intake_events WHERE task_id = $1 ORDER BY id`, taskID)
 	return scanIntakeEvents(rows, err)
 }
 
 func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices, withdraws
+		`SELECT `+intakeColumns+`
 		 FROM intake_events WHERE task_id = $1 AND signalled AND kind = ANY($2)
 		 AND created_at > COALESCE((SELECT max(created_at) FROM sessions WHERE task_id = $1), '-infinity')
 		 ORDER BY id`, taskID, changeRequestKinds)
@@ -855,12 +872,19 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for rows.Next() {
 		var e IntakeEvent
-		var choices []byte
-		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled, &choices, &e.Withdraws); err != nil {
+		var choices, question []byte
+		if err := rows.Scan(&e.ID, &e.TaskID, &e.Kind, &e.Author, &e.Body, &e.CreatedAt, &e.DeliveryID, &e.CommentID, &e.Trusted, &e.Signalled, &choices, &e.Withdraws, &question); err != nil {
 			return nil, err
 		}
 		if err := unmarshalChoices(choices, &e.Choices); err != nil {
 			return nil, err
+		}
+		if len(question) > 0 {
+			q := &HumanQuestion{}
+			if err := json.Unmarshal(question, q); err != nil {
+				return nil, err
+			}
+			e.Question = q
 		}
 		out = append(out, e)
 	}

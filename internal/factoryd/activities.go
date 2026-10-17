@@ -1061,6 +1061,14 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		}
 	}
 	question := escalationQuestion(reason)
+	var shaped *HumanQuestion
+	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
+		// the deterministic stops shape their five-part question from the
+		// stop's own numbers; the agent's tail keeps today's path
+		if shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason)); shaped != nil {
+			question = shaped.Ask
+		}
+	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
 		events, err := r.store.IntakeEvents(ctx, taskID)
@@ -1076,8 +1084,14 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	for i, c := range choices {
 		choices[i] = r.untrusted(t, c)
 	}
+	// the shaped question's buttons are not these choices: they carry
+	// values, and park and keep waiting record an answer without posting
+	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
 	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason)}
+	if shaped != nil {
+		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
+	}
 	if len(choices) > 0 {
 		step["choices"], asked["choices"] = choices, choices
 	}
@@ -1085,7 +1099,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	// the durable anchor Reconcile rebuilds the answers from; a retry
 	// with the same comment records nothing twice
 	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices}); err != nil {
+		Choices: choices, Question: shaped}); err != nil {
 		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
 	}
 	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)

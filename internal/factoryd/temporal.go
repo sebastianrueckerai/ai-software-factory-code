@@ -382,12 +382,17 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 			log.Printf("task %s: timeline escalated: %v", t.ID, err)
 		}
 	}
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment}); err != nil {
+	shaped := ShapedQuestion(reason, QuestionFacts{})
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment,
+		Question: shaped}); err != nil {
 		log.Printf("task %s: record the stale escalation: %v", t.ID, err)
 	}
+	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
+	if shaped != nil {
+		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info
+	}
 	if timeline != nil {
-		timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-			map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment})
+		timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	}
 	if _, err := store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: FactoryDecider, TaskID: t.ID,
 		Detail: map[string]any{"comment": comment, "reason": textutil.Truncate(reason, 2000)}}); err != nil {

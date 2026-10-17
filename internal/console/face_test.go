@@ -737,3 +737,138 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-ch", detail: postedDetail(1)})
 }
+
+// A shaped question renders as its ask with its why under it, its buttons
+// by value, and its info and recommendation behind the fold; a card that
+// holds answers its run has not taken warns instead of offering the box.
+func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
+	question := &factoryd.HumanQuestion{
+		Ask:            "The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?",
+		Why:            "the session cap is reached: every finding sent to a human returns unacted",
+		Info:           "A grant buys one more session on this card. Park holds the card for a person to work with.",
+		Recommendation: "Grant one session",
+		Source:         "the factory question",
+		Choices: []factoryd.QuestionChoice{
+			{Value: "grant", Label: "Grant one session"},
+			{Value: "park", Label: "Park it"},
+			{Value: "close", Label: "Close the card"},
+		},
+	}
+	shape := func(bt factoryd.BoardTask, url string) string {
+		r, _ := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{bt}
+		ck, _ := r.loggedIn(t)
+		return escalationOf(t, r.do(httptest.NewRequest(http.MethodGet, url, nil), ck).Body.String(), bt.ID)
+	}
+	bt := factoryd.BoardTask{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+		Escalation: "the session cap is reached: every finding sent to a human returns unacted", Question: question}
+	esc := shape(bt, "/?project=ai-software-factory-code")
+	for _, want := range []string{
+		`<p class="ask">The call cap is reached: 4 calls of 4, 1.50 EUR of 6.00 EUR left. Which way on?</p>`,
+		`<p class="why">the session cap is reached: every finding sent to a human returns unacted</p>`,
+		`<input type="hidden" name="value" value="grant">`, `<input type="hidden" name="value" value="park">`,
+		`aria-label="Grant one session, posted on the issue as you"`,
+		`aria-label="Park it, kept off the issue: the card stays waiting"`,
+		`<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close"`,
+		`<details class="fold"><summary>What each answer does</summary>`,
+		`<p class="info">A grant buys one more session on this card. Park holds the card for a person to work with.</p>`,
+		`<p class="recommendation">Recommendation (the factory question): Grant one session</p>`,
+		`<pre class="reason detail">the session cap is reached: every finding sent to a human returns unacted</pre>`,
+	} {
+		if !strings.Contains(esc, want) {
+			t.Errorf("the escalation lacks %q:\n%s", want, esc)
+		}
+	}
+	if strings.Contains(esc, `name="answer" value=`) {
+		t.Errorf("the shaped card offers the agent's choices as labels:\n%s", esc)
+	}
+	if strings.Contains(esc, `name="value" value="keep_waiting"`) {
+		t.Errorf("the shaped card renders an extra answer:\n%s", esc)
+	}
+
+	bt.AnswersPending = 2
+	esc = shape(bt, "/?project=ai-software-factory-code")
+	if !strings.Contains(esc, `<p class="liveness" role="status">This card holds answers its run has not taken`) {
+		t.Errorf("the card with pending answers carries no liveness warning:\n%s", esc)
+	}
+	if strings.Contains(esc, `id="answer-t-q"`) {
+		t.Errorf("the card with pending answers still offers the answer box:\n%s", esc)
+	}
+	if !strings.Contains(esc, `name="value" value="park"`) {
+		t.Errorf("the card with pending answers lost its buttons:\n%s", esc)
+	}
+}
+
+// The shaped buttons route by value: a park or keep waiting records the
+// answer and leaves the card waiting, nothing posted on the issue, and a
+// typed answer that repeats a button's words takes that button's route.
+func TestNeedsYouCardRoutesTheValue(t *testing.T) {
+	question := func() *factoryd.HumanQuestion {
+		return &factoryd.HumanQuestion{
+			Ask:  "The check-in's share of the budget is spent: 0.90 EUR of the 6.00 EUR budget. Which way on?",
+			Why:  "the check-in's share of the budget is spent: sessions bought on now would overrun the card's share",
+			Info: "Fund raises the card's budget. Park holds it. Keep waiting holds it and waits for the budget's next window.",
+			Choices: []factoryd.QuestionChoice{
+				{Value: "fund", Label: "Fund the card"},
+				{Value: "park", Label: "Park it"},
+				{Value: "keep_waiting", Label: "Wait for the window"},
+			},
+		}
+	}
+	setup := func(t *testing.T) (*rig, *fakeEvents, *http.Cookie, *session) {
+		r, ev := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+			Escalation: "the check-in's share of the budget is spent", Question: question()}}
+		ck, s := r.loggedIn(t)
+		return r, ev, ck, s
+	}
+	before := 0
+	r, ev, ck, s := setup(t)
+	before = ev.count()
+	rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"Park it"}, "value": {"park"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the park = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
+		t.Fatalf("the park posted %q, want no comment", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"answer": "Park it", "value": "park"}})
+
+	r, ev, ck, s = setup(t)
+	before = ev.count()
+	if rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"Wait for the window"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the typed label = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
+		t.Fatalf("the typed label posted %q, want no comment", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"answer": "Wait for the window", "value": "keep_waiting"}})
+
+	r, ev, ck, s = setup(t)
+	before = ev.count()
+	if rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"hold the card until the roadmap names it"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the typed answer = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "hold the card until the roadmap names it" {
+		t.Fatalf("the typed answer posted %q", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
+
+	// past a raised cap the fund answer posts like any answer, the label
+	// retrying the card; the card holds no budget refusal here
+	r, ev, ck, s = setup(t)
+	before = ev.count()
+	if rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"Fund one more session"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the fund answer = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "Fund one more session" {
+		t.Fatalf("the fund answer posted %q", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
+}
