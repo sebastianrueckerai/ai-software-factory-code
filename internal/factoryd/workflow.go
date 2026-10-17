@@ -519,6 +519,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
+	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	final, err := run.program()
 	run.endTrips()
@@ -1029,6 +1030,11 @@ const (
 	// is one); the criteria's findings go on the approval card, for the
 	// human. A run from before asks its approval without the gate.
 	versionCriteriaGate workflow.Version = 1
+	// versionCheckinRaise (change id "checkin-raise"): an answer to a
+	// check-in stopped at its call cap buys the card one more turn of
+	// the cap (TaskUsage.ExtraCheckin), and the budget's share still
+	// refuses on spent money.
+	versionCheckinRaise workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1133,6 +1139,7 @@ type taskRun struct {
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
+	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1437,6 +1444,14 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
+			case t.checkinRaise >= versionCheckinRaise && atCheckinCallCap(st.Question):
+				// the call cap's stop: the answer buys the card the
+				// wider cap beside the session, and that session runs
+				// instead of stopping at the same cap before any model
+				// call; placed before the spend case, for a call-cap
+				// stop is a spend stop too
+				u.ExtraCheckin++
+				buy()
 			case t.checkinSpend >= versionCheckinSpend && st.PR.Number != 0 && atCheckinSpend(st.Question):
 				// a spent check-in's answer verifies again, as the gate's
 				// stop does, but with no session: a bought one would stop
@@ -1769,11 +1784,17 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			// a spent check-in with the pull request open verifies the
-			// head it judged below, like a dropped check-in: a bought
-			// session would stop at the same cap before any model call
-			// while the head sits waiting on the approval
-			if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
+			// the call cap's stop grants the card its wider cap with the
+			// session (versionCheckinRaise) and falls through to buy(),
+			// never the verify break: the conversation the raise buys
+			// runs where the cap stopped it
+			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
+				u.ExtraCheckin++
+			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
+				// a spent check-in with the pull request open verifies the
+				// head it judged below, like a dropped check-in: a bought
+				// session would stop at the same cap before any model call
+				// while the head sits waiting on the approval
 				res.Commit = startRef
 				break
 			}

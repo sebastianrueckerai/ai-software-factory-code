@@ -30,6 +30,9 @@ func setRequiredEnv(t *testing.T) {
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
 		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
+		// the worker's own sandbox exports REPO_SHA; the seeded repos of
+		// the tests hold no such commit, so none is pinned here
+		"REPO_SHA": "",
 	} {
 		t.Setenv(name, val)
 	}
