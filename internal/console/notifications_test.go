@@ -105,6 +105,11 @@ func TestNotificationsPanel(t *testing.T) {
 	if !strings.Contains(page, "demo") || !strings.Contains(page, "default: needs-you") {
 		t.Fatalf("the panel misses demo's default:\n%s", page)
 	}
+	// the select rests on the effective level, so an untouched Save keeps
+	// the derived default instead of silently turning it off
+	if !strings.Contains(page, `value="needs-you" selected`) {
+		t.Fatalf("the select does not rest on the derived default:\n%s", page)
+	}
 	if strings.Contains(page, "sf/code") || strings.Contains(page, "demo-app") {
 		t.Fatalf("the panel lists a project bob cannot read:\n%s", page)
 	}
@@ -164,5 +169,30 @@ func TestNotificationsPanel(t *testing.T) {
 		if rec = send(c, "/notifications/level", form); rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
 			t.Fatalf("the refused level post %v = %d", form, rec.Code)
 		}
+	}
+
+	// the instrument panel (C19): one row per venue the console carries,
+	// the state said in words beside its lamp; discord not connected reads
+	// as a row with its connect link, connected as the address and a
+	// Disconnect, and a connected telegram keeps its own row
+	c = seat(&Messengers{Store: fm, TelegramName: "factorybot", Discord: &DiscordConnect{}})
+	page = get(c, "/notifications", bk)
+	for _, want := range []string{"telegram", "not connected", "discord", "/messengers/discord/start"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("the panel of an unconnected member misses %q:\n%s", want, page)
+		}
+	}
+	fm.links = []factoryd.MessengerLink{
+		{Venue: factoryd.VenueTelegram, Address: "@sebastian", VenueUser: "42"},
+		{Venue: factoryd.VenueDiscord, Address: "seb"},
+	}
+	if page = get(c, "/notifications", bk); !strings.Contains(page, "@sebastian") || !strings.Contains(page, "seb") {
+		t.Fatalf("the panel misses a connected address:\n%s", page)
+	}
+	if strings.Count(page, "Disconnect") != 2 {
+		t.Fatalf("the panel carries %d Disconnects, want one per connected venue:\n%s", strings.Count(page, "Disconnect"), page)
+	}
+	if strings.Contains(page, "not connected") {
+		t.Fatalf("a connected venue still says not connected:\n%s", page)
 	}
 }

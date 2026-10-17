@@ -1111,6 +1111,17 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .compacted { margin: 0 0 16px; }
 .compacted > summary { color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
 .compacted[open] > summary { margin-bottom: 10px; }
+/* the notifications panel (C19): one monospaced readout, a square lamp
+   on every state — cyan for connected and a level the member set, amber
+   for needs-you, an unlit socket for off and not connected */
+.notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); }
+.notify td.act { width: 100%; text-align: right; }
+.notify td.act form.inline { white-space: nowrap; }
+.notify .dim { color: var(--text-muted); }
+.notify .addr { color: var(--text-faint); }
+.lamp { display: inline-block; width: 8px; height: 8px; margin: 0 7px 1px 0; border: 1px solid var(--line-strong); border-radius: 1px; vertical-align: baseline; }
+.lamp.on { background: var(--accent); border-color: var(--accent); }
+.lamp.needs-you { background: var(--need); border-color: var(--need); }
 @media (max-width: 899px) {
   .chat.with-threads { display: flex; flex-direction: column; }
   .ttable { max-height: 40vh; border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1129,6 +1140,13 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .lvlpop [data-lvl] { min-height: 44px; }
   .cmds { gap: 8px; }
   .palette button { height: 44px; }
+  .notify thead { display: none; }
+  .notify tr { display: block; padding: 6px 0; }
+  .notify th[scope=row], .notify td { display: block; border-bottom: 0; padding: 3px 0; }
+  .notify td.act a { display: inline-flex; align-items: center; min-height: 44px; }
+  .notify td.act form.inline { display: flex; gap: 8px; }
+  .notify td.act form.inline button { height: 44px; }
+  .notify td.act select { flex: 1; height: 44px; min-width: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {

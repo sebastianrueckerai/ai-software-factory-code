@@ -86,6 +86,16 @@ func TestLab(t *testing.T) {
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
 		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}
 	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 120}
+	// the messenger panel (roadmap 145): telegram connected, discord offered,
+	// two levels the writer set and one left to its derived default
+	r.c.cfg.Messengers = &Messengers{
+		Store: &fakeMessengerStore{
+			links:  []factoryd.MessengerLink{{Venue: factoryd.VenueTelegram, Address: "@sebastian", VenueUser: "42"}},
+			levels: map[string]string{"demo-app/demo-app": factoryd.LevelAll, "sf/infra": factoryd.LevelOff},
+		},
+		TelegramName: "factorybot",
+		Discord:      &DiscordConnect{AuthorizeURL: func(string) string { return "https://discord.example/oauth" }},
+	}
 	r.ledger.briefs = map[string]string{labBump.Brief: labBumpBrief}
 	ck, _ := r.loggedIn(t)
 
