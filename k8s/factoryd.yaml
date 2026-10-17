@@ -554,6 +554,19 @@ spec:
         # 2026-10-13 plan); absent, write_doc says no token is seated
         - name: FORGEJO_DOCS_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-docs, key: token, optional: true}}
+        # factoryd-messengers (roadmap 145): Telegram's bot key and
+        # Discord's app, bot and guild; the secret may be absent and every
+        # key may be empty, each absence seats no messenger
+        - name: TELEGRAM_BOT_KEY
+          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: telegram_bot_key, optional: true}}
+        - name: DISCORD_CLIENT_ID
+          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_client_id, optional: true}}
+        - name: DISCORD_CLIENT_SECRET
+          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_client_secret, optional: true}}
+        - name: DISCORD_BOT_TOKEN
+          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_bot_token, optional: true}}
+        - name: DISCORD_GUILD_ID
+          valueFrom: {secretKeyRef: {name: factoryd-messengers, key: discord_guild_id, optional: true}}
         # factory-registry-read: a read:package token, member of org sf's
         # team factory-registry-read (packages read, no repository); the
         # roller reads main CI's images with it and can overwrite no tag
@@ -764,6 +777,8 @@ spec:
         - matchName: openbao.platform.svc.cluster.local
         - matchName: github.com
         - matchName: api.github.com
+        - matchName: api.telegram.org
+        - matchName: discord.com
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -826,6 +841,13 @@ spec:
   - toFQDNs:
     - matchName: github.com
     - matchName: api.github.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+  # The messengers (roadmap 145): Telegram's bot API and Discord's
+  # (its API and OAuth2 pages are discord.com)
+  - toFQDNs:
+    - matchName: api.telegram.org
+    - matchName: discord.com
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
   - toEndpoints:
