@@ -23,7 +23,7 @@ spec:
       - name: forgejo-registry
       containers:
       - name: gateway
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:519870b103b2648faa555ff204718441f933e3261b5dcaa16100ee1f3e28604f
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:fd0b2aa846737bc0c98b057239e2d1a47d355a0d51fa2543e2cc4dc3c3005237
         ports: [{name: http, containerPort: 8081}]
         env:
         - name: LITELLM_URL
