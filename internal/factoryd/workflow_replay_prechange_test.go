@@ -71,6 +71,7 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	ruTpl := []*historypb.HistoryEvent{copyEvent(ev[259]), copyEvent(ev[260]), copyEvent(ev[261])}
 	fundTpl := []*historypb.HistoryEvent{copyEvent(ev[241]), copyEvent(ev[242]), copyEvent(ev[243])}
 	sigStepTpl := []*historypb.HistoryEvent{copyEvent(ev[335]), copyEvent(ev[336]), copyEvent(ev[337])}
+	setStateTpl := []*historypb.HistoryEvent{copyEvent(ev[247]), copyEvent(ev[248]), copyEvent(ev[249])}
 
 	t0 := ev[255].GetEventTime().AsTime()
 	mark := 0
@@ -160,8 +161,10 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	sa.Input = encode(TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
 	sa.Identity = "sebastian"
 
-	// the history ends with the funding read of the answer's bought
-	// attempt: a partial replay, everything up to and including the grant
+	// the history ends with the answer's bought RunSession in flight: a
+	// partial replay — set running, then the fourth RunSession scheduled
+	// and started but never completed, where the workflow blocks on its
+	// result and the replay ends with no command left over
 	events := append([]*historypb.HistoryEvent{}, ev[:256]...)
 	events = append(events, wft(257)...)
 	events = append(events, act(ruTpl, 260, nil, nil)...)
@@ -180,6 +183,14 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	events = append(events, wft(296)...)
 	events = append(events, act(fundTpl, 299, nil, nil)...)
 	events = append(events, wft(302)...)
+	events = append(events, act(setStateTpl, 305, nil, nil)...)
+	events = append(events, wft(308)...)
+	bought, began := copyEvent(ev[253]), copyEvent(ev[254])
+	bought.EventId, bought.EventTime = 311, stamp()
+	bought.GetActivityTaskScheduledEventAttributes().ActivityId = "RunSession-4"
+	began.EventId, began.EventTime = 312, stamp()
+	began.GetActivityTaskStartedEventAttributes().ScheduledEventId = 311
+	events = append(events, bought, began)
 	for i, e := range events {
 		if e.EventId != int64(i+1) {
 			t.Fatalf("event %d has id %d", i+1, e.EventId)
