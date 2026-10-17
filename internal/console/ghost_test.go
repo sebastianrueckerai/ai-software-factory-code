@@ -45,47 +45,52 @@ func audit() factoryd.RoutineView {
 		NextWords: "after 6 more merges", Lane: "queued"}
 }
 
-// Every routine stands as a ghost at the foot of the lane its card lands
-// in, after the lane's real cards, which alone make the count; the strip
-// names the run under an hour away; a card a routine filed wears the chip.
+// Every routine stands as a ghost at the foot of Queued, after the
+// lane's real cards, which alone make the count; needs-you holds only
+// the filed card of a run that waits on the human. The strip names the
+// run under an hour away; a card a routine filed wears the chip.
 func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 	r := newRig(t)
-	r.routines.views = []factoryd.RoutineView{audit(), soonBump()}
-	done := time.Now().Add(-time.Hour)
+	// the bump's last run filed #781, which still waits on the human
+	bump := soonBump()
+	bump.Last.Outcome, bump.Last.Ended = "filed", time.Time{}
+	r.routines.views = []factoryd.RoutineView{audit(), bump}
 	r.tasks.set("which store?",
 		factoryd.Task{ID: "t-603", Status: "waiting-human", Repository: "sf/code", IssueNumber: 603, Lane: policy.LaneReady},
 		factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Lane: policy.LaneReady},
 		factoryd.Task{ID: "t-792", Status: "queued", Repository: "sf/code", IssueNumber: 792, Lane: policy.LaneReady, Source: factoryd.SourceRoutine},
-		factoryd.Task{ID: "t-781", Status: "done", Repository: "sf/code", IssueNumber: 781, Source: factoryd.SourceRoutine, FinishedAt: &done})
+		factoryd.Task{ID: "t-781", Status: "waiting-human", Repository: "sf/code", IssueNumber: 781, Source: factoryd.SourceRoutine})
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
 
 	needs, queued := col(t, body, "Needs you"), col(t, body, "Queued")
-	bump := ghostIn(t, needs, "weekly-bump")
-	if strings.Index(needs, "data-ghost=") < strings.LastIndex(needs, "data-card=") || strings.Contains(needs, "audit") {
-		t.Fatalf("Needs you does not end in the bump's ghost alone:\n%s", needs)
+	bumpG := ghostIn(t, queued, "weekly-bump")
+	// needs-you holds the bump's filed, waiting card and no ghost; the
+	// preview queues behind the lane's cards, the dated bump first
+	if strings.Contains(needs, "data-ghost=") || !strings.Contains(needs, `data-card="t-781"`) {
+		t.Fatalf("Needs you holds more or less than the bump's filed card:\n%s", needs)
+	}
+	if bumpAt, auditAt := strings.Index(queued, `data-ghost="ai-software-factory-code/weekly-bump"`), strings.Index(queued, `data-ghost="ai-software-factory-code/audit"`); bumpAt < 0 || auditAt < bumpAt || bumpAt < strings.LastIndex(queued, "data-card=") {
+		t.Fatalf("Queued does not end in the bump's ghost, then the audit's:\n%s", queued)
 	}
 	for _, want := range []string{
 		`<article class="card ghost"`,
 		`<button type="button" class="open" data-routine="ai-software-factory-code/weekly-bump"><span class="ref">↻</span> <span class="ttl">Weekly bump</span></button>`,
 		`<div class="line2 mono">every Monday 06:00</div>`,
 		`<div class="line2 mono soon">Mon 06:00 · in 20 min · human card</div>`,
-		`<div class="line2 mono">last #781 done in 2 d</div>`,
+		`<div class="line2 mono">last #781 filed</div>`,
 		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>`,
 		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/run" hx-post="/routines/ai-software-factory-code/weekly-bump/run" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form>`,
 	} {
-		if !strings.Contains(bump, want) {
-			t.Fatalf("the bump's ghost lacks %s:\n%s", want, bump)
+		if !strings.Contains(bumpG, want) {
+			t.Fatalf("the bump's ghost lacks %s:\n%s", want, bumpG)
 		}
 	}
-	if strings.Contains(bump, "data-card") || strings.Contains(bump, `class="count"`) {
-		t.Fatalf("a ghost reads as a card:\n%s", bump)
+	if strings.Contains(bumpG, "data-card") || strings.Contains(bumpG, `class="count"`) {
+		t.Fatalf("a ghost reads as a card:\n%s", bumpG)
 	}
 
 	a := ghostIn(t, queued, "audit")
-	if strings.Index(queued, "data-ghost=") < strings.LastIndex(queued, "data-card=") || strings.Contains(queued, "weekly-bump") {
-		t.Fatalf("Queued does not end in the audit's ghost alone:\n%s", queued)
-	}
 	for _, want := range []string{`<div class="line2 mono">every 20 merges</div>`, `<div class="line2 mono">after 6 more merges</div>`} {
 		if !strings.Contains(a, want) {
 			t.Fatalf("the audit's ghost lacks %s:\n%s", want, a)
@@ -164,7 +169,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 	}
 
 	body, needs, queued = board("&routines=within&within=2&unit=hours")
-	ghostIn(t, needs, "weekly-bump")
+	ghostIn(t, queued, "weekly-bump")
 	shown("2 hours", queued, "on-config", "audit")
 	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;routines=all">2 routines hidden</a></p>`) {
 		t.Fatalf("Queued does not say what it hides:\n%s", queued)
@@ -213,7 +218,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 	if strings.Contains(body, "data-ghost=") {
 		t.Fatal("none shows a ghost")
 	}
-	if !strings.Contains(needs, `>1 routine hidden</a></p>`) || !strings.Contains(queued, `>4 routines hidden</a></p>`) ||
+	if strings.Contains(needs, "ghosts-hidden") || !strings.Contains(queued, `>5 routines hidden</a></p>`) ||
 		!strings.Contains(queued, `Queued <span class="count">1</span>`) {
 		t.Fatalf("none: the lanes say wrong:\n%s\n%s", needs, queued)
 	}
@@ -224,7 +229,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 	// the hidden line's link keeps the find and the column's order, and
 	// the find leaves the ghosts standing
 	_, needs, queued = board("&q=455&queued=oldest&routines=within&within=2&unit=hours")
-	ghostIn(t, needs, "weekly-bump")
+	ghostIn(t, queued, "weekly-bump")
 	ghostIn(t, queued, "audit")
 	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;q=455&amp;queued=oldest&amp;routines=all">2 routines hidden</a></p>`) {
 		t.Fatalf("the hidden line drops the board's state:\n%s", queued)
@@ -274,7 +279,7 @@ func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("anna's board = %d", rec.Code)
 	}
-	g := ghostIn(t, col(t, rec.Body.String(), "Needs you"), "weekly-bump")
+	g := ghostIn(t, col(t, rec.Body.String(), "Queued"), "weekly-bump")
 	if strings.Contains(g, `class="acts"`) || strings.Contains(g, "/skip") || strings.Contains(g, "/run") {
 		t.Fatalf("a reader is offered the acts:\n%s", g)
 	}
@@ -296,7 +301,7 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
 
-	g := ghostIn(t, col(t, body, "Needs you"), "weekly-bump")
+	g := ghostIn(t, col(t, body, "Queued"), "weekly-bump")
 	if !strings.Contains(g, `<article class="card ghost held"`) || !strings.Contains(g, `<span class="held">held: #781 is still open</span>`) {
 		t.Fatalf("the held ghost is quiet:\n%s", g)
 	}
@@ -317,7 +322,7 @@ func TestHeldGhostSpeaks(t *testing.T) {
 	bump.Held, bump.Last = false, factoryd.RoutineRun{Project: bump.Project, Routine: "weekly-bump", Run: 15, Started: time.Now(), Trigger: "cron", TaskID: "t-781", Issue: 781, Outcome: "filed"}
 	r.routines.views = []factoryd.RoutineView{bump, run}
 	body = r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
-	if g := ghostIn(t, col(t, body, "Needs you"), "weekly-bump"); strings.Contains(g, "held") || !strings.Contains(g, "last #781 filed") {
+	if g := ghostIn(t, col(t, body, "Queued"), "weekly-bump"); strings.Contains(g, "held") || !strings.Contains(g, "last #781 filed") {
 		t.Fatalf("an open card reads as a held run:\n%s", g)
 	}
 	if !strings.Contains(body, `<span class="cell routine">↻ bump in 20 min</span>`) {
@@ -367,7 +372,7 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{bump}
 	r.routines.onSkip = func(_, _ string, skip bool) { r.routines.views[0].State.SkipNext = skip }
 	ck, s := r.loggedIn(t)
-	g := ghostIn(t, col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Needs you"), "weekly-bump")
+	g := ghostIn(t, col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued"), "weekly-bump")
 	for _, want := range []string{
 		`<div class="line2 mono">skipped once · next Mon 20 Oct 06:00 · in `,
 		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#board" hx-swap="outerHTML">` +
@@ -382,7 +387,7 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 		t.Fatalf("a skipped ghost offers Skip once:\n%s", g)
 	}
 	rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/skip", url.Values{"csrf": {s.csrf}, "undo": {"1"}, "project": {"ai-software-factory-code"}}), ck)
-	g = ghostIn(t, col(t, rec.Body.String(), "Needs you"), "weekly-bump")
+	g = ghostIn(t, col(t, rec.Body.String(), "Queued"), "weekly-bump")
 	if rec.Code != http.StatusOK || strings.Contains(g, "skipped once") || !strings.Contains(g, ">Skip once</button>") || r.routines.skips[bumpKey] != "" {
 		t.Fatalf("the undo = %d, skips %v:\n%s", rec.Code, r.routines.skips, g)
 	}

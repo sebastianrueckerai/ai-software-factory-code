@@ -247,7 +247,7 @@ func TestRoutineDrawerNeedsAMember(t *testing.T) {
 	if rec := getPage(r, ak, path); rec.Code != http.StatusForbidden {
 		t.Fatalf("anna, who does not write the project, = %d:\n%s", rec.Code, rec.Body)
 	}
-	if g := ghostIn(t, col(t, getPage(r, ak, codeBoard).Body.String(), "Needs you"), "weekly-bump"); strings.Contains(g, "data-routine") || strings.Contains(g, "<button") {
+	if g := ghostIn(t, col(t, getPage(r, ak, codeBoard).Body.String(), "Queued"), "weekly-bump"); strings.Contains(g, "data-routine") || strings.Contains(g, "<button") {
 		t.Fatalf("a reader's ghost opens a drawer:\n%s", g)
 	}
 
