@@ -589,6 +589,9 @@ func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan jso
 func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []factoryd.PlanQuestion) (bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
+	panic("unused")
+}
 
 // AnswerPlanQuestion is factoryd.PGStore.AnswerPlanQuestion on the fixture's // rows: an unknown number answers ErrNotFound, an answered one ErrAnswered.
 func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
@@ -941,7 +944,7 @@ tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forge
 `),
 		policy.ProcessFile("maintenance"): []byte(policy.Header(policy.ProcessFile("maintenance")) + "\n" + `lanes:
   - {name: backlog}
-  - {name: plan, class: planner, moved_by: writers, plan: {max_cards: 8, foundation: true, integration: true}}
+  - {name: plan, class: planner, moved_by: writers, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
   - {name: ready, class: coder, moved_by: writers}
 dependencies: {wait_until: done, on_failed: human}
 merge: {queue: none}

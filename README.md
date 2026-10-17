@@ -735,7 +735,7 @@ would end.
 The planner (`internal/factoryd/plan.go`, change id `plan`): a card in
 lane plan runs report-mode sessions of its class (the `planner`) on the
 stronger rung with the plan guide: the issue is the spec, the answer one
-fenced json block (a summary and 2 to `max_cards` cards, each with key,
+fenced json block (a summary and `min_cards` to `max_cards` cards, each with key,
 role, title, brief, directories, depends_on, acceptance and size), a card
 one session of the pinned `agent_time` and `steps`. `ValidatePlan` judges
 it (one line per finding, the block at most 12 KiB, a brief at most 1500

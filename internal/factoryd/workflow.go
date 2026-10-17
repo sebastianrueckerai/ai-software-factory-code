@@ -93,6 +93,7 @@ const (
 	ActivityGatePolicy                  = "GatePolicy"
 	ActivityGateMigration               = "GateMigration"
 	ActivityGateReproduction            = "GateReproduction"
+	ActivityGateCriteria                = "GateCriteria"
 	ActivityModelReview                 = "ModelReview"
 	ActivityRequestApproval             = "RequestApproval"
 	ActivityMerge                       = "Merge"
@@ -509,6 +510,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.reviewRemark = workflow.GetVersion(ctx, "review-remark", workflow.DefaultVersion, versionReviewRemark)
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
+	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1006,6 +1008,12 @@ const (
 	// checks stage's timeout. A run from before sends the pending checks
 	// back as findings, as it did.
 	versionApprovalPending workflow.Version = 1
+	// versionCriteriaGate (change id "criteria-gate", roadmap 287): the
+	// approval stage runs the criteria gate once before its request, on
+	// the plan's integration card alone (the activity decides which card
+	// is one); the criteria's findings go on the approval card, for the
+	// human. A run from before asks its approval without the gate.
+	versionCriteriaGate workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1107,6 +1115,7 @@ type taskRun struct {
 	reviewRemark      workflow.Version // concerns without findings is a remark (versionReviewRemark)
 	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
+	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -2599,6 +2608,22 @@ func (t *taskRun) reproduction(out *ReproResult, commit string) (verdict, bool, 
 	for {
 		*out = ReproResult{}
 		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateReproduction, t.taskID, t.pr.Number, commit)
+		if decided || err != nil || out.Escalate == "" {
+			return v, decided, err
+		}
+		if v, stop := t.gateEscalated(out.Escalate); stop {
+			return v, true, nil
+		}
+	}
+}
+
+// criteria runs the criteria gate on commit into out: a sandbox that
+// could not start asks the human (its start escalation), and the answer
+// runs the gate again, as gateEscalated's.
+func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, error) {
+	for {
+		*out = CriteriaResult{}
+		v, decided, err := t.gateActivity(true, reproOptions(), out, ActivityGateCriteria, t.taskID, t.pr.Number, commit)
 		if decided || err != nil || out.Escalate == "" {
 			return v, decided, err
 		}

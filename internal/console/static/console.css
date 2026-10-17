@@ -168,7 +168,6 @@ footer#live:empty { display: none; }
 .lane.five .column { min-width: 0; }
 .lane.five table { table-layout: fixed; }
 .lane.five table th, .lane.five table td { white-space: normal; overflow-wrap: anywhere; }
-.lane:not(.five) .column:has(.approval.plan) { grid-column: span 2; }
 /* Needs you: the first column, lit amber, the loudest thing on the board */
 #needs-you { scroll-margin-top: 1rem; }
 .lane.five #needs-you.lit { background: var(--need-tint); border-color: var(--need-line); box-shadow: var(--need-glow); }
@@ -320,6 +319,10 @@ form.move button { padding: 0 6px; }
    from 272 px of column, Approve on its own row under that. */
 .need-top { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .need-top h4 { margin: 0; font-size: 14px; line-height: 1.3; }
+.approval h4 a.open { color: inherit; text-decoration: none; }
+.approval h4 a.open:hover, .approval h4 a.open:focus-visible { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--text-faint); }
+.card.approval:has(h4 a.open) { cursor: pointer; }
+.card.approval:has(h4 a.open:focus-visible) { outline: 2px solid var(--focus); outline-offset: 2px; }
 .need-top .since, .need-foot .since { margin-left: auto; color: var(--text-faint); font: 11px/1.6 var(--font-mono); white-space: nowrap; }
 .chip.risk { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); background: color-mix(in srgb, var(--need) 12%, transparent); }
 .chip.migration { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
@@ -382,7 +385,6 @@ form.move button { padding: 0 6px; }
 .approval form[action$="/approve"] button, .approval form[action$="/deny"] button, .approval form[action$="/split"] button { height: 30px; }
 .approval fieldset, .envelope fieldset { margin: 6px 0; }
 .approval textarea { min-height: 52px; }
-.spec { white-space: pre-wrap; border-left: 2px solid var(--line-strong); padding-left: 8px; font-size: 12.5px; color: var(--text-muted); }
 .plan-cards { font-size: 11.5px; }
 .plan-cards td { overflow-wrap: break-word; }
 /* in a lane a row stacks: key, role and size, then the title, then what it depends on */

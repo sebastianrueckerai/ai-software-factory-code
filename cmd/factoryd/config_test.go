@@ -159,7 +159,7 @@ func TestExplainSpecPlan(t *testing.T) {
 	const want = `process spec (processes/spec.yaml), card kind plan
  1. card created: an issue labelled plan by a writer, or a card a writer moves from backlog to plan
  2. lane plan: starts a task of class planner (session plan) at once
- 3. planner session on the stronger rung: answers a plan of 2 to 12 cards, one foundation first, one integration last
+ 3. planner session on the stronger rung: answers a plan of 1 to 12 cards, one foundation first, one integration last
       plan invalid -> back to the planner (step 3)
  4. human card: the plan, for approvers to accept
       a writer's comment -> back to the planner (step 3)
@@ -352,7 +352,7 @@ func TestConfigCheckSkipsOpenCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noPlan := strings.Replace(string(b), "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, foundation: true, integration: true}\n", "", 1)
+	noPlan := strings.Replace(string(b), "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}\n", "", 1)
 	noPlan = strings.Replace(noPlan, "dependencies: {wait_until: done, on_failed: human}\n", "", 1)
 	if strings.Contains(noPlan, "name: plan") || strings.Contains(noPlan, "dependencies:") {
 		t.Fatalf("spec.yaml still holds the plan lane:\n%s", noPlan)

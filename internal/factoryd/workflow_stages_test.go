@@ -106,7 +106,7 @@ func TestStagesGreenHeadIsReadBeforeTheRequest(t *testing.T) {
 	if !slices.Equal(g.headChecks, []string{"c1"}) || len(g.approvals) != 1 || g.approvals[0].Commit != "c1" {
 		t.Fatalf("head reads %v, approvals %+v: want one read of c1 and its request", g.headChecks, g.approvals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -281,7 +281,7 @@ func TestStagesHumanFindingsGoToTheCard(t *testing.T) {
 	if final := g.run(t); final != "done" || len(g.sessions) != 1 {
 		t.Fatalf("final = %q, sessions %d", final, len(g.sessions))
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if len(g.autoNotes) != 0 || !slices.Contains(g.approvals[0].WhyHuman, "checks: lint failed") {
@@ -333,7 +333,7 @@ func TestStagesReviewRunsBesideTheChecksWait(t *testing.T) {
 	if !g.approvals[0].Gates.ChecksPassed || g.approvals[0].Review.Verdict != "approve" || g.approvals[0].Commit != "c1" {
 		t.Fatalf("approval = %+v: want the review and green checks together", g.approvals[0])
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -386,7 +386,7 @@ func TestStagesRedChecksAtTheCapKeepTheReviewBesideThem(t *testing.T) {
 		!strings.Contains(strings.Join(g.approvals[0].WhyHuman, "\n"), "checks, round 1: red 1") {
 		t.Fatalf("approvals = %+v: want one request on c1 with the review and the red checks", g.approvals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -406,7 +406,7 @@ func TestStagesBeforeReviewParallelReviewsAfterChecks(t *testing.T) {
 	if len(g.reviewGates) != 1 || !g.reviewGates[0].ChecksPassed {
 		t.Fatalf("review gates %+v: want one review after green checks", g.reviewGates)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -706,7 +706,7 @@ func TestStagesDisabledAndWhenAreSkippedOnTheTimeline(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if want := []string{"policy", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	want := []string{"screening: the issue's author is not an outside account", "reproduction: disabled", "review: the issue's author is not an outside account"}
@@ -1236,7 +1236,7 @@ func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "audit c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "audit c1", "criteria c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if len(g.approvals) != 0 || len(g.autoNotes) != 1 || len(g.auditGates) != 1 || g.auditGates[0].Pin != 7 {
@@ -1351,7 +1351,7 @@ func TestStagesAuditOffIsSkippedAtItsTurn(t *testing.T) {
 	if final := g.run(t); final != "done" || len(g.autoNotes) != 1 || len(g.approvals) != 0 {
 		t.Fatalf("final = %q, auto notes %v, approvals %d", final, g.autoNotes, len(g.approvals))
 	}
-	if len(g.auditGates) != 0 || !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "merge"}) {
+	if len(g.auditGates) != 0 || !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "criteria c1", "merge"}) {
 		t.Fatalf("audit calls %+v, steps %v: want no audit call", g.auditGates, g.steps)
 	}
 	var at []time.Duration
@@ -1399,7 +1399,7 @@ func TestStagesAuditRunsBesideTheChecksWait(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if want := []string{"policy", "repro c1", "audit c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "audit c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	want := []string{"review: r1", "audit: the security audit reports 1 finding for a human"}
@@ -1913,7 +1913,7 @@ func TestStagesMigrationClassRunsTheReview(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	want := []string{"policy", "migration internal/schema/migrations/factoryd/0033_unjudged.sql", "repro c1", "review c1", "approval c1", "merge"}
+	want := []string{"policy", "migration internal/schema/migrations/factoryd/0033_unjudged.sql", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}
 	if !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}

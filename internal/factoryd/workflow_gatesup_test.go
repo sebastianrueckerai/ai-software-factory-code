@@ -307,7 +307,7 @@ func TestWorkflowGateEscalationAnswerRunsTheGateAgain(t *testing.T) {
 	if last := g.usage[len(g.usage)-1]; last.ExtraAttempts != 0 {
 		t.Fatalf("usage = %+v, want no granted attempt: the gate used no agent time", last)
 	}
-	if !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "approval c1", "merge"}) {
+	if !slices.Equal(g.steps, []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}) {
 		t.Fatalf("steps = %v", g.steps)
 	}
 }

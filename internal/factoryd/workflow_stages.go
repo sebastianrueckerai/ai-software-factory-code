@@ -221,8 +221,21 @@ func (t *taskRun) runStages(commit string) verdict {
 // findings capped for a human (with the history) and every other card
 // finding; reviewed: the last review ran in this pass. covered: the
 // review findings the card shows, which an approval over it adjudicates
-// (versionAdjudicated).
+// (versionAdjudicated). The criteria gate runs first, once, on the head
+// the request will name; its findings are card findings, for the human
+// (versionCriteriaGate).
 func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
+	if t.criteriaGate >= versionCriteriaGate {
+		var res CriteriaResult
+		v, decided, err := t.criteria(&res, commit)
+		if err != nil {
+			return verdict{final: "failed", reason: "criteria gate: " + errMessage(err)}
+		}
+		if decided {
+			return v
+		}
+		card = append(card, res.Findings...)
+	}
 	earlier := t.reviews
 	if reviewed {
 		earlier = t.reviews[:len(t.reviews)-1]

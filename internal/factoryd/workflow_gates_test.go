@@ -28,7 +28,8 @@ type gateHarness struct {
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyCalls  int
-	repro        []ReproResult // in order, the last repeating
+	repro        []ReproResult    // in order, the last repeating
+	criteria     []CriteriaResult // in order, the last repeating; empty: no finding
 	review       Review
 	reviews      []Review      // in order, the last repeating; empty: review
 	earlier      [][]Review    // the earlier reviews each ModelReview call was given
@@ -105,6 +106,18 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			n++
 			g.steps = append(g.steps, "repro "+commit)
 			return g.repro[min(n, len(g.repro))-1], nil
+		})
+	k := 0
+	g.env.OnActivity(ActivityGateCriteria, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			k++
+			g.steps = append(g.steps, "criteria "+commit)
+			if len(g.criteria) == 0 {
+				return CriteriaResult{}, nil
+			}
+			return g.criteria[min(k, len(g.criteria))-1], nil
 		})
 	g.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.reviewDelay).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
@@ -232,7 +245,7 @@ func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals = %v", final, g.finals)
 	}
-	if want := []string{"policy", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
@@ -368,7 +381,7 @@ func TestWorkflowCheatsGoBackToTheAgent(t *testing.T) {
 	if len(g.sessions) != 2 || len(g.sessions[1].Findings) != 1 || !strings.Contains(g.sessions[1].Findings[0], "adds a skip to a test") {
 		t.Fatalf("sessions = %+v, want a second session holding the cheat", g.sessions)
 	}
-	if want := []string{"policy", "policy", "repro c2", "review c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
+	if want := []string{"policy", "policy", "repro c2", "review c2", "criteria c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
@@ -398,7 +411,11 @@ func TestWorkflowReproductionThatCannotStartAsksTheHuman(t *testing.T) {
 			if len(g.sessions) != 1 || !slices.Equal(g.escalated, []string{reason}) {
 				t.Fatalf("sessions %d, escalations %q; want one session and the start escalation", len(g.sessions), g.escalated)
 			}
-			if want := []string{"policy", "repro c1", "repro c1", "review c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
+			want := []string{"policy", "repro c1", "repro c1", "review c1", "approval c1", "merge"}
+			if staged { // the criteria gate rides the approval stage
+				want = slices.Insert(want, 4, "criteria c1")
+			}
+			if !slices.Equal(g.steps, want) {
 				t.Fatalf("steps = %v, want %v", g.steps, want)
 			}
 			if got := g.reviewGates[0].Reproduction; got != (ReproResult{}) {
@@ -444,9 +461,9 @@ func TestWorkflowMergeConflictGoesBackToTheAgent(t *testing.T) {
 		steps []string
 	}{
 		{name: "approval", setup: func(*gateHarness) {},
-			steps: []string{"policy", "repro c1", "review c1", "approval c1", "merge", "policy", "repro c2", "review c2", "approval c2", "merge"}},
+			steps: []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge", "policy", "repro c2", "review c2", "criteria c2", "approval c2", "merge"}},
 		{name: "auto", setup: autoGates,
-			steps: []string{"policy", "repro c1", "review c1", "merge", "policy", "repro c2", "review c2", "merge"}},
+			steps: []string{"policy", "repro c1", "review c1", "criteria c1", "merge", "policy", "repro c2", "review c2", "criteria c2", "merge"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarness(t, tc.setup)
@@ -829,7 +846,7 @@ func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
 	if len(g.merges) != 0 {
 		t.Fatalf("merges = %v, want none", g.merges)
 	}
-	if strings.Join(g.steps, ", ") != "policy, repro c1, review c1, approval c1" {
+	if strings.Join(g.steps, ", ") != "policy, repro c1, review c1, criteria c1, approval c1" {
 		t.Fatalf("steps = %v", g.steps)
 	}
 }

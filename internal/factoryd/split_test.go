@@ -22,9 +22,9 @@ var splitFiles = []PRFile{{Filename: "web/app.ts", Additions: 500}, {Filename: "
 func splitPlan() Plan {
 	return Plan{Summary: "The links API first, then the page on it.", Cards: []PlanCard{
 		{Key: "web", Role: RoleFeature, Title: "The links page", Brief: "Carry over web/ of pull/9.", Directories: []string{"web"},
-			DependsOn: []string{"api"}, Acceptance: []string{"TestLinksPage in web"}, Size: "medium"},
+			DependsOn: []string{"api"}, Acceptance: []PlanItem{{Text: "TestLinksPage in web"}}, Size: "medium"},
 		{Key: "api", Role: RoleFeature, Title: "The links API", Brief: "Carry over api/links.go of pull/9.", Directories: []string{"api/links.go"},
-			Acceptance: []string{"TestCreateLink in api"}, Size: "medium"},
+			Acceptance: []PlanItem{{Text: "TestCreateLink in api"}}, Size: "medium"},
 	}}
 }
 
@@ -39,7 +39,7 @@ func TestCheckSplit(t *testing.T) {
 		edit(&p)
 		return fencePlan(p)
 	}
-	extra := PlanCard{Key: "docs", Role: RoleFeature, Title: "Docs", Brief: "b", Acceptance: []string{"a"}, Size: "small"}
+	extra := PlanCard{Key: "docs", Role: RoleFeature, Title: "Docs", Brief: "b", Acceptance: []PlanItem{{Text: "a"}}, Size: "small"}
 	for name, tc := range map[string]struct {
 		text string
 		want []string
@@ -64,10 +64,24 @@ func TestCheckSplit(t *testing.T) {
 		"alone over its size": {change(func(p *Plan) { p.Cards[1].Size = "small" }),
 			[]string{"split: card api alone carries 520 changed lines (api/links.go), not under its size small's 300"}},
 		"shared, not alone": {change(func(p *Plan) { p.Cards[0].Directories = []string{"web", "api"}; p.Cards[1].Size = "small" }), nil},
+		// An acceptance item is an object since the spec-intake concept
+		// (roadmap 285); a split answered in the old string shape is
+		// refused at the decode.
+		"old string items": {"```json\n{\"summary\": \"s\", \"cards\": [{\"key\": \"api\", \"role\": \"feature\", \"title\": \"t\", \"brief\": \"b\", \"directories\": [\"api\"], \"acceptance\": [\"x\"], \"size\": \"medium\"}, {\"key\": \"web\", \"role\": \"feature\", \"title\": \"t\", \"brief\": \"b\", \"directories\": [\"web\"], \"depends_on\": [\"api\"], \"acceptance\": [\"y\"], \"size\": \"medium\"}]}\n```",
+			[]string{"plan: json: cannot unmarshal string into Go struct field PlanCard.cards.acceptance of type factoryd.PlanItem"}},
 	} {
 		if _, got := CheckSplit(tc.text, splitFiles, 1000, testLimits); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
 		}
+	}
+}
+
+// The split's guide dictates the item object with no criterion field: a
+// split carries no criteria, so its items cite none (roadmap 285).
+func TestSplitGuideAcceptanceObject(t *testing.T) {
+	got := splitGuide(9, splitFiles, 1000, testLimits)
+	if !strings.Contains(got, `"acceptance": [{"text": "..."}]`) || strings.Contains(got, "criterion") {
+		t.Fatalf("splitGuide = %q, want the item object and no criteria", got)
 	}
 }
 
@@ -211,9 +225,9 @@ func TestRunSplitRunsTheSessionWhenAllFilesAreUnderBound(t *testing.T) {
 	awaitPod(t, kube, done)
 	plan := Plan{Summary: "The API first, then the page on it.", Cards: []PlanCard{
 		{Key: "api", Role: RoleFeature, Title: "The links API", Brief: "Carry over api/ of pull/9.", Directories: []string{"api"},
-			Acceptance: []string{"TestCreateLink in api"}, Size: "medium"},
+			Acceptance: []PlanItem{{Text: "TestCreateLink in api"}}, Size: "medium"},
 		{Key: "web", Role: RoleFeature, Title: "The links page", Brief: "Carry over web/ of pull/9.", Directories: []string{"web"},
-			DependsOn: []string{"api"}, Acceptance: []string{"TestLinksPage in web"}, Size: "medium"},
+			DependsOn: []string{"api"}, Acceptance: []PlanItem{{Text: "TestLinksPage in web"}}, Size: "medium"},
 	}}
 	kube.scriptPods(0, resultLine(true, fencePlan(plan)))
 	if err := <-done; err != nil {

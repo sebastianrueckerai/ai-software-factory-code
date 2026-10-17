@@ -664,14 +664,14 @@ const BoundDefault = "default"
 // retries on workflow timers (ruling 163). RunSession, RunReport, Screen,
 // SuperviseGate, ModelReview and GateAudit follow the limits (Bound).
 var DefaultBounds = map[string]int{
-	"WaitChecks": 600, "GateReproduction": 900, "Merge": 90, BoundDefault: 120,
+	"WaitChecks": 600, "GateReproduction": 900, "GateCriteria": 900, "Merge": 90, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
 // besides default.
 var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
-	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction",
+	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
 	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit", "TaskConfig",
 }

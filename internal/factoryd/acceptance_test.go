@@ -112,7 +112,7 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 				t.Fatal(err)
 			}
 			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
-				Acceptance: []string{"bash check"}}}})
+				Acceptance: []PlanItem{{Text: "bash check"}}}}})
 			if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
 				t.Fatal(err)
 			}
@@ -162,7 +162,7 @@ func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
-		Acceptance: []string{"go test ./acceptance/"}}}})
+		Acceptance: []PlanItem{{Text: "go test ./acceptance/"}}}}})
 	if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +209,7 @@ func TestRunSessionAcceptanceOnlyWhereTheExitIsTheCommands(t *testing.T) {
 			if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
 				t.Fatal(err)
 			}
-			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief", Acceptance: []string{tt.item}}}})
+			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief", Acceptance: []PlanItem{{Text: tt.item}}}}})
 			if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
 				t.Fatal(err)
 			}

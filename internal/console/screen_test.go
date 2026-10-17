@@ -21,16 +21,17 @@ import (
 )
 
 // columnItems are what column title holds, in order: "t-x" for a card's
-// face, "approval 3" for an approval request.
+// face, "approval 3" for an approval request, which shares its task's
+// data-card with the face.
 func columnItems(t *testing.T, body, title string) []string {
 	t.Helper()
 	var out []string
-	re := regexp.MustCompile(`data-card="([^"]+)"|<article class="card approval[^"]*" aria-labelledby="approval-(\d+)"`)
+	re := regexp.MustCompile(`<article class="card approval[^"]*" data-card="[^"]*" aria-labelledby="approval-(\d+)"|data-card="([^"]+)"`)
 	for _, m := range re.FindAllStringSubmatch(col(t, body, title), -1) {
 		if m[1] != "" {
-			out = append(out, m[1])
+			out = append(out, "approval "+m[1])
 		} else {
-			out = append(out, "approval "+m[2])
+			out = append(out, m[2])
 		}
 	}
 	return out
@@ -927,6 +928,26 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}
+	}
+}
+
+// The 2026-10-17 ruling: a needs-you card is compact on the board and
+// opens its task's drawer by its title, exactly like a face card — a
+// door only for the one who writes the project, whose drawer it is.
+func TestNeedsYouCardOpensItsDrawer(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	lane := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String(), "Approvals")
+	for _, want := range []string{`data-card="t-res"`, `<a href="#card=t-res" class="open">Resource request</a>`,
+		`data-card="t-m"`, `<a href="#card=t-m" class="open">Merge</a>`} {
+		if !strings.Contains(lane, want) {
+			t.Errorf("a writer's approval column lacks %q:\n%s", want, lane)
+		}
+	}
+	ak, _ := r.as(t, "alice") // alice reads every board but writes none
+	lane = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ak).Body.String(), "Approvals")
+	if strings.Contains(lane, `class="open"`) || !strings.Contains(lane, ">Resource request</h4>") || !strings.Contains(lane, "Merge <a href=") {
+		t.Errorf("a reader's approval column links to a drawer that would refuse:\n%s", lane)
 	}
 }
 

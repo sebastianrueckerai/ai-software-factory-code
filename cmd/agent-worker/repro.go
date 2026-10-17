@@ -217,8 +217,10 @@ func fetchHead(e fetchEnv, dir string) error {
 	return os.RemoveAll(scratch)
 }
 
-// maxReproOutput is the output tail kept in memory and reported.
-const maxReproOutput = 4 << 10
+// maxReproOutput is the output tail kept in memory and reported. The
+// criteria gate's marker lines ride this tail: one line per criterion, a
+// plan of eight criteria stays whole under it.
+const maxReproOutput = 8 << 10
 
 // repro is the repro mode's report on ws: the fetch's failure, a bad
 // environment (exit -1), or the command's run at the fetched head.

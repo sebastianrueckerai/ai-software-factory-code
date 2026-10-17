@@ -15,6 +15,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,6 +53,22 @@ const (
 	RoleIntegration = "integration"
 )
 
+// The kinds of a plan's criteria (the spec-intake concept, piece 1): how
+// a criterion is proven.
+const (
+	CriterionTest      = "test"
+	CriterionInvariant = "invariant"
+	CriterionJudgement = "judgement"
+	CriterionHuman     = "human"
+)
+
+// The recording rule's first catch kinds (the spec-intake concept,
+// roadmap 285): a question's finder is the planner.
+const (
+	CatchQuestion = "question"
+	FinderPlanner = "planner"
+)
+
 // The plan's own caps: the report's transport cap (maxReport) never cuts a
 // valid plan.
 const (
@@ -67,9 +84,39 @@ const (
 
 // Plan is the planner's answer: one fenced json block of its last message.
 type Plan struct {
-	Summary   string         `json:"summary"`
-	Cards     []PlanCard     `json:"cards"`
-	Questions []PlanQuestion `json:"questions,omitempty"`
+	Summary   string          `json:"summary"`
+	Criteria  []PlanCriterion `json:"criteria,omitempty"`
+	Cards     []PlanCard      `json:"cards"`
+	Questions []PlanQuestion  `json:"questions,omitempty"`
+}
+
+// PlanCriterion is one criterion of the spec, a piece of its proof (the
+// spec-intake concept, piece 1): kind test names its test, its inputs and
+// the numbers it expects, a test bash check runs; invariant names a suite
+// and carries nothing else; judgement names the claim a model judges, its
+// fixed inputs and the pinned prompt, and no test; human names the claim
+// only a person settles, with the evidence the approver will see. The
+// kind names the fields it uses, the rest stay empty.
+type PlanCriterion struct {
+	ID       string `json:"id"`
+	Kind     string `json:"kind"`
+	Test     string `json:"test,omitempty"`
+	Inputs   string `json:"inputs,omitempty"`
+	Expected string `json:"expected,omitempty"`
+	Claim    string `json:"claim,omitempty"`
+	Prompt   string `json:"prompt,omitempty"`
+	Evidence string `json:"evidence,omitempty"`
+}
+
+// PlanItem is one acceptance item of a card: the test it names and the
+// criterion it works on, cited by id in the item itself, so which cards
+// work on a criterion is the sum of their items' citations and no second
+// list can drift out of step (the spec-intake concept, piece 2). The
+// criterion is empty where none is cited: a foundation card's contracts
+// and a split's items.
+type PlanItem struct {
+	Criterion string `json:"criterion,omitempty"`
+	Text      string `json:"text"`
 }
 
 // PlanQuestion is an open point the spec leaves to the member, with the
@@ -85,14 +132,14 @@ type PlanQuestion struct {
 
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
-	Key         string   `json:"key"`
-	Role        string   `json:"role"`
-	Title       string   `json:"title"`
-	Brief       string   `json:"brief"`
-	Directories []string `json:"directories"`
-	DependsOn   []string `json:"depends_on"`
-	Acceptance  []string `json:"acceptance"`
-	Size        string   `json:"size"`
+	Key         string     `json:"key"`
+	Role        string     `json:"role"`
+	Title       string     `json:"title"`
+	Brief       string     `json:"brief"`
+	Directories []string   `json:"directories"`
+	DependsOn   []string   `json:"depends_on"`
+	Acceptance  []PlanItem `json:"acceptance"`
+	Size        string     `json:"size"`
 	// Rung and RungReason: the model rung the card starts on and why,
 	// cheap or frontier; "" lets intake derive it (roadmap 222, item 5)
 	Rung       string `json:"rung,omitempty"`
@@ -157,7 +204,11 @@ type ChildrenResult struct {
 var (
 	planBlock = regexp.MustCompile("(?s)```json[ \t]*\r?\n(.*?)\r?\n[ \t]*```")
 	cardKey   = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
-	roles     = []string{RoleFoundation, RoleFeature, RoleIntegration}
+	// criterionID is a criterion id's shape: the concept's examples are
+	// snake_case (schedule_test), where card keys use dashes.
+	criterionID    = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
+	roles          = []string{RoleFoundation, RoleFeature, RoleIntegration}
+	criterionKinds = []string{CriterionTest, CriterionInvariant, CriterionJudgement, CriterionHuman}
 	// acceptedComment is PlanAcceptedComment of any revision
 	acceptedComment = regexp.MustCompile(`^Plan revision [0-9]+ accepted\.$`)
 	// deployLine is a spec's line asking for a deployment: "Deploy:" or
@@ -220,8 +271,8 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 	}
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
-	if n := len(p.Cards); n < 2 || n > shape.MaxCards {
-		add("%d cards; this process allows 2 to %d", n, shape.MaxCards)
+	if n := len(p.Cards); n < shape.Minimum() || n > shape.MaxCards {
+		add("%d cards; this process allows %d to %d", n, shape.Minimum(), shape.MaxCards)
 	}
 	keys := map[string]int{}
 	for i, c := range p.Cards {
@@ -238,7 +289,7 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 		}
 	}
 	foundation, integration := cardsOf(p, RoleFoundation), cardsOf(p, RoleIntegration)
-	if shape.Foundation && len(foundation) != 1 {
+	if shape.Foundation && len(p.Cards) > 1 && len(foundation) != 1 {
 		add("%d cards with role foundation; the process wants exactly one", len(foundation))
 	}
 	if shape.Integration && len(integration) != 1 {
@@ -265,6 +316,7 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 	for _, c := range p.Cards {
 		out = append(out, cardFindings(c, limits, bound)...)
 	}
+	out = append(out, criteriaFindings(p, shape)...)
 	return p, append(out, questionFindings(p.Questions)...)
 }
 
@@ -324,7 +376,8 @@ func sizeFindings(size string, bound int) []string {
 }
 
 // acceptanceFindings are a card's acceptance criteria's findings, the
-// plan card's and the ready check's alike.
+// plan card's and the ready check's alike, on the item lines as cardFacts
+// writes them and the body carries them back.
 func acceptanceFindings(acceptance []string) []string {
 	var out []string
 	if n := len(acceptance); n < 1 || n > maxCardAcceptance {
@@ -336,6 +389,154 @@ func acceptanceFindings(acceptance []string) []string {
 			out = append(out, fmt.Sprintf("acceptance test %d is empty", i+1))
 		case n > maxAcceptanceItem:
 			out = append(out, fmt.Sprintf("acceptance test %d is over %d characters", i+1, maxAcceptanceItem))
+		}
+	}
+	return out
+}
+
+// itemText is acceptance item it as cardFacts writes its line and the
+// ready check reads it back: the text alone, the criterion's id behind it
+// in brackets when the item cites one. The line is what the caps judge,
+// so a plan that passes validation never writes a line the ready check
+// refuses.
+func itemText(it PlanItem) string {
+	if it.Criterion == "" || it.Text == "" {
+		return it.Text
+	}
+	return it.Text + " [" + it.Criterion + "]"
+}
+
+// citations keys each criterion id of p to the keys of the cards whose
+// items cite it, in card order (the spec-intake concept, piece 2).
+func citations(p Plan) map[string][]string {
+	out := map[string][]string{}
+	for _, c := range p.Cards {
+		for _, it := range c.Acceptance {
+			if it.Criterion != "" && !slices.Contains(out[it.Criterion], c.Key) {
+				out[it.Criterion] = append(out[it.Criterion], c.Key)
+			}
+		}
+	}
+	return out
+}
+
+// criteriaFindings are a plan's criteria's findings (the spec-intake
+// concept, pieces 1 and 3, roadmap 285): a spec plan wants the spec's
+// criteria, 1 to maxCardAcceptance (the integration card carries one item
+// per criterion inside its own cap); each criterion is well formed for
+// its kind, every field the kind uses present and within the item cap,
+// every other field empty; and, when the plan carries criteria, every
+// citation names a criterion of the plan, every criterion is cited by a
+// card, every card but the foundation cites one, and the integration
+// card's items are the criteria, one item per criterion by id. A plan
+// without criteria (a split's) passes the citation rules; a shape without
+// an integration card does not ask for criteria.
+func criteriaFindings(p Plan, shape policy.PlanShape) []string {
+	var out []string
+	if n := len(p.Criteria); n > maxCardAcceptance || (shape.Integration && n < 1) {
+		want := "at most " + strconv.Itoa(maxCardAcceptance)
+		if shape.Integration {
+			want = "1 to " + strconv.Itoa(maxCardAcceptance)
+		}
+		out = append(out, fmt.Sprintf("plan: %d criteria; want %s", n, want))
+	}
+	ids := map[string]int{}
+	for i, c := range p.Criteria {
+		if !criterionID.MatchString(c.ID) {
+			out = append(out, fmt.Sprintf("plan: criterion %d: id %q: lowercase letters, digits and underscores, 2 to 32", i+1, c.ID))
+		} else if ids[c.ID]++; ids[c.ID] == 2 {
+			out = append(out, fmt.Sprintf("plan: criterion id %s is used twice", c.ID))
+		}
+		if !slices.Contains(criterionKinds, c.Kind) {
+			out = append(out, fmt.Sprintf("plan: criterion %s: kind %q, want one of %v", c.ID, c.Kind, criterionKinds))
+			continue
+		}
+		add := func(format string, args ...any) {
+			out = append(out, fmt.Sprintf("plan: criterion "+c.ID+": "+format, args...))
+		}
+		switch c.Kind {
+		case CriterionTest:
+			if c.Test == "" || c.Inputs == "" || c.Expected == "" {
+				add("kind test names its test, its inputs and its expected numbers")
+			}
+			if c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
+				add("kind test carries no claim, prompt or evidence")
+			}
+		case CriterionInvariant:
+			if c.Test == "" {
+				add("kind invariant names its suite")
+			}
+			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
+				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")
+			}
+		case CriterionJudgement:
+			if c.Claim == "" || c.Inputs == "" || c.Prompt == "" {
+				add("kind judgement names its claim, its fixed inputs and its pinned prompt")
+			}
+			if c.Test != "" || c.Expected != "" || c.Evidence != "" {
+				add("kind judgement carries no test, expected numbers or evidence")
+			}
+		case CriterionHuman:
+			if c.Claim == "" || c.Evidence == "" {
+				add("kind human names its claim and the evidence the approver sees")
+			}
+			if c.Test != "" || c.Inputs != "" || c.Expected != "" || c.Prompt != "" {
+				add("kind human carries no test, inputs, expected numbers or prompt")
+			}
+		}
+		for _, f := range []struct{ name, value string }{
+			{"test", c.Test}, {"inputs", c.Inputs}, {"expected", c.Expected},
+			{"claim", c.Claim}, {"prompt", c.Prompt}, {"evidence", c.Evidence},
+		} {
+			if n := utf8.RuneCountInString(f.value); n > maxAcceptanceItem {
+				add("%s over %d characters", f.name, maxAcceptanceItem)
+			}
+		}
+	}
+	if len(p.Criteria) == 0 {
+		return out
+	}
+	for _, c := range p.Cards {
+		for i, it := range c.Acceptance {
+			if it.Criterion != "" && !slices.ContainsFunc(p.Criteria, func(k PlanCriterion) bool { return k.ID == it.Criterion }) {
+				out = append(out, fmt.Sprintf("plan: card %s: acceptance item %d cites %q, which is no criterion of the plan", c.Key, i+1, it.Criterion))
+			}
+		}
+	}
+	cited := citations(p)
+	for _, k := range p.Criteria {
+		if len(cited[k.ID]) == 0 {
+			out = append(out, fmt.Sprintf("plan: criterion %s is cited by no card", k.ID))
+		}
+	}
+	for _, c := range p.Cards {
+		if c.Role == RoleFoundation {
+			continue
+		}
+		if !slices.ContainsFunc(c.Acceptance, func(it PlanItem) bool { return it.Criterion != "" }) {
+			out = append(out, fmt.Sprintf("plan: card %s: no acceptance item cites a criterion", c.Key))
+		}
+	}
+	for _, c := range p.Cards {
+		if c.Role != RoleIntegration {
+			continue
+		}
+		counts := map[string]int{}
+		for i, it := range c.Acceptance {
+			switch {
+			case it.Criterion == "":
+				out = append(out, fmt.Sprintf("plan: card %s: acceptance item %d cites no criterion", c.Key, i+1))
+			default:
+				counts[it.Criterion]++
+			}
+		}
+		for _, k := range p.Criteria {
+			switch n := counts[k.ID]; {
+			case n == 0:
+				out = append(out, fmt.Sprintf("plan: card %s: criterion %s is cited by no item", c.Key, k.ID))
+			case n > 1:
+				out = append(out, fmt.Sprintf("plan: card %s: criterion %s is cited by %d items; want one", c.Key, k.ID, n))
+			}
 		}
 	}
 	return out
@@ -380,7 +581,11 @@ func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
 			add("directory %q: closed to agents, the template owns it", d)
 		}
 	}
-	for _, f := range acceptanceFindings(c.Acceptance) {
+	lines := make([]string, len(c.Acceptance))
+	for i, it := range c.Acceptance {
+		lines[i] = itemText(it)
+	}
+	for _, f := range acceptanceFindings(lines) {
 		add("%s", f)
 	}
 	return out
@@ -584,6 +789,13 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		}
 		b.WriteString("\n")
 	}
+	if len(p.Criteria) > 0 {
+		cited := citations(p)
+		b.WriteString("\n| # | id | kind | names | cited by |\n|---|---|---|---|---|\n")
+		for i, k := range p.Criteria {
+			fmt.Fprintf(&b, "| %d | %s | %s | %s | %s |\n", i+1, cell(k.ID), cell(k.Kind), cell(criterionNames(k)), cell(strings.Join(cited[k.ID], ", ")))
+		}
+	}
 	if len(p.Questions) > 0 {
 		b.WriteString("\nQuestions:\n")
 		for i, q := range p.Questions {
@@ -602,6 +814,31 @@ func QuestionLine(n int, q PlanQuestion) string {
 	return fmt.Sprintf("%d. %s (choices: %s)", n, q.Text, strings.Join(q.Choices, " / "))
 }
 
+// criterionNames is what criterion c names, the fields its kind uses
+// joined with ": ": the test, the inputs and the expected numbers for a
+// test, the suite for an invariant, the claim for a judgement or a human
+// criterion.
+func criterionNames(c PlanCriterion) string {
+	join := func(fields ...string) string {
+		var out []string
+		for _, f := range fields {
+			if f != "" {
+				out = append(out, f)
+			}
+		}
+		return strings.Join(out, ": ")
+	}
+	switch c.Kind {
+	case CriterionTest:
+		return join(c.Test, c.Inputs, c.Expected)
+	case CriterionInvariant:
+		return c.Test
+	case CriterionJudgement, CriterionHuman:
+		return c.Claim
+	}
+	return join(c.Test, c.Inputs, c.Expected, c.Claim, c.Prompt, c.Evidence)
+}
+
 // cardDirectories keys a plan card's directories line.
 const cardDirectories = "Directories (guidance, not a boundary)"
 
@@ -611,8 +848,8 @@ func cardFacts(c PlanCard) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %s\n", cardDirectories, cmp.Or(strings.Join(c.Directories, ", "), "none"))
 	b.WriteString("Acceptance:\n")
-	for _, a := range c.Acceptance {
-		fmt.Fprintf(&b, "- %s\n", a)
+	for _, it := range c.Acceptance {
+		fmt.Fprintf(&b, "- %s\n", itemText(it))
 	}
 	fmt.Fprintf(&b, "Size: %s\n", c.Size)
 	if c.Rung != "" {
@@ -644,8 +881,15 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"every card follows the repository's conventions. Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"summary": "a paragraph: what gets built and in which order", "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": ["..."], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`{"summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
+		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
+		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
+		"kind invariant names its suite as go test <suite> passes, for example go test ./..., and carries no inputs; " +
+		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
+		"kind human names a claim only a person settles, with the evidence the approver will see. " +
+		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
@@ -654,7 +898,11 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 			"Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list. "
 	}
 	if shape.Integration {
-		g += "The integration card turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. "
+		g += "The integration card turns the spec's acceptance tests into tests under acceptance/ and makes them pass, after every other card. " +
+			"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim. "
+	}
+	if shape.Minimum() == 1 {
+		g += "A change that fits one card answers one card, its own integration, citing every criterion. "
 	}
 	if shape.Foundation || shape.Integration {
 		g += "factoryd adds the foundation and integration edges itself: " +
@@ -664,7 +912,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 	}
 	return g + "title and brief: markdown, what to build and how it is checked. " +
 		"directories: paths relative to the repository's root, guidance for the card's agent; " +
-		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects. " +
+		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none. " +
 		"size: small, medium or large; anything bigger is two cards. " +
 		"questions: open points the spec leaves to the member; their answers come back to you with your last plan, " +
 		"and a plan with open questions cannot be accepted until they are answered. " +
@@ -895,6 +1143,25 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices)
 		SELECT $1, $2, i, q->>'text', q->'choices' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// PutPlanCatches stores revision's hole catches of one kind and finder,
+// the recording rule's ledger (the spec-intake concept, roadmap 285):
+// false when the revision holds them already, so an activity retry adds
+// nothing.
+func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
+	b, err := json.Marshal(details)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_catches (task_id, revision, kind, idx, finder, detail)
+		SELECT $1, $2, $3, i, $4, d FROM jsonb_array_elements_text($5::jsonb) WITH ORDINALITY AS a(d, i) ON CONFLICT DO NOTHING`,
+		id, revision, kind, finder, b)
 	if err != nil {
 		return false, err
 	}
@@ -1682,7 +1949,8 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 
 // askQuestions stores revision's questions of plan task t, sanitised as
 // the plan's comment is (a clicked choice is posted as the member's
-// comment), and records one question_asked row each when it stored them.
+// comment), records one question_asked row each when it stored them, and
+// writes them to the recording rule's ledger as the planner's catches.
 func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []PlanQuestion) error {
 	if len(qs) == 0 {
 		return nil
@@ -1695,6 +1963,13 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 		}
 	}
 	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
+		return err
+	}
+	texts := make([]string, len(asked))
+	for i, q := range asked {
+		texts[i] = q.Text
+	}
+	if _, err := r.store.PutPlanCatches(ctx, t.ID, revision, CatchQuestion, FinderPlanner, texts); err != nil {
 		return err
 	}
 	for i, q := range asked {
@@ -1938,6 +2213,21 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 	return err
 }
 
+// acceptedPlan is plan task parent's accepted plan revision, as stored;
+// child names the card the revision's findings name. A read that fails is
+// a terminal one.
+func (r *Runner) acceptedPlan(ctx context.Context, parent, child string) (Plan, error) {
+	rev, ok, err := r.store.PlanRevision(ctx, parent, 0)
+	if err != nil || !ok {
+		return Plan{}, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))
+	}
+	var p Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return Plan{}, terminalError("plan %s revision %d: %v", parent, rev.Revision, err)
+	}
+	return p, nil
+}
+
 // planOf is plan card t's section "The spec and the plan" (its plan's
 // issue text and the accepted plan's summary), its role and its plan
 // row's directories, and the pull request of a split's card; "" and none
@@ -1950,13 +2240,9 @@ func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []
 	if err != nil {
 		return "", "", nil, 0, err
 	}
-	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
-	if err != nil || !ok {
-		return "", "", nil, 0, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", t.Parent, t.ID)))
-	}
-	var p Plan
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return "", "", nil, 0, terminalError("plan %s revision %d: %v", t.Parent, rev.Revision, err)
+	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	if err != nil {
+		return "", "", nil, 0, err
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
