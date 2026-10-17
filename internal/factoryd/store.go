@@ -326,7 +326,8 @@ type Store interface {
 	// since since: the gateway booked one of its calls allowed.
 	ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error)
 	// CheckinSpent is what the task's check-in conversations spent on the
-	// card: every purpose checkin row of the task, a tool's call included.
+	// card: the call costs of the task's purpose checkin rows (spend_eur
+	// holds the task's running total at each row, not a per-row cost).
 	CheckinSpent(ctx context.Context, taskID string) (float64, error)
 	// CheckinCalls is how many calls the task's check-in conversations made
 	// on the card, every purpose checkin row of the task.
@@ -906,7 +907,7 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
 	var eur float64
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(spend_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
+		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
 		taskID, policy.PurposeCheckin).Scan(&eur)
 	return eur, err
 }

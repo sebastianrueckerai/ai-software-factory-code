@@ -2568,8 +2568,11 @@ func TestPGStoreModelAnswered(t *testing.T) {
 }
 
 // The check-in's spend and calls on a card: every purpose checkin row of
-// the task counts, a tool's call included; other kinds and other tasks
-// count not.
+// the task counts its calls, a tool's call among the calls but costing
+// nothing (the gateway books the task's running spend into spend_eur and
+// the call's own cost into call_cost_eur, so the share counts only
+// call_cost_eur); other kinds and other tasks count not. Hand-derived:
+// 0.02 + 0 + 0.03 = 0.05, not the running totals 0.20 + 0.20 + 0.25.
 func TestCheckinSpentAndCalls(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_checkin"))
@@ -2578,20 +2581,21 @@ func TestCheckinSpentAndCalls(t *testing.T) {
 	}
 	defer s.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
-		INSERT INTO audit (task_id, decision, reason, kind, tool, spend_eur, ts) VALUES
-		('a', 'allowed', '', 'checkin', '', 0.01, '2026-10-15 10:00:00Z'),
-		('a', 'allowed', '', 'checkin', 'grep', 0.02, '2026-10-15 10:01:00Z'),
-		('a', 'allowed', '', 'agent', '', 0.5, '2026-10-15 10:02:00Z'),
-		('b', 'allowed', '', 'checkin', '', 0.04, '2026-10-15 10:03:00Z')`); err != nil {
+		INSERT INTO audit (task_id, decision, reason, kind, tool, spend_eur, call_cost_eur, ts) VALUES
+		('a', 'allowed', '', 'checkin', '', 0.20, 0.02, '2026-10-17 03:52:00Z'),
+		('a', 'allowed', '', 'checkin', 'run', 0.20, NULL, '2026-10-17 03:52:04Z'),
+		('a', 'allowed', '', 'checkin', '', 0.25, 0.03, '2026-10-17 04:20:00Z'),
+		('a', 'allowed', '', 'agent', '', 0.60, 0.35, '2026-10-17 04:21:00Z'),
+		('b', 'allowed', '', 'checkin', '', 0.04, 0.04, '2026-10-17 04:22:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	eur, err := s.CheckinSpent(ctx, "a")
-	if err != nil || eur != 0.03 {
-		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.03, nil)", eur, err)
+	if err != nil || eur != 0.05 {
+		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.05, nil)", eur, err)
 	}
 	n, err := s.CheckinCalls(ctx, "a")
-	if err != nil || n != 2 {
-		t.Errorf("CheckinCalls(a) = (%v, %v), want (2, nil)", n, err)
+	if err != nil || n != 3 {
+		t.Errorf("CheckinCalls(a) = (%v, %v), want (3, nil)", n, err)
 	}
 }
 
