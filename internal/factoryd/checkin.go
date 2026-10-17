@@ -553,9 +553,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	calls, repairs := 0, 0
 	for {
 		if calls >= callsLeft {
-			const reason = "check-in call cap reached"
-			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
-			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
+			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
 		}
 		calls++
 		at := time.Now()

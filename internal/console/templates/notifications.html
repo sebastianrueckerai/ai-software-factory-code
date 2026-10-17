@@ -1,0 +1,30 @@
+{{template "head" .}}
+<h2>Notifications</h2>
+
+<section aria-labelledby="connections">
+<h3 id="connections">Connections</h3>
+{{if .TelegramName}}{{if .Code}}<p class="code">Open <a href="https://t.me/{{.TelegramName}}?start={{.Code}}" rel="noopener">Telegram</a> and tap Start to connect.</p>
+{{else}}<form method="post" action="/notifications/telegram/code" class="inline"><input type="hidden" name="csrf" value="{{.CSRF}}"><button type="submit">Connect Telegram</button></form>
+{{end}}{{end}}
+{{if .Discord}}<p><a href="/messengers/discord/start">Connect Discord</a></p>
+{{end}}
+{{if .Links}}<ul>
+{{range .Links}}<li>{{.Venue}} ({{.Address}})<form method="post" action="/notifications/disconnect" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="venue" value="{{.Venue}}"><button type="submit">Disconnect</button></form></li>
+{{end}}</ul>
+{{else}}<p>No connection yet.</p>
+{{end}}
+</section>
+
+<section aria-labelledby="levels">
+<h3 id="levels">Level per project</h3>
+<table>
+<caption>The level you set for each project you read, with the default of needs-you where the project pings you, else off.</caption>
+<thead><tr><th scope="col">Project</th><th scope="col">Now</th><th scope="col">Set</th></tr></thead>
+<tbody>
+{{range .Projects}}{{$p := .}}<tr><th scope="row">{{.Name}}</th><td>{{if .Level}}<strong>{{.Level}}</strong>{{else}}default: {{.Default}}{{end}}</td>
+<td><form method="post" action="/notifications/level" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><input type="hidden" name="project" value="{{.Name}}"><select name="level">{{range $l := $.Levels}}<option value="{{$l}}"{{if eq $l $p.Level}} selected{{end}}>{{$l}}</option>{{end}}</select> <button type="submit">Save</button></form></td></tr>
+{{else}}<tr><td colspan="3">No project you read.</td></tr>{{end}}
+</tbody>
+</table>
+</section>
+{{template "foot"}}

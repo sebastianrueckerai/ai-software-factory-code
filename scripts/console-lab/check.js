@@ -902,6 +902,30 @@ async function text(page) {
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
       if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      // Clear old (the sweep): a shrunk log holds the member's scroll over
+      // a background refresh, the sweep takes the settled rows from view,
+      // the open ask stays with its buttons, and the cleared line counts
+      const logEl = p.page.locator("#chat-log");
+      await logEl.evaluate((e) => { e.style.height = "220px"; });
+      await logEl.evaluate((e) => { e.scrollTop = 0; });
+      await p.page.evaluate(() => document.dispatchEvent(new CustomEvent("factoryevent", { detail: { kind: "task_ended" } })));
+      await p.page.waitForTimeout(700);
+      if ((await logEl.evaluate((e) => e.scrollTop)) > 40) fails.push("poke: a background refresh yanks the member's scroll to the newest rows");
+      const clearBtn = p.page.locator(".thead [data-clear]");
+      if (!(await clearBtn.count())) fails.push("poke: the head carries no Clear old");
+      else {
+        const openAsk = p.page.locator("#chat-log .msg.esc:not(.settled)");
+        if (!(await openAsk.count())) fails.push("poke: no open ask to keep over the sweep");
+        await clearBtn.click();
+        await p.page.waitForTimeout(700);
+        if (!(await openAsk.count())) fails.push("poke: the sweep took the open ask");
+        else if (!(await p.page.locator("#chat-answer").getByRole("button", { name: "Postgres" }).count()))
+          fails.push("poke: the open ask lost its answer row over the sweep");
+        const line = p.page.locator("#chat-log .chat-cleared");
+        if (!(await line.count()) || !(await line.innerText()).includes("cleared: 4 older messages"))
+          fails.push("poke: the cleared line does not count the four swept rows");
+        if ((await p.page.locator("#chat-log .msg").count()) !== 1) fails.push("poke: the log kept old rows over the sweep");
+      }
     }
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();

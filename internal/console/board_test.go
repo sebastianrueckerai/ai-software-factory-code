@@ -40,6 +40,20 @@ func TestTitleClause(t *testing.T) {
 	}
 }
 
+// A step's time reads as the gates table's start: seconds in UTC. A
+// stamp that does not parse keeps the wire's string, so the cell never
+// goes blank; the raw stamp stays for the cell's title.
+func TestEntryFormatsTheTimeLikeTheGates(t *testing.T) {
+	e := entry(map[string]any{"step": "checks", "time": "2026-10-17T12:41:47.048126987Z"})
+	if e.Time != "2026-10-17 12:41:47" || e.Raw != "2026-10-17T12:41:47.048126987Z" {
+		t.Errorf("entry = %q (raw %q), want 2026-10-17 12:41:47 with the raw stamp kept", e.Time, e.Raw)
+	}
+	e = entry(map[string]any{"step": "checks", "time": "later"})
+	if e.Time != "later" || e.Raw != "" {
+		t.Errorf("entry = %q (raw %q), want the unparsable time as it is", e.Time, e.Raw)
+	}
+}
+
 // The routines control's choice: within reads its period, 1 to 999 days
 // or hours; a number it does not take reads as 1, a unit as days; the
 // period is read with within alone, and week is no choice.

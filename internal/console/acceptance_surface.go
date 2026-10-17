@@ -997,6 +997,8 @@ func (a *AcceptanceRig) RenameConversation(context.Context, string, string, int6
 
 func (a *AcceptanceRig) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (a *AcceptanceRig) MarkCleared(context.Context, string, string, int64) error { return nil }
+
 func (a *AcceptanceRig) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {

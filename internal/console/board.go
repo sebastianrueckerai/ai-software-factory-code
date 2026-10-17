@@ -1184,6 +1184,7 @@ type boardData struct {
 	Query       string   // the filter as a URL query for the poll's hx-get
 	Writes      bool     // the viewer writes the shown project: its drawer and its stream's rows are theirs
 	Chat        bool     // the project agent's panel shows beside the five columns, its input to a writer
+	Messengers  bool     // the layout's notifications link
 	ToggleQuery string   // the filter with the other view
 	ClearQuery  string   // the filter without the find, the ×'s link (C13)
 	whole       []column // the columns before the find narrowed them, the status panel's
@@ -2061,7 +2062,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 func (c *Console) boardOf(r *http.Request, f boardFilter) (boardData, error) {
 	ctx := r.Context()
 	v, all, err := c.viewOf(r, f)
-	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r)}
+	d := boardData{User: v.user, CSRF: v.csrf, Factory: c.factoryWriter(r), Messengers: c.cfg.Messengers != nil}
 	if v.policyOK {
 		d.PolicyVersion, d.PolicyCommit, d.PolicyTreeURL = v.policy.ID, v.policy.Commit, c.configTree(v.policy.Commit)
 	}
@@ -2508,6 +2509,7 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64) string {
 
 type timelineEntry struct {
 	Time       string
+	Raw        string // Time as the timeline wrote it, the cell's title
 	Step       string
 	Detail     string
 	Reason     string
@@ -2535,6 +2537,9 @@ func (c *Console) readTimeline(ctx context.Context, taskID string) ([]map[string
 func entry(m map[string]any) timelineEntry {
 	e := timelineEntry{}
 	e.Time, _ = m["time"].(string)
+	if at, err := time.Parse(time.RFC3339, e.Time); err == nil {
+		e.Raw, e.Time = e.Time, at.UTC().Format("2006-01-02 15:04:05")
+	}
 	e.Step, _ = m["step"].(string)
 	e.Reason, _ = m["reason"].(string)
 	switch e.Step {
