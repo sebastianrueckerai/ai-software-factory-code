@@ -2661,6 +2661,27 @@ func TestTimelineShowsTheSupervisorsAction(t *testing.T) {
 	}
 }
 
+// The steps table reads its time as the gates table reads its start,
+// seconds in UTC, with the raw stamp as the cell's title; a stamp that
+// does not parse stays as it is on the wire.
+func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "work"})
+	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"session_start","time":"2026-10-17T12:41:47.048126987Z","attempt":1}
+{"step":"session_end","time":"not a time","outcome":"pushed"}
+`)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
+	for _, want := range []string{
+		`<td title="2026-10-17T12:41:47.048126987Z">2026-10-17 12:41:47</td>`,
+		`<td>not a time</td>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the steps table lacks %s", want)
+		}
+	}
+}
+
 // A roll's card sits in the human lane only when its merge decision is
 // the one remaining action (ruling 219): at a pending merge approval or
 // in a waiting-human state; while its checks or review run the status

@@ -119,6 +119,9 @@ type Chat interface {
 	OpenConversation(ctx context.Context, repository, login string, n int64) error
 	RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error)
 	MarkSeen(ctx context.Context, repository, login string, n int64) error
+	// Clear old sweeps the thread's old rows from the member's view: the
+	// marker rides the seen marker's table, the record keeps the rows
+	MarkCleared(ctx context.Context, repository, login string, n int64) error
 	StartQueued(ctx context.Context, repository, login string, id int64) error
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took

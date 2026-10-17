@@ -630,6 +630,8 @@ func (f *acceptChat) RenameConversation(context.Context, string, string, int64, 
 
 func (f *acceptChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
+func (f *acceptChat) MarkCleared(context.Context, string, string, int64) error { return nil }
+
 func (f *acceptChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
 func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {

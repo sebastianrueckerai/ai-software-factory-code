@@ -12,14 +12,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
@@ -175,6 +179,13 @@ func TestToolExecutes(t *testing.T) {
 func TestBriefWait(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
+	}
+	// start() binds the worker's one fixed message port; inside a live
+	// worker pod that port is the pod's own, held for the session
+	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)); err != nil {
+		t.Skip("the worker's message port is held: " + err.Error())
+	} else {
+		ln.Close()
 	}
 	ready := func(t *testing.T) {
 		t.Helper()

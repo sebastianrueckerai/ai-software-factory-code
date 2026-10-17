@@ -161,6 +161,8 @@ console.log(JSON.stringify({
     decider: "assisted level · started by the agent", choices: ["Open the card"]}),
   compacted: chatView.threadHTML([{id: 1, role: "user", content: "a1", at: "2026-10-11T09:30:01Z"}, {id: 2, role: "assistant", content: "a2", at: "2026-10-11T09:30:02Z"},
     {id: 3, role: "user", content: "b1", at: "2026-10-11T09:31:00Z"}], "sebastian", [], {summary: "the cache was fixed", summary_upto: 2}),
+  cleared: chatView.threadHTML([{id: 3, role: "user", content: "b1", at: "2026-10-11T09:31:00Z"}], "sebastian", [], {cleared: 2}),
+  clearedOne: chatView.threadHTML([{id: 3, role: "user", content: "b1", at: "2026-10-11T09:31:00Z"}], "sebastian", [], {cleared: 1}),
   escalation: chatView.factoryHTML({id: 8, role: "assistant", kind: "escalation", content: "Which store?", at: "2026-10-11T09:13:00Z",
     choices: ["Postgres", "SQLite"]}),
   palette: JSON.stringify([chatView.paletteOf(cmds, "/"), chatView.paletteOf(cmds, "/c"), chatView.paletteOf(cmds, "/x"), chatView.paletteOf(cmds, "/c x"),
@@ -230,7 +232,8 @@ console.log(JSON.stringify({
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
-			`<span class="tacts"><button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
+			`<span class="tacts"><button type="button" data-clear title="Hide the old rows from view; the record keeps them">Clear old</button>` +
+			`<button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
 		{"pendingRow", `[1,1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
@@ -255,6 +258,10 @@ console.log(JSON.stringify({
 			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">a1</p></div>` +
 			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p><div class="said"><p>a2</p></div></div></details>` +
 			`<div class="msg sum"><span class="av" aria-hidden="true">≡</span><p class="who"><span class="name">summary</span> <time>10-11 09:30Z</time></p><div class="said"><p>the cache was fixed</p></div></div>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
+		{"cleared", `<p class="meta chat-cleared">cleared: 2 older messages out of view</p>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
+		{"clearedOne", `<p class="meta chat-cleared">cleared: 1 older message out of view</p>` +
 			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p><p class="said">b1</p></div>`},
 		{"escalation", `<div class="msg agent poke esc" data-message="8"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:13Z</time> <span class="esc-l">needs you</span></p>` +
 			`<div class="esc-b"><div class="said"><p>Which store?</p></div></div></div>`},
