@@ -614,18 +614,34 @@ var chatView = (function () {
     if (b && Number(b.dataset.openThread) !== open) load(Number(b.dataset.openThread));
   });
   // openCard opens a card's drawer over the board and lights the card on
-  // the board, so the eye finds it where the chat named it
-  function openCard(id) {
-    location.hash = "#card=" + encodeURIComponent(id);
-    var lit = document.querySelectorAll("#board [data-card=\"" + CSS.escape(id) + "\"]");
+  // the board, so the eye finds it where the chat named it. The scroll to
+  // the card can touch off a lane's Load more, whose board swap drops the
+  // light, so every board swap lights it again inside its window
+  var litCard = null, litUntil = 0;
+  function lightBoard(scroll) {
+    if (!litCard || Date.now() > litUntil) return;
+    var lit = document.querySelectorAll("#board [data-card=\"" + CSS.escape(litCard) + "\"]");
     for (var i = 0; i < lit.length; i++) {
       lit[i].classList.remove("lit");
       void lit[i].offsetWidth;
       lit[i].classList.add("lit");
-      lit[i].scrollIntoView({block: "nearest", inline: "nearest", behavior: "smooth"});
-      (function (el) { setTimeout(function () { el.classList.remove("lit"); }, 2600); })(lit[i]);
+      if (scroll) lit[i].scrollIntoView({block: "nearest", inline: "nearest", behavior: "smooth"});
     }
   }
+  function openCard(id) {
+    location.hash = "#card=" + encodeURIComponent(id);
+    litCard = id;
+    litUntil = Date.now() + 2600;
+    lightBoard(true);
+    setTimeout(function () {
+      litCard = null;
+      var lit = document.querySelectorAll("#board .lit");
+      for (var i = 0; i < lit.length; i++) lit[i].classList.remove("lit");
+    }, 2600);
+  }
+  document.addEventListener("htmx:afterSwap", function (e) {
+    if (e.target && (e.target.id === "board" || e.target.closest("#board"))) lightBoard(false);
+  });
   // #n in the model's text opens card n's drawer over the board
   document.addEventListener("click", function (e) {
     var ref = e.target.closest("a.cardref");
