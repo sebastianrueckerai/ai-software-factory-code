@@ -77,8 +77,8 @@
 
 {{define "escalation-actions"}}
 {{if .Card.Question}}{{with .Card.Question}}
-<p class="ask">{{.Ask}}</p>
-<p class="why">{{.Why}}</p>
+<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
+{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
 <div class="choices" role="group" aria-label="Answer with one click">
 {{range .Choices}}{{if eq .Value "close"}}
 <form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" hx-target="#board" hx-swap="outerHTML" class="inline close" hx-confirm="Close #{{$.Card.IssueNumber}}? Its issue closes as you, and the card ends.">
@@ -90,12 +90,12 @@
 <input type="hidden" name="value" value="{{.Value}}">
 <button type="submit" aria-label="{{.Label}}{{if or (eq .Value "park") (eq .Value "keep_waiting")}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>
-<details class="fold"><summary>What each answer does</summary>
-<p class="info">{{.Info}}</p>
+{{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>
+<div class="info">{{markup .Info}}</div>
 {{if .Recommendation}}<p class="recommendation">Recommendation{{with .Source}} ({{.}}){{end}}: {{.Recommendation}}</p>{{end}}
-{{with $.Card.Reason}}<pre class="reason detail">{{.}}</pre>{{end}}
 </details>
-{{end}}{{else}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
+{{if or .Why $.Card.Reason}}<details class="fold"><summary>The raw text, for copying</summary>{{if ne .Why $.Card.Reason}}{{with .Why}}<pre class="reason detail">{{.}}</pre>{{end}}{{end}}{{with $.Card.Reason}}<pre class="reason detail">{{.}}</pre>{{end}}</details>{{end}}
+{{end}}{{end}}{{else}}{{if .Card.Reason}}<p class="reason">{{.Card.Reason}}</p>{{end}}
 {{if .Card.IssueNumber}}{{with .Card.Choices}}<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range .}}<form method="post" action="/tasks/{{$.Card.ID}}/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
@@ -179,10 +179,12 @@
 {{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
 {{end}}</dl>{{end}}
 
-{{define "merge-brief"}}<p class="need-line"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
-{{range $c := .Merge.Review.Criteria}}{{if eq $c.Kind "human"}}<p class="need-line">Criterion {{$c.Criterion}}: yours to judge at this merge. {{$c.Evidence}}</p>
+{{define "merge-brief"}}{{with .Merge.WhyHuman}}<p class="why">{{range $i, $w := .}}{{if $i}}; {{end}}{{$w}}{{end}}</p>
+{{end}}<p class="info"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
+{{range .Merge.Review.Findings}}<p class="finding">{{.}}</p>
+{{end}}{{range $c := .Merge.Review.Criteria}}{{if eq $c.Kind "human"}}<p class="need-line">Criterion {{$c.Criterion}}: yours to judge at this merge. {{$c.Evidence}}</p>
 {{end}}{{end}}
-{{with .Merge.Recommendation}}<p class="need-line"><b>Recommendation</b> {{.}}</p>
+{{with .Merge.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>
 {{end}}{{end}}
 
 {{define "criteria"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Criteria gap</a>{{else}}Criteria gap{{end}} {{if .IssueURL}}<a href="{{.IssueURL}}">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>

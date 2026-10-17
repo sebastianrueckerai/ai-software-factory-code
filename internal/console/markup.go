@@ -22,12 +22,12 @@ var md = goldmark.New()
 
 // markup is the writer's text as HTML. On an error it returns the text
 // escaped, so a broken document never loses its words.
-func markup(text string) template.HTML {
-	src := []byte(text)
+func markup(raw string) template.HTML {
+	src := []byte(raw)
 	doc := md.Parser().Parse(text.NewReader(src))
 	// a question carries no links but a reader's: keep a target only
 	// when it names a page the member could actually visit
-	ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+	ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) { // #nosec G104 -- the walker never returns an error, so Walk cannot fail
 		if link, ok := n.(*ast.Link); ok && entering && !markupSafeTarget(string(link.Destination)) {
 			link.Destination = nil
 		}
@@ -35,9 +35,9 @@ func markup(text string) template.HTML {
 	})
 	var b bytes.Buffer
 	if err := md.Renderer().Render(&b, src, doc); err != nil {
-		return template.HTML(template.HTMLEscapeString(text))
+		return template.HTML(template.HTMLEscapeString(raw)) // #nosec G203 -- escaped above, the words never leave
 	}
-	return template.HTML(b.String())
+	return template.HTML(b.String()) // #nosec G203 -- goldmark at its defaults drops raw HTML and the walk strips unsafe link targets
 }
 
 // markupSafeTarget is a link target a question may carry: none, a
