@@ -70,6 +70,14 @@ const noAgent = "factoryd opened this pull request and no agent works on it: the
 // AtSessionCap: escalation is the card of a task at its session cap.
 func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
 
+// checkinSpendStop heads the card of a check-in stopped on its spend
+// above policy: the card's check-in share is spent.
+const checkinSpendStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
+
+// AtCheckinSpend: escalation is the card of a check-in's spend stop, whose
+// answer grants the card one more check-in share (versionCheckinGrant).
+func AtCheckinSpend(escalation string) bool { return strings.HasPrefix(escalation, checkinSpendStop) }
+
 // atGateStop: escalation is the gate supervisor's stop of one of the
 // verification's gates (actOnGate), not of a session or the screening.
 func atGateStop(escalation string) bool {

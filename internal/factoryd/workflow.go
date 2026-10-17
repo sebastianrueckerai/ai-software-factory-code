@@ -519,6 +519,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.plannerRetry = workflow.GetVersion(ctx, "planner-retry", workflow.DefaultVersion, versionPlannerRetry)
 	run.approvalPending = workflow.GetVersion(ctx, "approval-pending", workflow.DefaultVersion, versionApprovalPending)
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
+	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1017,11 +1018,20 @@ const (
 	// back as findings, as it did.
 	versionApprovalPending workflow.Version = 1
 	// versionCriteriaGate (change id "criteria-gate", roadmap 287): the
-	// approval stage runs the criteria gate once before its request, on
-	// the plan's integration card alone (the activity decides which card
+	// approval stage runs the criteria gate once before its request, on the
+	// plan's integration card alone (the activity decides which card
 	// is one); the criteria's findings go on the approval card, for the
 	// human. A run from before asks its approval without the gate.
 	versionCriteriaGate workflow.Version = 1
+	// versionCheckinGrant (change id "checkin-grant", issue 959): the
+	// answer to a check-in's spend stop grants the card one more share of
+	// the check-in budget beside its attempt (TaskUsage.ExtraCheckin
+	// widens the runner's share), so a long card stops once per human
+	// answer and not once per check-in moment; the call cap and the card's
+	// own budget stay the caps they were. A run from before the change
+	// buys the attempt alone and its next check-in moment stops the card
+	// again.
+	versionCheckinGrant workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1125,6 +1135,7 @@ type taskRun struct {
 	plannerRetry      workflow.Version // a used-up planner gets one fresh session (versionPlannerRetry)
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
+	checkinGrant      workflow.Version // the answer to a check-in spend stop grants a share (versionCheckinGrant)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1429,6 +1440,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
+			case AtCheckinSpend(st.Question):
+				t.grantCheckin(&u, true)
+				buy()
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
 				// here from the first stage, change requests back to the agent
@@ -1750,6 +1764,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
+			t.grantCheckin(&u, res.CheckIn.ReasonKind == CheckSpend && res.CheckIn.Reason == CheckinShareSpent)
 			buy()
 			continue
 		case OutcomeCheckinDropped:
@@ -2113,6 +2128,20 @@ func (t *taskRun) sessionAnswered(res SessionResult, began time.Time, attempt in
 func (t *taskRun) grant(u *TaskUsage) {
 	u.ExtraAttempts++
 	t.grantTime(u)
+}
+
+// grantCheckin is the share of the check-in budget an answer to its spend
+// stop buys beside the attempt (versionCheckinGrant, issue 959): one more
+// of the policy's CheckinShareOf widths, so the stretch the answer pays
+// for can run its own check-in moments and a long card stops once per
+// human answer, not once per check-in moment. The card's own budget and
+// the check-in call cap stay the caps they were; an answer to the call
+// cap's stop buys nothing here. The usage is recorded with the attempt
+// the same answer buys.
+func (t *taskRun) grantCheckin(u *TaskUsage, share bool) {
+	if share && t.checkinGrant >= versionCheckinGrant {
+		u.ExtraCheckin++
+	}
 }
 
 // grantTime is an answer's agent time: when less than answerTime of agent

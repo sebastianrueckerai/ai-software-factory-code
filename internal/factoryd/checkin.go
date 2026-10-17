@@ -61,6 +61,16 @@ const (
 	CheckAccess       = "access_factory_lacks"
 )
 
+// The two reasons a CheckSpend stop carries: the share of the card's
+// budget the check-in may spend is spent, or its calls per card ran out.
+// A human's answer to the share stop grants the card one more share of
+// the check-in budget (versionCheckinGrant); the call cap's answer buys
+// the next attempt alone and stops at the same cap again.
+const (
+	CheckinShareSpent = "the check-in's share of the budget is spent"
+	CheckinCallCapped = "check-in call cap reached"
+)
+
 // CheckFinding is one finding the check-in judges: its text exactly as the
 // review, the session's stop lines or a change request raised it, where it
 // came from, and how many earlier check-ins confirmed or dropped it. Its
@@ -547,9 +557,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	calls, repairs := 0, 0
 	for {
 		if calls >= callsLeft {
-			const reason = "check-in call cap reached"
-			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
-			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, CheckinCallCapped
+			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinCallCapped, Record: rec}
 		}
 		calls++
 		at := time.Now()

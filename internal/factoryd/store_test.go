@@ -1293,7 +1293,7 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckin: 1}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
