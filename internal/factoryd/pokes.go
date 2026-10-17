@@ -260,7 +260,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
 	case EventChatBudgetSpent:
 		budget, _ := e.Detail["budget_eur"].(float64)
-		m.Content = fmt.Sprintf("The chat's monthly budget of €%.2f is spent: the pulse and the chat stand until it is raised (Fund the chat on the board) or the month turns.", budget)
+		m.Content = fmt.Sprintf("The chat's monthly budget of €%.2f is spent: the chat stands until it is raised (Fund the chat on the board) or the month turns.", budget)
 	case EventRoutineRan:
 		if str("poke") == "" {
 			return m, false

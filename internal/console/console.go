@@ -237,8 +237,6 @@ type Config struct {
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat
 	Operator *factoryd.OperatorModel
-	// Pulses are the projects' pulses (factoryd.PGStore); nil shows none.
-	Pulses Pulses
 	// Notes are the projects' scratchpads (factoryd.PGStore); nil: the
 	// chat's notes tools say there is none.
 	Notes Notes
@@ -295,6 +293,11 @@ type Console struct {
 	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
 	// default true), and the second gets 400, which deletes the row.
 	refreshMu sync.Mutex
+	// chatAsks is when each chat task's budget-spent ask last went out
+	// (chatAsk): repeats wait for chatAskWait, so a turn on a spent
+	// budget counts on the inbox's row instead of writing it anew.
+	chatAsks   map[string]time.Time
+	chatAsksMu sync.Mutex
 }
 
 // writerLists are each project's writers by repository and the factory's
@@ -366,7 +369,6 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /routines/{project}/{name}/drawer", c.routineDrawer, "", "a routine's drawer: a fragment of the board page, whose tool is routines"},
 		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
 		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
-		{"GET /projects/{name}/pulse", c.pulseGet, "", "the pulse sentence: every turn's starting context carries it"},
 		{"GET /projects/{name}/docs/{path...}", c.docRead, "", "the drawer's document read: read_doc opens the same document to the agent"},
 	}, nil
 }

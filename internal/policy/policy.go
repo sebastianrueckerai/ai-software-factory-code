@@ -826,7 +826,6 @@ const (
 	PurposeGateSupervisor = "gate-supervisor"
 	PurposeAudit          = "audit"
 	PurposeOperator       = "operator"
-	PurposePulse          = "pulse"
 	// PurposeCompact is a chat thread's compaction (roadmap 239): one
 	// cheap call that summarises the thread before its kept tail.
 	PurposeCompact = "compact"
@@ -836,9 +835,10 @@ const (
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposePulse, PurposeCompact, PurposeCheckin}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin}
 
-// PulseModel is the LiteLLM alias of the pulse's calls (purpose pulse).
+// PulseModel is the LiteLLM alias of a chat thread's compaction (purpose
+// compact), its name a leftover of the pulse band it once served.
 const PulseModel = "pulse"
 
 // ToolCap caps a paid tool per task; a free tool carries none.
@@ -1168,19 +1168,19 @@ func (d Document) AllowsModel(classes []string, model string) bool {
 }
 
 // ClassChat is the capability of a project's chat task, which no policy
-// class may take: its models are the operator and the pulse purposes'.
+// class may take: its models are the operator's and the compaction's.
 const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's and the pulse's is
+// project agent's (operator) is the chat block's and the compaction's is
 // PulseModel, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator || purpose == PurposePulse || purpose == PurposeCompact {
+	if purpose == PurposeOperator || purpose == PurposeCompact {
 		switch {
 		case !slices.Contains(classes, ClassChat):
 			return ""
-		case purpose == PurposePulse || purpose == PurposeCompact:
+		case purpose == PurposeCompact:
 			return PulseModel
 		}
 		return d.ChatOf(ProjectConfig{}).Model

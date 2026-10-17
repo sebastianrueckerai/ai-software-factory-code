@@ -1,8 +1,7 @@
 {{template "head" .}}
 {{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
-{{if .Status.Project}}<section id="pulse" class="status{{if and .Pulse .Pulse.Prominent}} prominent{{end}}" aria-label="Pulse">
-{{with .Pulse}}<div class="pulse-row"><span class="pulse-sign"{{if not .Prominent}} hidden{{end}} aria-hidden="true">⚠</span><p class="pulse-text"><span class="pulse-say">{{.Sentence}}</span><span class="typing pulse-typing" hidden title="the pulse recomputes"><i></i><i></i><i></i></span></p></div>
-{{end}}<div id="status-line">{{template "status" .}}</div>
+{{if .Status.Project}}<section class="status" aria-label="Status">
+<div id="status-line">{{template "status" .}}</div>
 </section>
 {{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
 {{template "chat" .}}{{template "board" .}}
@@ -46,7 +45,7 @@
 <h2 id="keys-title">Keys</h2>
 <dl>
 <dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>
-<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, the status in detail, or this list</dd>
+<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, or this list</dd>
 <dt><kbd>?</kbd></dt><dd>this list</dd>
 <dt><kbd>f</kbd></dt><dd>find on the board: a word or a ref, or <code>plan:558</code>, <code>stage:verifying</code>, <code>is:failed</code> (blocked, stale, provider, near), <code>by:sebastian</code>, <code>model:coding-cheap</code>; <kbd>Escape</kbd> in the box clears it</dd>
 <dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>in the document's editor: save the draft as one commit on master</dd>

@@ -72,8 +72,8 @@ h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
 p { margin: 0 0 8px; }
 
 /* panels: a thin border and the four 7 px corner marks */
-.marks, .column, .pulse, .chat, .drawer, .overlay-box { position: relative; }
-.marks::after, .column::after, .pulse::after, .chat::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
+.marks, .column, .chat, .drawer, .overlay-box { position: relative; }
+.marks::after, .column::after, .chat::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
   -webkit-mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s));
           mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s)); }
 
@@ -605,29 +605,13 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .col-x:hover { color: var(--text); }
 .switch select { height: 28px; max-width: 240px; text-overflow: ellipsis; }
 
-/* the pulse band: one panel with the sentence at 20 px, the instrument
-   strip under it, and the bullets and the status in detail behind the
-   band's disclosure; prominent with the amber rule, tint and sign */
-.status { margin: 10px 12px 0; background: var(--bg-panel); border: 1px solid var(--line-strong); flex: none; cursor: pointer; }
+/* the status band: one panel with the instrument strip under it and the
+   status in detail (the panel) under that */
+.status { margin: 10px 12px 0; background: var(--bg-panel); border: 1px solid var(--line-strong); flex: none; }
 .status::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
   -webkit-mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s));
           mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s)); }
-.status:hover .pulse-row, .status:hover .strip { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
-.pulse-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
-.status.prominent .pulse-row { background: linear-gradient(90deg, color-mix(in srgb, var(--need) 11%, transparent), color-mix(in srgb, var(--need) 3%, transparent) 70%, transparent); box-shadow: inset 3px 0 0 var(--need); }
-.pulse-sign { color: var(--need-text); font-size: 19px; line-height: 1; }
-.pulse-text { flex: 1; min-width: 0; margin: 0; font-size: 20px; font-weight: 500; line-height: 26px; letter-spacing: -.012em; }
-.status:not(.prominent) .pulse-text { color: var(--text-muted); font-weight: 400; }
-.pulse-bullets { margin: 0; padding: 10px 16px 10px 46px; border-top: 1px solid var(--line); list-style: none; color: var(--text-muted); font-size: 13px; }
-.status:not(.prominent) .pulse-bullets { padding-left: 30px; }
-.pulse-bullets li { position: relative; padding: 2px 0; }
-.pulse-bullets li::before { content: ""; position: absolute; left: -14px; top: 11px; width: 6px; height: 1px; background: var(--text-faint); }
-.typing { display: inline-flex; gap: 4px; align-items: center; height: 1em; vertical-align: middle; }
-.pulse-typing { margin-left: 10px; height: auto; }
-.typing i { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: step 1.1s infinite; }
-.typing i:nth-child(2) { animation-delay: .18s; }
-.typing i:nth-child(3) { animation-delay: .36s; }
-@keyframes step { 0%, 60%, 100% { opacity: .25; } 30% { opacity: 1; } }
+.status:hover .strip { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
 /* the strip: cells split by hairlines, each a mono numeral and a word */
 .strip { display: flex; align-items: stretch; min-height: 36px; border-top: 1px solid var(--line); }
 .cell { display: flex; align-items: center; gap: 7px; padding: 0 16px; border-left: 1px solid var(--line); color: var(--text-muted); font-size: 13px; white-space: nowrap; text-decoration: none; font-family: var(--font-ui); }
@@ -660,12 +644,6 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .pct { font: 12px var(--font-mono); color: var(--text-muted); min-width: 4ch; }
 .cell.routine, .cell.gh { margin-left: auto; }
 .cell.routine + .cell.gh { margin-left: 0; }
-.cell.xp { margin: 0; padding: 0 14px; height: auto; border: 0; border-left: 1px solid var(--line); border-radius: 0; background: none; color: var(--text-muted); }
-.cell.gh + .cell.xp { margin-left: 0; }
-.cell.xp:not(.cell.gh + .cell.xp, .cell.routine + .cell.xp) { margin-left: auto; }
-.cell.xp:hover { color: var(--text); background: var(--bg-hover); border-color: var(--line); }
-.cell.xp svg { width: 14px; height: 14px; transition: transform .15s; }
-.strip.xp-open .cell.xp svg { transform: rotate(180deg); }
 /* the status in detail: four quiet columns split by hairlines */
 .sp { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.2fr) minmax(0, 1fr) minmax(0, 1fr); border-top: 1px solid var(--line); cursor: default; }
 .sp > section { min-width: 0; padding: 10px 16px 12px; border-left: 1px solid var(--line); }
@@ -912,16 +890,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .switch { flex: 1; min-width: 0; }
   .switch select { width: 100%; max-width: none; }
   .status { margin: 10px 12px 0; }
-  .pulse-row { align-items: flex-start; flex-wrap: wrap; gap: 8px 10px; padding: 12px 14px; }
-  .pulse-sign { margin-top: 3px; }
-  .pulse-text { flex-basis: calc(100% - 40px); font-size: 17px; }
-  .pulse-bullets { padding-left: 42px; }
   .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
   .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
   .cell.needs.on { background: color-mix(in srgb, var(--need) 10%, var(--bg-panel)); }
   .cell.spend { flex-basis: 100%; }
   .cell.spend .gauge { flex: 1; width: auto; }
-  .cell.xp { flex: 0 0 auto; margin-left: auto; }
   .sp { grid-template-columns: 1fr; }
   .sp > section { border-left: 0; border-top: 1px solid var(--line); }
   .sp > section:first-child { border-top: 0; }
@@ -1178,5 +1151,4 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .cursor { display: none; }
-  .typing i { animation: none; opacity: .7; }
 }

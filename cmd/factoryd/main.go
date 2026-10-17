@@ -565,7 +565,6 @@ func main() {
 			return t.IssueNumber, err
 		},
 		Operator: operator,
-		Pulses:   store,
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo
@@ -580,7 +579,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("console: %v", err)
 	}
-	go (&factoryd.Pulser{Store: store, Bus: eventBus, Model: operator, Context: consoleHandler.PulseContext}).Run(ctx)
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer

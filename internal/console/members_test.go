@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -19,6 +20,18 @@ import (
 // (sf/code) written by alice and controller, project demo (demo/demo)
 // written by bob, the policy's approvers [alice] and demo's file's [bob];
 // demo-app's file names none, so it keeps the policy's.
+
+// readerForgejo shows the member repository sf/code, as Forgejo does a
+// repository they read.
+type readerForgejo struct{ http.RoundTripper }
+
+func (f readerForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code" {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(`{"full_name":"sf/code"}`)), Request: r}, nil
+	}
+	return f.RoundTripper.RoundTrip(r)
+}
+
 func members(r *rig) {
 	r.writers.users = []string{"alice", "controller"}
 	r.writers.others = map[string][]string{"demo/demo": {"bob"}}

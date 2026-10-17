@@ -212,7 +212,8 @@ func TestStatusLineFigures(t *testing.T) {
 		if start < 0 {
 			t.Fatalf("board%s has no status strip", query)
 		}
-		return body[start : start+strings.Index(body[start:], `<button type="button" class="cell xp"`)]
+		return body[start : start+strings.Index(body[start:], `</div>
+<div class="sp"`)]
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
 	gauge := func(pct int) string {
@@ -490,7 +491,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 		`<button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button>`,
 		`<div id="keys" class="overlay" role="dialog" aria-modal="true" aria-labelledby="keys-title" hidden>`,
 		`<dt><kbd>w</kbd></dt><dd>the wide view, the board across the full width with the chat hidden, or back</dd>`,
-		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, the status in detail, or this list</dd>`,
+		`<dt><kbd>Escape</kbd></dt><dd>close the card's drawer, the document, or this list</dd>`,
 		`<dt><kbd>?</kbd></dt><dd>this list</dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board page lacks %s", want)
@@ -499,7 +500,7 @@ func TestKeysAndDrawerOnThePage(t *testing.T) {
 	for path, wants := range map[string][]string{
 		"/static/console.js": {`if (!document.getElementById("board") || e.ctrlKey || e.metaKey || e.altKey) return;`, `e.key === "Escape"`,
 			`e.key === "w"`, `e.key === "?"`, `window.addEventListener("hashchange", showDrawer);`, `"/drawer"`,
-			`if (el.querySelector("details[open]:not(.pulse-fold)")) return true;`},
+			`if (el.querySelector("details[open]")) return true;`},
 		"/static/theme.js": {`localStorage.getItem("view") !== "wide"`, `location.replace("/?" + q + location.hash);`},
 	} {
 		js := r.do(httptest.NewRequest(http.MethodGet, path, nil)).Body.String()
@@ -1358,22 +1359,9 @@ func (a *countingApprovals) ApprovalRequests(ctx context.Context, status string)
 	return a.fakeApprovals.ApprovalRequests(ctx, status)
 }
 
-// countingPulses is a pulse store that counts its reads.
-type countingPulses struct {
-	mu    sync.Mutex
-	reads int
-}
-
-func (p *countingPulses) NewestPulse(context.Context, string) (factoryd.Pulse, bool, error) {
-	p.mu.Lock()
-	p.reads++
-	p.mu.Unlock()
-	return factoryd.Pulse{}, false, nil
-}
-
 // A page of finished cards reads only its column: the column's page after
-// the cursor, not the open cards, the approval requests or the pulse a
-// whole board read takes (roadmap 270).
+// the cursor, not the open cards or the approval requests a whole board
+// read takes (roadmap 270).
 func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1385,9 +1373,9 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 			Objective: "a done card", CreatedAt: now.Add(-2 * time.Hour), FinishedAt: &at}})
 	}
 	r.tasks.mu.Unlock()
-	tasks, approvals, pulses := &countingTasks{fakeTasks: r.tasks}, &countingApprovals{fakeApprovals: r.approvals}, &countingPulses{}
+	tasks, approvals := &countingTasks{fakeTasks: r.tasks}, &countingApprovals{fakeApprovals: r.approvals}
 	cfg := r.c.cfg
-	cfg.Tasks, cfg.Approvals, cfg.Pulses = tasks, approvals, pulses
+	cfg.Tasks, cfg.Approvals = tasks, approvals
 	page, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -1410,9 +1398,6 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 	if approvals.reads != 0 {
 		t.Errorf("the page read the approval requests %d time(s)", approvals.reads)
 	}
-	if pulses.reads != 0 {
-		t.Errorf("the page read the pulse %d time(s)", pulses.reads)
-	}
 	if n := tasks.reads["FinishedTasks"]; n != 1 {
 		t.Errorf("the page read its column %d time(s), want 1", n)
 	}
@@ -1420,8 +1405,8 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 	if rec := get("/?project=ai-software-factory-code"); rec.Code != http.StatusOK {
 		t.Fatalf("the board = %d", rec.Code)
 	}
-	if tasks.reads["BoardTasks"] != 1 || approvals.reads != 1 || pulses.reads != 1 {
-		t.Errorf("the board read the open cards %d, the approvals %d and the pulse %d time(s), want 1 each",
-			tasks.reads["BoardTasks"], approvals.reads, pulses.reads)
+	if tasks.reads["BoardTasks"] != 1 || approvals.reads != 1 {
+		t.Errorf("the board read the open cards %d and the approvals %d time(s), want 1 each",
+			tasks.reads["BoardTasks"], approvals.reads)
 	}
 }

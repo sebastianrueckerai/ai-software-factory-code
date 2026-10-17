@@ -106,10 +106,21 @@ const EventQuestionAsked = "question_asked"
 const EventQuestionWithdrawn = "question_withdrawn"
 
 // EventChatBudgetSpent is factoryd's record of a project's chat task
-// reaching its monthly budget, which stands the pulse and the chat until
-// a raise (the console's Fund the chat) or the month's turn: detail
-// {"budget_eur"}. The poke it raises asks at the needs-you level.
+// reaching its monthly budget, which stands the chat until a raise (the
+// console's Fund the chat) or the month's turn: detail {"budget_eur"}.
+// The poke it raises asks at the needs-you level.
 const EventChatBudgetSpent = "chat_budget_spent"
+
+// The pulse's own events, historical kinds: the pulse band the console
+// once showed under a project's status line had a cheap model write it,
+// and a computation started (pulse_computing) and ended (pulse, detail:
+// sentence, bullets, prominent). No code writes them since the band's
+// removal, but rows live on in the table, and a project's events list
+// leaves them out.
+const (
+	EventPulseComputing = "pulse_computing"
+	EventPulse          = "pulse"
+)
 
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is
@@ -137,7 +148,7 @@ type Events interface {
 	Record(ctx context.Context, e Event) (int64, error)
 	// ProjectEvents lists repository's events newest first: those with an
 	// id above after (0 = every event), at most limit, the pulse's own
-	// aside.
+	// (historical) kinds aside.
 	ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	// TaskEvents lists task id's events newest first, at most limit.
 	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
