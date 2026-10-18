@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -207,7 +208,7 @@ func TestMergeFaceWhispers(t *testing.T) {
 	}
 }
 
-// The pulse's board read runs as no member (PulseContext's session-less
+// The heartbeat's board read runs as no member (PulseState's session-less
 // turn): a pending red merge request on the board once made it read the
 // head's checks as that missing member — a panic that killed factoryd
 // and, the card still pending, crash-looped it on every pulse, the
@@ -220,12 +221,20 @@ func TestPulseRedMergeRequestKeepsTheRedFace(t *testing.T) {
 		Spec: json.RawMessage(`{"risk_class":"normal","red_checks":true,"head_sha":"deadbeef",` +
 			`"verdict_summary":"the change is safe","recommendation":"Merge it.","why_human":["a human decides this merge"]}`),
 	})
-	text, waiting, err := r.c.PulseContext(t.Context(), projectRows()[0])
+	_, waiting, err := r.c.PulseState(t.Context(), projectRows()[0])
 	if err != nil {
 		t.Fatalf("FIX MISSING: the pulse over a red merge request dies: %v", err)
 	}
 	if !waiting {
 		t.Fatal("FIX MISSING: the red merge request does not wait on a person")
+	}
+	req, rerr := http.NewRequestWithContext(context.WithValue(t.Context(), ctxKey{}, &session{}), http.MethodGet, "/", nil)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	text, _, err := r.c.boardText(req, projectRows()[0], actor{})
+	if err != nil {
+		t.Fatalf("FIX MISSING: the pulse's board read dies: %v", err)
 	}
 	if !strings.Contains(text, "pull request #11") {
 		t.Errorf("FIX MISSING: the pulse's board does not show the red merge request:\n%s", text)

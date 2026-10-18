@@ -3,10 +3,12 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -22,6 +24,24 @@ const (
 	eventLimitDefault = 50
 	eventLimitMax     = 500
 )
+
+// reads reports whether member s reads project p: they write it, or
+// Forgejo shows them its repository.
+func (c *Console) reads(ctx context.Context, s *session, p factoryd.Project) (bool, error) {
+	if s.user == "" {
+		return false, nil
+	}
+	if writes, err := c.mayMoveCached(ctx, p.Repository, s.user, policy.MovedByWriters); err == nil && writes {
+		return true, nil
+	}
+	repo := p.Repo()
+	err := c.as(ctx, s, http.MethodGet, "/api/v1/repos/"+url.PathEscape(repo.Owner)+"/"+url.PathEscape(repo.Name), nil, http.StatusOK, nil)
+	var api *apiError
+	if errors.As(err, &api) && (api.status == http.StatusNotFound || api.status == http.StatusForbidden) {
+		return false, nil
+	}
+	return err == nil, err
+}
 
 // act records what the human just did as one event row, via button, with
 // their login as actor. A failure is logged only: an action that took
@@ -279,9 +299,9 @@ func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool,
 // Last-Event-ID replays the rows after it from the table, oldest first
 // and at most the newest eventLimitMax of them; a first connect replays
 // nothing. A member who only reads it gets no row: they carry steers and
-// the agent's text, and the pulse's is the board's to show. countersWait
-// after a live event other than the agent's text (and, to a writer, the
-// pulse's), and at every heartbeat (ruling 288), the stream reads the
+// the agent's text. countersWait
+// after a live event other than the agent's text, and at every heartbeat
+// (ruling 288), the stream reads the
 // board under the query's filter: event "counters" carries its counters
 // when they changed, and a data-less event "board" says, at a heartbeat,
 // that a card's face changed with time alone, and, to a member who only
@@ -400,14 +420,13 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			pulse := e.Kind == factoryd.EventPulse || e.Kind == factoryd.EventPulseComputing
 			// live events may come out of id order: skip only the replayed ones
 			if writes && (e.ID == 0 || e.ID > replayed) {
 				if err := send(e); err != nil {
 					return
 				}
 			}
-			if due == nil && (!pulse || !writes) && e.Kind != factoryd.EventSessionSaid {
+			if due == nil && e.Kind != factoryd.EventSessionSaid {
 				due = time.After(countersWait)
 			}
 		case <-due:

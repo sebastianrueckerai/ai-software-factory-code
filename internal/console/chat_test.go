@@ -1639,10 +1639,10 @@ func TestChatBoardView(t *testing.T) {
 	if !slices.Contains(ev, `view {"query":"?project=ai-software-factory-code\u0026queued-only=plan%3A558"}`) {
 		t.Errorf("plan:n does not ride along:\n%s", strings.Join(ev, "\n"))
 	}
-	// the card opens the drawer, its tab with it; the panel and theme ride
-	ev = post("?project=ai-software-factory-code", `{"card":"11","tab":"chat","panel":"closed","theme":"light"}`)
-	if !slices.Contains(ev, `view {"card":"t-r","panel":"closed","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
-		t.Errorf("the card, tab, panel and theme do not ride along:\n%s", strings.Join(ev, "\n"))
+	// the card opens the drawer, its tab with it; the theme rides
+	ev = post("?project=ai-software-factory-code", `{"card":"11","tab":"chat","theme":"light"}`)
+	if !slices.Contains(ev, `view {"card":"t-r","query":"?project=ai-software-factory-code","tab":"chat","theme":"light"}`) {
+		t.Errorf("the card, tab and theme do not ride along:\n%s", strings.Join(ev, "\n"))
 	}
 	// the POST's view field is bounded and only the wide view rides: one
 	// too long reads as absent (its find with it), a view word the board
@@ -1699,7 +1699,6 @@ func TestChatBoardViewRefusals(t *testing.T) {
 	refuse(`{"unit":"weeks"}`, "The unit must be days or hours.")
 	refuse(`{"tab":"chat"}`, "The tab needs the card it opens.")
 	refuse(`{"tab":"history"}`, "The tab must be overview, chat, activity or files.")
-	refuse(`{"panel":"half"}`, "The panel must be open or closed.")
 	refuse(`{"theme":"blue"}`, "The theme must be dark or light.")
 	refuse(`{"card":"t-nope"}`, "There is no card t-nope in this project.")
 }
@@ -2135,6 +2134,49 @@ func TestChatBudgetSpentAndGatewayFailure(t *testing.T) {
 	got := answer.Messages
 	if len(got) != 2 || got[0].Role != "user" || got[1].Content != "hello again" {
 		t.Fatalf("conversation = %+v, want the two messages only (task %s)", got, id)
+	}
+}
+
+// A turn on a spent chat budget asks the inbox of it (chatAsk) once an
+// hour: the event the Poker turns into the needs-you row the Fund the
+// chat form answers. Repeats within the hour write no second row; an
+// hour past the ask, one turn writes one.
+func TestChatAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	if _, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	id := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
+	r.tasks.mu.Lock()
+	r.tasks.tasks[len(r.tasks.tasks)-1].SpentEUR = 5
+	r.tasks.mu.Unlock()
+	asks := func() []factoryd.Event {
+		var rows []factoryd.Event
+		for _, e := range r.events.all() {
+			if e.Kind == factoryd.EventChatBudgetSpent {
+				rows = append(rows, e)
+			}
+		}
+		return rows
+	}
+	for _, message := range []string{"hello", "again"} {
+		if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}}); len(events) == 0 {
+			t.Fatalf("the turn %q made no stream", message)
+		}
+	}
+	if rows := asks(); len(rows) != 1 || rows[0].Repository != "sf/code" || rows[0].Actor != factoryd.FactoryDecider ||
+		rows[0].Via != factoryd.ViaFactoryd || !reflect.DeepEqual(rows[0].Detail, map[string]any{"budget_eur": float64(5)}) {
+		t.Fatalf("the spent budget's asks: %+v, want the one row of the ask", rows)
+	}
+	r.c.chatAsksMu.Lock()
+	r.c.chatAsks[id] = time.Now().Add(-chatAskWait - time.Second)
+	r.c.chatAsksMu.Unlock()
+	if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"once more"}}); len(events) == 0 {
+		t.Fatal("the turn past the hour made no stream")
+	}
+	if rows := asks(); len(rows) != 2 {
+		t.Fatalf("an hour past the ask: %d rows, want 2", len(rows))
 	}
 }
 

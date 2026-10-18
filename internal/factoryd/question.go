@@ -61,6 +61,17 @@ func (q *HumanQuestion) ChoiceValue(label string) string {
 	return ""
 }
 
+// ChoiceLabel returns the label of the choice valued value, "" when the
+// question has no such choice.
+func (q *HumanQuestion) ChoiceLabel(value string) string {
+	for _, c := range q.Choices {
+		if c.Value == value {
+			return c.Label
+		}
+	}
+	return ""
+}
+
 // Labels returns the choice labels, the words a click posts as the
 // answer.
 func (q *HumanQuestion) Labels() []string {

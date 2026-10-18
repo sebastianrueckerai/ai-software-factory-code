@@ -111,7 +111,6 @@ type toolInput struct {
 	Unit         string `json:"unit,omitempty"`
 	Card         string `json:"card,omitempty"`
 	Tab          string `json:"tab,omitempty"`
-	Panel        string `json:"panel,omitempty"`
 	Theme        string `json:"theme,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
@@ -848,7 +847,7 @@ var tabNames = func() (ns []string) {
 // and the call's words merge into one filter whose query the member's
 // screen alone then holds, as a click holds it, nothing stored. Reset
 // instead clears every control to the board's default and closes the
-// drawer, leaving the member's panel fold and theme theirs.
+// drawer, leaving the member's theme theirs.
 func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 	var f boardFilter
 	var e map[string]any
@@ -946,13 +945,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 			}
 			e["card"] = task.ID
 		}
-		switch in.Panel {
-		case "":
-		case "open", "closed":
-			e["panel"] = in.Panel
-		default:
-			return "", nil, refuse(http.StatusBadRequest, "The panel must be open or closed.")
-		}
 		switch in.Theme {
 		case "":
 		case "dark", "light":
@@ -969,9 +961,6 @@ func (t *turn) setView(in toolInput, reset bool) (string, *inverse, error) {
 	note := f.viewNote()
 	if card, ok := e["card"].(string); ok {
 		note = strings.TrimSuffix(note, ".") + ", the card " + card + " open in the drawer."
-	}
-	if p, ok := e["panel"].(string); ok {
-		note = strings.TrimSuffix(note, ".") + ", the panel " + p + "."
 	}
 	if th, ok := e["theme"].(string); ok {
 		note = strings.TrimSuffix(note, ".") + ", the " + th + " theme."
@@ -990,7 +979,6 @@ func boardViewParams() map[string]any {
 		"unit":     enum("the period's unit: days or hours", "days", "hours"),
 		"card":     str("the card to open in the drawer"),
 		"tab":      enum("the card's tab: "+orWords(tabNames...), tabNames...),
-		"panel":    enum("the status panel: open or closed", "open", "closed"),
 		"theme":    enum("the theme: dark or light", "dark", "light"),
 	}
 	for _, m := range colMenus {
@@ -1471,7 +1459,7 @@ var tools = []chatTool{
 		about:    "Search every thread of the project, every member's, for a text, at most 20 hits.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
-		about:  "Works the board's view controls as a click does: menus, find, routines, card, panel, theme.",
+		about:  "Works the board's view controls as a click does: menus, find, routines, card, theme.",
 		params: boardViewParams(),
 		run:    func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(in, false) },
 	},

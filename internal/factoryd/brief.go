@@ -212,6 +212,15 @@ func briefAnswer(content string) (brief, detail string, err error) {
 	return cut(brief, briefChars), cut(detail, detailChars), nil
 }
 
+// cut is s cut to n characters, marked "…" when cut.
+func cut(s string, n int) string {
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n-1]) + "…"
+	}
+	return s
+}
+
 // lines is s as one paragraph: its lines trimmed, empty ones dropped.
 func lines(s string) string {
 	var out []string

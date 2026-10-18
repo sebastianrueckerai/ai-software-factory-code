@@ -189,6 +189,31 @@ func TestPGStoreEventRequiresRepositoryAndKind(t *testing.T) {
 	}
 }
 
+// The pulse's kinds are historical — nothing writes them since the pulse
+// band's removal — but their rows live on, and a project's events list
+// leaves them out.
+func TestPGStoreLeavesHistoricalPulseEventsOut(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, kind := range []string{EventCardMoved, EventPulseComputing, EventPulse} {
+		if _, err := s.Record(ctx, Event{Repository: "sf/r", Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	events, err := s.ProjectEvents(ctx, "sf/r", 0, 10)
+	if err != nil || len(events) != 1 || events[0].Kind != EventCardMoved {
+		t.Fatalf("ProjectEvents = %+v, %v: want the card_moved only", events, err)
+	}
+}
+
 // Record publishes the row it stored: the id it answers and the time the
 // table gave it when the caller set none. A second row naming the same
 // answer comment is no row: Record answers 0 and publishes nothing, also
