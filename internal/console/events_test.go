@@ -772,15 +772,12 @@ func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
 	}
 	running.CreatedAt = running.CreatedAt.Add(-time.Hour)
 	r.tasks.set("", running)
-	// the status panel names the card's stage age, so the counters change
-	// too: the heartbeat's ping, the counters, then the board event
-	for _, want := range []string{": ping", "event: counters"} {
+	// the panel carries no stage ages (C20), so the card's age alone
+	// changes no counter: the heartbeat's ping, then the board event
+	for _, want := range []string{": ping", "event: board"} {
 		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
 			t.Fatalf("after the card's age changed: %q, want %s", got, want)
 		}
-	}
-	if got := nextMessage(t, br); !slices.Equal(got, []string{"event: board", "data:"}) {
-		t.Fatalf("after the counters: %q, want the board event", got)
 	}
 }
 

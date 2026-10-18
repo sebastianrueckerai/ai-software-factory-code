@@ -64,24 +64,52 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 }
 
-// The status panel's In progress list and Needs you links hold in the
-// wide view too, and a human task links to its drawer: it has no
-// escalation article.
-func TestStatusPanelListsInTheWideView(t *testing.T) {
+// The status panel's "In progress" and "Needs you" lists went with C20
+// (card t-e98f769e872d), and with them the test that read them
+// (TestStatusPanelListsInTheWideView): the lists duplicated the board —
+// the strip's counts already say how many cards work and need you, and
+// the columns already list the cards — so no list remains in the panel
+// whose content could be tested; its figures are covered by
+// TestBoardPageCarriesTheFiguresOfTheStatusPanel and, under a find, by
+// TestFindNarrowsTheColumns. What needs holding is the shape the ruling
+// leaves, in both views: the panel carries only its Spend and Provider,
+// GitHub, configuration sections, and the columns list the cards the
+// lists once named — the human task as a plain card, with no escalation
+// article of its own.
+func TestStatusPanelListsNoCards(t *testing.T) {
 	r := newRig(t)
 	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
 		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", Objective: "rotate the key", IssueNumber: 16})
 	ck, _ := r.loggedIn(t)
 	for _, page := range []string{"/", "/?view=wide"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		for _, want := range []string{`<a class="sp-link" href="#card=t-run">`, `<a class="sp-link" href="#card=t-h">`} {
-			if !strings.Contains(body, want) {
-				t.Errorf("%s: the status panel lacks %s", page, want)
-			}
+		start := strings.Index(body, `<div class="sp" id="status-panel"`)
+		if start < 0 {
+			t.Fatalf("%s: the status panel is missing", page)
 		}
-		if strings.Contains(body, `href="#need-t-h"`) {
-			t.Errorf("%s: a human task links to an escalation article it has not", page)
+		panel := body[start:]
+		end := strings.Index(panel, "</section>\n</div>")
+		if end < 0 {
+			t.Fatalf("%s: the status panel does not close", page)
 		}
+		panel = panel[:end]
+		if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Provider, GitHub, configuration</h3>") {
+			t.Errorf("%s: the panel holds %d sections, want only Spend and Provider, GitHub, configuration:\n%s", page, n, panel)
+		}
+		if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
+			t.Errorf("%s: the panel still lists the board's cards", page)
+		}
+		if strings.Contains(body, `id="need-t-h"`) {
+			t.Errorf("%s: the human task carries an escalation article it has not", page)
+		}
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(col(t, body, "Needs you"), `data-card="t-h"`) || !strings.Contains(col(t, body, "In progress"), `data-card="t-run"`) {
+		t.Error("the four columns do not list the human task and the running card the panel once listed")
+	}
+	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if !strings.Contains(col(t, wide, "Human tasks"), `data-card="t-h"`) || !strings.Contains(wide, `data-card="t-run"`) {
+		t.Error("the wide view does not list the human task and the running card the panel once listed")
 	}
 }
 
