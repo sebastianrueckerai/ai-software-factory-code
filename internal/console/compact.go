@@ -39,7 +39,7 @@ const (
 
 // threadRef names the turn's thread on the audit rows of its calls.
 func (t *turn) threadRef() string {
-	return t.p.Repository + ":" + t.a.s.user + ":" + strconv.FormatInt(t.conv, 10)
+	return t.p.Repository + ":" + t.owner + ":" + strconv.FormatInt(t.conv, 10)
 }
 
 // window is the context window of the alias the chat calls.
@@ -146,11 +146,11 @@ Answer with the summary alone, as short paragraphs, at most 400 words.`
 // thread holds nothing before its tail.
 func (t *turn) compact(taskID string, keep int) (bool, error) {
 	ctx := t.r.Context()
-	th, _, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.a.s.user, t.conv)
+	th, _, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.owner, t.conv)
 	if err != nil {
 		return false, err
 	}
-	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.a.s.user, t.conv, compactRead)
+	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, compactRead)
 	if err != nil {
 		return false, err
 	}
@@ -173,7 +173,7 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 	}
 	before := t.weight(th.Summary, rows)
 	after := t.weight(summary, rows[start:])
-	if err := t.c.cfg.Chat.SaveSummary(ctx, t.p.Repository, t.a.s.user, t.conv,
+	if err := t.c.cfg.Chat.SaveSummary(ctx, t.p.Repository, t.owner, t.conv,
 		factoryd.ThreadSummary{Text: summary, Model: policy.PulseModel, Upto: rows[start-1].ID, Before: before, After: after}); err != nil {
 		return false, err
 	}
@@ -190,14 +190,14 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 // trigger still holds the bound.
 func (t *turn) presetCompact(taskID string) {
 	ctx := t.r.Context()
-	th, _, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.a.s.user, t.conv)
+	th, _, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.owner, t.conv)
 	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		return
 	}
-	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.a.s.user, t.conv, compactRead)
+	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, compactRead)
 	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		return
 	}
 	rows = liveRows(th, rows)

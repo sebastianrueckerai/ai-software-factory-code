@@ -248,6 +248,10 @@ type Config struct {
 	// EscalateToHuman); nil: the escalate tool says the factory files
 	// none.
 	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
+	// AttachAnalysis records what the chat agent found about a card's
+	// open ask inside the ask itself (factoryd.PGStore.AttachAnalysis);
+	// nil: the attach_analysis tool says the factory records none.
+	AttachAnalysis func(ctx context.Context, repository, taskID, found, recommendation, by string) error
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.
@@ -398,6 +402,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
+		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
 		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},

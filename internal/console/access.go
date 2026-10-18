@@ -113,6 +113,7 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/summary":                  rCard,
 	"POST /tasks/{id}/accent":                   rCard,
 	"POST /cards/{id}/lane":                     rLane,
+	"POST /cards/{id}/thread":                   rCard,
 	"POST /tasks/{id}/start-plan":               {need: approver, scope: scCard, what: "start a plan"},
 	"POST /tasks/{id}/plan/accept":              {need: approver, scope: scCard, what: "accept a plan"},
 	"POST /tasks/{id}/plan/answer":              rCard,
@@ -155,8 +156,9 @@ var accessTable = map[string]accessRule{
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
-	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "routines": rMember,
+	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
+	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember,
 	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "projects": rFactory, "policy": rFactory,
 
 	// chat tools: writes
@@ -197,6 +199,7 @@ var accessTable = map[string]accessRule{
 	"write_doc":        {need: writer, scope: scChat},
 	"notes_write":      {need: writer, scope: scChat},
 	"escalate":         {need: writer, scope: scChat},
+	"attach_analysis":  {need: writer, scope: scChat},
 }
 
 // admit refuses a unless they hold rule's roles over repository, whose

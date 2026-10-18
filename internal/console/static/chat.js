@@ -73,7 +73,9 @@ var chatView = (function () {
     }
     var esc1 = m.kind === "escalation";
     var meta = "<p class=\"who\"><span class=\"name\">the factory</span> <time>" + stamp(m.at) + "</time>" +
-      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") + "</p>";
+      (m.repeats ? " <span class=\"rep\">" + (m.repeats + 1) + " times</span>" : "") + (esc1 && !m.settled ? " <span class=\"esc-l\">needs you</span>" : "") +
+      (m.thread ? " <button type=\"button\" class=\"chip linkbtn\" data-open-thread=\"" + esc(m.thread) + "\"" +
+        (m.thread_owner ? " data-thread-owner=\"" + esc(m.thread_owner) + "\"" : "") + ">thread ↗</button>" : "") + "</p>";
     var body = saidHTML(m.content);
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
@@ -116,46 +118,70 @@ var chatView = (function () {
       (a.undo ? " <button type=\"button\" class=\"undo\" data-undo=\"" + esc(a.undo) + "\">Undo</button>" : "") + "</p>";
   }
   // historyHTML is the stored conversation, oldest first: each member's
-  // line, and the agent's rows between two of them as one message. A
-  // proposed call whose state in proposals is pending offers its Do it as
-  // the stream's does; a used or expired one says so under its block.
+  // line, and the agent's rows between two of them as one message. A wake
+  // the factory started itself is one row of its own, folded to its first
+  // line (the main agent concept). A proposed call whose state in
+  // proposals is pending offers its Do it as the stream's does; a used or
+  // expired one says so under its block.
   function historyHTML(msgs, login, proposals) {
     var states = {};
     (proposals || []).forEach(function (p) { states[p.token] = p.state; });
-    var out = [], parts = null, at;
+    var out = [], parts = null, at, wake = null;
     function close() {
+      if (wake) out.push(wakeHTML(wake));
+      wake = null;
       if (parts) out.push(agentHTML(at, parts.join("")));
       parts = null;
     }
     msgs.forEach(function (m) {
-      if (m.role === "user") {
-        close();
-        out.push(userHTML(login, m.content, m.at, m.queued));
-        return;
-      }
+      // a row the factory wrote itself renders as its own whatever its
+      // role: a card thread's first row is the ask, seeded as a user row
       if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
         close();
         out.push(factoryHTML(m));
         return;
       }
-      if (!parts) {
-        parts = [];
+      if (m.role === "user") {
+        close();
+        if (/^wake/.test(m.birth_kind || "")) {
+          wake = {text: m.content, at: m.at, parts: []};
+          return;
+        }
+        out.push(userHTML(login, m.content, m.at, m.queued));
+        return;
+      }
+      var dst = wake ? wake.parts : parts;
+      if (!dst) {
+        parts = dst = [];
         at = m.at;
       }
-      if (m.content) parts.push(saidHTML(m.content));
+      if (m.content) dst.push(saidHTML(m.content));
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
         if (state === "pending") {
-          parts.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
+          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
-        parts.push(toolHTML(c.name, c.arguments, null, c.result));
-        if (state) parts.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
+        dst.push(toolHTML(c.name, c.arguments, null, c.result));
+        if (state) dst.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
     close();
     return out.join("");
+  }
+  // wakeHTML is one wake turn the factory started itself (the main agent
+  // concept): its rows fold to one line — wake, then the wake text's
+  // first line — and open on a click to the whole turn, the settled
+  // row's fold
+  function wakeHTML(w) {
+    var first = String(w.text || "").split("\n")[0];
+    return "<div class=\"msg agent wake\"><span class=\"av\" aria-hidden=\"true\"></span>" +
+      whoHTML("the factory", w.at) +
+      "<div class=\"wake-b\">" + saidHTML(w.text) + w.parts.join("") + "</div>" +
+      "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
+      "<span class=\"visually-hidden\">Wake: </span><span class=\"fw\">wake</span>" +
+      "<span class=\"ft\">" + esc(first) + "</span></p></div>";
   }
   // threadHTML is a thread's log: the rows Clear old swept from view name
   // their count in one line at the top; after a compaction its rows up to
@@ -226,31 +252,44 @@ var chatView = (function () {
     var n = t.needs_you || t.new_rows;
     return "<span class=\"badge" + (t.needs_you ? "" : " new") + "\" aria-label=\"" + label + "\">" + esc(n) + "</span>";
   }
-  // rowsHTML is the switcher's rows: the inbox first, the active threads,
-  // then the archived under their rule; open is the open thread's number
-  function rowsHTML(list, open, now) {
+  // rowsHTML is the switcher's rows: the member's own inbox first, their
+  // active threads, the other members' with their names, then the
+  // archived under their rule; open is the open thread's number and owner
+  function rowsHTML(list, open, openOwner, login, now) {
+    var mine = function (t) { return !t.login || t.login === login; };
+    var on = function (t) { return t.number === open && (t.login && t.login !== login ? t.login : "") === openOwner; };
     var active = (list || []).filter(function (t) { return t.state !== "archived"; });
     var archived = (list || []).filter(function (t) { return t.state === "archived"; });
-    var rows = active.map(function (t) {
-      var on = t.number === open, mark = badgeHTML(t);
+    var rows = active.filter(mine).map(function (t) {
+      var here = on(t), mark = badgeHTML(t);
       var tip = titleOf(t) + (mark ? ", " + splitOf(t) : "") + (t.working ? ", a turn in flight" : "");
-      return "<button type=\"button\" class=\"trow" + (on ? " on" : "") + (mark ? " unread" : "") + (t.inbox ? " inbox" : "") +
-        "\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + on + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
+      return "<button type=\"button\" class=\"trow" + (here ? " on" : "") + (mark ? " unread" : "") + (t.inbox ? " inbox" : "") +
+        "\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + here + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
         "<span class=\"ttitle\">" + esc(titleOf(t)) + "</span>" + (mark ? mark : "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span>") + "</button>";
+    }).join("");
+    var others = active.filter(function (t) { return !mine(t); });
+    rows += others.map(function (t) {
+      var here = on(t);
+      var tip = titleOf(t) + ", " + t.login + "'s thread" + (t.working ? ", a turn in flight" : "");
+      return "<button type=\"button\" class=\"trow others" + (here ? " on" : "") +
+        "\" data-thread=\"" + esc(t.number) + "\" data-owner=\"" + esc(t.login) + "\" aria-current=\"" + here + "\" title=\"" + esc(tip) + "\">" + markHTML(t) +
+        "<span class=\"ttitle\">" + esc(titleOf(t)) + " <span class=\"twhose\">" + esc(t.login) + "'s</span></span>" +
+        "<span class=\"tat\">" + esc(when(t.last_at, now)) + "</span></button>";
     }).join("");
     if (archived.length) {
       rows += "<div class=\"tarch\"><span class=\"tarch-l\">archived</span>" + archived.map(function (t) {
-        return "<span class=\"trow arch" + (t.number === open ? " on" : "") + "\"><span class=\"tmark\" aria-hidden=\"true\">arc</span>" +
-          "<button type=\"button\" class=\"ttitle open-arch\" data-thread=\"" + esc(t.number) + "\" aria-current=\"" + (t.number === open) + "\">" + esc(titleOf(t)) + "</button>" +
-          "<button type=\"button\" class=\"linkbtn restore\" data-restore=\"" + esc(t.number) + "\">restore</button></span>";
+        return "<span class=\"trow arch" + (on(t) ? " on" : "") + "\"><span class=\"tmark\" aria-hidden=\"true\">arc</span>" +
+          "<button type=\"button\" class=\"ttitle open-arch\" data-thread=\"" + esc(t.number) + "\"" +
+          (mine(t) ? "" : " data-owner=\"" + esc(t.login) + "\"") + " aria-current=\"" + on(t) + "\">" + esc(titleOf(t)) + (mine(t) ? "" : " · " + esc(t.login) + "'s") + "</button>" +
+          (mine(t) ? "<button type=\"button\" class=\"linkbtn restore\" data-restore=\"" + esc(t.number) + "\">restore</button>" : "") + "</span>";
       }).join("") + "</div>";
     }
     return rows;
   }
   // sumHTML is the folded switcher's one row on the phone, its split as
   // the badge's pills
-  function sumHTML(list, folded) {
-    var active = (list || []).filter(function (t) { return t.state !== "archived"; });
+  function sumHTML(list, login, folded) {
+    var active = (list || []).filter(function (t) { return t.state !== "archived" && (!t.login || t.login === login); });
     var needs = active.reduce(function (n, t) { return n + (t.needs_you || 0); }, 0);
     var fresh = active.reduce(function (n, t) { return n + (t.new_rows || 0); }, 0);
     var sum = { needs_you: needs, new_rows: fresh };
@@ -261,23 +300,28 @@ var chatView = (function () {
       "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
   }
   // unreadOf is the threads' split summed to a number, the tab title's
-  // count: the items that need the member now, nothing when none does
-  function unreadOf(list) {
-    return (list || []).reduce(function (n, t) { return n + (t.needs_you || 0) + (t.new_rows || 0); }, 0);
+  // count: the member's own threads' items that need them now, nothing
+  // when none does
+  function unreadOf(list, login) {
+    var own = (list || []).filter(function (t) { return !t.login || t.login === login; });
+    return own.reduce(function (n, t) { return n + (t.needs_you || 0) + (t.new_rows || 0); }, 0);
   }
   // headHTML is the open thread's head: its title (a click renames it),
   // its last turn or the inbox's line or the archived note, and its acts:
   // Clear old sweeps the old rows from view on any thread with more than
   // one row, Archive and Delete… on an active thread with rows, never on
   // the inbox (C14)
-  function headHTML(t, now) {
-    var hint = t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
-    var acts = t.messages >= 2 ? "<button type=\"button\" data-clear title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
-    if (!t.inbox && t.state !== "archived" && t.messages) {
+  function headHTML(t, login, now) {
+    var mine = !t.login || t.login === login;
+    var hint = !mine ? t.login + "'s thread: read it and talk in it" :
+      t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
+    var acts = mine && t.messages >= 2 ? "<button type=\"button\" data-clear title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
+    if (mine && !t.inbox && t.state !== "archived" && t.messages) {
       acts += "<button type=\"button\" data-archive>Archive</button><button type=\"button\" class=\"danger\" data-delete>Delete…</button>";
     }
+    var title = esc(titleOf(t)) + (mine ? "" : " · " + esc(t.login) + "'s");
     return "<h3 class=\"ttl\">" + (t.inbox ? "<span class=\"tmark inbox\" aria-hidden=\"true\">⌂</span>" : "") +
-      (t.inbox || t.state === "archived" ? esc(titleOf(t)) : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
+      (t.inbox || t.state === "archived" || !mine ? title : "<button type=\"button\" class=\"rename\" data-rename title=\"Rename the thread\">" + esc(titleOf(t)) + "</button>") +
       "</h3><span class=\"thint" + (t.inbox || t.state === "archived" ? "" : " when") + "\">" + esc(hint) + "</span>" +
       (acts ? "<span class=\"tacts\">" + acts + "</span>" : "");
   }
@@ -389,7 +433,7 @@ var chatView = (function () {
   var baseTitle = document.title;
   // threads is the switcher's list; open the shown thread and its row;
   // running counts each thread's streams in this page
-  var threads = [], open = 0, openThread = {}, running = {}, readOnly = false;
+  var threads = [], open = 0, openOwner = "", openThread = {}, running = {}, readOnly = false;
   var foldKey = "chat-fold:" + login;
 
   function scrollEnd(force) {
@@ -402,14 +446,18 @@ var chatView = (function () {
     into.insertBefore(t.content, into.querySelector(":scope > .cursor"));
     scrollEnd();
   }
-  function busy(n) { return !!running[n]; }
+  // ref is a thread's key: its number and its owner, "" the member's own
+  function ref(n, owner) { return n + "@" + (owner || ""); }
+  function openRef() { return ref(open, openOwner); }
+  function threadOwner(t) { return t && t.login && t.login !== login ? t.login : ""; }
+  function busy(k) { return !!running[k]; }
   // lock disables the composer while the open thread is read-only and the
   // log's buttons while a turn of the open thread streams
   function lock() {
     if (!form) return;
     form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = readOnly; });
-    log.setAttribute("aria-busy", String(busy(open)));
-    log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(open); });
+    log.setAttribute("aria-busy", String(busy(openRef())));
+    log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(openRef()); });
   }
   function read(reader, onEvent) {
     var decoder = new TextDecoder(), buf = "";
@@ -427,13 +475,14 @@ var chatView = (function () {
   // onMissing's when given; a stream that ends without either says the
   // connection was lost. A thread switched away from keeps its stream: the
   // turn ends and marks the thread.
-  function run(n, url, body, into, onMissing) {
+  function run(n, owner, url, body, into, onMissing) {
+    var k = ref(n, owner);
     var ended = false, said = null, raw = "", reader = null, cursor = document.createElement("span"), wait = null;
     cursor.className = "cursor";
     cursor.setAttribute("aria-hidden", "true");
     cursor.textContent = "▍";
     into.appendChild(cursor);
-    running[n] = (running[n] || 0) + 1;
+    running[k] = (running[k] || 0) + 1;
     lock();
     listThreads();
     function event(ev) {
@@ -490,36 +539,36 @@ var chatView = (function () {
     }).then(function () {
       if (!ended) add(into, "<p class=\"chat-error\">the chat lost the connection, send again</p>");
       cursor.remove();
-      running[n]--;
+      running[k]--;
       lock();
-      queueOf(n).flush();
-      return (n === open ? seen(n) : Promise.resolve()).then(listThreads);
+      queueOf(k).flush();
+      return (k === openRef() ? seen(n, owner) : Promise.resolve()).then(listThreads);
     });
   }
   // seen moves thread n's seen marker to its newest row: the member read it
-  function seen(n) {
-    return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n}).toString(),
+  function seen(n, owner) {
+    return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
   }
   // each thread's own queue of messages sent while its turn streams
   var queues = {};
-  function queueOf(n) {
-    if (!queues[n]) {
-      queues[n] = chatView.queue(function (text) { turn(n, text); }, function () {
-        return busy(n) || readOnly && n === open || n === open && !!queued.querySelector("textarea");
+  function queueOf(k) {
+    if (!queues[k]) {
+      queues[k] = chatView.queue(function (text) { turn(k, text); }, function () {
+        return busy(k) || readOnly && k === openRef() || k === openRef() && !!queued.querySelector("textarea");
       }, function (items) {
-        if (n !== open || queued.querySelector("textarea")) return;
+        if (k !== openRef() || queued.querySelector("textarea")) return;
         queued.innerHTML = chatView.queueHTML(items);
         queued.hidden = !items.length;
       });
     }
-    return queues[n];
+    return queues[k];
   }
   function send() {
     var text = input.value.trim();
     if (!text || readOnly) return;
     input.value = "";
-    queueOf(open).add(text);
+    queueOf(openRef()).add(text);
   }
   // pageQuery is the view the page stands on (282): the board's query the
   // chat's POST carries, so the agent's view tools work the page the
@@ -528,8 +577,9 @@ var chatView = (function () {
     var b = document.getElementById("board");
     return b && b.dataset.query ? b.dataset.query : "";
   }
-  function turn(n, text) {
-    var shown = n === open, command = text === "/compact";
+  function turn(k, text) {
+    var at = k.indexOf("@"), n = Number(k.slice(0, at)), owner = k.slice(at + 1);
+    var shown = k === openRef(), command = text === "/compact";
     if (shown) {
       pending = null;
       drawAnswer();
@@ -541,8 +591,8 @@ var chatView = (function () {
       scrollEnd(true);
       into = log.lastElementChild;
     }
-    run(n, base, new URLSearchParams({message: text, conversation: n, view: pageQuery()}).toString(), into).then(function () {
-      if (command && n === open) return load(n);
+    run(n, owner, base, new URLSearchParams({message: text, conversation: n, owner: owner, view: pageQuery()}).toString(), into).then(function () {
+      if (command && k === openRef()) return load(n, owner);
     }).then(function () {
       if (document.activeElement === document.body) input.focus();
     });
@@ -610,7 +660,26 @@ var chatView = (function () {
   // a drawer's "From your chat thread" opens that thread here
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-open-thread]");
-    if (b && Number(b.dataset.openThread) !== open) load(Number(b.dataset.openThread));
+    var whose = b && b.dataset.threadOwner && b.dataset.threadOwner !== login ? b.dataset.threadOwner : "";
+    if (b && (Number(b.dataset.openThread) !== open || whose !== openOwner)) load(Number(b.dataset.openThread), whose);
+  });
+  // a drawer's "Talk about this card" opens the card's own thread, made
+  // on its first open (the card door)
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-card-thread]");
+    if (!b || !form) return;
+    b.disabled = true;
+    fetch("/cards/" + encodeURIComponent(b.dataset.cardThread) + "/thread", {method: "POST",
+      headers: {"X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+      if (!resp.ok) throw new Error(resp.status);
+      return resp.json();
+    }).then(function (d) {
+      b.disabled = false;
+      load(Number(d.conversation), d.owner && d.owner !== login ? d.owner : "");
+    }).catch(function () {
+      b.disabled = false;
+      failed();
+    });
   });
   // openCard opens a card's drawer over the board and lights the card on
   // the board, so the eye finds it where the chat named it. The scroll to
@@ -672,7 +741,7 @@ var chatView = (function () {
     var b = e.target.closest("button");
     if (!b) return;
     if (b.hasAttribute("data-remove")) {
-      queueOf(open).remove(Number(b.dataset.remove));
+      queueOf(openRef()).remove(Number(b.dataset.remove));
       input.focus();
       return;
     }
@@ -699,8 +768,8 @@ var chatView = (function () {
     var area = e.target;
     if (area.localName !== "textarea") return;
     area.remove();
-    if (area.dataset.drop === undefined) queueOf(open).edit(Number(area.dataset.edit), area.value);
-    else queueOf(open).flush();
+    if (area.dataset.drop === undefined) queueOf(openRef()).edit(Number(area.dataset.edit), area.value);
+    else queueOf(openRef()).flush();
   });
 
   form.addEventListener("submit", function (e) {
@@ -786,27 +855,27 @@ var chatView = (function () {
   });
   log.addEventListener("click", function (e) {
     var b = e.target.closest("button");
-    if (!b || busy(open)) return;
+    if (!b || busy(openRef())) return;
     var card = b.closest(".proposal");
     if (b.hasAttribute("data-choice")) {
-      queueOf(open).add(b.dataset.choice);
+      queueOf(openRef()).add(b.dataset.choice);
     } else if (b.hasAttribute("data-skip")) {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
       var foot = card.querySelector(".pfoot");
       foot.textContent = "";
-      run(open, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
+      run(open, openOwner, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
     } else if (b.hasAttribute("data-undo")) {
       var out = document.createElement("div");
       out.className = "undoing";
       b.parentNode.after(out);
       b.remove();
-      run(open, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
+      run(open, openOwner, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
-  // a settled row's fold line opens the row it stands for, and closes it
+  // a settled row's or a wake row's fold line opens the row it stands for
   function toggleFold(el) {
-    var row = el.closest(".msg.settled");
+    var row = el.closest(".msg");
     var on = row.classList.toggle("expanded");
     el.setAttribute("aria-expanded", on);
   }
@@ -825,29 +894,33 @@ var chatView = (function () {
   // member's place: a refresh of the thread they stand in moves the log
   // only when they sit at its end; opening lands on the newest rows
   var intro = log.innerHTML;
-  function load(n, keep) {
-    var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n));
+  function load(n, owner, keep) {
+    var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n) +
+      (owner ? "&owner=" + encodeURIComponent(owner) : ""));
     return fetch(url, {headers: {Accept: "application/json"}}).then(function (resp) {
       if (!resp.ok) throw new Error("GET " + url + ": " + resp.status);
       return resp.json();
     }).then(function (data) {
       open = data.conversation;
       openThread = data.thread || {number: open};
+      openOwner = threadOwner(openThread);
       readOnly = openThread.state === "archived";
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
       log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
       if (form) {
-        // an archived thread's composer is one line with restore (C14)
+        // an archived thread's composer is one line with restore (C14);
+        // another member's archived thread has no restore to offer
         form.classList.toggle("arch", readOnly);
+        form.classList.toggle("theirs", !!openOwner);
         form.querySelector(".arch-note").hidden = !readOnly;
       }
-      if (busy(open)) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
+      if (busy(openRef())) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
       drawHead();
       if (keep && !held) log.scrollTop = was;
       else scrollEnd(true);
-      queueOf(open).flush();
+      queueOf(openRef()).flush();
       lock();
       return listThreads();
     }).catch(function () {
@@ -864,7 +937,7 @@ var chatView = (function () {
   }
   function drawHead() {
     if (!head) return;
-    head.innerHTML = chatView.headHTML(openThread, new Date());
+    head.innerHTML = chatView.headHTML(openThread, login, new Date());
     head.className = "thead" + (openThread.inbox ? " inbox" : "") + (openThread.state === "archived" ? " arch" : "");
   }
   // listThreads reads the switcher's list and draws it, its fold's summary
@@ -877,13 +950,13 @@ var chatView = (function () {
     }).then(function (list) {
       threads = list;
       var now = new Date();
-      rowsEl.innerHTML = chatView.rowsHTML(list, open, now);
-      sum.innerHTML = chatView.sumHTML(list, folded());
+      rowsEl.innerHTML = chatView.rowsHTML(list, open, openOwner, login, now);
+      sum.innerHTML = chatView.sumHTML(list, login, folded());
       sum.hidden = false;
-      var n = chatView.unreadOf(list);
+      var n = chatView.unreadOf(list, login);
       document.title = (n ? "(" + n + ") " : "") + baseTitle;
-      var mine = list.filter(function (t) { return t.number === open; })[0];
-      if (mine && mine.unread && !busy(open)) load(open);
+      var mine = list.filter(function (t) { return t.number === open && threadOwner(t) === openOwner; })[0];
+      if (mine && mine.unread && !busy(openRef())) load(open, openOwner);
       else if (mine) {
         openThread = mine;
         drawHead();
@@ -904,7 +977,7 @@ var chatView = (function () {
         b.title = on ? "Unfold the threads" : "Fold the threads";
       }
     });
-    sum.innerHTML = chatView.sumHTML(threads, on);
+    sum.innerHTML = chatView.sumHTML(threads, login, on);
   }
   try { fold(localStorage.getItem(foldKey) !== "0"); } catch (e) {}
   // postThread posts form to the chat's path, the open thread's number in it
@@ -932,7 +1005,7 @@ var chatView = (function () {
     if (b && b.dataset.dlg === "delete") {
       var n = open;
       d.remove();
-      postThread("/delete", {conversation: n}).then(function () { return load(""); }).catch(failed);
+      postThread("/delete", {conversation: n, owner: openOwner}).then(function () { return load(""); }).catch(failed);
     } else if (b || e.target === d) closeDialog();
   });
   document.addEventListener("keydown", function (e) {
@@ -944,7 +1017,7 @@ var chatView = (function () {
   form.addEventListener("click", function (e) {
     if (!e.target.closest("[data-restore-open]")) return;
     var n = open;
-    postThread("/archive", {conversation: n, restore: "1"}).then(function () { return load(n); }).catch(failed);
+    postThread("/archive", {conversation: n, restore: "1", owner: openOwner}).then(function () { return load(n, openOwner); }).catch(failed);
   });
   panel.addEventListener("click", function (e) {
     var r0 = e.target.closest("[data-restore]");
@@ -961,8 +1034,9 @@ var chatView = (function () {
       return;
     }
     var row = e.target.closest("[data-thread]");
-    if (row && Number(row.dataset.thread) !== open) {
-      load(Number(row.dataset.thread)).then(function () {
+    var whose = row && row.dataset.owner && row.dataset.owner !== login ? row.dataset.owner : "";
+    if (row && (Number(row.dataset.thread) !== open || whose !== openOwner)) {
+      load(Number(row.dataset.thread), whose).then(function () {
         if (!readOnly) input.focus({preventScroll: true});
       });
     }
@@ -973,15 +1047,15 @@ var chatView = (function () {
     var n = open, m = pending;
     pending = null;
     drawAnswer();
-    postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer}).then(function () { return load(n); }).catch(failed);
+    postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer, owner: openOwner}).then(function () { return load(n, openOwner); }).catch(failed);
   });
   head.addEventListener("click", function (e) {
     if (e.target.closest("[data-clear]")) {
-      postThread("/clear", {conversation: open}).then(function () { return load(open); }).catch(failed);
+      postThread("/clear", {conversation: open, owner: openOwner}).then(function () { return load(open, openOwner); }).catch(failed);
       return;
     }
     if (e.target.closest("[data-archive]")) {
-      postThread("/archive", {conversation: open}).then(function () { return load(""); }).catch(failed);
+      postThread("/archive", {conversation: open, owner: openOwner}).then(function () { return load(""); }).catch(failed);
       return;
     }
     if (e.target.closest("[data-delete]")) {
@@ -1009,7 +1083,7 @@ var chatView = (function () {
         drawHead();
         return;
       }
-      fetch(base + "/rename", {method: "POST", body: new URLSearchParams({conversation: open, title: title}).toString(),
+      fetch(base + "/rename", {method: "POST", body: new URLSearchParams({conversation: open, owner: openOwner, title: title}).toString(),
         headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function () {
         return listThreads();
       });
@@ -1041,7 +1115,7 @@ var chatView = (function () {
   document.addEventListener("factoryevent", function (e) {
     if (!settleEvents[e.detail.kind]) return;
     listThreads();
-    if (open && !busy(open) && !document.hidden && !readOnly) load(open, true);
+    if (open && !busy(openRef()) && !document.hidden && !readOnly) load(open, openOwner, true);
   });
   setInterval(function () {
     if (!document.hidden) listThreads();

@@ -100,14 +100,28 @@ func (c *Console) reads(ctx context.Context, s *session, p factoryd.Project) (bo
 	return err == nil, err
 }
 
-// PulseContext is project p as the project agent reads it, its snapshot
-// and its last factoryd.PulseEvents events, seen by no member, and whether
-// a card on it waits on a human: the pulse's prompt (factoryd.Pulser).
-func (c *Console) PulseContext(ctx context.Context, p factoryd.Project) (string, bool, error) {
+// pulseTurn reads project p as the project agent reads it, seen by no
+// member: its snapshot with status line and its last
+// factoryd.PulseEvents events.
+func (c *Console) pulseTurn(ctx context.Context, p factoryd.Project) (string, statusLine, error) {
 	r, err := http.NewRequestWithContext(context.WithValue(ctx, ctxKey{}, &session{}), http.MethodGet, "/", nil)
 	if err != nil {
-		return "", false, err
+		return "", statusLine{}, err
 	}
-	text, s, err := (&turn{c: c, r: r, p: p}).project(factoryd.PulseEvents)
+	return (&turn{c: c, r: r, p: p}).project(factoryd.PulseEvents)
+}
+
+// PulseContext is the pulse's prompt (factoryd.Pulser): pulseTurn's
+// snapshot and whether a card on p waits on a human.
+func (c *Console) PulseContext(ctx context.Context, p factoryd.Project) (string, bool, error) {
+	text, s, err := c.pulseTurn(ctx, p)
 	return text, s.NeedYou > 0, err
+}
+
+// PulseState answers the heartbeat's two questions from the same
+// snapshot: whether work sits open on p's board and whether a card
+// waits on a human.
+func (c *Console) PulseState(ctx context.Context, p factoryd.Project) (workOpen, waitingHuman bool, err error) {
+	_, s, err := c.pulseTurn(ctx, p)
+	return s.Working > 0 || s.Waiting > 0, s.NeedYou > 0, err
 }
