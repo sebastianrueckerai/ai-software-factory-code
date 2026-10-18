@@ -180,7 +180,7 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 	th, ok, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, owner, n)
 	switch {
 	case err != nil:
-		log.Printf("console: the chat of %s on %s: %v", owner, t.p.Repository, err)
+		log.Printf("console: the chat of %q on %s: %v", owner, t.p.Repository, err) // #nosec G706 -- %q escapes every control character
 		return th, refuse(http.StatusInternalServerError, "cannot read the conversation")
 	case !ok:
 		if owner != t.a.s.user {

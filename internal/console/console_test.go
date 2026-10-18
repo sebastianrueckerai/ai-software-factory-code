@@ -2161,6 +2161,12 @@ func TestNilActorRedChecksBoard(t *testing.T) {
 	r.approvals.mu.Unlock()
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
+	// the pulse path itself: PulseContext drives pulseTurn's turn, whose
+	// actor carries no session, and wants a rendered board, not a panic
+	text, _, err := r.c.PulseContext(t.Context(), projectRows()[0])
+	if err != nil || !strings.Contains(text, "Approval requests waiting") {
+		t.Fatalf("the pulse's snapshot = %v, %v: want a rendered board", text, err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, &session{}))
 	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
 	if err != nil {

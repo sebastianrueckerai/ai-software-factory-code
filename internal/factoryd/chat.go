@@ -889,7 +889,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		var id int64
 		var content string
 		if err := rows.Scan(&id, &content); err != nil {
-			rows.Close()
+			rows.Close() // #nosec G104 -- the scan's error is the one to return
 			return err
 		}
 		switch {
@@ -902,10 +902,12 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		rows.Close() // #nosec G104 -- the iteration's error is the one to return
 		return err
 	}
-	rows.Close()
+	if err := rows.Close(); err != nil {
+		return err
+	}
 	if len(ids) == 0 {
 		return ErrNoAsk
 	}
