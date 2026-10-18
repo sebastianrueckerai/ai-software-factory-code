@@ -2361,7 +2361,8 @@ func TestChatProposalStatesInGet(t *testing.T) {
 // Every refusal of a card's state names the state and the action that
 // fits it, the button's as well: #14 waits at its session cap, #15 used
 // all its sessions and waits on its merge request, which comes first. The
-// card tool names the cap and the pending merge request.
+// card tool names the cap and the pending merge request. A worded answer
+// on a running agent card steers its session, no wrongState wall.
 func TestChatRefusalsNameTheState(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
@@ -2397,18 +2398,18 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		b, _ := json.Marshal(map[string]any{"name": name, "arguments": json.RawMessage(args), "duration_ms": 0, "result": result})
 		return "tool " + string(b)
 	}
-	if len(events) != 11 {
-		t.Fatalf("stream length = %d, want 11; events: %v", len(events), events)
+	if len(events) != 12 {
+		t.Fatalf("stream length = %d, want 12; events: %v", len(events), events)
 	}
-	equal(t, "stream refusals", events[:7], []string{
+	equal(t, "stream refusals", events[:8], []string{
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
 			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer); close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
 			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
 		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+backlog+", not a running session: move_card starts it."),
 		refused("move_card", `{"lane":"ready","task_id":"t-r"}`, "Refused: Card #11 runs an agent session, not the backlog: "+running),
-		refused("answer", `{"task_id":"t-r","text":"yes"}`,
-			"Refused: Card #11 runs an agent session, not a question or a session cap to answer: "+running),
+		refused("answer", `{"task_id":"t-r","text":"yes"}`, "The session of #11 has your message."),
+		`applied {"result":"The session of #11 has your message.","tool":"answer"}`,
 		refused("accept_plan", `{"revision":1,"sha256":"x","task_id":"t-m"}`,
 			"Refused: Card #5 "+backlog+", not a plan awaiting acceptance: move_card starts it."),
 		refused("steer", `{"task_id":"t-mr","text":"go"}`,
@@ -2418,16 +2419,18 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		`#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
 		`#15 t-mr \"Add the index.\" waiting-human (` + human + `)`,
 	} {
-		line := events[7+i]
+		line := events[8+i]
 		wantFragment := `"result":"` + wantPrefix
 		if !strings.HasPrefix(line, `tool {"arguments":{"task_id":"`) || !strings.Contains(line, wantFragment) {
 			t.Errorf("stream card %d prefix mismatch:\n%s\nwant result containing: %s", i, line, wantFragment)
 		}
 	}
-	equal(t, "stream tail", events[9:], []string{
+	equal(t, "stream tail", events[10:], []string{
 		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index.\"","id":"TOKEN","tool":"approve_merge"}`,
 		`done {}`})
-	chatRows(t, r.events, before, "sebastian")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
+			Detail: map[string]any{"text": "yes", "thread": 1}})
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\ncost: no model calls\n"+

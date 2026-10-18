@@ -1039,10 +1039,12 @@ func (c *Console) chatClear(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatConversations answers GET /projects/{name}/chat/conversations:
-// the project's threads, every member's with its owner named, the
-// busiest first; the member's own inbox is made here the first time.
-// Each of the member's own threads carries its unread turns; every
-// thread whether a turn runs on it.
+// the member's own threads alone, the inbox pinned first even when
+// empty; the member's own inbox is made here the first time. A
+// never-opened thread (no row ever landed) lists nowhere; another
+// member's thread stays readable by link but lists in no one else's
+// window. Each of the member's own threads carries its unread turns;
+// every thread whether a turn runs on it.
 func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -1057,15 +1059,24 @@ func (c *Console) chatConversations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the conversations", http.StatusInternalServerError)
 		return
 	}
-	if list == nil {
-		list = []factoryd.ChatConversation{}
+	own := make([]factoryd.ChatConversation, 0, len(list))
+	for _, th := range list {
+		switch {
+		case th.Login != t.a.s.user:
+			// another member's thread: readable by link, listed in no
+			// one else's window
+		case th.Messages == 0 && !th.Inbox:
+			// a never-opened thread lists nowhere
+		default:
+			own = append(own, th)
+		}
 	}
-	for i := range list {
-		list[i].Working = c.turns.working(threadKey(t.p.Repository, list[i].Login, list[i].Number))
+	for i := range own {
+		own[i].Working = c.turns.working(threadKey(t.p.Repository, own[i].Login, own[i].Number))
 	}
-	c.settleCounts(r.Context(), t.p.Repository, t.a.s.user, list)
+	c.settleCounts(r.Context(), t.p.Repository, t.a.s.user, own)
 	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(list); err != nil {
+	if err := json.NewEncoder(w).Encode(own); err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
 }
