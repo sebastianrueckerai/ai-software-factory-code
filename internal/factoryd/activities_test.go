@@ -1675,11 +1675,14 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	}
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(701), "source": "agent"}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(701), "source": "agent",
+				"ask": "Which file?", "why": "Which file?", "info": plainInfo}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor"}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "supervisor escalated: the check cannot pass", "comment": int64(703), "source": "supervisor"}},
+			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor",
+				"ask": "This card stopped and needs your decision: how should it go on?",
+				"why": "supervisor escalated: the check cannot pass", "info": plainInfo}},
 	}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)

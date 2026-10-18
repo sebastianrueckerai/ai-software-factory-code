@@ -1064,10 +1064,10 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	var shaped *HumanQuestion
 	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
 		// the deterministic stops shape their five-part question from the
-		// stop's own numbers; the agent's tail keeps today's path
-		if shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason)); shaped != nil {
-			question = shaped.Ask
-		}
+		// stop's own numbers; every other ask gets the same five parts
+		// from its reason, so no card asks with words alone
+		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason))
+		question = shaped.Ask
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again

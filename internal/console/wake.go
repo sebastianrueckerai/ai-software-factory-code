@@ -71,6 +71,78 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	return nil
 }
 
+// answerInChat runs the member's card answer, whose words matched none of
+// the question's choices, as their chat turn. It is a variable set in
+// init, because the chat's tool table reaches doAnswerValue, whose chat
+// route reaches the turn, whose tool calls read the table: a direct call
+// would close that circle at package init.
+var answerInChat func(c *Console, ctx context.Context, a actor, t factoryd.Task, text string) (string, error)
+
+func init() { answerInChat = (*Console).answerInChatTurn }
+
+// answerInChatTurn stores the member's words as a user row on their
+// current thread before it returns, runs the turn on without the request,
+// and answers the note the answer route reads to land the member on the
+// chat page, where the agent reads the card and answers with its own
+// judgement.
+func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task, text string) (string, error) {
+	p, ok, err := c.projectAt(ctx, t.Repository)
+	switch {
+	case err != nil:
+		log.Printf("console: the projects: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+	case !ok:
+		return "", refuse(http.StatusNotFound, "There is no project "+t.Repository+".")
+	}
+	conv, err := c.cfg.Chat.CurrentConversation(ctx, p.Repository, a.s.user)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
+	}
+	v, _ := c.inForce(ctx)
+	cfg := v.Document.ChatOf(v.Projects[p.Name])
+	text, scrubbed := scrubTokens(text)
+	notice := ""
+	if scrubbed {
+		notice = "I removed a GitHub token from your answer; it was not stored or sent."
+	}
+	tu := &turn{c: c, p: p, conv: conv, owner: a.s.user, tree: v.Tree, cfg: cfg,
+		a: actor{s: a.s, thread: conv, repository: p.Repository, via: factoryd.ViaChat, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
+	if pc, ok := v.Projects[p.Name]; ok {
+		tu.a.level, tu.a.mergeRule = pc.AutonomyState(), pc.MergeRule
+	}
+	tu.r = wakeRequest(context.WithoutCancel(ctx), tu.a.s)
+	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, cfg.MonthlyEUR, time.Now())
+	if err != nil {
+		log.Printf("console: the chat task of %s: %v", p.Name, err)
+		return "", refuse(http.StatusInternalServerError, "cannot file the chat's task")
+	}
+	pos, wait := c.turns.enter(tu.key())
+	id, err := c.cfg.Chat.AddChatMessage(ctx, p.Repository, a.s.user, factoryd.ChatMessage{Role: "user",
+		Content: fmt.Sprintf("About card #%d (%s): %s", t.IssueNumber, t.ID, text), Conversation: conv, Queued: pos > 0})
+	if err != nil {
+		c.turns.leave(tu.key())
+		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
+		return "", refuse(http.StatusInternalServerError, "cannot store the message")
+	}
+	go func() {
+		defer c.turns.leave(tu.key())
+		tu.detach()
+		tu.stream(func(string) error { return nil }, nil)
+		tu.takeTurn(pos, wait)
+		if pos > 0 {
+			if err := c.cfg.Chat.StartQueued(tu.r.Context(), p.Repository, a.s.user, id); err != nil {
+				log.Printf("console: start the queued turn of %s on %s: %v", a.s.user, p.Repository, err)
+				return
+			}
+		}
+		release := c.turns.slot(p.Repository, tu.parallelTurns())
+		defer release()
+		tu.run(task.ID, notice)
+	}()
+	return answerInChatNote, nil
+}
+
 // wakeSession is the member's newest login the wake runs on, a bare
 // session of just their name when none reads back or opens: the turn
 // runs, its token-needing tools refuse.

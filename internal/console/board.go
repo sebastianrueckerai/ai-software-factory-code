@@ -2811,10 +2811,17 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
 }
 
-// answer posts the human's answer to an escalation (doAnswer).
+// answer posts the human's answer to an escalation (doAnswer). Words that
+// matched none of the question's choices went to the chat (answerInChat):
+// the member lands on it.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	if _, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value")); err != nil {
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"))
+	if err != nil {
 		c.fail(w, r, err)
+		return
+	}
+	if note == answerInChatNote {
+		http.Redirect(w, r, "/projects/"+url.PathEscape(r.PostFormValue("project"))+"/chat", http.StatusSeeOther)
 		return
 	}
 	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)

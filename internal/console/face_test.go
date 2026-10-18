@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1042,6 +1043,48 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 			detail = map[string]any{"comment": int64(1), "value": tc.value}
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: detail})
+	}
+}
+
+// A typed answer that matches none of a shaped question's choices is not
+// an answer: its words go to the member's chat as a user row naming the
+// card, a turn answers them there without the request, nothing is posted
+// on the issue, and the member lands on the chat page.
+func TestNeedsYouFreeAnswerGoesToTheChat(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "The session hit its cap. Which way on?", Choices: []factoryd.QuestionChoice{
+			{Value: "fund", Label: "Fund one more session"}, {Value: "park", Label: "Park it"}}}}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("I read the card and answer with my own judgement.")}}
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"use your own judgement on the replica"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the typed answer = %d %q, want 303", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != chatPath {
+		t.Fatalf("the typed answer lands on %q, want the chat %q", got, chatPath)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "" {
+		t.Fatalf("the typed answer posted %q, want no comment", got)
+	}
+	var msgs []factoryd.ChatMessage
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		chat.mu.Lock()
+		msgs = slices.Clone(chat.msgs["sf/code "+s.user])
+		chat.mu.Unlock()
+		if len(msgs) >= 2 {
+			break
+		}
+	}
+	if len(msgs) < 2 {
+		t.Fatalf("the chat holds %d rows, want the member's words and the turn's answer: %+v", len(msgs), msgs)
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "About card #13 (t-e): use your own judgement on the replica" {
+		t.Fatalf("the member's row = %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" {
+		t.Fatalf("the turn's row = %+v", msgs[1])
 	}
 }
 
