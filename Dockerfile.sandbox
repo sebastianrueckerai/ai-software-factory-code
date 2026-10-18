@@ -40,7 +40,10 @@ COPY go.mod go.sum ./
 # undated "off" is the same mode.
 RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" \
       && sum=$(sha256sum go.sum | awk '{print $1}') \
-      && wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz" \
+      && i=0 && until wget -T 60 -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz"; do \
+           i=$((i+1)); [ "$i" -lt 5 ] || { echo "go-modules: the store did not answer in five tries" >&2; exit 1; }; \
+           echo "go-modules: retry $i after a failed fetch"; sleep $((i * 10)); \
+         done \
       && mkdir -p "$(go env GOMODCACHE)/cache/download" \
       && tar -C "$(go env GOMODCACHE)/cache/download" -xzf /tmp/go-modules.tar.gz \
       && rm /tmp/go-modules.tar.gz \
@@ -53,11 +56,20 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ag
 # step 2): package npm-cache, version the lockfile's sha256, its _cacache
 # the tarball holds — what scripts/upstream-files uploaded. The node base
 # image below ships no downloader, so the store's golang copy fetches it
-# with busybox wget; a 404 fails the build, no upstream answers.
+# with busybox wget; a 404 fails the build, no upstream answers. The two
+# bare wgets of this image (this one and the build stage's go-modules
+# fetch) are its only network reads without a retry — apt above retries
+# eight times — and busybox wget has none of its own, so a single store
+# blip failed the build outright: main run 1620's image-sandbox went red
+# on sandbox inputs identical to the green run before it (1bec5978 changed
+# k8s pins only), the class of fault five bounded retries rule out.
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS npm-cache
 COPY opencode-plugin/package-lock.json /tmp/package-lock.json
 RUN sum=$(sha256sum /tmp/package-lock.json | awk '{print $1}') \
-      && wget -O /tmp/npm-cache.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/npm-cache/$sum/npm-cache.tar.gz" \
+      && i=0 && until wget -T 60 -O /tmp/npm-cache.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/npm-cache/$sum/npm-cache.tar.gz"; do \
+           i=$((i+1)); [ "$i" -lt 5 ] || { echo "npm-cache: the store did not answer in five tries" >&2; exit 1; }; \
+           echo "npm-cache: retry $i after a failed fetch"; sleep $((i * 10)); \
+         done \
       && mkdir -p /npm-cache \
       && tar -C /npm-cache -xzf /tmp/npm-cache.tar.gz
 
