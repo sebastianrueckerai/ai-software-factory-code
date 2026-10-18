@@ -1,8 +1,6 @@
 {{template "head" .}}
 {{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
-{{if .Status.Project}}<section class="status" aria-label="Status">
-<div id="status-line">{{template "status" .}}</div>
-</section>
+{{if .Status.Project}}<details id="status-line" class="status" aria-label="Status">{{template "status" .}}</details>
 {{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
 {{template "chat" .}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>

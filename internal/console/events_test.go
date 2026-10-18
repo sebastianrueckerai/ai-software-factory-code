@@ -1100,7 +1100,7 @@ func TestBoardFollowsTheStreamAlone(t *testing.T) {
 		t.Error("the board page still polls")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board?project=ai-software-factory-code", nil), ck).Body.String()
-	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<div id=\"status-line\" hx-swap-oob=\"innerHTML\"><div class=\"strip\" role=\"group\" aria-label=\"Status of the project\">") {
+	if !strings.HasPrefix(frag, `<div id="board"`) || !strings.Contains(frag, "</div>\n<div id=\"status-line\" hx-swap-oob=\"innerHTML\"><summary class=\"strip\">") {
 		t.Errorf("the board fragment carries no status line out of band:\n%s", frag)
 	}
 
