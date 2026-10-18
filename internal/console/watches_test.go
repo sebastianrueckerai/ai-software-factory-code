@@ -66,3 +66,23 @@ func TestSetTimerBoundsAndCap(t *testing.T) {
 		`text {"text":"None set."}`,
 		`done {}`})
 }
+
+// A card another member's thread already watches takes no second watch:
+// the answer names the watcher, one wake turn per card is one.
+func TestWatchCardNamesTheWatcher(t *testing.T) {
+	r, f, g := newChatRig(t)
+	f.mu.Lock()
+	f.watches = append(f.watches, storedWatch{"sf/code", "alice", "t-m", 1})
+	f.mu.Unlock()
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "watch_card", `{"task_id":"t-m"}`, "watch_card", `{"task_id":"#5"}`)}, {say("Twice refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"watch the cache card twice"}})
+	card := `#5 t-m \"Fix the cache. It drops entries.\"`
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"watch_card","result":"` + card +
+			` is already watched by alice's thread: its moves wake that thread, which you can read."}`,
+		`tool {"arguments":{"task_id":"#5"},"duration_ms":0,"name":"watch_card","result":"` + card +
+			` is already watched by alice's thread: its moves wake that thread, which you can read."}`,
+		`text {"text":"Twice refused."}`,
+		`done {}`})
+}

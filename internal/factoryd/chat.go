@@ -553,9 +553,28 @@ func wakeCapped(n int) error {
 	return fmt.Errorf("%w: it holds %d of %d, end one first.", ErrChatWakeCap, n, WakeTimersMax)
 }
 
+// WatchTakenError names the member whose watch already holds a card:
+// one watch per card, a second member's row would wake nobody new.
+type WatchTakenError struct{ Login string }
+
+func (e *WatchTakenError) Error() string {
+	return fmt.Sprintf("%s already watches this card", e.Login)
+}
+
 // AddChatWatch stores login's watch of taskID on the thread
 // conversation, the row it already has for the card when there is one.
+// A card another member watches is refused with the watcher named.
 func (s *PGStore) AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error {
+	var other string
+	err := s.db.QueryRowContext(ctx, `SELECT login FROM chat_watches
+		WHERE repository = $1 AND task_id = $2 AND login <> $3 LIMIT 1`,
+		repository, taskID, login).Scan(&other)
+	if err == nil {
+		return &WatchTakenError{Login: other}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
 	// a watch the member already holds replaces itself, so it never meets
 	// the cap
 	var n int
@@ -568,7 +587,7 @@ func (s *PGStore) AddChatWatch(ctx context.Context, repository, login string, co
 	if n >= WakeTimersMax {
 		return wakeCapped(n)
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_watches (repository, login, conversation, task_id)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO chat_watches (repository, login, conversation, task_id)
 		VALUES ($1, $2, $3, $4) ON CONFLICT (repository, login, task_id) DO UPDATE SET conversation = excluded.conversation`,
 		repository, login, conversation, taskID)
 	return err

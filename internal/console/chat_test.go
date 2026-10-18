@@ -211,6 +211,11 @@ func (f *fakeChat) CardThreadFor(_ context.Context, repository, taskID string) (
 func (f *fakeChat) AddChatWatch(_ context.Context, repository, login string, conversation int64, taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	for _, w := range f.watches {
+		if w.repository == repository && w.taskID == taskID && w.login != login {
+			return &factoryd.WatchTakenError{Login: w.login}
+		}
+	}
 	for i, w := range f.watches {
 		if w.repository == repository && w.login == login && w.taskID == taskID {
 			f.watches[i].conversation = conversation

@@ -315,3 +315,62 @@ func TestTimerCapRefuses(t *testing.T) {
 		t.Fatalf("the freed slot refused a timer: %v", err)
 	}
 }
+
+// One project's failing pass holds only that project back: the sweep
+// logs its error and the other projects' timers still fire.
+func TestWakerPassIsolatesProjects(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+		"one": {Repository: "sf/one", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+		"two": {Repository: "sf/two", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+	})
+	w.Pulse = func(context.Context, string) (bool, bool, error) {
+		return false, false, fmt.Errorf("the pulse is down")
+	}
+	for _, repository := range []string{"sf/one", "sf/two"} {
+		if _, err := s.NewConversation(t.Context(), repository, "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.AddChatTimer(t.Context(), repository, "sebastian", 1, time.Now().Add(-time.Minute), "Check.", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass returned %v, want nil: one project's error is not the sweep's", err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 {
+		t.Fatalf("%d timer wakes, want 2: %+v", len(calls), calls)
+	}
+}
+
+// One watch per card: a second member's watch of a taken card refuses
+// and names the watcher, while the watcher's own row still moves to a
+// new thread of theirs.
+func TestWatchOnePerCard(t *testing.T) {
+	_, s, _, _ := newWakeRig(t, nil)
+	seb, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bob, err := s.NewConversation(t.Context(), "sf/wake", "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", seb, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	err = s.AddChatWatch(t.Context(), "sf/wake", "bob", bob, "t-1")
+	var taken *WatchTakenError
+	if !errors.As(err, &taken) || taken.Login != "sebastian" {
+		t.Fatalf("bob's watch of a taken card returned %v, want WatchTakenError naming sebastian", err)
+	}
+	seb2, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", seb2, "t-1"); err != nil {
+		t.Fatalf("the watcher's own re-watch: %v", err)
+	}
+	if w, err := s.ChatWatchesFor(t.Context(), "sf/wake", "t-1"); err != nil || len(w) != 1 || w[0].Conversation != seb2 {
+		t.Fatalf("the watch after the re-watch: %v %+v", err, w)
+	}
+}

@@ -32,6 +32,10 @@ func (t *turn) watchCard(in toolInput) (string, error) {
 		return "", err
 	}
 	if err := t.c.cfg.Chat.AddChatWatch(t.r.Context(), t.p.Repository, t.owner, t.conv, task.ID); err != nil {
+		var taken *factoryd.WatchTakenError
+		if errors.As(err, &taken) {
+			return name + " is already watched by " + taken.Login + "'s thread: its moves wake that thread, which you can read.", nil
+		}
 		return "", refuse(http.StatusInternalServerError, "cannot watch the card")
 	}
 	return "Watching " + name + ": its moves wake this thread.", nil

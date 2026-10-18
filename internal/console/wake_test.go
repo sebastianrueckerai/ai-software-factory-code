@@ -1,10 +1,13 @@
 package console
 
 import (
+	"errors"
 	"net/url"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // A wake turn runs without a request: the Waker's call alone writes the
@@ -99,4 +102,24 @@ func waitFor(t *testing.T, within time.Duration, cond func() bool) bool {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return cond()
+}
+
+// The two refusals a wake cannot outlive name the sentinel the Waker
+// drops its row on: a thread that is not there any more and an archived
+// one are both gone for good, never a cooldown.
+func TestStartWakeRefusalNamesAVenueThatIsGone(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	conv, err := chat.NewConversation(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chat.ArchiveConversation(t.Context(), "sf/code", "sebastian", conv, true); err != nil {
+		t.Fatal(err)
+	}
+	for name, n := range map[string]int64{"archived": conv, "missing": conv + 400} {
+		err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", n, "wake_ask", "Wake: 1 ask waits.")
+		if !errors.Is(err, factoryd.ErrWakeVenueGone) {
+			t.Fatalf("%s venue: StartWake returned %v, want ErrWakeVenueGone", name, err)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ type fakeWakeStarter struct {
 	mu    sync.Mutex
 	calls []wakeCall
 	err   error
+	gone  map[int64]bool // conversations whose venue is gone: the wake refuses for good
 }
 
 type wakeCall struct {
@@ -35,6 +37,9 @@ func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text})
+	if f.gone[conversation] {
+		return fmt.Errorf("conversation %d is archived: %w", conversation, ErrWakeVenueGone)
+	}
 	return f.err
 }
 
@@ -407,5 +412,63 @@ func TestWakerMarksSurviveRestart(t *testing.T) {
 	if len(calls) != 1 || !strings.Contains(calls[0].text, "Fund the build?") ||
 		strings.Contains(calls[0].text, "Raise the month cap?") {
 		t.Fatalf("the restart's wake = %+v, want only the blocked ask", calls)
+	}
+}
+
+// A wake whose venue is gone is not a failure to retry: the watch row
+// goes with the thread, the cursor moves past the move, and a later ask
+// on the same project still wakes.
+func TestVenueGoneDropsItsWatch(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, nil)
+	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", conv, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	starter.gone = map[int64]bool{conv: true}
+	wakeMove(t, s, "sf/wake", "t-1", "board", true)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass returned %v, want nil", err)
+	}
+	if ws, err := s.ChatWatchesFor(t.Context(), "sf/wake", "t-1"); err != nil {
+		t.Fatal(err)
+	} else if len(ws) != 0 {
+		t.Fatalf("the watch outlived its venue: %+v", ws)
+	}
+	wakeAsk(t, s, "sf/wake", "t-1", "Where does the cache live?", "member")
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("second Pass returned %v, want nil", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 2 || calls[1].birth != "wake_ask" {
+		t.Fatalf("the wakes are %+v, want the refused card wake then wake_ask", calls)
+	}
+}
+
+// A due timer on a gone venue drops its row instead of holding the
+// cooldown: the sweep does not retry it.
+func TestVenueGoneDropsItsTimer(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+	})
+	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatTimer(t.Context(), "sf/wake", "sebastian", conv, clock.Add(-time.Minute), "Check the mirror.", ""); err != nil {
+		t.Fatal(err)
+	}
+	starter.gone = map[int64]bool{conv: true}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass returned %v, want nil", err)
+	}
+	*clock = clock.Add(2 * time.Minute)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("second Pass returned %v, want nil", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1 (the refused timer wake, never retried): %+v", len(calls), calls)
 	}
 }

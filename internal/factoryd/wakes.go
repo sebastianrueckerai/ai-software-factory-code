@@ -21,6 +21,11 @@ type WakeStarter interface {
 	StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error
 }
 
+// ErrWakeVenueGone marks a wake refusal that no retry can settle: the
+// thread it names is deleted or archived. The Waker drops the wake's
+// row instead of holding a cooldown.
+var ErrWakeVenueGone = errors.New("the wake's thread is gone")
+
 // WakeStore is the Waker's rows: the chat task, the inbox, the events and
 // the wake cursor and marks.
 type WakeStore interface {
@@ -31,6 +36,7 @@ type WakeStore interface {
 	DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error)
 	DeleteChatTimer(ctx context.Context, repository string, id int64) error
 	ChatWatchesFor(ctx context.Context, repository, taskID string) ([]ChatWatch, error)
+	RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error)
 	DeleteChatWatchesOfTask(ctx context.Context, repository, taskID string) error
 	WakeEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	WakeCursor(ctx context.Context, repository string) (int64, error)
@@ -102,7 +108,8 @@ func (w *Waker) Pass(ctx context.Context) error {
 	now := w.now()
 	for name, p := range v.Tree.Projects {
 		if err := w.passProject(ctx, v, name, p, now); err != nil {
-			return err
+			// one project's failure holds only that project back
+			log.Printf("wake: %s: %v", name, err)
 		}
 	}
 	return nil
@@ -202,6 +209,18 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if len(watched) > 0 {
 		c := watched[0]
 		if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
+			if errors.Is(err, ErrWakeVenueGone) {
+				log.Printf("wake %s: %v", name, err)
+				// the watch's thread is gone for good: the row goes with it,
+				// and this card no longer holds the batch back
+				if _, err := w.Store.RemoveChatWatch(ctx, p.Repository, c.watch.Login, c.watch.TaskID); err != nil {
+					return err
+				}
+				if len(pending) == 0 && len(watched) == 1 {
+					return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+				}
+				return nil
+			}
 			log.Printf("wake %s: %v", name, err)
 			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}
@@ -266,6 +285,11 @@ func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p 
 		return nil // the ask path owns the month-cap card; the row waits
 	}
 	if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
+		if errors.Is(err, ErrWakeVenueGone) {
+			log.Printf("wake %s: %v", name, err)
+			// the timer's thread is gone for good: the row goes with it
+			return w.Store.DeleteChatTimer(ctx, p.Repository, t.ID)
+		}
 		log.Printf("wake %s: %v", name, err)
 		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 	}

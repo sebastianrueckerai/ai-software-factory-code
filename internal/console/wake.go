@@ -33,10 +33,10 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 		return fmt.Errorf("read conversation %d: %w", conversation, err)
 	}
 	if !ok {
-		return fmt.Errorf("there is no conversation %d of %s on %s", conversation, login, p.Repository)
+		return fmt.Errorf("there is no conversation %d of %s on %s: %w", conversation, login, p.Repository, factoryd.ErrWakeVenueGone)
 	}
 	if th.State == factoryd.ThreadArchived {
-		return fmt.Errorf("conversation %d is archived", conversation)
+		return fmt.Errorf("conversation %d is archived: %w", conversation, factoryd.ErrWakeVenueGone)
 	}
 	v, _ := c.inForce(ctx)
 	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
