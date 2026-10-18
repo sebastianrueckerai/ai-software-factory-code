@@ -95,3 +95,37 @@ func TestDrawerShowsDoorAndSessionTab(t *testing.T) {
 		t.Fatal("the drawer still names a Chat tab")
 	}
 }
+
+// The ask's sentence rides its ask field, the field the wake path
+// writes: the thread's first row carries it, not an empty ask.
+func TestCardDoorSeedsTheAskSentence(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-e",
+		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
+		Detail: map[string]any{"ask": "use a replica?"}}); err != nil {
+		t.Fatal(err)
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/cards/t-e/thread", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /cards/t-e/thread = %d %s", rec.Code, rec.Body.String())
+	}
+	var door struct {
+		Conversation int64 `json:"conversation"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &door); err != nil || door.Conversation == 0 {
+		t.Fatalf("the door's answer = %s (%v), want a conversation number", rec.Body.String(), err)
+	}
+	get := r.do(httptest.NewRequest(http.MethodGet,
+		chatPath+"?conversation="+strconv.FormatInt(door.Conversation, 10), nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(get.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Messages) != 1 {
+		t.Fatalf("the thread's rows = %+v, want the ask alone", answer.Messages)
+	}
+	if want := "#13 needs you: use a replica?"; !strings.Contains(answer.Messages[0].Content, want) {
+		t.Fatalf("the ask's row = %q, want it to hold %q", answer.Messages[0].Content, want)
+	}
+}

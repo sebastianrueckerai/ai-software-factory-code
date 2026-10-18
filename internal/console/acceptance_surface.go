@@ -593,6 +593,20 @@ func (a *AcceptanceRig) Task(_ context.Context, id string) (factoryd.Task, bool,
 	return factoryd.Task{}, false, nil
 }
 
+func (a *AcceptanceRig) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := map[string]string{}
+	for _, id := range ids {
+		for _, t := range a.tasks {
+			if t.ID == id {
+				out[id] = t.Status
+			}
+		}
+	}
+	return out, nil
+}
+
 func (a *AcceptanceRig) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -761,6 +775,18 @@ func (a *AcceptanceRig) TaskEvents(_ context.Context, id string, limit int) ([]f
 		if a.events[i].TaskID == id {
 			out = append(out, a.events[i])
 		}
+	}
+	return out, nil
+}
+
+func (a *AcceptanceRig) TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]factoryd.Event, error) {
+	out := map[string][]factoryd.Event{}
+	for _, id := range ids {
+		evs, err := a.TaskEvents(ctx, id, limit)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = evs
 	}
 	return out, nil
 }
@@ -1024,6 +1050,10 @@ func (a *AcceptanceRig) EnsureCardThread(context.Context, string, string, string
 
 func (a *AcceptanceRig) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
 	return "", 0, false, nil
+}
+
+func (a *AcceptanceRig) CardThreads(context.Context, string, []string) (map[string]factoryd.CardThread, error) {
+	return map[string]factoryd.CardThread{}, nil
 }
 
 func (a *AcceptanceRig) AddChatWatch(context.Context, string, string, int64, string) error {
