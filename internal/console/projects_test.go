@@ -84,7 +84,7 @@ func TestSettingsPage(t *testing.T) {
 	const at = "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/"
 	demo := page("/settings?project=demo-app")
 	for _, want := range []string{
-		`change them <a href="` + at + `demo-app.yaml">in Git</a>`,
+		`change them <a href="` + at + `demo-app.yaml" target="_blank" rel="noopener">in Git</a>`,
 		"Repository: demo-app/demo-app", "Objects: factory", "Agents: coder", "Merge rule: auto",
 		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",

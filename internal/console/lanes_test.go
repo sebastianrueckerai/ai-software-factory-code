@@ -392,7 +392,7 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 	card := col(t, body, "Needs you")
 	for _, want := range []string{
 		`<article class="card approval plan" data-card="t-plan"`,
-		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1">#1</a>, revision 2`,
+		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a>, revision 2`,
 		"Foundation first, then the API, then the acceptance tests.",
 		`action="/tasks/t-plan/plan/accept"`, `<input type="hidden" name="revision" value="2">`, `<input type="hidden" name="sha256" value="sha-2">`,
 		`action="/tasks/t-plan/plan/changes"`, `action="/tasks/t-plan/plan/reject"`,
@@ -610,9 +610,9 @@ func TestStartPlanLabelsBacklogChildren(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
 	for _, want := range []string{
-		`<li><a href="https://git.example/linkshort/linkshort/issues/2">#2</a> backlog</li>`,
-		`<li><a href="https://git.example/linkshort/linkshort/issues/4">#4</a> waiting-deps</li>`,
-		`<li><a href="https://git.example/linkshort/linkshort/issues/5">#5</a> done</li>`,
+		`<li><a href="https://git.example/linkshort/linkshort/issues/2" target="_blank" rel="noopener">#2</a> backlog</li>`,
+		`<li><a href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener">#4</a> waiting-deps</li>`,
+		`<li><a href="https://git.example/linkshort/linkshort/issues/5" target="_blank" rel="noopener">#5</a> done</li>`,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)

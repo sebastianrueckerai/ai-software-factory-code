@@ -3,7 +3,7 @@
 <p class="figs">version {{.Version.ID}} · commit <a href="{{.At}}" target="_blank" rel="noopener"><code>{{.Version.Commit}}</code></a> · loaded {{.LoadedAt}} · in force since {{.ActivatedAt}}</p>
 <p class="meta">The configuration is the directory {{.Dir}}/ of the infra repository; every change is a commit there. <a href="{{.Main}}" target="_blank" rel="noopener">Edit it on main</a>.</p>
 {{range $name, $p := .Version.Processes}}<section class="ro">
-<h3>Process {{$name}} (<a href="{{$.At}}/processes/ target="_blank" rel="noopener"{{$name}}.yaml">processes/{{$name}}.yaml</a>)</h3>
+<h3>Process {{$name}} (<a href="{{$.At}}/processes/{{$name}}.yaml" target="_blank" rel="noopener">processes/{{$name}}.yaml</a>)</h3>
 <table aria-label="Stages of process {{$name}}">
 <thead><tr><th scope="col">Stage</th><th scope="col">Findings go to</th><th scope="col">Enabled</th><th scope="col">When</th></tr></thead>
 <tbody>
@@ -15,7 +15,7 @@
 <table aria-label="The projects of this configuration">
 <thead><tr><th scope="col">Project</th><th scope="col">Repository</th><th scope="col">Merge rule</th><th scope="col">Objects</th><th scope="col">Agents</th><th scope="col">Namespaces</th></tr></thead>
 <tbody>
-{{range .Projects}}<tr><td><a href="{{$.At}}/projects/ target="_blank" rel="noopener"{{.Name}}.yaml">{{.Name}}</a></td><td>{{.Repository}}</td><td>{{.MergeRule}}</td><td>{{.Objects}}</td><td>{{.Agents}}</td><td>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
+{{range .Projects}}<tr><td><a href="{{$.At}}/projects/{{.Name}}.yaml" target="_blank" rel="noopener">{{.Name}}</a></td><td>{{.Repository}}</td><td>{{.MergeRule}}</td><td>{{.Objects}}</td><td>{{.Agents}}</td><td>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
 {{end}}</tbody>
 </table>
 </section>

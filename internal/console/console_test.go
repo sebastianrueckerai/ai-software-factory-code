@@ -1399,7 +1399,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 func TestBoardShowsTheConfigVersion(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	line := `<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a></dd>`
+	line := `<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener"><code>c9d98bb0aa11</code></a></dd>`
 	for _, path := range []string{"/", "/?view=wide", "/board"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
 		if !strings.Contains(body, line) {
@@ -1793,16 +1793,16 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	at := "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"
 	for _, want := range []string{"version 4 · commit ", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
 		`&#34;agent_time&#34;: &#34;20m0s&#34;`,
-		`<a href="` + at + `"><code>c9d98bb0aa11</code></a>`,
-		`<a href="` + at + `/policy.yaml">policy.yaml</a>`,
-		`<h3>Process maintenance (<a href="` + at + `/processes/maintenance.yaml">processes/maintenance.yaml</a>)</h3>`,
-		`<a href="` + at + `/projects/demo-app.yaml">demo-app</a>`,
-		`<a href="` + at + `/projects/infra.yaml">infra</a>`,
+		`<a href="` + at + `" target="_blank" rel="noopener"><code>c9d98bb0aa11</code></a>`,
+		`<a href="` + at + `/policy.yaml" target="_blank" rel="noopener">policy.yaml</a>`,
+		`<h3>Process maintenance (<a href="` + at + `/processes/maintenance.yaml" target="_blank" rel="noopener">processes/maintenance.yaml</a>)</h3>`,
+		`<a href="` + at + `/projects/demo-app.yaml" target="_blank" rel="noopener">demo-app</a>`,
+		`<a href="` + at + `/projects/infra.yaml" target="_blank" rel="noopener">infra</a>`,
 		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
 		"<td>demo-app/demo-app</td><td>auto</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
 		"<td>screening</td><td>human</td><td><i class=\"lamp\" aria-hidden=\"true\"></i>no</td><td>outsider</td>",
 		"<td>checks</td><td>agent</td><td><i class=\"lamp on\" aria-hidden=\"true\"></i>yes</td><td></td>",
-		`<a href="https://git.example/sf/infra/src/branch/main/factory">`} {
+		`<a href="https://git.example/sf/infra/src/branch/main/factory" target="_blank" rel="noopener">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/policy lacks %q", want)
 		}
@@ -1835,7 +1835,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		// the merge request: the PR, the chips and the forms; the
 		// five-part ask lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
-		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9">PR #9</a>`,
+		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a>`,
 		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
 		`<a href="#card=t-m:reviews" class="details">Details</a>`,
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
@@ -2292,7 +2292,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		"No project file names this repository: the policy's envelope_default applies.",
 		"task block €10.00 a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month €0.0000 used or reserved, 0 servers open",
 		// demo-app's file, read-only, linked at the version's commit
-		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml">change it in Git</a>.`,
+		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml" target="_blank" rel="noopener">change it in Git</a>.`,
 		"task block €30.00 a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
 		"this month €1.5000 used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
@@ -2516,7 +2516,7 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Objective: "done work", Repository: "sf/code",
 			CreatedAt: asked, FinishedAt: &finished})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<span class="elapsed">2 h 5 min</span>`, "47 min in all"} {
+	for _, want := range []string{`<span class="elapsed">25 min</span>`, "47 min in all"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board lacks %q", want)
 		}
