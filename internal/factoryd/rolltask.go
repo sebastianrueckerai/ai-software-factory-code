@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -71,63 +70,6 @@ func (s *PGStore) RollRequestSeen(ctx context.Context, sha string) (bool, error)
 	var found bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM roll_requests WHERE sha = $1)`, sha).Scan(&found)
 	return found, err
-}
-
-// RollRequestBySHA is the roller's judgement of sha, when it has made one:
-// the read the CI chain's rollout job polls (roadmap 296).
-func (s *PGStore) RollRequestBySHA(ctx context.Context, sha string) (RollRequest, bool, error) {
-	r := RollRequest{}
-	var changes []byte
-	err := s.db.QueryRowContext(ctx, `SELECT sha, repository, run_id, state, COALESCE(task_id, ''), changes, summary, created_at FROM roll_requests
-		WHERE sha = $1`, sha).Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.TaskID, &changes, &r.Summary, &r.CreatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RollRequest{}, false, nil
-	}
-	if err != nil {
-		return RollRequest{}, false, err
-	}
-	if err := json.Unmarshal(changes, &r.Changes); err != nil {
-		return RollRequest{}, false, err
-	}
-	return r, true, nil
-}
-
-// RollStateStore is the read RollStateHandler serves.
-type RollStateStore interface {
-	RollRequestBySHA(ctx context.Context, sha string) (RollRequest, bool, error)
-}
-
-// RollStateHandler serves GET /internal/roll-state?sha=<commit> (roadmap
-// 296): the roller's judgement of that commit, which CI's rollout job
-// polls until the commit's change runs live — the request a roll task
-// confirmed with its own rollout wait. state none means the roller has
-// not judged the commit yet.
-func RollStateHandler(store RollStateStore) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		sha := r.URL.Query().Get("sha")
-		if len(sha) < 7 {
-			http.Error(w, "sha: want a commit sha", http.StatusBadRequest)
-			return
-		}
-		req, ok, err := store.RollRequestBySHA(r.Context(), sha)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		v := rollStateView{State: "none"}
-		if ok {
-			v = rollStateView{State: req.State, Task: req.TaskID, Run: req.RunID}
-		}
-		writeJSON(w, v)
-	}
-}
-
-// rollStateView is RollStateHandler's answer: the state, and when a roll
-// task carries the request, the task and the run that opened it.
-type rollStateView struct {
-	State string `json:"state"`
-	Task  string `json:"task"`
-	Run   int64  `json:"run"`
 }
 
 // RollRuns bounds the push runs the roller judges on repository: first,
@@ -273,16 +215,30 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 // committed requests merged, and the ones folded in after its last commit
 // forgotten, so the next poll judges their images again; a task that ended
 // otherwise fails its requests; a request whose task or card never got
-// filed is forgotten.
-func (s *PGStore) SettleRollRequests(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `WITH gone AS (
+// filed is forgotten. It returns the requests it settled, whose verdicts
+// the caller reports as commit statuses (roadmap 297).
+func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `WITH gone AS (
 		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
 			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status = 'done')
 		RETURNING r.sha)
 		UPDATE roll_requests r SET state = CASE WHEN t.status = 'done' THEN 'merged' ELSE 'failed' END
 		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1)
-		AND r.sha NOT IN (SELECT sha FROM gone)`, FinalStatuses)
-	return err
+		AND r.sha NOT IN (SELECT sha FROM gone)
+		RETURNING r.sha, r.state`, FinalStatuses)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var settled []RollRequest
+	for rows.Next() {
+		var r RollRequest
+		if err := rows.Scan(&r.SHA, &r.State); err != nil {
+			return nil, err
+		}
+		settled = append(settled, r)
+	}
+	return settled, rows.Err()
 }
 
 // LastMergedRoll is the newest commit whose images a roll task of
@@ -335,7 +291,7 @@ type RollerStore interface {
 	OpenRollTask(ctx context.Context, repository string) (Task, bool, error)
 	InsertRollRequest(ctx context.Context, r RollRequest) error
 	DeleteRollRequest(ctx context.Context, sha string) error
-	SettleRollRequests(ctx context.Context) error
+	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
@@ -401,8 +357,16 @@ func (r *Roller) Run(ctx context.Context) {
 const rollRunsRead = 20
 
 func (r *Roller) poll(ctx context.Context) error {
-	if err := r.Store.SettleRollRequests(ctx); err != nil {
+	settled, err := r.Store.SettleRollRequests(ctx)
+	if err != nil {
 		return err
+	}
+	for _, req := range settled {
+		if req.State == RollMerged {
+			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
+		} else {
+			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
+		}
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
@@ -477,6 +441,22 @@ func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
 	return len(green) == len(imageContexts), nil
 }
 
+// rollStatusContext is the commit-status context the roller reports its
+// verdict under. CI's rollout job polls it (roadmap 297): success means the
+// commit's change runs live, failure means it will not, pending means a
+// roll task is carrying it.
+const rollStatusContext = "factory/roll"
+
+// rollStatus reports the roller's verdict on sha as a commit status. A
+// status the API refuses is logged, not fatal: the card and the roll
+// request, not the status, are the record.
+func (r *Roller) rollStatus(ctx context.Context, sha, state, description string) {
+	if err := r.Forgejo.CreateCommitStatus(ctx, r.Repo.Owner, r.Repo.Name, sha,
+		CommitStatus{State: state, Context: rollStatusContext, Description: description}); err != nil {
+		log.Printf("roller: %s: report %s: %v", sha, state, err)
+	}
+}
+
 // judge decides one run of main whose image jobs are green: a skip, a roll
 // task, or a fold into the open one. done: it filed or folded, or waits
 // while the open roll has no pull request yet; the older runs wait for the
@@ -505,7 +485,11 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		return false, err
 	} else if only {
 		log.Printf("roller: %s (run %d) changes nothing outside k8s/; nothing to roll", run.CommitSHA, run.ID)
-		return false, r.Store.InsertRollRequest(ctx, req)
+		if err := r.Store.InsertRollRequest(ctx, req); err != nil {
+			return false, err
+		}
+		r.rollStatus(ctx, req.SHA, "success", "nothing to roll outside k8s/: already live")
+		return false, nil
 	}
 	at, ref := r.Repo, prBase
 	if folding {
@@ -517,7 +501,11 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	}
 	if len(changes) == 0 {
 		log.Printf("roller: %s (run %d) changed no image; nothing to roll", run.CommitSHA, run.ID)
-		return false, r.Store.InsertRollRequest(ctx, req)
+		if err := r.Store.InsertRollRequest(ctx, req); err != nil {
+			return false, err
+		}
+		r.rollStatus(ctx, req.SHA, "success", "no image changed: already live")
+		return false, nil
 	}
 	req.Changes = changes
 	if len(unsigned) > 0 {
@@ -754,6 +742,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 		log.Printf("roller: task %s: summary: %v", t.ID, err)
 	}
 	log.Printf("roller: %s (run %d): roll task %s, issue #%d: %s", req.SHA, req.RunID, t.ID, ref.Number, title)
+	r.rollStatus(ctx, req.SHA, "pending", "roll task "+t.ID+" is taking the change live")
 	return nil
 }
 
@@ -786,6 +775,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
 	}
 	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, ref.Number, title)
+	r.rollStatus(ctx, req.SHA, "failure", "roll refused: "+strings.Join(rollNames(unsigned), ", ")+" not signed")
 	return nil
 }
 
@@ -805,6 +795,7 @@ func (r *Roller) fold(ctx context.Context, open Task, req RollRequest) error {
 		log.Printf("roller: task %s: signal the fold of %s: %v", open.ID, req.SHA, err)
 	}
 	log.Printf("roller: %s (run %d): folded into roll task %s: %s", req.SHA, req.RunID, open.ID, title)
+	r.rollStatus(ctx, req.SHA, "pending", "folded into roll task "+open.ID)
 	return nil
 }
 

@@ -73,7 +73,47 @@ func (s *fakeStore) DeleteRollRequest(ctx context.Context, sha string) error {
 	return nil
 }
 
-func (s *fakeStore) SettleRollRequests(ctx context.Context) error { return nil }
+// SettleRollRequests settles the fake's open requests the way the store
+// does: a done task's committed request merged, its never-committed ones
+// forgotten, any other ended task's request failed, a request without its
+// task forgotten. It returns what it settled.
+func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
+	var settled []RollRequest
+	var gone []string
+	for _, r := range s.rolls {
+		if r.State != RollOpened {
+			continue
+		}
+		t, ok := s.tasks[r.TaskID]
+		if !ok || (t.Status == "done" && !r.Committed) {
+			gone = append(gone, r.SHA)
+			continue
+		}
+		if !slices.Contains(FinalStatuses, t.Status) {
+			continue
+		}
+		if t.Status == "done" {
+			r.State = RollMerged
+		} else {
+			r.State = RollFailed
+		}
+		s.UpdateRollRequest(ctx, r)
+		settled = append(settled, r)
+	}
+	for _, sha := range gone {
+		s.DeleteRollRequest(ctx, sha)
+	}
+	return settled, nil
+}
+
+func (s *fakeStore) UpdateRollRequest(ctx context.Context, r RollRequest) {
+	for i, old := range s.rolls {
+		if old.SHA == r.SHA {
+			s.rolls[i] = r
+			return
+		}
+	}
+}
 
 func (s *fakeStore) LastMergedRoll(ctx context.Context, repository string) (string, bool, error) {
 	var last RollRequest
@@ -234,6 +274,7 @@ type rollForgejo struct {
 	forkParents map[string][]string            // fork commit -> its parents (a merge commit has several)
 	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
 	statuses    map[string][]map[string]string // commit -> its statuses (status, context, target_url, created_at)
+	reported    []string                       // "sha state context" of every status the roller reported
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
@@ -306,6 +347,13 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				}
 			}
 			reply(map[string]any{"state": state, "statuses": f.statuses[sha]})
+		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/statuses/"):
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			sha := strings.TrimPrefix(p, "/statuses/")
+			f.statuses[sha] = append(f.statuses[sha], in)
+			f.reported = append(f.reported, sha+" "+in["state"]+" "+in["context"])
+			w.WriteHeader(http.StatusCreated)
 		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
 			var in map[string]any
 			json.NewDecoder(r.Body).Decode(&in)
@@ -790,6 +838,9 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	if n := slices.Index(f.calls, "GET /v2/token"); n < 0 || slices.Contains(f.calls[n+1:], "GET /v2/token") {
 		t.Fatalf("registry tokens read %v, want one per poll", f.calls)
 	}
+	if !slices.Equal(f.reported, []string{commitC1 + " failure factory/roll"}) {
+		t.Fatalf("reported %v, want the refusal named", f.reported)
+	}
 
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -823,6 +874,9 @@ func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 	}
 	if len(f.issues) != 0 || len(wf.started) != 0 || !strings.Contains(logs.String(), commitC2+" (run 60) changed no image") {
 		t.Fatalf("issues %v, starts %v, log %q", f.issues, wf.started, logs.String())
+	}
+	if !slices.Equal(f.reported, []string{commitC2 + " success factory/roll"}) {
+		t.Fatalf("reported %v, want the skip live", f.reported)
 	}
 
 	f.runs = []map[string]any{pushRun(59, commitC1, "success")}
@@ -1712,36 +1766,40 @@ func TestRollerFilesTheNewestOfSeveralGreenRuns(t *testing.T) {
 	}
 }
 
-// rollStateFake plays the store RollStateHandler reads.
-type rollStateFake struct{ rolls map[string]RollRequest }
-
-func (f *rollStateFake) RollRequestBySHA(_ context.Context, sha string) (RollRequest, bool, error) {
-	r, ok := f.rolls[sha]
-	return r, ok, nil
-}
-
-// The roll-state endpoint answers the state the CI chain's rollout job
-// polls until the commit runs live (roadmap 296): none for a commit the
-// roller has not judged, the request's own state with its task and run
-// when it has, and a missing sha is a bad request.
-func TestRollStateHandler(t *testing.T) {
-	h := RollStateHandler(&rollStateFake{rolls: map[string]RollRequest{
-		commitC1: {SHA: commitC1, RunID: 57, State: RollOpened, TaskID: "t-9"},
-	}})
-	get := func(url string) (int, string) {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
-		return rec.Code, rec.Body.String()
+// The roller reports each verdict as the factory/roll commit status
+// (roadmap 297): pending while the roll task it filed carries the commit,
+// then success once the task settles merged — the status the CI chain's
+// rollout job polls, the currency the store already carries to every job.
+func TestRollerReportsItsVerdictAsACommitStatus(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
-	if code, body := get("/internal/roll-state?sha=" + commitC1); code != 200 ||
-		body != `{"state":"opened","task":"t-9","run":57}`+"\n" {
-		t.Fatalf("an opened roll: %d %s", code, body)
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
 	}
-	if code, body := get("/internal/roll-state?sha=" + commitC2); code != 200 ||
-		body != `{"state":"none","task":"","run":0}`+"\n" {
-		t.Fatalf("an unjudged commit: %d %s", code, body)
+	want := []string{commitC1 + " pending factory/roll"}
+	if !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %v, want %v", f.reported, want)
 	}
-	if code, _ := get("/internal/roll-state"); code != http.StatusBadRequest {
-		t.Fatalf("no sha: %d", code)
+	// the roll task ends done with its request committed: the next poll
+	// settles it and reports the commit live
+	id := store.rolls[0].TaskID
+	store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "done", Repository: codeRepo}
+	store.rolls[0].Committed = true
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, commitC1+" success factory/roll")
+	if !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %v, want %v", f.reported, want)
 	}
 }

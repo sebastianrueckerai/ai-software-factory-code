@@ -1175,6 +1175,19 @@ func (f *Forgejo) CombinedStatus(ctx context.Context, owner, repo, sha string) (
 	return CombinedStatus{State: res.State, Statuses: res.Statuses}, nil
 }
 
+// CreateCommitStatus reports one check result against a commit. The roller
+// publishes its verdict this way (roadmap 297): the CI chain reads statuses,
+// the currency every project's chain already speaks.
+func (f *Forgejo) CreateCommitStatus(ctx context.Context, owner, repo, sha string, s CommitStatus) error {
+	payload, err := json.Marshal(map[string]any{"state": s.State, "context": s.Context, "description": s.Description})
+	if err != nil {
+		return err
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/statuses/%s", owner, repo, sha)
+	_, err = f.call(ctx, http.MethodPost, path, payload, http.StatusCreated)
+	return err
+}
+
 // JobLog fetches the tail of a finished job's raw log, its last
 // maxForgejoAnswer bytes, where a failed step's error and the runner's
 // own lines stand; a log cut there starts mid-line. Forgejo 15.0.9 has
