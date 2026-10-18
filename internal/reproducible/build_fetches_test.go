@@ -22,17 +22,19 @@ var (
 	// PGDG's archive, which the store does not front.
 	aptSourceURL   = regexp.MustCompile(`\bdeb\s+(?:\[[^\]]*\]\s*)?(https?://` + "[^\\s\"'`$]+" + `)`)
 	aptArchiveHost = map[string]bool{"snapshot.debian.org": true, "apt-archive.postgresql.org": true}
-	// ciMirrorValue reads the registry and cache mirrors ci.yml names:
-	// the values of its env's CACHE and BUILDKIT.
-	ciMirrorValue = regexp.MustCompile(`(?m)^\s+(CACHE|BUILDKIT): (\S+)`)
+	// ciMirrorValue reads the registry and cache mirrors and the control
+	// plane ci.yml names: the values of its env's CACHE, BUILDKIT and
+	// FACTORYD.
+	ciMirrorValue = regexp.MustCompile(`(?m)^\s+(CACHE|BUILDKIT|FACTORYD): (\S+)`)
 	// buildVMDenyList is the hosts the build VM's own rules refuse.
 	buildVMDenyList = regexp.MustCompile(`(?s)buildVMUpstreamHosts\s*=\s*\[\]string\{([^}]*)\}`)
 	quotedString    = regexp.MustCompile(`"([^"]+)"`)
 )
 
 // buildFetchHosts are the hosts a build-time fetch may name: the store's
-// host and the registry and cache mirrors ci.yml itself names (roadmap
-// 203, step 3). Nothing else answers a build.
+// host and the registry and cache mirrors and the factory's own control
+// plane ci.yml itself names (roadmap 203, step 3; the control plane,
+// roadmap 296). Nothing else answers a build.
 func buildFetchHosts(t *testing.T) map[string]bool {
 	t.Helper()
 	storeHost, _, _ := strings.Cut(store, "/")
@@ -42,7 +44,8 @@ func buildFetchHosts(t *testing.T) map[string]bool {
 		t.Fatal(err)
 	}
 	for _, m := range ciMirrorValue.FindAllStringSubmatch(string(ci), -1) {
-		host, _, _ := strings.Cut(m[2], "/")
+		value := strings.TrimPrefix(strings.TrimPrefix(m[2], "https://"), "http://")
+		host, _, _ := strings.Cut(value, "/")
 		if host == "" {
 			t.Fatalf("ci.yml: %s names no host", m[1])
 		}
@@ -121,13 +124,13 @@ func outsideFetches(name string, lines []string, allowed map[string]bool) []stri
 }
 
 // Every build-time fetch the build files name resolves to the store's
-// host or a registry or cache mirror ci.yml itself names (roadmap 203,
-// step 3): every ADD, wget and curl URL, every FROM, the go module and
-// npm restore paths — apt's dated snapshot and PGDG archive aside,
-// roadmap 242's deliberate exception. Anything else names an upstream
-// the store fronts — a build must not even name one, let alone reach
-// it: the build VM's own rules deny those hosts
-// (TestTheBuildVMDeniesEveryUpstreamFileHost).
+// host or a registry or cache mirror or the factory's control plane
+// ci.yml itself names (roadmap 203, step 3): every ADD, wget and curl
+// URL, every FROM, the go module and npm restore paths — apt's dated
+// snapshot and PGDG archive aside, roadmap 242's deliberate exception.
+// Anything else names an upstream the store fronts — a build must not
+// even name one, let alone reach it: the build VM's own rules deny those
+// hosts (TestTheBuildVMDeniesEveryUpstreamFileHost).
 func TestEveryBuildFetchResolvesToTheStoreOrAMirror(t *testing.T) {
 	allowed := buildFetchHosts(t)
 	for f, raw := range buildFetchFiles(t) {

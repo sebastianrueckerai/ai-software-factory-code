@@ -573,6 +573,19 @@ func pushRun(id int64, sha, status string) map[string]any {
 	return map[string]any{"id": id, "commit_sha": sha, "event": "push", "status": status, "prettyref": "main", "created": "2026-09-29T10:00:00Z"}
 }
 
+// imageGreen is the shas' combined status as main CI reports it once its
+// three image jobs published their images: the roller's trigger (roadmap
+// 296), whatever the run's own state then is.
+func imageGreen(shas ...string) map[string][]map[string]string {
+	out := map[string][]map[string]string{}
+	for _, sha := range shas {
+		for _, ctx := range imageContexts {
+			out[sha] = append(out[sha], map[string]string{"status": "success", "context": ctx, "target_url": "https://git.example"})
+		}
+	}
+	return out
+}
+
 // registryOf serves each index under its digest and under the tags given,
 // each signed as main CI signs what it pushes.
 func registryOf(tags map[string]string, indexes ...string) map[string]string {
@@ -613,8 +626,9 @@ func mainPins() map[string]string {
 func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{
-		runs:  []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success"), pushRun(56, "c0c0c0c0", "success")},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		runs:     []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success"), pushRun(56, "c0c0c0c0", "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
 			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
@@ -645,6 +659,9 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 		len(req.Changes) != 2 || req.Changes["factoryd"] != sha256Of(gwNewIdx) || req.Changes["gateway"] != sha256Of(gwNewIdx) {
 		t.Fatalf("roll request %+v", req)
 	}
+	if !slices.Equal(req.PRs, []int64{12}) {
+		t.Fatalf("roll request carries pull requests %v, want #12's: the card merged among its commits", req.PRs)
+	}
 	if task.Source != SourceRoll || task.Objective != want || task.SHA != commitC1 || task.Status != "queued" || task.Kind != "agent" ||
 		task.IssueNumber != 31 || task.AgentSummary != want || task.BudgetEUR != testBudget().TaskDefaultEUR {
 		t.Fatalf("roll task %+v", task)
@@ -667,6 +684,44 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	}
 }
 
+// The roller judges a run whose three image jobs are green even while the
+// run itself still runs (roadmap 296): its rollout job holds the run open
+// until its roll goes live, so the run's own state says nothing of its
+// images. A run with an image job not yet green waits.
+func TestRollerRollsARunItsRolloutJobHoldsOpen(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(64, commitC1, "running")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, wf := newTestRoller(t, f)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened || len(wf.started) != 1 {
+		t.Fatalf("rolls %+v, starts %v; the running run was not judged", store.rolls, wf.started)
+	}
+
+	// the sandbox image job has not reported yet: no judgement
+	f.runs = []map[string]any{pushRun(65, commitC2, "running")}
+	f.statuses = map[string][]map[string]string{commitC2: {
+		{"status": "success", "context": "ci / image (push)", "target_url": "https://git.example"},
+		{"status": "success", "context": "ci / image-runner (push)", "target_url": "https://git.example"},
+	}}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 || len(wf.started) != 1 {
+		t.Fatalf("rolls %+v, starts %v; a run with a pending image job was judged", store.rolls, wf.started)
+	}
+}
+
 // A green commit whose changed images are not all signed with the
 // factory's key (roadmap 46) rolls none of them: the gateway's signature
 // is by another key and the worker carries none, so no roll task is
@@ -677,8 +732,9 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	run := pushRun(57, commitC1, "success")
 	run["index_in_repo"] = 412
 	f := &rollForgejo{
-		runs:  []map[string]any{run},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		runs:     []map[string]any{run},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
 			"sf/opencode-worker/manifests/c1c1c1c": workerNewIdx,
@@ -749,8 +805,9 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{
-		runs:  []map[string]any{pushRun(60, commitC2, "success")},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		runs:     []map[string]any{pushRun(60, commitC2, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC2),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:b1"),
 			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
@@ -761,7 +818,7 @@ func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.rolls) != 1 || !reflect.DeepEqual(store.rolls[0], RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 60, State: RollSkipped}) {
+	if len(store.rolls) != 1 || !reflect.DeepEqual(store.rolls[0], RollRequest{SHA: commitC2, Repository: codeRepo, RunID: 60, State: RollSkipped, PRs: []int64{12, 14}}) {
 		t.Fatalf("roll requests %+v, want one skip", store.rolls)
 	}
 	if len(f.issues) != 0 || len(wf.started) != 0 || !strings.Contains(logs.String(), commitC2+" (run 60) changed no image") {
@@ -786,8 +843,9 @@ func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	branchPins := k8sManifests(sha256Of(gwNewIdx), sha256Of(gwNewIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx))
 	f := &rollForgejo{
-		runs:  []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-open": branchPins},
+		runs:     []map[string]any{pushRun(61, commitC2, "success"), pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins(), forkRepo + "@factory/t-open": branchPins},
+		statuses: imageGreen(commitC2),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c2c2c2c": gwNewRebuilt,
 			"sf/opencode-worker/manifests/c2c2c2c": workerNewIdx,
@@ -802,7 +860,7 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(store.rolls) != 1 || len(f.calls) != 1 {
+	if len(store.rolls) != 1 || len(f.calls) != 2 { // the runs read and the trigger's status read
 		t.Fatalf("folded before the pull request was open: rolls %+v, calls %v", store.rolls, f.calls)
 	}
 
@@ -1084,7 +1142,8 @@ func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 func TestRollerSkipsACommitThatChangesOnlyK8s(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{runs: []map[string]any{pushRun(62, commitC2, "success")},
-		touched: map[string][]string{commitC2: {"k8s/factoryd.yaml", "k8s/deployment.yaml", "k8s/factoryd.yaml"}}}
+		statuses: imageGreen(commitC2),
+		touched:  map[string][]string{commitC2: {"k8s/factoryd.yaml", "k8s/deployment.yaml", "k8s/factoryd.yaml"}}}
 	roller, store, wf := newTestRoller(t, f)
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
@@ -1114,9 +1173,10 @@ func TestRollerRollsACodeMergeWhoseRunTheRollMergeCancelled(t *testing.T) {
 		// Against its first parent C1 (the cancelled run's own commit), R1
 		// looks k8s-only: C1's code is already in that tree. Against C0,
 		// the last merged roll, R1 also carries C1's code change.
-		touched: map[string][]string{commitR1: {"k8s/factoryd.yaml"}},
-		rolled:  map[string][]string{commitR1: {"internal/factoryd/x.go", "k8s/factoryd.yaml"}},
-		files:   map[string]map[string]string{codeRepo + "@main": mainPins()},
+		touched:  map[string][]string{commitR1: {"k8s/factoryd.yaml"}},
+		rolled:   map[string][]string{commitR1: {"internal/factoryd/x.go", "k8s/factoryd.yaml"}},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitR1),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/9191919": gwNewIdx,
 			"sf/opencode-worker/manifests/9191919": workerRebuilt,
@@ -1144,7 +1204,8 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 	const commitR2 = "9292929292929292929292929292929292929292"
 	logs := captureLog(t)
 	f := &rollForgejo{runs: []map[string]any{pushRun(103, commitR2, "success")},
-		touched: map[string][]string{commitR2: {"k8s/factoryd.yaml"}}}
+		statuses: imageGreen(commitR2),
+		touched:  map[string][]string{commitR2: {"k8s/factoryd.yaml"}}}
 	roller, store, wf := newTestRoller(t, f)
 	store.tasks["t-prev"] = Task{ID: "t-prev", Source: SourceRoll, Status: "done", Repository: codeRepo}
 	store.rolls = []RollRequest{{SHA: commitC0, Repository: codeRepo, RunID: 90, State: RollMerged, TaskID: "t-prev", Committed: true}}
@@ -1309,7 +1370,7 @@ func TestRollCommitRefusesABranchItDidNotWrite(t *testing.T) {
 func TestRollerComparesTheImagesOfAnEmptyCommit(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{runs: []map[string]any{pushRun(63, commitC2, "success")}, touched: map[string][]string{commitC2: {}},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()}, statuses: imageGreen(commitC2),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c2c2c2c": gwNewIdx,
 			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
@@ -1331,9 +1392,10 @@ func TestRollerComparesTheImagesOfAnEmptyCommit(t *testing.T) {
 // A's code.
 func TestRollerRollsACodeCommitWhoseRunFinishesAfterAK8sOnlyOne(t *testing.T) {
 	f := &rollForgejo{
-		runs:    []map[string]any{pushRun(101, commitC2, "success"), pushRun(100, commitC1, "running")},
-		touched: map[string][]string{commitC2: {"k8s/factoryd.yaml"}},
-		files:   map[string]map[string]string{codeRepo + "@main": mainPins()},
+		runs:     []map[string]any{pushRun(101, commitC2, "success"), pushRun(100, commitC1, "running")},
+		touched:  map[string][]string{commitC2: {"k8s/factoryd.yaml"}},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC2),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
 			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
@@ -1351,6 +1413,7 @@ func TestRollerRollsACodeCommitWhoseRunFinishesAfterAK8sOnlyOne(t *testing.T) {
 		t.Fatalf("after B: rolls %+v, starts %v", store.rolls, wf.started)
 	}
 	f.runs = []map[string]any{pushRun(101, commitC2, "success"), pushRun(100, commitC1, "success")}
+	f.statuses = imageGreen(commitC2, commitC1) // the slow run's images landed
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -1628,8 +1691,9 @@ func TestRollCommitRefusesATipWithoutFactorydsCommit(t *testing.T) {
 // run falls below the roll.
 func TestRollerFilesTheNewestOfSeveralGreenRuns(t *testing.T) {
 	f := &rollForgejo{
-		runs:  []map[string]any{pushRun(102, commitC2, "success"), pushRun(101, commitC1, "success")},
-		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		runs:     []map[string]any{pushRun(102, commitC2, "success"), pushRun(101, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC2, commitC1),
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx, "sf/opencode-worker/manifests/c1c1c1c": workerRebuilt, "sf/ci-runner/manifests/c1c1c1c": runnerRebuilt,
 			"sf/factory-gateway/manifests/c2c2c2c": gwNewRebuilt, "sf/opencode-worker/manifests/c2c2c2c": workerNewIdx, "sf/ci-runner/manifests/c2c2c2c": runnerRebuilt2,
@@ -1645,5 +1709,39 @@ func TestRollerFilesTheNewestOfSeveralGreenRuns(t *testing.T) {
 	if len(store.rolls) != 2 || store.rolls[1].SHA != commitC2 || store.rolls[1].State != RollOpened || len(wf.started) != 1 || len(wf.signals) != 0 ||
 		len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "roll c2c2c2c: factoryd, gateway, worker\n\n") {
 		t.Fatalf("rolls %+v, starts %v, signals %v, issues %q", store.rolls, wf.started, wf.signals, f.issues)
+	}
+}
+
+// rollStateFake plays the store RollStateHandler reads.
+type rollStateFake struct{ rolls map[string]RollRequest }
+
+func (f *rollStateFake) RollRequestBySHA(_ context.Context, sha string) (RollRequest, bool, error) {
+	r, ok := f.rolls[sha]
+	return r, ok, nil
+}
+
+// The roll-state endpoint answers the state the CI chain's rollout job
+// polls until the commit runs live (roadmap 296): none for a commit the
+// roller has not judged, the request's own state with its task and run
+// when it has, and a missing sha is a bad request.
+func TestRollStateHandler(t *testing.T) {
+	h := RollStateHandler(&rollStateFake{rolls: map[string]RollRequest{
+		commitC1: {SHA: commitC1, RunID: 57, State: RollOpened, TaskID: "t-9"},
+	}})
+	get := func(url string) (int, string) {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
+		return rec.Code, rec.Body.String()
+	}
+	if code, body := get("/internal/roll-state?sha="+commitC1); code != 200 ||
+		body != `{"state":"opened","task":"t-9","run":57}`+"\n" {
+		t.Fatalf("an opened roll: %d %s", code, body)
+	}
+	if code, body := get("/internal/roll-state?sha="+commitC2); code != 200 ||
+		body != `{"state":"none","task":"","run":0}`+"\n" {
+		t.Fatalf("an unjudged commit: %d %s", code, body)
+	}
+	if code, _ := get("/internal/roll-state"); code != http.StatusBadRequest {
+		t.Fatalf("no sha: %d", code)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
@@ -47,13 +48,16 @@ const (
 // RollRequest is factoryd's judgement of one main commit whose push run
 // went green: Changes maps each roll target whose image changed to the
 // digest main CI published for the commit; Committed, that the roll task's
-// branch carries them.
+// branch carries them. PRs are the pull requests merged among the commits
+// it carries, the link each card reads to track its own deploy (roadmap
+// 296).
 type RollRequest struct {
 	SHA        string
 	Repository string
 	RunID      int64
 	State      string
 	TaskID     string
+	PRs        []int64
 	Changes    map[string]string
 	Summary    string
 	Committed  bool
@@ -66,6 +70,63 @@ func (s *PGStore) RollRequestSeen(ctx context.Context, sha string) (bool, error)
 	var found bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM roll_requests WHERE sha = $1)`, sha).Scan(&found)
 	return found, err
+}
+
+// RollRequestBySHA is the roller's judgement of sha, when it has made one:
+// the read the CI chain's rollout job polls (roadmap 296).
+func (s *PGStore) RollRequestBySHA(ctx context.Context, sha string) (RollRequest, bool, error) {
+	r := RollRequest{}
+	var changes []byte
+	err := s.db.QueryRowContext(ctx, `SELECT sha, repository, run_id, state, COALESCE(task_id, ''), changes, summary, created_at FROM roll_requests
+		WHERE sha = $1`, sha).Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.TaskID, &changes, &r.Summary, &r.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return RollRequest{}, false, nil
+	}
+	if err != nil {
+		return RollRequest{}, false, err
+	}
+	if err := json.Unmarshal(changes, &r.Changes); err != nil {
+		return RollRequest{}, false, err
+	}
+	return r, true, nil
+}
+
+// RollStateStore is the read RollStateHandler serves.
+type RollStateStore interface {
+	RollRequestBySHA(ctx context.Context, sha string) (RollRequest, bool, error)
+}
+
+// RollStateHandler serves GET /internal/roll-state?sha=<commit> (roadmap
+// 296): the roller's judgement of that commit, which CI's rollout job
+// polls until the commit's change runs live — the request a roll task
+// confirmed with its own rollout wait. state none means the roller has
+// not judged the commit yet.
+func RollStateHandler(store RollStateStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sha := r.URL.Query().Get("sha")
+		if len(sha) < 7 {
+			http.Error(w, "sha: want a commit sha", http.StatusBadRequest)
+			return
+		}
+		req, ok, err := store.RollRequestBySHA(r.Context(), sha)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		v := rollStateView{State: "none"}
+		if ok {
+			v = rollStateView{State: req.State, Task: req.TaskID, Run: req.RunID}
+		}
+		writeJSON(w, v)
+	}
+}
+
+// rollStateView is RollStateHandler's answer: the state, and when a roll
+// task carries the request, the task and the run that opened it.
+type rollStateView struct {
+	State string `json:"state"`
+	Task  string `json:"task"`
+	Run   int64  `json:"run"`
 }
 
 // RollRuns bounds the push runs the roller judges on repository: first,
@@ -102,8 +163,12 @@ func (s *PGStore) InsertRollRequest(ctx context.Context, r RollRequest) error {
 	if r.TaskID != "" {
 		task = &r.TaskID
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO roll_requests (sha, repository, run_id, state, task_id, changes, summary)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)`, r.SHA, r.Repository, r.RunID, r.State, task, changes, r.Summary)
+	prs := r.PRs
+	if prs == nil {
+		prs = []int64{}
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO roll_requests (sha, repository, run_id, state, task_id, prs, changes, summary)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, r.SHA, r.Repository, r.RunID, r.State, task, prs, changes, r.Summary)
 	return err
 }
 
@@ -115,7 +180,7 @@ func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
 // TaskRolls are task's roll requests, oldest first: an update writes them
 // all again, on main's head (roadmap 279).
 func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at FROM roll_requests
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, repository, run_id, state, committed, changes, summary, created_at, prs FROM roll_requests
 		WHERE task_id = $1 ORDER BY run_id`, taskID)
 	if err != nil {
 		return nil, err
@@ -125,7 +190,7 @@ func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, 
 	for rows.Next() {
 		r := RollRequest{TaskID: taskID}
 		var changes []byte
-		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.Committed, &changes, &r.Summary, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.Committed, &changes, &r.Summary, &r.CreatedAt, &r.PRs); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(changes, &r.Changes); err != nil {
@@ -281,9 +346,11 @@ type RollerStore interface {
 	ClearQueuePause(ctx context.Context, project string) error
 }
 
-// Roller opens the roll of the code repository (ruling 178): for the
-// green push runs of main it has not judged, newest first and none older
-// than a commit a roll carries, it compares the images the run published
+// Roller opens the roll of the code repository (ruling 178): for the push
+// runs of main whose three image jobs are green (the run itself may still
+// run: its rollout job waits for the roll, roadmap 296) and it has not
+// judged, newest first and none older than a commit a roll carries, it
+// compares the images the run published
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
 // and for a changed image files a task of source roll whose one commit
 // bumps the digests; while a roll task is open, a newer set of images is
@@ -341,26 +408,15 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err := r.mainState(ctx, runs); err != nil {
 		return err
 	}
-	var green []ActionRun
-	for _, x := range runs {
-		if x.PrettyRef == prBase && x.Status == "success" && len(x.CommitSHA) >= 7 {
-			green = append(green, x)
-		}
-	}
-	if len(green) == 0 {
-		return nil
-	}
-	// newest first: the newest changed images file (or fold) the roll, and
-	// the older runs fall below it
-	slices.SortFunc(green, func(a, b ActionRun) int { return cmp.Compare(b.ID, a.ID) })
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
 		return err
 	}
-	if first == 0 {
-		green = green[:1] // the first judgement: the newest only
-	}
-	for _, run := range green {
+	var green []ActionRun
+	for _, run := range runs {
+		if run.PrettyRef != prBase || len(run.CommitSHA) < 7 {
+			continue
+		}
 		// a run older than the first judged, or than a commit a roll
 		// carries, would roll main back
 		if run.ID < first || run.ID <= carried {
@@ -371,6 +427,24 @@ func (r *Roller) poll(ctx context.Context) error {
 		} else if seen {
 			continue
 		}
+		ok, err := r.imagesGreen(ctx, run.CommitSHA)
+		if err != nil {
+			return err
+		}
+		if ok {
+			green = append(green, run)
+		}
+	}
+	if len(green) == 0 {
+		return nil
+	}
+	// newest first: the newest changed images file (or fold) the roll, and
+	// the older runs fall below it
+	slices.SortFunc(green, func(a, b ActionRun) int { return cmp.Compare(b.ID, a.ID) })
+	if first == 0 {
+		green = green[:1] // the first judgement: the newest only
+	}
+	for _, run := range green {
 		if done, err := r.judge(ctx, run); err != nil || done {
 			return err
 		}
@@ -378,9 +452,32 @@ func (r *Roller) poll(ctx context.Context) error {
 	return nil
 }
 
-// judge decides one green run of main: a skip, a roll task, or a fold
-// into the open one. done: it filed or folded, or waits while the open
-// roll has no pull request yet; the older runs wait for the next poll.
+// imageContexts are main CI's three image jobs' commit-status contexts:
+// the images they publish are what a roll rolls.
+var imageContexts = []string{"ci / image (push)", "ci / image-sandbox (push)", "ci / image-runner (push)"}
+
+// imagesGreen reads whether sha's three image jobs report success. The
+// roller judges a run on this, not on the run's own state: the run's
+// rollout job (roadmap 296) waits for the run's roll to go live, so the
+// run stays running until its change is deployed.
+func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
+	cs, err := r.Forgejo.CombinedStatus(ctx, r.Repo.Owner, r.Repo.Name, sha)
+	if err != nil {
+		return false, err
+	}
+	green := map[string]bool{}
+	for _, s := range cs.Statuses {
+		if s.State == "success" && slices.Contains(imageContexts, s.Context) {
+			green[s.Context] = true
+		}
+	}
+	return len(green) == len(imageContexts), nil
+}
+
+// judge decides one run of main whose image jobs are green: a skip, a roll
+// task, or a fold into the open one. done: it filed or folded, or waits
+// while the open roll has no pull request yet; the older runs wait for the
+// next poll.
 func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error) {
 	open, folding, err := r.Store.OpenRollTask(ctx, r.Repo.String())
 	if err != nil {
@@ -389,7 +486,18 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	if folding && open.PRNumber == 0 {
 		return true, nil // folded in once its pull request is open
 	}
-	req := RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped}
+	// the pull requests the run's commits merged since the last roll: every
+	// state carries them, so a card tracks its own deploy through a skip or
+	// a refusal too (roadmap 296)
+	commits, merged, err := r.carried(ctx, run.CommitSHA)
+	if err != nil {
+		return false, err
+	}
+	prs := make([]int64, len(merged))
+	for i, p := range merged {
+		prs[i] = p.Number
+	}
+	req := RollRequest{SHA: run.CommitSHA, Repository: r.Repo.String(), RunID: run.ID, State: RollSkipped, PRs: prs}
 	if only, err := r.onlyK8s(ctx, run.CommitSHA); err != nil {
 		return false, err
 	} else if only {
@@ -413,7 +521,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		return false, r.refuse(ctx, run, req, unsigned)
 	}
 	req.State = RollOpened
-	if req.Summary, err = r.summary(ctx, run, changes, refs); err != nil {
+	if req.Summary, err = r.summary(ctx, run, changes, refs, commits, merged); err != nil {
 		return false, err
 	}
 	if folding {
@@ -536,16 +644,12 @@ func rollNames(changes map[string]string) []string {
 
 // summary is the roll's text: its title line, the new references, the
 // commits since the last roll and the pull requests merged among them.
-func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string) (string, error) {
+func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[string]string, commits []ComparedCommit, merged []MergedPullRequest) (string, error) {
 	var b strings.Builder
 	fmt.Fprintf(&b, "roll %s: %s\n\nMain CI's push run %d published the images of %s. The digests under k8s/ that change:\n",
 		run.CommitSHA[:7], strings.Join(rollNames(changes), ", "), run.ID, run.CommitSHA)
 	for _, name := range rollNames(changes) {
 		fmt.Fprintf(&b, "\n- %s: %s", name, refs[name])
-	}
-	commits, prs, err := r.carried(ctx, run.CommitSHA)
-	if err != nil {
-		return "", err
 	}
 	// subjects and titles can be an agent's or an issue author's: the
 	// summary goes into the roll issue, comments and commit messages
@@ -563,9 +667,9 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 	for _, c := range commits {
 		fmt.Fprintf(&b, "\n- %s %s", c.SHA[:min(7, len(c.SHA))], sanitize.Outbound(c.Subject, hosts))
 	}
-	if len(prs) > 0 {
+	if len(merged) > 0 {
 		b.WriteString("\n\nMerged pull requests it carries:\n")
-		for _, p := range prs {
+		for _, p := range merged {
 			fmt.Fprintf(&b, "\n- #%d %s", p.Number, sanitize.Outbound(p.Title, hosts))
 		}
 	}

@@ -8,6 +8,10 @@ env:
   # it; plain HTTP inside the cluster. A cache outage never fails main: the
   # import only warns, the export ignores errors.
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
+  # The factory's own control plane (roadmap 296): the rollout job polls
+  # it for a commit's roll state. Not an upstream the store fronts, so
+  # the fetch guard allows the host this env names.
+  FACTORYD: http://factoryd.factory.svc.cluster.local:8080
   # main's image builder (roadmap 242), the buildkitd release the pull
   # request build VM runs. The dind's builtin builder takes the exporter's
   # rewrite-timestamp and still writes the wall clock into the layers; a
@@ -197,3 +201,47 @@ jobs:
           printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
           /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
             git.aisoftwarefactory.world/sf/ci-runner@$(jq -r '."containerimage.digest"' /tmp/image.json)
+  rollout:
+    # The last leg of the CI chain (roadmap 296): a commit is done when it
+    # runs live, not when its images are pushed. This job polls factoryd
+    # until the roller confirms the commit's change runs on the cluster —
+    # the roller's own rollout wait, Flux applied and the deployments
+    # available — so a green ci run means live. The roller triggers on the
+    # three image jobs' statuses, not on this run's state, so it can judge
+    # the commit while this job holds the run open.
+    needs: [image, image-sandbox, image-runner]
+    runs-on: ubuntu-latest
+    steps:
+      - name: wait for the commit's change to run live
+        env:
+          TOKEN: ${{ secrets.FACTORYD_INTAKE_TOKEN }}
+        run: |
+          set -euo pipefail
+          url="$FACTORYD/internal/roll-state?sha=$GITHUB_SHA"
+          deadline=$(( $(date +%s) + 1800 ))
+          answered=0
+          while [ "$(date +%s)" -lt "$deadline" ]; do
+            code=$(curl -sS -m 10 -o /tmp/roll.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "$url") || code=000
+            if [ "$code" = 200 ]; then
+              answered=1
+              state=$(jq -r .state /tmp/roll.json)
+              case "$state" in
+                merged|skipped) echo "roll $state: $GITHUB_SHA runs live"; exit 0 ;;
+                refused|failed) echo "roll $state: $GITHUB_SHA will not run live"; cat /tmp/roll.json; exit 1 ;;
+                opened) echo "roll open: the roller is rolling $GITHUB_SHA" ;;
+                none) echo "the roller has not judged $GITHUB_SHA yet" ;;
+                *) echo "unknown roll state: $state"; cat /tmp/roll.json; exit 1 ;;
+              esac
+            elif [ "$code" = 404 ]; then
+              : # the deployed factoryd predates the endpoint
+            elif [ "$code" = 401 ]; then
+              echo "roll-state refused the token: check FACTORYD_INTAKE_TOKEN"; exit 1
+            else
+              echo "roll-state answered HTTP $code"; exit 1
+            fi
+            sleep 15
+          done
+          if [ "$answered" = 1 ]; then
+            echo "roll never went live within 30 minutes"; cat /tmp/roll.json 2>/dev/null || true; exit 1
+          fi
+          echo "no roll-state endpoint: the old chain rolls without CI watching"; exit 0
