@@ -1926,6 +1926,36 @@ func TestPGStoreDeployedCommit(t *testing.T) {
 // Migration 0026 on a real Postgres: the author and the agent's summary
 // on the row, a backlog card outside every gate until it enters a lane, closed
 // as a final state, the info_request alert kind, projects by repository.
+// The intake switch's rows: no row reads open, a set writes the state,
+// and a second set flips it back.
+func TestPGStoreChatIntake(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE chat_intake`); err != nil {
+		t.Fatal(err)
+	}
+	if closed, err := s.ChatIntakeClosed(ctx, "sf/code"); err != nil || closed {
+		t.Fatalf("no row reads %v, %v; want open", closed, err)
+	}
+	if err := s.SetChatIntake(ctx, "sf/code", true, "sebastian", time.Date(2026, 10, 26, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if closed, err := s.ChatIntakeClosed(ctx, "sf/code"); err != nil || !closed {
+		t.Fatalf("the closed row reads %v, %v; want closed", closed, err)
+	}
+	if err := s.SetChatIntake(ctx, "sf/code", false, "sebastian", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if closed, err := s.ChatIntakeClosed(ctx, "sf/code"); err != nil || closed {
+		t.Fatalf("the reopened row reads %v, %v; want open", closed, err)
+	}
+}
+
 func TestPGStoreIntakeAuto(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()

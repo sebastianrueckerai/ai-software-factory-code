@@ -210,6 +210,34 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// intakeButton answers POST /projects/{name}/intake, the chat header's
+// intake switch: closed refuses the wake's own filings — the turns the
+// Waker starts without the member's ask — and open takes them again; the
+// member's own ask always files and starts. It answers 204.
+func (c *Console) intakeButton(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	closed := r.PostFormValue("intake") == "closed"
+	p, ok, err := c.projectOf(r.Context(), name)
+	if err != nil || !ok {
+		http.Error(w, "there is no project "+name, http.StatusNotFound)
+		return
+	}
+	b := button(r)
+	if err := c.cfg.Chat.SetChatIntake(r.Context(), p.Repository, closed, b.s.user, time.Now()); err != nil {
+		log.Printf("console: the intake of %s: %v", name, err)
+		http.Error(w, "cannot set the intake of "+name, http.StatusInternalServerError)
+		return
+	}
+	from, to := "open", "closed"
+	if !closed {
+		from, to = "closed", "open"
+	}
+	c.event(context.WithoutCancel(r.Context()), factoryd.Event{Repository: p.Repository, Kind: factoryd.EventIntakeChanged,
+		Actor: b.s.user, Via: b.via, Detail: map[string]any{"from": from, "to": to}})
+	log.Printf("console: %s set the intake of %s %s", b.s.user, name, to)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // editProjectFile is the project file raw with edit applied to its
 // YAML, written back with two-space indents, so every line edit leaves
 // alone keeps its comments, order and style.

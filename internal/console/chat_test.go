@@ -66,6 +66,8 @@ type fakeChat struct {
 	spend     []spendRow
 	// proposals are the proposals and undos, in the order stored
 	proposals []*fakeProposal
+	// intake is the repositories' closed intake switches
+	intake map[string]bool
 }
 
 // fakeProposal is a row of the proposals' table: used is its used_at, zero
@@ -259,6 +261,22 @@ func (f *fakeChat) AddChatTimer(_ context.Context, repository, login string, con
 	}
 	f.timers = append(f.timers, storedTimer{repository, login, note, taskID, conversation, due})
 	return nil
+}
+
+func (f *fakeChat) SetChatIntake(_ context.Context, repository string, closed bool, by string, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.intake == nil {
+		f.intake = map[string]bool{}
+	}
+	f.intake[repository] = closed
+	return nil
+}
+
+func (f *fakeChat) ChatIntakeClosed(_ context.Context, repository string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.intake[repository], nil
 }
 
 func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {

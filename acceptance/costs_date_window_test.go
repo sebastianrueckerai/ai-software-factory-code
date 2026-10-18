@@ -686,6 +686,14 @@ func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64,
 	return true, nil
 }
 
+func (f *acceptChat) SetChatIntake(context.Context, string, bool, string, time.Time) error {
+	return nil
+}
+
+func (f *acceptChat) ChatIntakeClosed(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
 	return 0, nil
 }

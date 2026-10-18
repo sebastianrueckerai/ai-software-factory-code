@@ -843,6 +843,14 @@ func (f *accBatchChat) ArchiveConversation(context.Context, string, string, int6
 	return true, nil
 }
 
+func (f *accBatchChat) SetChatIntake(context.Context, string, bool, string, time.Time) error {
+	return nil
+}
+
+func (f *accBatchChat) ChatIntakeClosed(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
 	return 0, nil
 }

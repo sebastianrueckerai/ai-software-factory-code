@@ -15,7 +15,11 @@ import (
 const (
 	// EventAutonomyChanged records a project's autonomy level or backlog
 	// cap change (roadmap 239): detail {"from", "to", "backlog_cap"}.
-	EventAutonomyChanged   = "autonomy_changed"
+	EventAutonomyChanged = "autonomy_changed"
+	// EventIntakeChanged records a project's intake switch (the chat
+	// header's): detail {"from", "to"} with the words open and closed —
+	// closed refuses the wake's own filings, the member's ask still files.
+	EventIntakeChanged     = "intake_changed"
 	EventCardCreated       = "card_created"
 	EventCardEnteredLane   = "card_entered_lane"
 	EventTaskEnded         = "task_ended"
