@@ -53,6 +53,9 @@ const (
 // Tasks is the task state the board reads.
 type Tasks interface {
 	Task(ctx context.Context, id string) (factoryd.Task, bool, error)
+	// TaskStatuses reads many cards' statuses at once, keyed by id: a
+	// card with no row gets no entry.
+	TaskStatuses(ctx context.Context, ids []string) (map[string]string, error)
 	// TaskByIssue is repository's card of issue number issue.
 	TaskByIssue(ctx context.Context, repository string, issue int64) (factoryd.Task, bool, error)
 	// BoardTasks lists repository's open tasks, each with its latest

@@ -495,6 +495,37 @@ func (s *PGStore) CardThreadFor(ctx context.Context, repository, taskID string) 
 	return cardThreadOf(ctx, s.db, repository, taskID)
 }
 
+// CardThread is a card's bound thread: the member whose thread it is and
+// its conversation number.
+type CardThread struct {
+	Login        string
+	Conversation int64
+}
+
+// CardThreads is CardThreadFor over many cards at once: one query for the
+// project's bindings. A card with no thread gets no entry.
+func (s *PGStore) CardThreads(ctx context.Context, repository string, ids []string) (map[string]CardThread, error) {
+	out := map[string]CardThread{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id, login, conversation FROM chat_conversations
+		WHERE repository = $1 AND task_id = ANY($2)`, repository, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var c CardThread
+		if err := rows.Scan(&id, &c.Login, &c.Conversation); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
 // EnsureCardThread answers the conversation bound to repository's card
 // taskID, making it for login when the card has none: the first caller
 // binds the thread, titled #taskID, and every later caller, whoever they
