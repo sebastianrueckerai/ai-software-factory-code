@@ -368,6 +368,15 @@ form.move button { padding: 0 6px; }
 /* a need's five parts, on whatever card asks: the why under the ask, the
    info a review holds, the recommendation, a review's findings; the
    fold carries what a member copies, not what they must read first */
+/* the board's faces whisper, every part of them: whatever a need's card
+   carries, its column copy shows at most its first lines — the drawer
+   holds the whole text. The clamp sits on the board's card list itself,
+   so a part added tomorrow is small the day it lands (ruling 293) */
+.cards .card :is(.ask, .why, .info, .finding, .need-line, .brief, .recommendation) { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.cards .card .ask { -webkit-line-clamp: 3; }
+.cards .card :is(.why, .info, .finding, .need-line, .brief) { -webkit-line-clamp: 2; }
+.cards .card .recommendation { -webkit-line-clamp: 3; }
+.cards .card.plan > p { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 3; }
 .need .ask { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
 .need .why, .approval .why { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
 .need .info, .approval .info { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
@@ -381,7 +390,7 @@ form.move button { padding: 0 6px; }
 .need .why :is(h1, h2, h3, h4), .need .info :is(h1, h2, h3, h4) { margin: 6px 0 0; font-size: 12.5px; line-height: 1.4; color: var(--text); }
 .need .why :is(ul, ol), .need .info :is(ul, ol) { margin: 2px 0 0; padding-left: 16px; font-size: 12.5px; }
 .need .why p, .need .info p { margin: 2px 0 0; font-size: 12.5px; }
-.need .why pre, .need .info pre { margin: 4px 0 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.5 var(--font-mono); white-space: pre; overflow-x: auto; }
+.need .why pre, .need .info pre { margin: 4px 0 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.5 var(--font-mono); white-space: pre; overflow: auto; max-height: 40vh; }
 .need .why code, .need .info code { font-family: var(--font-mono); font-size: 11.5px; }
 /* the nested face is the item's headline and state row: its parts become
    the item's own children so the question and the choices come between
@@ -1230,3 +1239,18 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .cursor { display: none; }
   .typing i { animation: none; opacity: .7; }
 }
+
+/* C24: the secondary pages follow one readout grammar — a small-caps
+   section label, one line of figures, then rows on the page ground */
+.project > h3, .ro > h3 { margin: 18px 0 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.pagehead h2 { margin: 16px 0 8px; }
+.figs { margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.figs a { color: var(--text-muted); }
+.figs code { font-size: 1em; }
+.daycap { margin: 2px 0; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.daycap strong { color: var(--text); font-weight: 600; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+tr.standing > td { border-top: 2px solid var(--btn-line); }
+ul.rows { list-style: none; margin: 6px 0; padding: 0; }
+ul.rows li { padding: 5px 0; border-bottom: 1px solid var(--line); }

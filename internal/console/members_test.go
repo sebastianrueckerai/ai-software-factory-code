@@ -47,7 +47,7 @@ func memberLogin(t *testing.T, r *rig, user string) (*http.Cookie, *session) {
 
 const badLogin = "a Forgejo user name is required: 1 to 40 letters, digits, dots, dashes and underscores, starting and ending with a letter or digit"
 
-var factoryLinks = []string{`href="/tasks/new"`, `href="/projects"`, `href="/resources"`, `href="/costs"`, `href="/policy"`, `href="/alerts"`}
+var factoryLinks = []string{`href="/tasks/new"`, `href="/settings"`, `href="/resources"`, `href="/costs"`, `href="/policy"`}
 
 // A writer of any project logs in and sees the projects they write: another
 // project's board is 404 unless Forgejo shows them its repository, then
@@ -78,7 +78,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 	}
 	r.c.cfg.HTTP = plain
 	for _, path := range []string{"/cards/t-c/drawer", "/projects/ai-software-factory-code/chat", "/tasks/t-c/timeline",
-		"/costs", "/policy", "/alerts", "/resources", "/projects", "/projects/new", "/tasks/new", "/projects/demo/status"} {
+		"/costs", "/policy", "/resources", "/settings", "/settings/new", "/tasks/new", "/projects/demo/status"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("GET %s as bob = %d, want 403", path, rec.Code)
 		}
@@ -100,7 +100,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 			t.Errorf("alice's board lacks %s", link)
 		}
 	}
-	for _, path := range []string{"/costs", "/policy", "/alerts", "/resources", "/projects", "/projects/new", "/tasks/new"} {
+	for _, path := range []string{"/costs", "/policy", "/resources", "/settings", "/settings/new", "/tasks/new"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, path, nil), ak); rec.Code != http.StatusOK {
 			t.Errorf("GET %s as alice = %d, want 200", path, rec.Code)
 		}
@@ -145,7 +145,7 @@ func TestApproversArePerProject(t *testing.T) {
 		}
 	}
 	ak, _ := memberLogin(t, r, "alice")
-	if page := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ak).Body.String(); !strings.Contains(page, `action="/projects/demo-app/export"`) ||
+	if page := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=demo-app", nil), ak).Body.String(); !strings.Contains(page, `action="/projects/demo-app/export"`) ||
 		strings.Contains(page, `action="/projects/demo/export"`) {
 		t.Errorf("alice's /projects: want demo-app's export form and not demo's:\n%s", page)
 	}

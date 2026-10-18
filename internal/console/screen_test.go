@@ -648,12 +648,18 @@ func TestDrawerActivity(t *testing.T) {
 		t.Errorf("the activity's tables are not the timeline page's:\n%s\nwant\n%s", got, tables(page))
 	}
 	for _, want := range []string{
-		`<tr><td>session</td><td>1</td><td>2026-10-11 10:00:00</td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
-		`<tr><td title="2026-10-11T10:05:00Z">2026-10-11 10:05:00</td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td>session</td><td>1</td><td><time>2026-10-11 10:00:00</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
+		`<tr><td title="2026-10-11T10:05:00Z"><time>2026-10-11 10:05:00</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)
 		}
+	}
+	// the <time> cells keep to one line only through the stylesheet's
+	// nowrap rule; the wrapper and the rule stand together
+	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
+	if !strings.Contains(css, "td time { white-space: nowrap; }") {
+		t.Error("console.css lacks td time { white-space: nowrap; }")
 	}
 	r.c.cfg.Timelines = failingObjects{}
 	failed := drawer(t, r, ck, "t-run", "activity")
@@ -870,7 +876,7 @@ func TestVerdictReturnsToTheFilteredBoard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
 		{ID: 6, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/alerts"}} {
+	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/"}} {
 		rec := r.do(post("/alerts/"+id+"/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {back[0]}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != back[1] {
 			t.Errorf("verdict with back %q = %d to %q, want %q", back[0], rec.Code, rec.Header().Get("Location"), back[1])

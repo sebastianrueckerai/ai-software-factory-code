@@ -16,7 +16,7 @@ const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
 const tall = { width: 1440, height: 2600 };
 const phone = { width: 390, height: 844 };
-const pages = ["costs", "alerts", "resources", "projects", "policy", "notifications"];
+const pages = ["costs", "resources", "settings", "policy", "notifications"];
 
 const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").trim().split(/=(.*)/s);
 

@@ -938,7 +938,7 @@ func (t *turn) project(n int) (string, statusLine, error) {
 // pulse, each line ending in a newline, and its board, as the agent reads
 // them.
 func (t *turn) snapshot() (string, string, statusLine, error) {
-	board, d, err := t.c.boardText(t.r, t.p)
+	board, d, err := t.c.boardText(t.r, t.p, t.a)
 	if err != nil {
 		return "", "", statusLine{}, err
 	}

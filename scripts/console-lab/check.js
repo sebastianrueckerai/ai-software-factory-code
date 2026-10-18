@@ -48,7 +48,7 @@ const mustHave = {
   assisted: ["Inbox", "Board", "autonomy", "assisted", "Moved #8 to lane ready",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
-  busy: ["Factory console", "Board", "New task", "Projects", "Resources", "Costs", "Policy", "Alerts", "Log out", "sebastian", "Theme",
+  busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
     "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",

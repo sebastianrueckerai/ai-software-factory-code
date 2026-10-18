@@ -478,11 +478,11 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	}
 }
 
-// The top bar (C23): the eight destinations sit in three groups, the open
-// page's link alone carries aria-current, New task is the bar's one
+// The top bar (C23, C24): the six destinations sit in three groups, the
+// open page's link alone carries aria-current, New task is the bar's one
 // bordered word with the phone's "+" beside its word, and the menu sheet
 // repeats every destination as a row with the logout last, so a narrow
-// bar never hides Board behind a second press.
+// bar never hides a word behind a second press.
 func TestTopBarSparseNav(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -495,25 +495,26 @@ func TestTopBarSparseNav(t *testing.T) {
 	}
 	board := get("/")
 	for _, want := range []string{
-		`<a href="/" aria-current="page">Board</a>`,
 		`class="ng ng-work"`, `class="ng ng-ref"`, `class="ng ng-gov"`,
 		`<a class="act" href="/tasks/new"><span class="w">New task</span><span class="p">+</span></a>`,
 		`<details class="menu">`, `<summary>`,
-		`<a class="s-work" href="/" aria-current="page">Board</a>`,
-		`<a class="s-ref" href="/projects">Projects</a>`,
-		`<a class="s-gov" href="/alerts">Alerts</a>`,
+		`<a class="s-work" href="/tasks/new">New task</a>`,
+		`<a class="s-ref" href="/costs">Costs</a>`,
+		`<a class="s-gov" href="/settings">Settings</a>`,
 		`<form method="post" action="/logout" class="logout s-out">`,
 	} {
 		if !strings.Contains(board, want) {
 			t.Errorf("the board's bar lacks %s", want)
 		}
 	}
+	if hdr := board[:strings.Index(board, "</header>")]; strings.Contains(hdr, ">Board<") || strings.Contains(hdr, ">Projects<") || strings.Contains(hdr, ">Alerts<") {
+		t.Error("the board's bar still shows a dropped word")
+	}
 	if i, j := strings.Index(board, `class="ng ng-ref"`), strings.Index(board, `class="ng ng-gov"`); i > j {
 		t.Error("the reference group sits after governance")
 	}
 	for target, want := range map[string][2]string{
-		"/alerts":     {`<a href="/alerts" aria-current="page">Alerts</a>`, `href="/" aria-current="page"`},
-		"/projects":   {`<a href="/projects" aria-current="page">Projects</a>`, `href="/" aria-current="page"`},
+		"/settings":   {`<a href="/settings" aria-current="page">Settings</a>`, `href="/" aria-current="page"`},
 		"/tasks/new":  {`<a class="act" href="/tasks/new" aria-current="page">`, `href="/" aria-current="page"`},
 		"/costs":      {`<a href="/costs" aria-current="page">Costs</a>`, `href="/" aria-current="page"`},
 		"/policy":     {`<a href="/policy" aria-current="page">Policy</a>`, `href="/" aria-current="page"`},

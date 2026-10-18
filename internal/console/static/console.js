@@ -1589,3 +1589,13 @@ document.addEventListener("keydown", function (e) {
   // the board's swaps bring a fresh Documents button: say what it opens
   document.addEventListener("htmx:afterSettle", function () { syncButton(visible()); });
 })();
+
+// C23: the open page's word in the bar carries the cyan. The header is
+// never swapped, so marking once per load is enough; More and the phone
+// sheet repeat the destinations and are marked the same way.
+(function () {
+  var path = location.pathname;
+  document.querySelectorAll("header.top a[href]").forEach(function (a) {
+    if (new URL(a.href, location.href).pathname === path) a.classList.add("open");
+  });
+})();

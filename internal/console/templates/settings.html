@@ -1,10 +1,11 @@
 {{template "head" .}}
-<h2>Projects</h2>
-<p>Each project is a repository the factory works on, the namespaces it deploys into, and its settings. The project owns its CI/CD; the factory owns the gates, these settings and the hardware limits. The settings are the project's file in the configuration: change them <a href="{{.New}}">in Git</a>. <a href="/projects/new">New project</a> files a new project's file as a pull request and shows each step up to its board: the merge, the Forgejo organisation, repository, CI user and tokens made with the Forgejo admin's login, and the rest registration sets up.</p>
-{{range $p := .Projects}}<section class="project" aria-labelledby="project-{{.Name}}">
-<h3 id="project-{{.Name}}">{{.Name}}</h3>
-{{if .File}}<p class="meta">Settings from <a href="{{.File}}">projects/{{.Name}}.yaml</a>.</p>
-<ul>
+<div class="pagehead"><h2>Settings</h2><form method="get" action="/settings" class="auto-submit"><label for="settings-project" class="visually-hidden">Project</label><select id="settings-project" name="project">
+{{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
+{{end}}</select></form></div>
+{{with .Row}}
+<p class="meta">How the factory works on {{.Name}}: the project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.{{if .File}} The settings are the project's file in the configuration: change them <a href="{{.File}}">in Git</a>.{{end}}</p>
+{{if .File}}
+<ul class="rows">
 <li>Repository: {{.Repository}}</li>
 <li>Objects: {{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</li>
 <li>Agents: {{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</li>
@@ -14,7 +15,7 @@
 {{if eq .Objects "factory"}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
 <li>Environments: {{range $i, $e := .Envs}}{{if $i}}; {{end}}{{$e.Words}}{{else}}none{{end}}</li>
 <li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: the reconcile registers it with the Forgejo admin's login from OpenBao{{end}}</li>
-{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{if eq .Mode "pull_requests"}}pull requests, {{end}}{{.State}}{{with .SyncResult}}; last sync: {{.}}{{end}}{{if $p.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
+{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{if eq .Mode "pull_requests"}}pull requests, {{end}}{{.State}}{{with .SyncResult}}; last sync: {{.}}{{end}}{{if $.Row.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{if $.Sync}} <form method="post" action="/projects/{{.Project}}/export/sync" class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Sync latest</button></form>{{end}}{{end}}{{else}}none{{end}}</li>{{end}}
 {{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
@@ -27,9 +28,10 @@
 <label>Mode <select name="mode"><option value="mirror">mirror: every branch and tag</option><option value="pull_requests">pull requests: each merged card</option></select></label>
 <button type="submit">Export to GitHub</button>
 </form>{{end}}
-{{template "envelope" .Envelope}}
-{{if .GatewayYAML}}<details><summary>Gateway listeners and certificates for the infra commit</summary><pre>{{.GatewayYAML}}</pre></details>{{end}}
+{{if .GatewayYAML}}<details class="compacted"><summary>Gateway listeners and certificates for the infra commit</summary><pre>{{.GatewayYAML}}</pre></details>{{end}}
 {{else}}<p class="meta">No file projects/{{.Name}}.yaml in the configuration: nothing acts on this project; its row keeps its tokens.</p>{{end}}
-</section>
+{{else}}
+<p class="meta">No projects yet.</p>
 {{end}}
+<p class="meta"><a href="/settings/new">New project</a> files a new project's file as a pull request and shows each step up to its board: the merge, the Forgejo organisation, repository, CI user and tokens made with the Forgejo admin's login, and the rest registration sets up.</p>
 {{template "foot"}}

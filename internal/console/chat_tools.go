@@ -584,9 +584,10 @@ const boardListed = 25
 
 // boardText is project p's board in the wide view as the session's member
 // sees it, for the agent: each column with its cards, the human lane, the
-// escalations and the approval requests waiting.
-func (c *Console) boardText(r *http.Request, p factoryd.Project) (string, boardData, error) {
-	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide})
+// escalations and the approval requests waiting. a is the chat's actor,
+// whose member its approval cards read a healed head's checks as.
+func (c *Console) boardText(r *http.Request, p factoryd.Project, a actor) (string, boardData, error) {
+	d, err := c.boardOf(r, boardFilter{Project: p.Name, View: viewWide}, a)
 	if errors.Is(err, errNoProject) {
 		return "Project " + p.Name + " takes no agent cards: it has no board.", d, nil
 	}
@@ -1011,7 +1012,7 @@ var tools = []chatTool{
 	{name: "board", title: "Read the board",
 		about: "The project's board: each column's cards, the human lane, the escalations and the approval requests.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
-			s, _, err := t.c.boardText(t.r, t.p)
+			s, _, err := t.c.boardText(t.r, t.p, t.a)
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1100,8 +1101,8 @@ var tools = []chatTool{
 			s, err := t.c.resourcesText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
-	{name: "projects", title: "Read the projects",
-		about: "The factory's projects.",
+	{name: "settings", title: "Read the settings",
+		about: "Every project's settings.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.projectsText(t.r.Context(), t.a)
 			return s, nil, err
@@ -1536,7 +1537,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 
 // toolNotes are what the tools' sentences leave to the manual, each
 // stated once.
-var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
+var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
   new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
