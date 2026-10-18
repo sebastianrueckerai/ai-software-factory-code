@@ -862,6 +862,7 @@ type rig struct {
 	chat      *fakeChat
 	mirrors   *fakeMirrors
 	routines  *fakeRoutines
+	deps      *fakeDeps
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string
@@ -911,6 +912,7 @@ func newRig(t *testing.T) *rig {
 		events:      &fakeEvents{bus: factoryd.NewEventBus()},
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
+		deps:        &fakeDeps{},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
@@ -919,7 +921,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger,
+		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		Projects: r.projects, Events: r.events, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,

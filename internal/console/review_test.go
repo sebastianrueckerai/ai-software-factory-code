@@ -72,8 +72,9 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 // whose content could be tested; its figures are covered by
 // TestBoardPageCarriesTheFiguresOfTheStatusPanel and, under a find, by
 // TestFindNarrowsTheColumns. What needs holding is the shape the ruling
-// leaves, in both views: the panel carries only its Spend and Provider,
-// GitHub, configuration sections, and the columns list the cards the
+// leaves, in both views: the panel carries only its Spend, Provider,
+// GitHub, configuration and Dependencies sections (the last unknown until
+// the prober writes, roadmap 299), and the columns list the cards the
 // lists once named — the human task as a plain card, with no escalation
 // article of its own.
 func TestStatusPanelListsNoCards(t *testing.T) {
@@ -93,8 +94,8 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 			t.Fatalf("%s: the status panel does not close", page)
 		}
 		panel = panel[:end]
-		if n := strings.Count(panel, "<h3>"); n != 2 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Provider, GitHub, configuration</h3>") {
-			t.Errorf("%s: the panel holds %d sections, want only Spend and Provider, GitHub, configuration:\n%s", page, n, panel)
+		if n := strings.Count(panel, "<h3>"); n != 3 || !strings.Contains(panel, "<h3>Spend</h3>") || !strings.Contains(panel, "<h3>Provider, GitHub, configuration</h3>") || !strings.Contains(panel, "<h3>Dependencies</h3>") {
+			t.Errorf("%s: the panel holds %d sections, want only Spend, Provider, GitHub, configuration and Dependencies:\n%s", page, n, panel)
 		}
 		if strings.Contains(body, `class="sp-link"`) || strings.Contains(panel, "<h3>In progress</h3>") || strings.Contains(panel, "<h3>Needs you</h3>") {
 			t.Errorf("%s: the panel still lists the board's cards", page)

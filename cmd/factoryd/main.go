@@ -373,6 +373,24 @@ func main() {
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Registry:  registry, SigningKey: rollSigningKey()}
 	go roller.Run(ctx)
+	// the factory's own dependency health (roadmap 299): the provider seam
+	// is the control-plane probe alone, so a cloud switch stays one value
+	var controlPlane factoryd.ControlPlane
+	switch env("FACTORY_PROVIDER", "hetzner") {
+	case "hetzner":
+		controlPlane = hetznerCI
+	default:
+		log.Fatalf("FACTORY_PROVIDER %q: no control-plane probe", env("FACTORY_PROVIDER", "hetzner"))
+	}
+	depProber := &factoryd.DepProber{Store: store, Objects: objects, Control: controlPlane,
+		Forgejo: forgejo, Owner: own.Repo().Owner, RepoName: own.Repo().Name, Branch: "main",
+		PG: store.Ping,
+		Temporal: func(ctx context.Context) error {
+			_, err := temporal.CheckHealth(ctx, &client.CheckHealthRequest{})
+			return err
+		},
+		Interval: envDuration("DEPENDENCY_HEALTH_INTERVAL", time.Minute)}
+	go depProber.Run(ctx)
 	revertPass := &factoryd.RevertPass{Book: store, Forgejo: forgejo, Metrics: metrics, Now: time.Now}
 	go revertPass.Loop(ctx)
 	go ciCollector.Run(ctx)
@@ -482,6 +500,7 @@ func main() {
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,
+		Dependencies:     store,
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)

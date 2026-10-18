@@ -257,6 +257,59 @@ func TestStatusLineFigures(t *testing.T) {
 	}
 }
 
+// The dependencies whisper (roadmap 299): no cell while every row is up,
+// a red cell when one is down, an amber one when one is degraded, and
+// the panel behind the strip always carries the list, "unknown" when
+// the prober has written nothing.
+func TestStatusLineDependencies(t *testing.T) {
+	r, ck := screenRig(t)
+	line := func() string {
+		t.Helper()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+		start := strings.Index(body, `<details id="status-line" class="status" aria-label="Status"><summary class="strip">`)
+		if start < 0 {
+			t.Fatal("board has no status strip")
+		}
+		return body[start : start+strings.Index(body[start:], `</summary>
+<div class="sp"`)]
+	}
+	const down = `<span class="cell deps down" title="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	const warn = `<span class="cell deps warn" title="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	if got := line(); strings.Contains(got, "deps") {
+		t.Fatalf("no rows, strip holds a deps cell:\n%s", got)
+	}
+	r.deps.rows = []factoryd.DependencyState{
+		{Name: "object storage", State: "up", CheckedAt: time.Now()},
+		{Name: "forgejo", State: "down", Detail: "the api refused", CheckedAt: time.Now()},
+	}
+	if got := line(); !strings.Contains(got, down) || strings.Contains(got, warn) {
+		t.Fatalf("one down row:\n%s\nwant the red cell only", got)
+	}
+	r.deps.rows = []factoryd.DependencyState{{Name: "postgres", State: "degraded", Detail: "answered in 3.4 s", CheckedAt: time.Now()}}
+	if got := line(); !strings.Contains(got, warn) || strings.Contains(got, down) {
+		t.Fatalf("one degraded row:\n%s\nwant the amber cell only", got)
+	}
+	r.deps.rows = []factoryd.DependencyState{{Name: "temporal", State: "up", CheckedAt: time.Now()}}
+	if got := line(); strings.Contains(got, "deps") {
+		t.Fatalf("every row up, strip holds a deps cell:\n%s", got)
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`<h3>Dependencies</h3>`, `<dt>temporal</dt>`, `>up · under a minute ago</dd>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the panel lacks %q", want)
+		}
+	}
+	r.deps.rows = nil
+	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if !strings.Contains(body, `<p class="none">unknown</p>`) {
+		t.Error("no rows, the panel does not say unknown")
+	}
+	r.deps.err = errors.New("the store is gone")
+	if got := line(); strings.Contains(got, "deps") {
+		t.Fatalf("a read error, strip holds a deps cell:\n%s", got)
+	}
+}
+
 // The status line is one thin strip; the panel with the spend detail,
 // the provider and the configuration sits behind the strip's click: a
 // closed details whose summary is the strip. C20's "renders always,

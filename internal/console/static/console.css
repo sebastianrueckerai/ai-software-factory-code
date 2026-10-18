@@ -703,6 +703,8 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-dl dt { color: var(--text-faint); font-weight: 400; }
 .sp-dl dd { margin: 0; color: var(--text-muted); }
 .sp-dl dd.warn { color: var(--need-text); }
+.cell.deps.down, .cell.deps.down .dot { color: var(--st-failed); }
+.sp-dl dd.down { color: var(--st-failed); }
 
 /* the main area: the chat left at 40 percent, the board right, one
    viewport high on a desktop with the log and the columns scrolling

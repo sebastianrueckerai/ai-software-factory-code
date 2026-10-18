@@ -1185,6 +1185,20 @@ type statusLine struct {
 	ChatSpent bool
 	ChatTask  string
 	Approver  bool
+	// Dependencies are the factory's own dependencies' latest health with
+	// each row's age, the panel's list (roadmap 299); DepsDown names any
+	// down and DepsDegraded any degraded, the strip's dot, which whispers
+	// while all is up.
+	Dependencies []depRow
+	DepsDown     bool
+	DepsDegraded bool
+}
+
+// depRow is one dependency's state as the panel shows it: its latest
+// state and the age of that word.
+type depRow struct {
+	factoryd.DependencyState
+	Age string
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -2367,6 +2381,22 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		s.State = "working"
 	default:
 		s.State = "idle"
+	}
+	if c.cfg.Dependencies != nil {
+		if deps, err := c.cfg.Dependencies.DependencyStates(ctx); err != nil {
+			log.Printf("console: the dependencies' health: %v", err)
+			d.Problems = append(d.Problems, "the dependencies' health could not be read")
+		} else {
+			for _, row := range deps {
+				s.Dependencies = append(s.Dependencies, depRow{DependencyState: row, Age: coarse(time.Since(row.CheckedAt))})
+				switch row.State {
+				case "down":
+					s.DepsDown = true
+				case "degraded":
+					s.DepsDegraded = true
+				}
+			}
+		}
 	}
 	var err error
 	if s.Spend, err = c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now()); err != nil {

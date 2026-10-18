@@ -67,6 +67,13 @@ type Costs interface {
 	CallTotals(ctx context.Context, tasks []string) (map[string]policy.CallTotals, error)
 }
 
+// Dependencies reads the factory's own dependency health: one latest row
+// per probed dependency (factoryd.PGStore). Nil seats nothing: the strip
+// stays quiet and the panel lists nothing.
+type Dependencies interface {
+	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
+}
+
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
 // the machine, human escalations judged by an approver.
 type Alerts interface {

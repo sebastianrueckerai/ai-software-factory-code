@@ -82,6 +82,26 @@ func TestServersFollowsPagesAndSendsSelector(t *testing.T) {
 	}
 }
 
+// Probe is the factory's dependency health read: one servers list, no
+// selector, nil when the api answers, its error when it does not.
+func TestProbe(t *testing.T) {
+	ok := true
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if !ok {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		io.WriteString(w, `{"servers":[],"meta":{"pagination":{"next_page":null}}}`)
+	})
+	if err := c.Probe(context.Background()); err != nil {
+		t.Fatalf("probe = %v, want nil", err)
+	}
+	ok = false
+	if err := c.Probe(context.Background()); err == nil {
+		t.Fatal("probe against a failing api = nil, want the error")
+	}
+}
+
 func TestFirewallsListAllWithoutSelector(t *testing.T) {
 	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/firewalls" || r.URL.Query().Has("label_selector") {
