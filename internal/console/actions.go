@@ -1113,7 +1113,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
 		return refuse(http.StatusInternalServerError, "cannot read the chat task")
 	case !ok || t.Kind != factoryd.KindChat || t.Status != "running":
-		return refuse(http.StatusConflict, "the project's chat has spent no budget: its task starts with the chat's or the pulse's first turn of the month")
+		return refuse(http.StatusConflict, "the project's chat has spent no budget: its task starts with the chat's first turn of the month")
 	case t.SpentEUR < t.BudgetEUR:
 		return refuse(http.StatusConflict, fmt.Sprintf("the chat's budget of €%.2f is not spent: it needs no raise", t.BudgetEUR))
 	}

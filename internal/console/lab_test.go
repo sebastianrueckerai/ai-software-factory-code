@@ -226,7 +226,6 @@ type labScene struct {
 	chat             []factoryd.ChatMessage
 	proposals        []factoryd.ChatProposal
 	spend, chatSpend float64
-	pulse            factoryd.Pulse
 	github           string
 	alerts           []factoryd.Alert
 	resources        []cloudres.Resource
@@ -390,8 +389,7 @@ func assistedScene(now time.Time) labScene {
 				"chat_task": factoryd.ChatTaskID("ai-software-factory-code", now)}},
 	}
 	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting}, inbox: 2, open: 1,
-		chat: msgs, events: events, spend: 1.2, chatSpend: 0.18, drawer: "t-a1",
-		pulse: factoryd.Pulse{Repository: "sf/code", At: now, Sentence: "One card works, one queues for a slot, one waits in the backlog."}}
+		chat: msgs, events: events, spend: 1.2, chatSpend: 0.18, drawer: "t-a1"}
 }
 
 // labDocs are the code project's documents in the lab's sf/docs: the
@@ -540,7 +538,6 @@ func (r *rig) labSeed(name string) (string, error) {
 		labNext(v, now, s.routinesAt, s.routinesAt.Add(v.Next.Sub(now)-30*time.Second))
 	}
 	r.routines.mu.Unlock()
-	r.c.cfg.Pulses = fakePulses{"sf/code": s.pulse}
 	r.c.turns = newTurnGate()
 	for _, n := range s.working {
 		r.c.turns.enter(threadKey("sf/code", "sebastian", n))
@@ -809,12 +806,6 @@ func busyScene(now time.Time) labScene {
 		labEvent(598, factoryd.EventCardFiled, "sebastian", factoryd.ViaChat, ago(50*time.Hour), nil),
 	}
 
-	s.pulse = factoryd.Pulse{ID: 88, Repository: "sf/code", At: ago(4 * time.Minute), Prominent: true,
-		Sentence: "Two cards need your decision; #612's merge carries a migration.",
-		Bullets: []string{"Needs you: merge PR #612 (migration 0031), #603 asks which store keeps the snapshots, plan #558 waits on one answer",
-			"Working: #606 at 3/4 checks and near its budget; #611 and #614 in their sessions",
-			"Spend: €61.40 of the €120 cap this month"}}
-
 	s.chat, s.proposals = busyChat(now, drawer, queued.Task, factoryd.CardTitle)
 	s.alerts = []factoryd.Alert{
 		{ID: 41, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
@@ -1046,9 +1037,6 @@ func idleScene(now time.Time) labScene {
 		{Task: labCard(now, 178, "backlog", "backlog", 347*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer.")},
 	}, s.tasks...)
-	s.pulse = factoryd.Pulse{ID: 91, Repository: "sf/code", At: now.Add(-6 * time.Minute),
-		Sentence: "Factory is idle with no active work; spend of €144.16 has exceeded the monthly budget of €120.00.",
-		Bullets:  []string{"Needs you: nothing", "Queued: #455 and #178 in the backlog", "Spend: €144.16 of the €120.00 cap, €24.16 over"}}
 	s.alerts = []factoryd.Alert{
 		{ID: 62, Kind: factoryd.AlertMonthCap, Source: "100", RaisedAt: now.Add(-20 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/100"},
 		{ID: 55, Kind: factoryd.AlertMonthCap, Source: "80", RaisedAt: now.Add(-3 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/80"},
@@ -1151,11 +1139,6 @@ func fireScene(now time.Time) labScene {
 		labStatus(604, "failed", "", ago(70*time.Minute)),
 		labStatus(609, "failed", "", ago(35*time.Minute)),
 	}
-	s.pulse = factoryd.Pulse{ID: 95, Repository: "sf/code", At: ago(3 * time.Minute), Prominent: true,
-		Sentence: "#610 is at its session cap and needs your answer; two cards wait on the provider.",
-		Bullets: []string{"Needs you: #610's session cap, the cx33 #619 asks for, #781's weekly bump, which holds this week's run",
-			"Failed: #604 and #609 in the last two hours",
-			"Waiting on the provider: #615 and #621 (429, budget exhausted)", "Spend: €97.30 of the €120 cap"}}
 	s.alerts = []factoryd.Alert{
 		{ID: 66, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: capped.ID, RaisedAt: ago(12 * time.Minute)},
 		{ID: 65, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: f2.ID, RaisedAt: ago(50 * time.Minute),
@@ -1184,7 +1167,5 @@ func quietScene(now time.Time) labScene {
 			"Show the commit of the configuration in force in the console's footer."), now, 8*time.Hour, 0.33)},
 	}
 	s.events = []factoryd.Event{labStatus(624, "running", factoryd.GateSession, now.Add(-3*time.Minute))}
-	s.pulse = factoryd.Pulse{ID: 97, Repository: "sf/code", At: now.Add(-2 * time.Minute), Sentence: "One card is working; nothing needs you.",
-		Bullets: []string{"Needs you: nothing", "Running: #624 README.md: extend the intro", "Spend: €4.10 of the €120 cap"}}
 	return s
 }

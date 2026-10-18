@@ -5,7 +5,7 @@
 // find's box holds none, focused or holding text: its text applies as you
 // type, and its form outlives every swap of the board (hx-preserve).
 function busy(el) {
-  if (el.querySelector("details[open]:not(.pulse-fold)")) return true;
+  if (el.querySelector("details[open]")) return true;
   if (el.querySelector('button.deny[aria-expanded="true"], button.own-toggle[aria-expanded="true"]')) return true;
   var a = document.activeElement;
   if (a && a.id !== "q" && el.contains(a) && a.matches("input, textarea, select")) return true;
@@ -286,8 +286,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   // the agent's view change (282): the merged query holds for this page
   // as a click's does, nothing stored, so it pushes the URL beside the
   // open document's doc= and the drawer's hash — only when the board's
-  // query changes, for a card, a tab, the panel or the theme alone push
-  // no entry a click would not — then reads the board under it, the
+  // query changes, for a card, a tab or the theme alone push no entry a
+  // click would not — then reads the board under it, the
   // guards of a read holding as ever, and the find's box takes the
   // query's q as Back hands it the entry's
   document.addEventListener("view", function (e) {
@@ -366,7 +366,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     // a swap under the keyboard's focus would drop it: that panel waits for the next
     if (line && !line.contains(document.activeElement)) {
       line.innerHTML = d.status;
-      document.dispatchEvent(new Event("statusswapped"));
     }
     if (counts.length === d.counts.length) d.counts.forEach(function (n, i) { counts[i].innerHTML = n; });
   }
@@ -429,8 +428,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
       document.dispatchEvent(new CustomEvent("factoryevent", { detail: e }));
-      if (e.kind === "pulse_computing" || e.kind === "pulse") pulse(e);
-      else if (e.kind === "session_said") said(e);
+      if (e.kind === "session_said") said(e);
       else if (e.kind === "doc_written") document.dispatchEvent(new CustomEvent("docwritten", { detail: e }));
       else if (!e.task_id || e.kind === "card_filed" || e.kind === "project_merged") swapBoard();
       else {
@@ -442,66 +440,6 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     });
     s.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
     s.addEventListener("board", function () { swapBoard(); });
-  }
-  // The pulse band: pulse_computing shows its typing indicator, pulse
-  // swaps its sentence and bullets in; the band's disclosure (the status
-  // in detail with the bullets) stays as the member left it across the
-  // counters' swaps of the strip.
-  var statusOpen = false, pulseBusy = false;
-  function showStatus() {
-    var panel = document.getElementById("status-panel"), bullets = document.getElementById("pulse-bullets"),
-      toggle = document.getElementById("status-toggle"), typing = document.querySelector && document.querySelector("#pulse .typing");
-    if (panel) panel.hidden = !statusOpen;
-    if (bullets) bullets.hidden = !statusOpen;
-    if (toggle) {
-      toggle.setAttribute("aria-expanded", String(statusOpen));
-      toggle.parentElement.classList.toggle("xp-open", statusOpen);
-    }
-    if (typing) typing.hidden = !pulseBusy;
-  }
-  function toggleStatus(open) {
-    statusOpen = open === undefined ? !statusOpen : open;
-    showStatus();
-  }
-  document.addEventListener("htmx:afterSettle", showStatus);
-  document.addEventListener("statusswapped", showStatus);
-  document.addEventListener("click", function (e) {
-    var band = e.target.closest && e.target.closest("#pulse");
-    if (!band) return;
-    if (e.target.closest("#status-toggle")) return toggleStatus();
-    // a click anywhere on the band that is not a link, a button or a field
-    if (e.target.closest("a, button, input, select, textarea, label, form")) return;
-    toggleStatus();
-  });
-  document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && statusOpen && !e.target.closest("input, textarea, select")) {
-      var drawer = document.getElementById("drawer"), keys = document.getElementById("keys");
-      if (drawer && !drawer.hidden || keys && !keys.hidden) return;
-      toggleStatus(false);
-      var t = document.getElementById("status-toggle");
-      if (t) t.focus();
-    }
-  });
-  // the agent's view change folds or unfolds the status panel (282)
-  document.addEventListener("view", function (e) {
-    var d = e.detail || {};
-    if (d.panel === "open" || d.panel === "closed") toggleStatus(d.panel === "open");
-  });
-  function pulse(e) {
-    var el = document.getElementById("pulse"), d = e.detail;
-    pulseBusy = e.kind === "pulse_computing";
-    if (!pulseBusy && d.sentence && !el) return swapBoard();
-    if (!pulseBusy && d.sentence) {
-      el.classList.toggle("prominent", !!d.prominent);
-      var sign = el.querySelector(".pulse-sign"), say = el.querySelector(".pulse-say"), ul = document.getElementById("pulse-bullets");
-      if (sign) sign.hidden = !d.prominent;
-      if (say) say.textContent = d.sentence;
-      if (ul) {
-        ul.textContent = "";
-        (d.bullets || []).forEach(function (b) { ul.appendChild(document.createElement("li")).textContent = b; });
-      }
-    }
-    showStatus();
   }
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
@@ -1529,12 +1467,12 @@ document.addEventListener("keydown", function (e) {
     else if (visible()) closeDoc(false);
   });
   // Escape: the Recent menu, the peek, the editor's ask and the new
-  // form, the document — the keys list and the status band close first,
+  // form, the document — the keys list closes first,
   // and from inside a field the view stays open, the draft with it
   document.addEventListener("keydown", function (e) {
     if (e.key !== "Escape") return;
-    var keys = document.getElementById("keys"), panel = document.getElementById("status-panel");
-    if (keys && !keys.hidden || panel && !panel.hidden) return;
+    var keys = document.getElementById("keys");
+    if (keys && !keys.hidden) return;
     var d = e.target.closest && e.target.closest("#doc-recent");
     if (d && d.open) { d.open = false; e.stopPropagation(); return; }
     if (peekEl) { hidePeek(); e.stopPropagation(); return; }

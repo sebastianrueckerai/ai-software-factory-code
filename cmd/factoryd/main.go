@@ -566,7 +566,6 @@ func main() {
 		},
 		AttachAnalysis: store.AttachAnalysis,
 		Operator:       operator,
-		Pulses:         store,
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo
@@ -581,7 +580,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("console: %v", err)
 	}
-	go (&factoryd.Pulser{Store: store, Bus: eventBus, Model: operator, Context: consoleHandler.PulseContext}).Run(ctx)
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
 	// the wake: an ask the project agent did not file wakes one turn of
 	// its own on the venue member's inbox
