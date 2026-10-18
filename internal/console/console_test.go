@@ -1399,40 +1399,39 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 }
 
 // A done card whose change is not live yet stays in progress, wearing
-// where its deploy sits (roadmap 296): rolling while its roll runs,
-// waiting for the roll until the roller judges its commit, roll refused
-// or roll failed at the end states. A done card whose roll merged or
-// skipped sits in Done, and one that finished before the roller began
-// recording the pull requests its rolls carry does too. A roll task is
-// no card.
+// where its deploy chain sits (roadmap 297): chain running while the chain
+// runs, waiting for the chain until a run carries its change, chain red at
+// the failed end states. A done card whose chain went green sits in Done,
+// and one that finished before the chain began recording runs does too. A
+// roll task is no card.
 func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	at := func(mins int) *time.Time { t := time.Now().Add(-time.Duration(mins) * time.Minute); return &t }
 	card := func(id string, pr int64, state string, finished int) factoryd.BoardTask {
 		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "done", Repository: "sf/code",
-			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, RollState: state}
+			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, ChainState: state}
 	}
-	// t-era finished before the first roll the set records; t-wait after
-	// t-roll's roll opened, so the era no longer holds it live
+	// t-era finished before the first chain the set records; t-wait after
+	// t-chain's run was recorded, so the era no longer holds it live
 	r.tasks.tasks = []factoryd.BoardTask{
 		card("t-era", 8, "", 90),
-		card("t-roll", 9, factoryd.RollOpened, 40),
+		card("t-chain", 9, "running", 40),
 		card("t-wait", 10, "", 30),
-		card("t-refused", 11, factoryd.RollRefused, 25),
-		card("t-failed", 12, factoryd.RollFailed, 20),
-		card("t-live", 13, factoryd.RollMerged, 15),
-		card("t-skip", 14, factoryd.RollSkipped, 10),
+		card("t-red", 11, "failure", 25),
+		card("t-gone", 12, "cancelled", 20),
+		card("t-live", 13, "success", 15),
+		card("t-skip", 14, "skipped", 10),
 		{Task: factoryd.Task{ID: "t-rollcard", Kind: "agent", Status: "done", Source: factoryd.SourceRoll,
 			Repository: "sf/code", PRNumber: 15, Objective: "the roll itself", FinishedAt: at(35)}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	progress, done := col(t, body, "In progress"), col(t, body, "Done")
 	for id, stage := range map[string]string{
-		"t-roll":    ">rolling</span>",
-		"t-wait":    ">waiting for the roll</span>",
-		"t-refused": ">roll refused</span>",
-		"t-failed":  ">roll failed</span>",
+		"t-chain": ">chain running</span>",
+		"t-wait":  ">waiting for the chain</span>",
+		"t-red":   ">chain red</span>",
+		"t-gone":  ">chain red</span>",
 	} {
 		if !strings.Contains(progress, `data-card="`+id+`"`) || !strings.Contains(progress, stage) {
 			t.Errorf("In progress lacks %s wearing %q:\n%s", id, stage, progress)
@@ -1446,7 +1445,7 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 			t.Errorf("In progress holds the live card %s", id)
 		}
 	}
-	for _, id := range []string{"t-roll", "t-wait", "t-refused", "t-failed"} {
+	for _, id := range []string{"t-chain", "t-wait", "t-red", "t-gone"} {
 		if strings.Contains(done, `data-card="`+id+`"`) {
 			t.Errorf("Done holds %s, whose change is not live", id)
 		}

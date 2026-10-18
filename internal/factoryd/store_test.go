@@ -57,6 +57,7 @@ type fakeStore struct {
 	alertsMu     sync.Mutex
 	alerts       []Alert
 	rolls        []RollRequest
+	chain        []fakeChainRun
 	liveSessions map[string]LiveSession
 	pauses       map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,

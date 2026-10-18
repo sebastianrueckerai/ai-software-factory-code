@@ -21,9 +21,9 @@ import (
 // shaped it (nil on the older and unshaped rows); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
-// liveness warning. RollState is the newest roll request that carries the
-// card's pull request ("" for none): a done card reads it to track its
-// own deploy (roadmap 296).
+// liveness warning. ChainState is the status of the newest main run that
+// carries the card's pull request ("" for none): a done card reads it to
+// track its own deploy (roadmap 297), the chain's own fact, no roll in it.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -35,20 +35,20 @@ type BoardTask struct {
 	QueueAhead      int
 	Question        *HumanQuestion
 	AnswersPending  int
-	RollState       string
+	ChainState      string
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
-// cluster (roadmap 296): a card that never opened a pull request, or whose
-// roll request merged or skipped — the roll task's own rollout wait
-// confirmed the merge runs — or that no roll names at all and that
-// finished before the roller began recording the pull requests its rolls
-// carry (no such roll yet: every card, while none is recorded). A roll
-// that names it as open, refused or failed keeps it waiting.
+// cluster (roadmap 297): a card that never opened a pull request, or
+// whose chain run went green — the chain's tail job confirmed the change
+// runs, whatever that tail is for the project — or that no chain names at
+// all and that finished before the chain began recording runs (none
+// recorded yet: every card, while none is). A chain that names it as not
+// green keeps it waiting.
 const deployLive = `(tasks.pr_number = 0
-	OR EXISTS (SELECT 1 FROM roll_requests rr WHERE rr.prs @> ARRAY[tasks.pr_number] AND rr.state IN ('merged', 'skipped'))
-	OR NOT EXISTS (SELECT 1 FROM roll_requests rr WHERE rr.prs @> ARRAY[tasks.pr_number])
-	   AND COALESCE((SELECT min(created_at) FROM roll_requests WHERE cardinality(prs) > 0), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
+	OR EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number AND cr.status IN ('success', 'skipped'))
+	OR NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
+	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
 // kind and $2 the escalation alert's kind; the caller adds the WHERE.
@@ -68,8 +68,8 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        esc.question,
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
-		        COALESCE((SELECT rr.state FROM roll_requests rr WHERE tasks.pr_number > 0 AND rr.prs @> ARRAY[tasks.pr_number]
-		        ORDER BY rr.run_id DESC LIMIT 1), '')`
+		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
+		        ORDER BY cr.run_id DESC LIMIT 1), '')`
 
 const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
@@ -80,7 +80,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.RollState)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState)...)
 	})
 	if err != nil {
 		return b, err
@@ -209,8 +209,8 @@ func SortBoardTasks(tasks []BoardTask) {
 // FinishedPage is FinishedTasks over tasks in memory, for the fakes,
 // which keep no dependencies: a card without a finish stamp is in the
 // window. A done card whose change is not live yet is no finished card, as
-// FinishedTasks reads it; the fakes model a roll row as the task's
-// RollState at its CreatedAt.
+// FinishedTasks reads it; the fakes model a chain row as the task's
+// ChainState at its arrival.
 func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	order := func(a, b Task) int {
 		by := arrival(b).Compare(arrival(a))
@@ -250,18 +250,18 @@ func byFinish(a, b Task) int {
 }
 
 // DeployLive is deployLive for the fakes: a card without a pull request,
-// or whose roll merged or skipped, or that no roll names and that arrived
-// before the first roll the set records. A roll that names it as open,
-// refused or failed keeps it waiting.
+// or whose chain run went green or skipped — nothing to deploy — or that
+// no chain names and that arrived before the first chain the set records.
+// A chain that names it as not green keeps it waiting.
 func DeployLive(tasks []BoardTask, t BoardTask) bool {
-	if t.PRNumber == 0 || slices.Contains([]string{RollMerged, RollSkipped}, t.RollState) {
+	if t.PRNumber == 0 || t.ChainState == "success" || t.ChainState == "skipped" {
 		return true
 	}
-	if t.RollState != "" {
+	if t.ChainState != "" {
 		return false
 	}
 	for _, o := range tasks {
-		if o.RollState != "" && !arrival(o.Task).After(arrival(t.Task)) {
+		if o.ChainState != "" && !arrival(o.Task).After(arrival(t.Task)) {
 			return false
 		}
 	}

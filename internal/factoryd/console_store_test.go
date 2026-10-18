@@ -98,6 +98,96 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 }
 
+// A done card is live when the chain run that carried its pull request went
+// green or skipped, whatever else the project's chain did after (roadmap 297).
+// A card no chain run names is live only while it finished before the chain
+// began recording. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestPGStoreChainLiveness(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, tk := range []Task{
+		{ID: "t-era", Status: "done", PRNumber: 11},
+		{ID: "t-green", Status: "done", PRNumber: 12},
+		{ID: "t-run", Status: "done", PRNumber: 13},
+		{ID: "t-red", Status: "done", PRNumber: 14},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '90 minutes' WHERE id = 't-era';
+		UPDATE tasks SET finished_at = now() - interval '20 minutes' WHERE id IN ('t-green', 't-run', 't-red')`); err != nil {
+		t.Fatalf("stamp finished_at: %v", err)
+	}
+	// before any chain run is recorded every done card is live
+	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 0 {
+		t.Fatalf("BoardTasks before the chain = %d cards, %v; want none", len(board), err)
+	}
+	for _, row := range []struct {
+		pr     int64
+		sha    string
+		run    int64
+		status string
+	}{
+		{0, "e0", 50, "success"}, // a run no pull request rode: only the era starts
+		{12, "e1", 51, "success"},
+		{13, "e2", 52, "running"},
+		{14, "e3", 53, "failure"},
+	} {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
+			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET updated_at = now() - interval '80 minutes' WHERE run_id = 50`); err != nil {
+		t.Fatalf("stamp chain era: %v", err)
+	}
+	board, err := s.BoardTasks(ctx, "sf/r")
+	if err != nil {
+		t.Fatalf("BoardTasks: %v", err)
+	}
+	var ids, stages []string
+	for _, tk := range board {
+		ids = append(ids, tk.ID)
+		stages = append(stages, tk.ChainState)
+	}
+	// t-era finished before the first recorded run, so it stays live; t-green
+	// rode a green run; t-run and t-red wait on their run's verdict (t-red
+	// first: its id sorts before t-run's at the same priority and finish time)
+	if want := []string{"t-red", "t-run"}; !slices.Equal(ids, want) {
+		t.Fatalf("BoardTasks = %v, want %v", ids, want)
+	}
+	if want := []string{"failure", "running"}; !slices.Equal(stages, want) {
+		t.Fatalf("chain states = %v, want %v", stages, want)
+	}
+	done, rest, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: time.Now().Add(-7 * 24 * time.Hour)})
+	if err != nil || rest != len(done) {
+		t.Fatalf("FinishedTasks = %d cards, rest %d, %v", len(done), rest, err)
+	}
+	var doneIDs []string
+	for _, tk := range done {
+		doneIDs = append(doneIDs, tk.ID)
+	}
+	if want := []string{"t-green", "t-era"}; !slices.Equal(doneIDs, want) {
+		t.Fatalf("FinishedTasks = %v, want %v", doneIDs, want)
+	}
+	// the running run settles green: its card joins the live ones
+	if err := s.RefreshChainStatus(ctx, "sf/r", "e2", "success"); err != nil {
+		t.Fatalf("RefreshChainStatus: %v", err)
+	}
+	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 1 || board[0].ID != "t-red" {
+		t.Fatalf("BoardTasks after the run went green = %+v, %v; want only t-red", board, err)
+	}
+}
+
 // BoardTasks reads only the repository it is asked for: none of another
 // repository's open cards, however urgent, all of its own — and a card
 // that waits on another repository's card still names its issue, its
