@@ -902,7 +902,10 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // posted comment would start the attempt the person declined to start.
 // fund raises the card's budget by the shortfall its question names while
 // the card holds a budget refusal; past a raised cap it posts like any
-// answer, the label retrying the card.
+// answer, the label retrying the card. A worded answer on a running
+// agent card steers its session (doSteer) instead of the wrongState
+// wall, so the board form and the answer tool, which both ride here,
+// reach a session too.
 func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
 	if len(text) > factoryd.MaxAnswer {
@@ -911,6 +914,9 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
+	}
+	if t.Kind == "agent" && t.Status == "running" && text != "" && c.cfg.Steer != nil {
+		return c.doSteer(ctx, a, id, text)
 	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
