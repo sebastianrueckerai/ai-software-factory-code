@@ -126,6 +126,9 @@ type Config struct {
 	Timelines factoryd.ObjectStore
 	Policies  Policies
 	Costs     Costs
+	// Dependencies reads the factory's own dependency health for the
+	// status line's red dot and the panel's list (roadmap 299).
+	Dependencies Dependencies
 	// ConfigRepo is the infra repository's web URL and ConfigDir the
 	// configuration tree's directory in it, where every change is made
 	// (ruling 183).

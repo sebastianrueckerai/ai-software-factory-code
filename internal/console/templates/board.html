@@ -51,6 +51,8 @@
 {{if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
 {{end}}{{if .RoutineCell}}<span class="cell routine{{if .RoutineHeld}} warn{{end}}">{{.RoutineCell}}</span>
 {{end}}{{with .GitHub}}<span class="cell gh">GitHub: {{.}}</span>
+{{end}}{{if .DepsDown}}<span class="cell deps down" title="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>
+{{else if .DepsDegraded}}<span class="cell deps warn" title="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>
 {{end}}</summary>
 <div class="sp" id="status-panel" role="region" aria-label="The status in detail">
 <section><h3>Spend</h3><div class="sp-g{{gaugeClass .TodayEUR .DayCapEUR}}"><span class="lbl">today</span><span class="fig">{{eur2 .TodayEUR}} of {{eur2 .DayCapEUR}} day cap</span><span class="gauge"><meter min="0" max="100" value="{{pct100 .TodayEUR .DayCapEUR}}" aria-label="today">{{pct .TodayEUR .DayCapEUR}} percent</meter></span></div><div class="sp-g{{gaugeClass .Spend.EUR .CapEUR}}"><span class="lbl">this month</span><span class="fig">{{eur2 .Spend.EUR}} of {{eur2 .CapEUR}}</span><span class="gauge"><meter min="0" max="100" value="{{pct100 .Spend.EUR .CapEUR}}" aria-label="this month">{{pct .Spend.EUR .CapEUR}} percent</meter></span></div>{{if and (gt .CapEUR 0.0) (gt .Spend.EUR .CapEUR)}}<p class="sp-note">the month cap is passed</p>{{end}}{{if .ChatSpent}}<p class="sp-note">the chat's monthly budget is spent: the chat stands until it is raised or the month turns</p>{{if .Approver}}<form method="post" action="/projects/{{.Project}}/chat/fund" class="inline fund">
@@ -62,6 +64,7 @@
 <button type="submit">Fund the chat</button>
 </form>{{end}}{{end}}</section>
 <section><h3>Provider, GitHub, configuration</h3><dl class="sp-dl"><dt>provider</dt><dd{{if .Waiting}} class="warn"{{end}}>{{if .Waiting}}{{.Waiting}} waiting on the provider{{else}}ok{{end}}</dd><dt>GitHub</dt><dd>{{if .GitHub}}<a href="{{.GitHubURL}}" target="_blank" rel="noopener">GitHub: {{.GitHub}}</a>{{else}}none{{end}}</dd>{{if $.PolicyCommit}}<dt>configuration</dt><dd>version {{$.PolicyVersion}} · <a href="{{$.PolicyTreeURL}}" target="_blank" rel="noopener"><code>{{$.PolicyCommit}}</code></a></dd>{{end}}</dl></section>
+<section><h3>Dependencies</h3>{{if .Dependencies}}<dl class="sp-dl">{{range .Dependencies}}<dt>{{.Name}}</dt><dd{{if eq .State "down"}} class="down"{{else if eq .State "degraded"}} class="warn"{{end}}>{{.State}}{{with .Detail}} · {{.}}{{end}} · {{.Age}} ago</dd>{{end}}</dl>{{else}}<p class="none">unknown</p>{{end}}</section>
 </div>{{end}}{{end}}
 
 {{define "board-fragment"}}{{template "board" .}}{{if .Status.Project}}

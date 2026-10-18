@@ -241,6 +241,13 @@ func (c *Client) Server(ctx context.Context, id int64) (Server, error) {
 	return out.Server, err
 }
 
+// Probe checks the control-plane API answers one cheap read (the servers
+// list, the collector's own call), for the factory's dependency health.
+func (c *Client) Probe(ctx context.Context) error {
+	_, err := c.Servers(ctx, "")
+	return err
+}
+
 // Servers lists the project's servers matching labelSelector ("" = all).
 func (c *Client) Servers(ctx context.Context, labelSelector string) ([]Server, error) {
 	var all []Server
