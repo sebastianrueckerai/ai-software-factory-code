@@ -135,7 +135,8 @@ func TestPGStoreRollRequests(t *testing.T) {
 	insert(RollRequest{SHA: "f", Repository: repo, RunID: 15, State: RollRefused, TaskID: "rc1",
 		Changes: map[string]string{"worker": "sha256:w3"}, Summary: "roll f refused"})
 	insert(RollRequest{SHA: "g", Repository: repo, RunID: 16, State: RollRefused, TaskID: "rc2"})
-	if err := s.SettleRollRequests(ctx); err != nil {
+	settled, err := s.SettleRollRequests(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 	states := map[string]string{}
@@ -154,6 +155,15 @@ func TestPGStoreRollRequests(t *testing.T) {
 	if want := map[string]string{"a": RollSkipped, "b": RollMerged, "e": RollFailed, "f": RollRefused}; !reflect.DeepEqual(states, want) {
 		t.Fatalf("settled %v, want %v", states, want)
 	}
+	// settle returned the two it settled, for their verdicts to ride a
+	// commit status; the gone (c, d) and the refused (f) are not among them
+	got := map[string]string{}
+	for _, r := range settled {
+		got[r.SHA] = r.State
+	}
+	if want := map[string]string{"b": RollMerged, "e": RollFailed}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("settled rows %v, want %v", got, want)
+	}
 	if open() != "" {
 		t.Fatalf("open roll %q after settling, want none", open())
 	}
@@ -165,14 +175,6 @@ func TestPGStoreRollRequests(t *testing.T) {
 	if rolls, err := s.TaskRolls(ctx, "rt1"); err != nil || len(rolls) != 1 ||
 		!reflect.DeepEqual(rolls[0].PRs, []int64{12}) {
 		t.Fatalf("task rolls %+v, want the settled b carrying pull request 12", rolls)
-	}
-	bySHA, ok, err := s.RollRequestBySHA(ctx, "b")
-	if err != nil || !ok || bySHA.State != RollMerged || bySHA.TaskID != "rt1" ||
-		!reflect.DeepEqual(bySHA.Changes, map[string]string{"worker": "sha256:w1"}) {
-		t.Fatalf("roll request by sha %+v %v %v", bySHA, ok, err)
-	}
-	if _, ok, err := s.RollRequestBySHA(ctx, "zz"); err != nil || ok {
-		t.Fatalf("an unknown sha answered %v %v", ok, err)
 	}
 	if err := s.DeleteRollRequest(ctx, "a"); err != nil || seen("a") {
 		t.Fatalf("delete a: %v, seen %v", err, seen("a"))

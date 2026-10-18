@@ -22,19 +22,17 @@ var (
 	// PGDG's archive, which the store does not front.
 	aptSourceURL   = regexp.MustCompile(`\bdeb\s+(?:\[[^\]]*\]\s*)?(https?://` + "[^\\s\"'`$]+" + `)`)
 	aptArchiveHost = map[string]bool{"snapshot.debian.org": true, "apt-archive.postgresql.org": true}
-	// ciMirrorValue reads the registry and cache mirrors and the control
-	// plane ci.yml names: the values of its env's CACHE, BUILDKIT and
-	// FACTORYD.
-	ciMirrorValue = regexp.MustCompile(`(?m)^\s+(CACHE|BUILDKIT|FACTORYD): (\S+)`)
+	// ciMirrorValue reads the registry and cache mirrors ci.yml names: the
+	// values of its env's CACHE and BUILDKIT.
+	ciMirrorValue = regexp.MustCompile(`(?m)^\s+(CACHE|BUILDKIT): (\S+)`)
 	// buildVMDenyList is the hosts the build VM's own rules refuse.
 	buildVMDenyList = regexp.MustCompile(`(?s)buildVMUpstreamHosts\s*=\s*\[\]string\{([^}]*)\}`)
 	quotedString    = regexp.MustCompile(`"([^"]+)"`)
 )
 
 // buildFetchHosts are the hosts a build-time fetch may name: the store's
-// host and the registry and cache mirrors and the factory's own control
-// plane ci.yml itself names (roadmap 203, step 3; the control plane,
-// roadmap 296). Nothing else answers a build.
+// host and the registry and cache mirrors ci.yml itself names (roadmap
+// 203, step 3). Nothing else answers a build.
 func buildFetchHosts(t *testing.T) map[string]bool {
 	t.Helper()
 	storeHost, _, _ := strings.Cut(store, "/")
