@@ -1311,9 +1311,9 @@ func TestSystemTool(t *testing.T) {
 		}
 		equal(t, "stream tail", events[1:], []string{
 			`text {"text":"read it."}`, `done {}`})
-	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
-			Detail: map[string]any{"text": "yes", "thread": 1}})
+		chatRows(t, r.events, before, "sebastian",
+			factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
+				Detail: map[string]any{"text": "yes", "thread": 1}})
 		calls := g.calls()
 		equal(t, "model calls", len(calls), 2)
 		msgs := messages(t, calls[1])
