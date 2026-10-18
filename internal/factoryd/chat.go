@@ -889,7 +889,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		var id int64
 		var content string
 		if err := rows.Scan(&id, &content); err != nil {
-			rows.Close()
+			rows.Close() // #nosec G104 -- the tx is abandoned on this error; its rollback closes the rows anyway
 			return err
 		}
 		switch {
@@ -902,10 +902,10 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		}
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		rows.Close() // #nosec G104 -- the tx is abandoned on this error; its rollback closes the rows anyway
 		return err
 	}
-	rows.Close()
+	rows.Close() // #nosec G104 -- the rows are exhausted; the next statements run on the tx, not them
 	if len(ids) == 0 {
 		return ErrNoAsk
 	}

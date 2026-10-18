@@ -130,8 +130,11 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		err = json.Unmarshal(a.Spec, &k.Merge)
 		// a red request whose head's checks are green now (#1013) merges
 		// again; a read that fails leaves the red face, which says so —
-		// its refusal still names the remedies
-		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
+		// its refusal still names the remedies. The pulse's board read
+		// runs as no member (PulseContext's session-less turn), and only
+		// a member's session reads the head's checks: its face keeps the
+		// red.
+		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" && act.s != nil {
 			if green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA); gerr != nil {
 				log.Printf("console: approval request %d: %v", a.ID, gerr)
 				k.HeadUnread = true
