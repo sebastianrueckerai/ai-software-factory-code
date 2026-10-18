@@ -1311,9 +1311,7 @@ func TestSystemTool(t *testing.T) {
 		}
 		equal(t, "stream tail", events[1:], []string{
 			`text {"text":"read it."}`, `done {}`})
-		chatRows(t, r.events, before, "sebastian",
-			factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
-				Detail: map[string]any{"text": "yes", "thread": 1}})
+		chatRows(t, r.events, before, "sebastian")
 		calls := g.calls()
 		equal(t, "model calls", len(calls), 2)
 		msgs := messages(t, calls[1])
@@ -2430,7 +2428,9 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	equal(t, "stream tail", events[10:], []string{
 		`proposal {"arguments":{"task_id":"t-mr"},"description":"Approve a merge, #15 t-mr \"Add the index.\"","id":"TOKEN","tool":"approve_merge"}`,
 		`done {}`})
-	chatRows(t, r.events, before, "sebastian")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
+			Detail: map[string]any{"text": "yes", "thread": 1}})
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
 	equal(t, "the capped card", stored[0].ToolCalls[7].Result, "#14 t-cap \"Trim the logs.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\ncost: no model calls\n"+
