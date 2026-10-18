@@ -30,6 +30,9 @@ var funcs = template.FuncMap{
 	// text; askline is a text's first line, what a card's face shows
 	"markup": markup, "askline": askline,
 	"eur4": func(v float64) string { return fmt.Sprintf("%.4f", v) },
+	// away reports whether a link leaves the console, so it opens its own
+	// tab while a console path stays in this one
+	"away": func(href string) bool { return !strings.HasPrefix(href, "/") },
 	// servers is n with the noun in its number: 1 server, 2 servers
 	"servers": func(n int) string {
 		if n == 1 {

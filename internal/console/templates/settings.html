@@ -3,7 +3,7 @@
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select></form></div>
 {{with .Row}}
-<p class="meta">How the factory works on {{.Name}}: the project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.{{if .File}} The settings are the project's file in the configuration: change them <a href="{{.File}}">in Git</a>.{{end}}</p>
+<p class="meta">How the factory works on {{.Name}}: the project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.{{if .File}} The settings are the project's file in the configuration: change them <a href="{{.File}}" target="_blank" rel="noopener">in Git</a>.{{end}}</p>
 {{if .File}}
 <ul class="rows">
 <li>Repository: {{.Repository}}</li>

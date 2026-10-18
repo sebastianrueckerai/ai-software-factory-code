@@ -478,7 +478,7 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	want := `<p class="activity"><a href="https://git.example/sf/code/issues/12">answer on the issue</a> — use a replica or a shard?</p>`
+	want := `<p class="activity"><a href="https://git.example/sf/code/issues/12" target="_blank" rel="noopener">answer on the issue</a> — use a replica or a shard?</p>`
 	for _, title := range []string{"Escalations", "Waiting on a human", "Needs you"} {
 		board := body
 		if title == "Needs you" {

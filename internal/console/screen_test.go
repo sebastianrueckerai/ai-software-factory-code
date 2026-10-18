@@ -606,7 +606,7 @@ func TestDrawerOverview(t *testing.T) {
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
+		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
@@ -644,7 +644,7 @@ func TestDrawerOverview(t *testing.T) {
 	}
 
 	merge := drawer(t, r, ck, "t-m", "overview")
-	for _, want := range []string{`<h4>Reviews and audit of <a href="https://git.example/sf/code/pulls/9">PR #9</a></h4>`,
+	for _, want := range []string{`<h4>Reviews and audit of <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a></h4>`,
 		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
 		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
 		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
@@ -1099,7 +1099,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	// version (C9), under a find as without one
 	for _, want := range []string{`<h3>Spend</h3>`, `<span class="fig">€0.00 of €20.00 day cap</span>`,
 		`<h3>Provider, GitHub, configuration</h3>`, `<dt>provider</dt><dd>ok</dd>`, `<dt>GitHub</dt><dd>none</dd>`,
-		`<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a></dd>`} {
+		`<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener"><code>c9d98bb0aa11</code></a></dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("under the find the status panel lacks %s", want)
 		}
