@@ -73,6 +73,7 @@ type fakeForgejo struct {
 	patched    []string // "path {body}" per PATCH of an issue
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
+	pullHead string            // PR 9's current head; empty answers no pull read
 	// posted are the comment bodies per path, in the order they came
 	posted map[string][]string
 }
@@ -167,6 +168,8 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			files = append(files, map[string]any{"filename": fmt.Sprintf("gen/p%s-%d.go", r.URL.Query().Get("page"), i), "status": "added", "additions": 1})
 		}
 		json.NewEncoder(w).Encode(files)
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9" && f.pullHead != "":
+		json.NewEncoder(w).Encode(map[string]any{"head": map[string]any{"sha": f.pullHead}})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9/files":
 		pages := map[string]string{"1": `[{"filename":"a.go","status":"modified","additions":40,"deletions":3},` +
 			`{"filename":"b.go","status":"modified","additions":5,"deletions":5}]`}
@@ -1998,8 +2001,8 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
 		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
@@ -2008,6 +2011,7 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
+		"GET /api/v1/repos/sf/code/pulls/9 Bearer access-1",
 		"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
@@ -2061,8 +2065,8 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") ||
-		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
-		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "GET /api/v1/repos/sf/code/pulls/9 Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review, the head's read and the pull's", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
 	if rec.Code != http.StatusSeeOther {
@@ -2148,6 +2152,58 @@ func TestHealedRedChecksCardOffersApprove(t *testing.T) {
 	// the button path reads the head's current checks as the viewer who
 	// asked for the board (#1013), the one forge call the read makes
 	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+}
+
+// A red-checks merge request whose branch moved past the head it froze
+// (#1091: the recorded head stays red, the branch head is green) approves
+// on the current head — the head the merge takes, so the review pins it —
+// and its card says which head healed it. A moved head still red keeps
+// the return and the close.
+func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.pullHead = "def456"
+	r.fg.statuses = map[string]string{
+		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
+		"def456": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+
+	// the card: the chip names the moved head, the Approve is back
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	for _, want := range []string{`action="/approvals/4/approve"`, "branch moved on, its checks green at def456"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %q", want)
+		}
+	}
+
+	// the approve: the review pins the moved head
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve on the moved green head = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "def456" {
+		t.Fatalf("reviews = %v: want one APPROVED at the moved head", r.fg.reviews)
+	}
+
+	// a moved head still red: no approve, the return and the close stand
+	r2 := newRig(t)
+	ck2, _ := r2.loggedIn(t)
+	r2.approvals.mu.Lock()
+	r2.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r2.approvals.mu.Unlock()
+	r2.fg.pullHead = "def456"
+	r2.fg.statuses = map[string]string{
+		"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`,
+		"def456": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
+	body = r2.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck2).Body.String()
+	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "checks green at def456") {
+		t.Errorf("the still-red moved head offers an approve or a healed chip")
+	}
+	if !strings.Contains(body, `aria-controls="deny-4">Return or close</button>`) {
+		t.Errorf("the still-red moved head lost its return and close")
+	}
 }
 
 // A red-checks card whose head's current checks cannot be read keeps the

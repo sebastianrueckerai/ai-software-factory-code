@@ -33,10 +33,14 @@ type approvalCard struct {
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
-	// Healed: a merge request opened on red checks whose recorded head's
-	// checks are green now (#1013: a re-run healed them), so the card
-	// offers its Approve again and says so.
+	// Healed: a merge request opened on red checks whose head's checks
+	// are green now — at the recorded head after a re-run (#1013) or at
+	// the current head after the branch moved on — so the card offers
+	// its Approve again and says so.
 	Healed bool
+	// HealedSHA: the branch moved past the recorded head, and the current
+	// head's checks are the green ones the Approve takes.
+	HealedSHA string
 	// HeadUnread: the head's current checks could not be read (#1013), so
 	// the card shows the face its frozen spec gives it, which may be
 	// stale; the card says so rather than fail silently.
@@ -130,14 +134,20 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.PRURL = fmt.Sprintf("%s/pulls/%d", base, a.PRNumber)
 		err = json.Unmarshal(a.Spec, &k.Merge)
 		// a red request whose head's checks are green now (#1013) merges
-		// again; a read that fails leaves the red face, which says so —
-		// its refusal still names the remedies
+		// again, and one whose branch moved on merges on the current
+		// head's green checks — the head the merge takes; a read that
+		// fails leaves the red face, which says so — its refusal still
+		// names the remedies
 		if err == nil && k.Merge.RedChecks && k.Merge.HeadSHA != "" {
-			if green, gerr := c.headChecksGreen(ctx, act, a.Project, k.Merge.HeadSHA); gerr != nil {
+			green, sha, gerr := c.mergeHeadGreen(ctx, act, a.Project, k.Merge.HeadSHA, a.PRNumber)
+			if gerr != nil {
 				log.Printf("console: approval request %d: %v", a.ID, gerr)
 				k.HeadUnread = true
 			} else {
 				k.Healed = green
+				if sha != k.Merge.HeadSHA {
+					k.HealedSHA = sha
+				}
 			}
 		}
 	case factoryd.ApprovalResource:
@@ -352,4 +362,50 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 		return false, &forgejoRefusal{"read the head's checks", err}
 	}
 	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning"), nil
+}
+
+// mergeHeadGreen reads whether a red-flagged merge request's pull request
+// may merge now: green at its recorded head (#1013, a re-run) or, when
+// the branch has moved on, green at the pull request's current head,
+// which is the head the merge takes. It returns the sha the approving
+// review pins: the current head when that one heals the request, the
+// recorded one otherwise. A current head that cannot be read leaves the
+// request unhealed, so its remedies stand: no read failure may take the
+// card's actions away.
+func (c *Console) mergeHeadGreen(ctx context.Context, a actor, project, pin string, pr int64) (bool, string, error) {
+	green, err := c.headChecksGreen(ctx, a, project, pin)
+	if err != nil || green {
+		return green, pin, err
+	}
+	sha, err := c.prHeadSHA(ctx, a, project, pr)
+	if err != nil {
+		log.Printf("console: pull request %d of %s: %v", pr, project, err)
+		return false, pin, nil
+	}
+	if sha == pin {
+		return false, pin, nil
+	}
+	green, err = c.headChecksGreen(ctx, a, project, sha)
+	return green, sha, err
+}
+
+// prHeadSHA is the pull request's current head commit.
+func (c *Console) prHeadSHA(ctx context.Context, a actor, project string, pr int64) (string, error) {
+	if a.s == nil {
+		return "", &forgejoRefusal{"read the pull request's head", errors.New("the actor carries no session, so the head was not read")}
+	}
+	repo, err := factoryd.SplitRepo(project)
+	if err != nil {
+		return "", err
+	}
+	var p struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr)
+	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &p); err != nil {
+		return "", &forgejoRefusal{"read the pull request's head", err}
+	}
+	return p.Head.SHA, nil
 }

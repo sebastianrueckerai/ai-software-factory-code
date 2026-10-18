@@ -947,6 +947,14 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		log.Printf("console: %s answered the escalation of %s via %s: %s, the card stays waiting", a.s.user, t.ID, a.via, value)
 		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
 	}
+	// the member's own words, matching none of the question's choices, are
+	// not an answer: they go to the member's chat, where the agent reads
+	// the card and answers with its own judgement. The chat tool's own
+	// answers apply as answers; only the card form's words go to the chat.
+	// A console without a chat posts the words on the card's issue instead.
+	if a.via == factoryd.ViaButton && bt.Question != nil && text != "" && value == "" && c.cfg.Chat != nil && c.cfg.Operator != nil {
+		return answerInChat(c, ctx, a, t, text)
+	}
 	if why := c.unfundedAnswer(ctx, t); why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
@@ -955,6 +963,10 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
 }
+
+// answerInChatNote is doAnswerValue's note when the member's own words
+// went to the chat: the answer route reads it and lands the member there.
+const answerInChatNote = "The words are in the project chat; the agent answers there."
 
 // answerCard posts text as the member's answer to card t's escalation; at the
 // session cap the answer is a grant, and its event session_granted. value,
@@ -1680,8 +1692,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		}
 		if spec.RedChecks {
 			// the flag froze the head red at open; green at the same head
-			// now (a re-run) heals the request (#1013), and it merges again
-			green, err := c.headChecksGreen(ctx, a, q.Project, spec.HeadSHA)
+			// now (a re-run) heals the request (#1013), and so does green
+			// at the current head after the branch moved on — the head
+			// the merge takes, so the review pins it
+			green, sha, err := c.mergeHeadGreen(ctx, a, q.Project, spec.HeadSHA, q.PRNumber)
 			if err != nil {
 				return "", err
 			}
@@ -1692,6 +1706,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				}
 				return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
 			}
+			spec.HeadSHA = sha
 		}
 		// a card the plan has passed cannot merge (roadmap 291): the
 		// request opened before the revision landed
