@@ -724,7 +724,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 		{"nothing", func(s *statusRig) {}, []string{"waiting", "waiting", "waiting", "waiting"},
 			[]string{"No pull request from branch project-linkshort into main yet."}, []string{`action="/projects/linkshort/merge"`, `type="password"`}},
 		{"pull request open", func(s *statusRig) { s.infra.set(openPull) }, []string{"done", "waiting", "waiting", "waiting"},
-			[]string{`<a href="https://git.example/sf/infra/pulls/12">#12, filed by sebastian</a>`, "Waiting for an approver to merge #12.",
+			[]string{`<a href="https://git.example/sf/infra/pulls/12" target="_blank" rel="noopener">#12, filed by sebastian</a>`, "Waiting for an approver to merge #12.",
 				`action="/projects/linkshort/merge"`, `hx-post="/projects/linkshort/merge"`, `>Merge</button>`}, []string{`type="password"`}},
 		{"pull request closed", func(s *statusRig) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
@@ -996,7 +996,7 @@ func TestMergeActsOnTheLastFiling(t *testing.T) {
 	s.filed(t, 13)
 	s.infra.set(map[string]any{"number": 13, "state": "open", "merged": false, "html_url": "https://git.example/sf/infra/pulls/13",
 		"user": map[string]any{"login": "sebastian"}})
-	if body := s.status(t); !strings.Contains(body, `<a href="https://git.example/sf/infra/pulls/13">#13, filed by sebastian</a>`) {
+	if body := s.status(t); !strings.Contains(body, `<a href="https://git.example/sf/infra/pulls/13" target="_blank" rel="noopener">#13, filed by sebastian</a>`) {
 		t.Errorf("the panel lacks #13:\n%s", body)
 	}
 	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusSeeOther {
