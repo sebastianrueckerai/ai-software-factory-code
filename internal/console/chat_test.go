@@ -1343,7 +1343,7 @@ func TestSystemTool(t *testing.T) {
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n"+
-			"\nChat bounds:\n  rounds per turn: 8\n  message size: 8 KiB\n",
+			"\nChat bounds:\n  message size: 8 KiB\n  model calls: as many as the task's budget holds\n",
 		"\nThe writing guide, for every word a person reads:\n# The writing guide\n",
 		"Never use a long word where a short one will do.",
 		"No em dashes. No en dashes as punctuation.")
@@ -2196,6 +2196,38 @@ func TestChatAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
 	}
 	if rows := asks(); len(rows) != 2 {
 		t.Fatalf("an hour past the ask: %d rows, want 2", len(rows))
+	}
+}
+
+// A turn holds as many model calls as its budget holds: eight tool-call
+// answers in a row do not end it in the fail message, and the ninth
+// answer, the one without tool calls, ends it as the turn's text.
+func TestChatTurnRunsPastEightCalls(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	if _, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	replies := make([][]string, 0, 9)
+	for i := 0; i < 8; i++ {
+		replies = append(replies, []string{call(i, "routines", "{}")})
+	}
+	g.replies = append(replies, []string{say("All routines listed.")})
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"list the routines"}})
+	if n := len(g.calls()); n != 9 {
+		t.Fatalf("model calls = %d, want 9", n)
+	}
+	done, fail := false, false
+	for _, e := range events {
+		if strings.HasPrefix(e, "done ") {
+			done = true
+		}
+		if strings.HasPrefix(e, "error ") {
+			fail = true
+		}
+	}
+	if !done || fail {
+		t.Fatalf("events = %v, want the turn done and no error", events)
 	}
 }
 

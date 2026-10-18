@@ -414,9 +414,15 @@ var chatView = (function () {
         "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
     }).join("");
   }
+  // clampShare bounds the chat pane's width for the divider drag: the
+  // chat keeps 18rem and the board 30rem of availPx.
+  function clampShare(chatPx, availPx, remPx) {
+    var min = 18 * remPx, max = availPx - 30 * remPx;
+    return Math.max(min, Math.min(max, chatPx));
+  }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, levelConfirmHTML: levelConfirmHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
-    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML};
+    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML, clampShare: clampShare};
 })();
 
 (function () {
@@ -435,6 +441,59 @@ var chatView = (function () {
   // running counts each thread's streams in this page
   var threads = [], open = 0, openOwner = "", openThread = {}, running = {}, readOnly = false;
   var foldKey = "chat-fold:" + login;
+
+  // the screen's two panes: the divider drags (or the arrow keys move) the
+  // boundary, every side keeping its minimum, Full hands the whole screen
+  // to the chat, Grow heights the input for a long message; the boundary
+  // and Full outlive the page in localStorage
+  var screenEl = document.getElementById("screen"), divider = document.getElementById("chat-divider");
+  if (divider && screenEl) {
+    var remPx = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
+    var share = function (chatPx) {
+      var avail = screenEl.clientWidth, px = chatView.clampShare(chatPx, avail, remPx);
+      screenEl.style.setProperty("--chat-share", (px / Math.max(1, avail - 10 - px)).toFixed(3) + "fr");
+      try { localStorage.setItem("chat-share", (px / avail).toFixed(4)); } catch (err) {}
+    };
+    var storedShare = 0;
+    try { storedShare = parseFloat(localStorage.getItem("chat-share")) || 0; } catch (err) {}
+    if (storedShare) share(storedShare * screenEl.clientWidth);
+    divider.addEventListener("pointerdown", function (e) {
+      e.preventDefault();
+      if (divider.setPointerCapture) divider.setPointerCapture(e.pointerId);
+    });
+    divider.addEventListener("pointermove", function (e) {
+      if (!divider.hasPointerCapture || !divider.hasPointerCapture(e.pointerId)) return;
+      share(e.clientX - screenEl.getBoundingClientRect().left);
+    });
+    divider.addEventListener("keydown", function (e) {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      var step = screenEl.clientWidth * 0.03;
+      var chat = screenEl.querySelector(".chat");
+      share((chat ? chat.getBoundingClientRect().width : 0) + (e.key === "ArrowLeft" ? -step : step));
+    });
+  }
+  var full = document.getElementById("chat-full");
+  if (full && screenEl) {
+    var setFull = function (on) {
+      screenEl.classList.toggle("chat-only", on);
+      full.setAttribute("aria-pressed", String(on));
+      try { localStorage.setItem("chat-only", on ? "1" : "0"); } catch (err) {}
+    };
+    var wasFull = false;
+    try { wasFull = localStorage.getItem("chat-only") === "1"; } catch (err) {}
+    setFull(wasFull);
+    full.addEventListener("click", function () { setFull(!screenEl.classList.contains("chat-only")); });
+  }
+  var grow = document.getElementById("chat-grow");
+  if (grow && input) {
+    grow.addEventListener("click", function () {
+      var on = !input.classList.contains("tall");
+      input.classList.toggle("tall", on);
+      grow.setAttribute("aria-pressed", String(on));
+      input.focus();
+    });
+  }
 
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;

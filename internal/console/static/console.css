@@ -90,8 +90,9 @@ button:disabled { opacity: .5; cursor: default; }
 [data-theme=light] .need-btn:hover, [data-theme=light] form[action$="/approve"] button[type=submit]:hover { background: color-mix(in srgb, var(--need) 86%, #000); border-color: color-mix(in srgb, var(--need) 86%, #000); }
 button.deny { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 70%, transparent); }
 button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transparent); border-color: var(--st-failed); }
-.xs, form.inline button, .drawer-close, .chat-new, .intake, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
-.xs:hover, form.inline button:hover, .chat-new:hover, .intake:hover, button.skip:hover, button.undo:hover { color: var(--text); }
+.xs, form.inline button, .drawer-close, .chat-new, .chat-full, .chat-grow, .intake, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
+.xs:hover, form.inline button:hover, .chat-new:hover, .chat-full:hover, .chat-grow:hover, .intake:hover, button.skip:hover, button.undo:hover { color: var(--text); }
+.chat-full[aria-pressed=true], .chat-grow[aria-pressed=true] { background: var(--bg-hover); color: var(--text); }
 .intake { border: 1px solid transparent; }
 .intake.closed { color: var(--need-text); border-color: var(--need-line); border-radius: 11px; }
 button.htmx-request::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
@@ -716,9 +717,18 @@ body:has(#screen) { height: 100vh; height: 100dvh; display: flex; flex-direction
 body:has(#screen) > main { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 0; }
 body:has(#screen) #flash { flex: none; }
 #screen { position: relative; flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 6fr); gap: 10px; padding: 12px; }
-#screen.with-chat { grid-template-columns: minmax(0, 4fr) minmax(0, 6fr); }
+/* the chat and the board hold a divider between them: the drag sets
+   --chat-share, every side keeps its minimum (18rem the chat, 30rem the
+   board) */
+#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, 4fr)) 10px minmax(30rem, 1fr); gap: 0; }
+#chat-divider { position: relative; cursor: col-resize; }
+#chat-divider::after { content: ""; position: absolute; inset: 0 4px; background: var(--line); }
+#chat-divider:hover::after, #chat-divider:focus-visible::after { background: var(--accent); }
 #screen.wide { grid-template-columns: minmax(0, 1fr); }
 #screen.wide .chat { display: none; }
+#screen.chat-only { grid-template-columns: minmax(0, 1fr); }
+#screen.chat-only .chat { display: flex; }
+#screen.chat-only #board, #screen.chat-only #chat-divider { display: none; }
 #board { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 .lane { flex: 1; min-height: 0; }
 .lane.five { grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); overflow: visible; }
@@ -783,6 +793,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .prompt:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .prompt .ps { align-self: flex-start; color: var(--accent); font: 600 14px/22px var(--font-mono); }
 .prompt textarea { flex: 1; min-width: 0; max-width: none; padding: 0; border: 0; outline: none; background: none; resize: none; font-size: 14px; line-height: 22px; }
+.prompt textarea.tall { height: min(38vh, 22rem); flex: none; align-self: stretch; }
 .prompt textarea:focus-visible { box-shadow: none; }
 .prompt button { margin: 0; }
 .chat-queue { list-style: none; margin: 0; padding: 0 14px 10px; display: flex; flex-direction: column; gap: 4px; }

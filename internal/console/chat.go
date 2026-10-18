@@ -27,7 +27,6 @@ import (
 
 const (
 	chatHistory    = 100              // messages GET answers
-	chatRounds     = 8                // model calls a turn may make
 	chatTTL        = 30 * time.Minute // a proposal's and an undo's life
 	chatMessageMax = 8 << 10
 	chatViewMax    = 4 << 10 // the view field a chat's POST carries
@@ -485,7 +484,7 @@ func (t *turn) run(id, notice string) {
 	}
 	defs := t.offered()
 	forced := 0
-	for round := 0; round < chatRounds; round++ {
+	for {
 		task, ok, err := t.c.cfg.Tasks.Task(ctx, id)
 		if err != nil || !ok {
 			log.Printf("console: chat task %s: found %v, %v", id, ok, err)
@@ -512,7 +511,6 @@ func (t *turn) run(id, notice string) {
 						log.Printf("console: compact %s on the provider's refusal: %v", t.threadRef(), cerr)
 					} else if done {
 						if msgs, err = t.context(); err == nil {
-							round--
 							continue
 						}
 					}
@@ -549,7 +547,6 @@ func (t *turn) run(id, notice string) {
 		}
 		msgs = append(append(msgs, answer), results...)
 	}
-	t.fail(fmt.Sprintf("The agent made %d model calls without an answer; ask again.", chatRounds))
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's

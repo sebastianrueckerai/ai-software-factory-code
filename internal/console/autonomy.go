@@ -424,9 +424,10 @@ func (c *Console) docFileAt(ctx context.Context, repo factoryd.Repo, path, ref s
 	return string(raw), file.SHA, true, nil
 }
 
-// readDoc is read_doc: path at master with its base_sha256, its first
-// docShown bytes or the lines holding find.
-func (c *Console) readDoc(ctx context.Context, docRepo, path, find string) (string, error) {
+// readDoc is read_doc: path at master with its base_sha256 and line count,
+// its first docShown bytes, its lines from..to, or the lines holding find,
+// by literal text or a regular expression.
+func (c *Console) readDoc(ctx context.Context, docRepo, path, find string, from, to int, regex bool) (string, error) {
 	repo, err := c.docRepoOf(docRepo, path)
 	if err != nil {
 		return "", err
@@ -438,17 +439,52 @@ func (c *Console) readDoc(ctx context.Context, docRepo, path, find string) (stri
 	case !present:
 		return path + " does not exist on master: write_doc with content makes it.", nil
 	}
-	head := fmt.Sprintf("%s on %s@master: %d bytes, base_sha256 %s.", path, docRepo, len(content), factoryd.ContentHash(content))
+	lines := strings.Split(content, "\n")
+	if strings.HasSuffix(content, "\n") {
+		lines = lines[:len(lines)-1]
+	}
+	head := fmt.Sprintf("%s on %s@master: %d bytes, %d lines, base_sha256 %s.", path, docRepo, len(content), len(lines), factoryd.ContentHash(content))
+	if find != "" && (from > 0 || to > 0) {
+		return head + " find and a line range do not combine: find searches every line, from and to read one.", nil
+	}
+	if from != 0 || to != 0 {
+		if from < 0 || to < 0 || from > len(lines) || (from > 0 && to > 0 && from > to) {
+			return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", from, to, len(lines), len(lines)), nil
+		}
+		var b strings.Builder
+		size := 0
+		for i := max(from, 1); i <= min(cmp.Or(to, len(lines)), len(lines)); i++ {
+			if l := lines[i-1]; size+len(l) > docShown {
+				fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
+				break
+			} else {
+				size += len(l)
+				fmt.Fprintf(&b, "line %d: %s\n", i, l)
+			}
+		}
+		return head + "\n\n" + b.String(), nil
+	}
 	if find == "" {
 		if len(content) > docShown {
-			return head + " Its first 20 KiB; find narrows to the lines holding a word.\n\n" + textutil.Truncate(content, docShown), nil
+			return head + " Its first 20 KiB; read lines with from and to, find the ones holding a word, a pattern with regex.\n\n" + textutil.Truncate(content, docShown), nil
 		}
 		return head + "\n\n" + content, nil
 	}
+	var match func(string) bool
+	if regex {
+		expr, err := regexp.Compile(find)
+		if err != nil {
+			return head + fmt.Sprintf(" find %q is no regular expression: %v.", find, err), nil
+		}
+		match = expr.MatchString
+	} else {
+		needle := strings.ToLower(find)
+		match = func(l string) bool { return strings.Contains(strings.ToLower(l), needle) }
+	}
 	var b strings.Builder
 	n, size := 0, 0
-	for i, l := range strings.Split(content, "\n") {
-		if !strings.Contains(strings.ToLower(l), strings.ToLower(find)) {
+	for i, l := range lines {
+		if !match(l) {
 			continue
 		}
 		if n == docFinds || size+len(l) > docShown {
@@ -459,7 +495,10 @@ func (c *Console) readDoc(ctx context.Context, docRepo, path, find string) (stri
 		fmt.Fprintf(&b, "line %d: %s\n", i+1, l)
 	}
 	if n == 0 {
-		return head + fmt.Sprintf(" No line holds %q.", find), nil
+		if regex {
+			return head + fmt.Sprintf(" No line matches the pattern %q: widen it, or read a line range with from and to.", find), nil
+		}
+		return head + fmt.Sprintf(" No line holds %q. find matches literal text, case-insensitively: try a word of the document, a pattern with regex, or a line range with from and to.", find), nil
 	}
 	return head + "\n\n" + b.String(), nil
 }

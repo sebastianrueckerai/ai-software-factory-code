@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -167,10 +168,10 @@ func TestDocsReadAndEdit(t *testing.T) {
 	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
 	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat, chatTask: "t-chat"}
 	hash := factoryd.ContentHash(docsPlan)
-	got, err := r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "")
-	equal(t, "the read", []any{got, err}, []any{"docs/plans/cache.md on sf/docs@master: 61 bytes, base_sha256 " + hash + ".\n\n" + docsPlan, error(nil)})
-	got, _ = r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "WINDOW")
-	equal(t, "the find", got, "docs/plans/cache.md on sf/docs@master: 61 bytes, base_sha256 "+hash+".\n\nline 4: The window: one week.\n")
+	got, err := r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "", 0, 0, false)
+	equal(t, "the read", []any{got, err}, []any{"docs/plans/cache.md on sf/docs@master: 61 bytes, 4 lines, base_sha256 " + hash + ".\n\n" + docsPlan, error(nil)})
+	got, _ = r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "WINDOW", 0, 0, false)
+	equal(t, "the find", got, "docs/plans/cache.md on sf/docs@master: 61 bytes, 4 lines, base_sha256 "+hash+".\n\nline 4: The window: one week.\n")
 
 	edited := strings.Replace(docsPlan, "one week", "two weeks", 1)
 	got, err = r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", docEdit{Old: "one week", New: "two weeks", Base: hash})
@@ -201,6 +202,51 @@ func TestDocsReadAndEdit(t *testing.T) {
 		}
 	}
 	equal(t, "the commits", len(f.commits), 2)
+}
+
+// read_doc reads a line range with from and to, finds by literal text or by
+// a regular expression, and every refusal names the document's state and
+// the fitting action (roadmap 281's chat findings, 2026-10-19).
+func TestReadDocRangesAndPatterns(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	const doc = "one alpha\ntwo beta\nthree gamma\n" // 31 bytes, 3 lines
+	withDocs(t, r, map[string]string{"docs/plans/range.md": doc, "docs/plans/big.md": strings.Repeat("w", docShown) + "\nend"})
+	ctx := t.Context()
+	const path = "docs/plans/range.md"
+	head := path + " on sf/docs@master: 31 bytes, 3 lines, base_sha256 " + factoryd.ContentHash(doc) + "."
+	for _, tt := range []struct {
+		name  string
+		find  string
+		from  int
+		to    int
+		regex bool
+		want  string
+	}{
+		{"a range", "", 2, 3, false, head + "\n\nline 2: two beta\nline 3: three gamma\n"},
+		{"a range from the start", "", 0, 99, false, head + "\n\nline 1: one alpha\nline 2: two beta\nline 3: three gamma\n"},
+		{"a range to the last line", "", 2, 0, false, head + "\n\nline 2: two beta\nline 3: three gamma\n"},
+		{"a range past the end", "", 5, 9, false, head + " from 5 and to 9 name no line range of its 3 lines: name from at or before to, inside lines 1 to 3."},
+		{"an inverted range", "", 3, 2, false, head + " from 3 and to 2 name no line range of its 3 lines: name from at or before to, inside lines 1 to 3."},
+		{"a negative line", "", -1, 0, false, head + " from -1 and to 0 name no line range of its 3 lines: name from at or before to, inside lines 1 to 3."},
+		{"a pattern", "tw.", 0, 0, true, head + "\n\nline 2: two beta\n"},
+		{"a pattern that matches nothing", "zz+", 0, 0, true, head + " No line matches the pattern \"zz+\": widen it, or read a line range with from and to."},
+		{"no regular expression", "[", 0, 0, true, head + " find \"[\" is no regular expression: error parsing regexp: missing closing ]: `[`."},
+		{"literal text a dot does not hold", "tw.", 0, 0, false, head + " No line holds \"tw.\". find matches literal text, case-insensitively: try a word of the document, a pattern with regex, or a line range with from and to."},
+		{"find with a range", "one", 1, 1, false, head + " find and a line range do not combine: find searches every line, from and to read one."},
+	} {
+		got, err := r.c.readDoc(ctx, "sf/docs", path, tt.find, tt.from, tt.to, tt.regex)
+		equal(t, tt.name, []any{got, err}, []any{tt.want, error(nil)})
+	}
+	big := strings.Repeat("w", docShown) + "\nend"
+	got, err := r.c.readDoc(ctx, "sf/docs", "docs/plans/big.md", "", 0, 0, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "docs/plans/big.md on sf/docs@master: " + fmt.Sprint(len(big)) + " bytes, 2 lines, base_sha256 " +
+		factoryd.ContentHash(big) + ". Its first 20 KiB; read lines with from and to, find the ones holding a word, a pattern with regex.\n\n"
+	if !strings.HasPrefix(got, want) || !strings.HasSuffix(got, strings.Repeat("w", docShown)+"…") {
+		t.Errorf("the big read = %q…, want the head %q and the first %d bytes", got[:200], want, docShown)
+	}
 }
 
 // Two writes read at one hash: the first lands, the second's stale hash

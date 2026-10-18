@@ -2,7 +2,8 @@
 {{if .Filed}}<p class="note" role="status">Filed issue #{{.Filed}}; it appears on the board once factoryd picks it up.</p>{{end}}
 {{if .Status.Project}}<details id="status-line" class="status" aria-label="Status">{{template "status" .}}</details>
 {{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
-{{template "chat" .}}{{template "board" .}}
+{{template "chat" .}}{{if .Chat}}<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0"></div>
+{{end}}{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
 {{if .Docs}}<aside id="doc-view" class="doc-view" aria-label="The project's documents" tabindex="-1" hidden>
 <div class="doc-head"><div class="doc-row doc-row-nav">

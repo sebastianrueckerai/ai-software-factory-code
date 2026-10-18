@@ -66,7 +66,8 @@ type toolInput struct {
 	BacklogCap int    `json:"backlog_cap,omitempty"`
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
-	// document read to the lines that hold it.
+	// document read to the lines that hold it, Regex makes Find a pattern,
+	// From and To read a line range.
 	// Ask and Choices are an escalation's question and answers; Why and
 	// Info the question format's why and what-would-change-your-mind,
 	// Recommendation its suggested answer, all the writer's own.
@@ -82,6 +83,7 @@ type toolInput struct {
 	New        string `json:"new,omitempty"`
 	BaseSHA256 string `json:"base_sha256,omitempty"`
 	Find       string `json:"find,omitempty"`
+	Regex      bool   `json:"regex,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -1332,11 +1334,14 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "read_doc", title: "Read a document",
-		params:   map[string]any{"path": docPath, "find": str("only the lines holding this text")},
+		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
+			"from":  stepParam("the first line to read"),
+			"to":    stepParam("the last line to read"),
+			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
 		required: []string{"path"},
-		about:    "A document of the project's document repository with its base_sha256.",
+		about:    "A document of the project's document repository with its base_sha256 and line count.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find)
+			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
 			return s, nil, err
 		}},
 	{name: "write_doc", title: "Write a document", write: true,
@@ -1586,7 +1591,7 @@ func (t *turn) systemText() (string, error) {
 		fmt.Fprintf(&b, "  project month cap: €%.2f\n", eur)
 	}
 	b.WriteString(limitLines(v.Tree.Document))
-	fmt.Fprintf(&b, "\nChat bounds:\n  rounds per turn: %d\n  message size: %d KiB\n", chatRounds, chatMessageMax>>10)
+	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
 	b.WriteString("\nThe writing guide, for every word a person reads:\n" + writingguide.Guide)
 	return b.String(), nil
 }
