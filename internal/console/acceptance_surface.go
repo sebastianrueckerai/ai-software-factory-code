@@ -55,6 +55,7 @@ type AcceptanceRig struct {
 	chat      *policy.ChatConfig
 	// chat is the chat block the policy names once SetDocs seats the
 	// documents: the project's chat.doc_repo.
+	intake map[string]bool // the repositories' closed intake switches
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -1070,6 +1071,22 @@ func (a *AcceptanceRig) AddChatTimer(context.Context, string, string, int64, tim
 
 func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
+}
+
+func (a *AcceptanceRig) SetChatIntake(_ context.Context, repository string, closed bool, _ string, _ time.Time) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.intake == nil {
+		a.intake = map[string]bool{}
+	}
+	a.intake[repository] = closed
+	return nil
+}
+
+func (a *AcceptanceRig) ChatIntakeClosed(_ context.Context, repository string) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.intake[repository], nil
 }
 
 func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, error) {

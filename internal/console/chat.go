@@ -215,7 +215,9 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t.settleRows(ctx, msgs, th.SeenUpto)
 	// the owner's Clear old swept the rows up to their marker from view;
 	// an open ask stays whatever the marker says, and the record keeps
-	// every row
+	// every row. Past the summary's fold the answer carries no summary
+	// either: no summary card over rows the member swept, while the
+	// stored thread keeps its summary for the turns.
 	if th.ClearedUpto > 0 {
 		kept := make([]factoryd.ChatMessage, 0, len(msgs))
 		for _, m := range msgs {
@@ -226,6 +228,9 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 			kept = append(kept, m)
 		}
 		msgs = kept
+		if th.ClearedUpto >= th.SummaryUpto {
+			th.Summary, th.SummaryUpto = "", 0
+		}
 	}
 	// reading marks the member's own thread seen; another member's keeps
 	// its owner's unread marker

@@ -90,8 +90,10 @@ button:disabled { opacity: .5; cursor: default; }
 [data-theme=light] .need-btn:hover, [data-theme=light] form[action$="/approve"] button[type=submit]:hover { background: color-mix(in srgb, var(--need) 86%, #000); border-color: color-mix(in srgb, var(--need) 86%, #000); }
 button.deny { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 70%, transparent); }
 button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transparent); border-color: var(--st-failed); }
-.xs, form.inline button, .drawer-close, .chat-new, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
-.xs:hover, form.inline button:hover, .chat-new:hover, button.skip:hover, button.undo:hover { color: var(--text); }
+.xs, form.inline button, .drawer-close, .chat-new, .intake, button.skip, button.undo, .queued-remove { height: 22px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
+.xs:hover, form.inline button:hover, .chat-new:hover, .intake:hover, button.skip:hover, button.undo:hover { color: var(--text); }
+.intake { border: 1px solid transparent; }
+.intake.closed { color: var(--need-text); border-color: var(--need-line); border-radius: 11px; }
 button.htmx-request::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* fields: a line, the page's colour, a cyan ring when focused */

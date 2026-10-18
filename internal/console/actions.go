@@ -36,9 +36,11 @@ type actor struct {
 	// autonomy state, the rule and the chat task behind its actions, and
 	// who decided, the agent unconfirmed or the member (roadmap 239).
 	level, mergeRule, chatTask, decider string
-	// thread is the chat thread the action came from, which its event
-	// names so the card shows the conversation behind it
-	thread int64
+	// wake marks the actor of a turn the Waker started (the concept's
+	// wake): the member never asked, so a closed intake refuses its own
+	// filings while the member's ask still files.
+	wake   bool
+	thread int64 // the chat thread the action came from, which its event names so the card shows the conversation behind it
 }
 
 // attribution is who a's commit is for: the chat or the console, the
@@ -366,6 +368,19 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == project })
 	if i < 0 || a.repository != "" && ps[i].Repository != a.repository {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "choose a project agents work on")
+	}
+	// a closed intake refuses the wake's own filings — the turn the Waker
+	// started without the member's ask — while the member's own ask still
+	// files and starts
+	if a.via == factoryd.ViaChat && a.wake {
+		closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, ps[i].Repository)
+		if err != nil {
+			log.Printf("console: the intake of %s: %v", ps[i].Name, err)
+			return factoryd.Repo{}, 0, refuse(http.StatusServiceUnavailable, "cannot read the intake of "+ps[i].Name+"; try again")
+		}
+		if closed {
+			return factoryd.Repo{}, 0, refuse(http.StatusForbidden, "The intake of "+ps[i].Name+" is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts.")
+		}
 	}
 	label := factoryd.LaneHuman
 	if lane != factoryd.LaneHuman {

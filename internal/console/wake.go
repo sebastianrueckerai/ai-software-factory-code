@@ -40,7 +40,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	v, _ := c.inForce(ctx)
 	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
-		a: actor{s: c.wakeSession(ctx, login), repository: p.Repository, via: factoryd.ViaChat, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
+		a: actor{s: c.wakeSession(ctx, login), repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
 	if pc, ok := v.Projects[p.Name]; ok {
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
