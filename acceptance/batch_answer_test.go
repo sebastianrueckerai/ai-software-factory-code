@@ -86,6 +86,20 @@ func (s *accBatchTasks) Task(_ context.Context, id string) (factoryd.Task, bool,
 	return factoryd.Task{}, false, nil
 }
 
+func (s *accBatchTasks) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]string{}
+	for _, id := range ids {
+		for _, t := range s.tasks {
+			if t.ID == id {
+				out[id] = t.Status
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *accBatchTasks) SetAdmitted(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -796,6 +810,10 @@ func (f *accBatchChat) EnsureCardThread(context.Context, string, string, string)
 
 func (f *accBatchChat) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
 	return "", 0, false, nil
+}
+
+func (f *accBatchChat) CardThreads(context.Context, string, []string) (map[string]factoryd.CardThread, error) {
+	return map[string]factoryd.CardThread{}, nil
 }
 
 func (f *accBatchChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {

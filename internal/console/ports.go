@@ -134,6 +134,9 @@ type Chat interface {
 	// caller binds it, every later caller gets the same one
 	EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error)
 	CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error)
+	// CardThreads is CardThreadFor over many cards at once: one read of
+	// the settle rule's bindings.
+	CardThreads(ctx context.Context, repository string, ids []string) (map[string]factoryd.CardThread, error)
 	// the thread's own subscriptions (the timers concept): its watches of
 	// cards and its one-shot timers, which the Waker wakes it on
 	AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error

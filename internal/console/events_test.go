@@ -108,6 +108,18 @@ func (f *fakeEvents) TaskEvents(_ context.Context, id string, limit int) ([]fact
 	return out, nil
 }
 
+func (f *fakeEvents) TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]factoryd.Event, error) {
+	out := map[string][]factoryd.Event{}
+	for _, id := range ids {
+		evs, err := f.TaskEvents(ctx, id, limit)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = evs
+	}
+	return out, nil
+}
+
 func (f *fakeEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[string]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
