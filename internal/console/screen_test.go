@@ -213,18 +213,18 @@ func TestStatusLineFigures(t *testing.T) {
 	line := func(query string) string {
 		t.Helper()
 		body := r.do(httptest.NewRequest(http.MethodGet, "/"+query, nil), ck).Body.String()
-		start := strings.Index(body, `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">`)
+		start := strings.Index(body, `<details id="status-line" class="status" aria-label="Status"><summary class="strip">`)
 		if start < 0 {
 			t.Fatalf("board%s has no status strip", query)
 		}
-		return body[start : start+strings.Index(body[start:], `</div>
+		return body[start : start+strings.Index(body[start:], `</summary>
 <div class="sp"`)]
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
 	gauge := func(pct int) string {
 		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span><span class="pct">%d%%</span>`, pct, pct, pct)
 	}
-	code := `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
@@ -239,7 +239,7 @@ func TestStatusLineFigures(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-poster", Author: "sebastian", Repository: "demo-app/demo-app"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-old", Kind: "agent", Status: "done", Repository: "linkshort/linkshort"}})
 	r.tasks.tasks = slices.DeleteFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-elsewhere" })
-	if got, want := line("?project=demo-app"), `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+	if got, want := line("?project=demo-app"), `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
@@ -247,13 +247,39 @@ func TestStatusLineFigures(t *testing.T) {
 `; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
-	if got, want := line("?project=linkshort"), `<div id="status-line"><div class="strip" role="group" aria-label="Status of the project">
+	if got, want := line("?project=linkshort"), `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
 <a href="/costs" class="cell spend" `+title+`><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`+gauge(0)+`</a>
 `; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
+	}
+}
+
+// The status line is one thin strip; the panel with the spend detail,
+// the provider and the configuration sits behind the strip's click: a
+// closed details whose summary is the strip. C20's "renders always,
+// without an expand control" line misrecorded the standing want.
+func TestStatusLineStripExpandsThePanel(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	i := strings.Index(body, `<details id="status-line" class="status" aria-label="Status"><summary class="strip">`)
+	if i < 0 {
+		t.Fatal("the status line is not a closed details with the strip as its summary")
+	}
+	if strings.Contains(body, `<section class="status"`) || strings.Contains(body, `<div class="strip"`) {
+		t.Error("the old always-open status markup is still rendered")
+	}
+	rest := body[i:]
+	summaryEnd := strings.Index(rest, `</summary>`)
+	sp := strings.Index(rest, `<div class="sp" id="status-panel"`)
+	if summaryEnd < 0 || sp < 0 || sp < summaryEnd {
+		t.Fatal("the detail panel does not sit inside the details after the summary")
+	}
+	if j := strings.Index(rest[sp:], `</details>`); j < 0 {
+		t.Error("the details does not close after the panel")
 	}
 }
 

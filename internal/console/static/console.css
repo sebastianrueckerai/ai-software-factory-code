@@ -648,8 +648,11 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
   -webkit-mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s));
           mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s)); }
 .status:hover .strip { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
-/* the strip: cells split by hairlines, each a mono numeral and a word */
+/* the strip: cells split by hairlines, each a mono numeral and a word;
+   it is the summary of the status details: one thin line, click for the panel */
 .strip { display: flex; align-items: stretch; min-height: 36px; border-top: 1px solid var(--line); }
+summary.strip { cursor: pointer; list-style: none; }
+summary.strip::-webkit-details-marker { display: none; }
 .cell { display: flex; align-items: center; gap: 7px; padding: 0 16px; border-left: 1px solid var(--line); color: var(--text-muted); font-size: 13px; white-space: nowrap; text-decoration: none; font-family: var(--font-ui); }
 .cell:first-child { border-left: 0; }
 .cell .n { color: var(--text); font-size: 15px; font-weight: 500; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }

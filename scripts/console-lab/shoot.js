@@ -105,8 +105,9 @@ async function main() {
         // the columns scroll inside the viewport: a tall one shows every card
         await shot("board-tall-1440.png", tall, "/", doIt);
         await shot("wide-1440.png", desk, "/?view=wide");
-        // the status in detail sits under the strip (C20: it no longer folds)
+        // the status in detail opens on the strip's click
         await shot("status-open-1440.png", desk, "/", async (p) => {
+          await p.page.locator("#status-line > summary").click();
           await p.idle();
         }, false);
         if (drawer) {
