@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	"go.temporal.io/sdk/activity"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -190,7 +191,9 @@ func (s *PGStore) TaskRolls(ctx context.Context, taskID string) ([]RollRequest, 
 	for rows.Next() {
 		r := RollRequest{TaskID: taskID}
 		var changes []byte
-		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.Committed, &changes, &r.Summary, &r.CreatedAt, &r.PRs); err != nil {
+		// the array arrives as a string through database/sql; pgx's
+		// scanner decodes it into the slice (as cloudres does)
+		if err := rows.Scan(&r.SHA, &r.Repository, &r.RunID, &r.State, &r.Committed, &changes, &r.Summary, &r.CreatedAt, pgtype.NewMap().SQLScanner(&r.PRs)); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(changes, &r.Changes); err != nil {

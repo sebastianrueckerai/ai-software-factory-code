@@ -160,9 +160,11 @@ func TestPGStoreRollRequests(t *testing.T) {
 	if sha, ok, err := s.LastMergedRoll(ctx, repo); err != nil || !ok || sha != "b" {
 		t.Fatalf("last merged roll %q %v %v, want b", sha, ok, err)
 	}
-	if rolls, err := s.TaskRolls(ctx, "rt1"); err != nil || len(rolls) != 2 ||
-		!reflect.DeepEqual(rolls[0].PRs, []int64{12}) || len(rolls[1].PRs) != 0 {
-		t.Fatalf("task rolls %+v, want b carrying pull request 12", rolls)
+	// settle deleted the never-committed c (the states above say so):
+	// the merged b alone remains, carrying its pull request
+	if rolls, err := s.TaskRolls(ctx, "rt1"); err != nil || len(rolls) != 1 ||
+		!reflect.DeepEqual(rolls[0].PRs, []int64{12}) {
+		t.Fatalf("task rolls %+v, want the settled b carrying pull request 12", rolls)
 	}
 	bySHA, ok, err := s.RollRequestBySHA(ctx, "b")
 	if err != nil || !ok || bySHA.State != RollMerged || bySHA.TaskID != "rt1" ||
