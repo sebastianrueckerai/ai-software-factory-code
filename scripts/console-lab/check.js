@@ -987,6 +987,30 @@ async function text(page) {
     if (p.errors.length) fails.push(sc + ": " + p.errors[0]);
     await p.ctx.close();
   }
+  // the roll's gap: the router answers 503 to the event stream while the
+  // console's pod rolls, and a refused connect closes the browser's
+  // EventSource for good; the board must reopen the stream itself and read
+  // its cards again, not stand frozen until a reload (a done card stayed in
+  // its column while its notification arrived, 2026-10-18)
+  await seed("busy");
+  {
+    const pp = await open(browser, { width: 1440, height: 900 });
+    await pp.page.goto(base + "/", { waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    const busy = await pp.page.evaluate(() => document.getElementById("status-line").innerText);
+    await fetch(base + "/lab/stream-fail?n=1", { method: "POST" });
+    await pp.page.reload({ waitUntil: "load" });
+    await pp.page.waitForTimeout(600);
+    const down = await pp.page.evaluate(() => document.getElementById("live").textContent);
+    if (!/down/.test(down)) fails.push("gap: the 503 leaves the footer not saying the stream is down (" + down + ")");
+    await seed("idle");
+    await pp.page.waitForTimeout(9000);
+    const live = await pp.page.evaluate(() => document.getElementById("live").textContent);
+    if (live) fails.push("gap: the closed stream reopens by itself (" + live + ")");
+    const idle = await pp.page.evaluate(() => document.getElementById("status-line").innerText);
+    if (idle === busy) fails.push("gap: the reopened stream reads no board again (" + String(idle).slice(0, 60) + ")");
+    await pp.ctx.close();
+  }
   // the panel on the phone: the rows stack, every target reaches 44 px, no horizontal scroll
   await seed("busy");
   {

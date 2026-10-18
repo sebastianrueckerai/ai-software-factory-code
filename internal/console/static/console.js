@@ -217,7 +217,8 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // promise): htmx would queue it behind the first and drop it with the
 // board the first replaced. A find that changes the board's query moves
 // the stream to it, whose first open reads the board as a reconnect does.
-// The footer says when the stream is down.
+// The footer says when the stream is down, and a stream a refused connect
+// closed (a roll's 503 gap) the board reopens itself.
 (function () {
   var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null;
   function board() { return document.getElementById("board"); }
@@ -422,8 +423,12 @@ document.addEventListener("DOMContentLoaded", offerLanes);
       opened = true;
     };
     s.onerror = function () {
-      document.getElementById("live").textContent = s.readyState === EventSource.CLOSED ?
-        "The live stream ended: reload the page to follow the board." : "The live stream is down; it reconnects by itself.";
+      document.getElementById("live").textContent = "The live stream is down; it reconnects by itself.";
+      // a connect the server refused (the 503 the router answers while the
+      // console's pod rolls) closes the EventSource for good: the browser
+      // never retries it, so the board opens one itself, and its onopen
+      // reads the board again, healing the cards the gap froze
+      if (s.readyState === EventSource.CLOSED) setTimeout(function () { if (es === s) follow(project, query); }, 5000);
     };
     s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);

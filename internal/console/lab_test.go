@@ -151,6 +151,21 @@ func TestLab(t *testing.T) {
 			Detail: map[string]any{"path": path, "commit": head}})
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the roll's gap: the router answers 503 to the event stream while the
+	// console's pod stands between its old and its new one, which closes
+	// the browser's EventSource for good. ?n arms n such answers, the state
+	// a board sits in until it reopens its stream itself.
+	var streamFails struct {
+		sync.Mutex
+		n int
+	}
+	mux.HandleFunc("POST /lab/stream-fail", func(w http.ResponseWriter, req *http.Request) {
+		n, _ := strconv.Atoi(cmp.Or(req.URL.Query().Get("n"), "1"))
+		streamFails.Lock()
+		streamFails.n = n
+		streamFails.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("GET /lab/scenario/{name}", func(w http.ResponseWriter, req *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -167,6 +182,17 @@ func TestLab(t *testing.T) {
 		if !strings.HasSuffix(req.URL.Path, "/events/stream") {
 			mu.RLock()
 			defer mu.RUnlock()
+		} else {
+			streamFails.Lock()
+			fail := streamFails.n > 0
+			if fail {
+				streamFails.n--
+			}
+			streamFails.Unlock()
+			if fail {
+				http.Error(w, "no ready backends", http.StatusServiceUnavailable)
+				return
+			}
 		}
 		r.c.ServeHTTP(w, req)
 	})
