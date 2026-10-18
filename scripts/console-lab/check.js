@@ -181,7 +181,12 @@ async function viewChange(p, query, fails) {
   await page.waitForTimeout(600);
   if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": Back leaves q in the URL (" + page.url() + ")");
   if ((await page.locator(cards).count()) < shown.length + 1) fails.push(label + ": Back does not read the entry's board");
-  if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the status panel does not show");
+  await page.locator("#status-line > summary").click();
+  await page.waitForTimeout(200);
+  if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the strip does not open the panel");
+  await page.locator("#status-line > summary").click();
+  await page.waitForTimeout(200);
+  if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the strip does not close the panel");
   await page.evaluate((card) => document.dispatchEvent(new CustomEvent("view",
     {detail: {query: "?project=ai-software-factory-code", card: card, tab: "chat", panel: "closed", theme: "light"}})), labID(616));
   await page.waitForTimeout(900);
@@ -234,9 +239,9 @@ async function lateRead(page, label, fails) {
 }
 
 async function text(page) {
-  // what a disclosure hides (the deny form, the own-answer box) counts once opened
+  // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
-  await page.evaluate(() => document.querySelectorAll("details.col-menu").forEach((d) => { d.open = true; }));
+  await page.evaluate(() => document.querySelectorAll("details.col-menu, #status-line").forEach((d) => { d.open = true; }));
   return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
     .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
 }
