@@ -1734,17 +1734,16 @@ func (v *boardView) column(bt factoryd.BoardTask, viewer string) int {
 }
 
 // deployStage is the chain position a done card shows while its change is
-// not live yet: where its deploy sits (roadmap 296).
+// not live yet: where its deploy chain sits (roadmap 297), the words of
+// the chain itself, no roll in them.
 func deployStage(state string) string {
 	switch state {
-	case factoryd.RollOpened:
-		return "rolling"
-	case factoryd.RollRefused:
-		return "roll refused"
-	case factoryd.RollFailed:
-		return "roll failed"
+	case "":
+		return "waiting for the chain"
+	case "failure", "cancelled":
+		return "chain red"
 	}
-	return "waiting for the roll"
+	return "chain running"
 }
 
 // escalated: t waits on an escalation of its own; a waiting plan's card is
@@ -1784,7 +1783,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
 		v.column(bt, v.user))
 	if v.deploys[t.ID] {
-		k.Stage = deployStage(bt.RollState)
+		k.Stage = deployStage(bt.ChainState)
 		if t.FinishedAt != nil {
 			k.StageAge = minutes(time.Since(*t.FinishedAt))
 		}

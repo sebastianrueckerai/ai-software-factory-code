@@ -569,6 +569,26 @@ func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path st
 	return commits[0].SHA, parent, nil
 }
 
+// CommitParent is sha's first parent, "" for a root commit.
+func (f *Forgejo) CommitParent(ctx context.Context, owner, repo, sha string) (string, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s", owner, repo, sha), nil, http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return "", fmt.Errorf("forgejo commit %s/%s %s: %w", owner, repo, sha, err)
+	}
+	if len(res.Parents) == 0 {
+		return "", nil
+	}
+	return res.Parents[0].SHA, nil
+}
+
 // FileAt reads path at ref.
 func (f *Forgejo) FileAt(ctx context.Context, owner, repo, ref, path string) ([]byte, error) {
 	return f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s", owner, repo, path, url.QueryEscape(ref)), nil, http.StatusOK)
