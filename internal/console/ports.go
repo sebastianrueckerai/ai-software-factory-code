@@ -144,6 +144,10 @@ type Chat interface {
 	AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error
 	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
+	// the intake switch (the chat header's): a closed intake refuses the
+	// wake's own filings, the member's ask still files
+	SetChatIntake(ctx context.Context, repository string, closed bool, by string, at time.Time) error
+	ChatIntakeClosed(ctx context.Context, repository string) (bool, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
 	// since a time, and its calls' totals
 	SaveSummary(ctx context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error

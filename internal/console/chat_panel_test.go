@@ -36,7 +36,7 @@ func TestChatPanel(t *testing.T) {
 		`<div id="screen" class="main with-chat">
 <section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title"`,
 		`<section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-new" class="chat-new" title="Start a new thread">New</button></div>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="intake-btn" class="intake" data-intake="open" aria-pressed="false" title="The project's intake: open takes the agent's own filings, closed refuses them; your ask always files.">intake <span class="intake-name">open</span></button> <button type="button" id="chat-new" class="chat-new" title="Start a new thread">New</button></div>
 <nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="false" aria-label="Unfold the threads" title="Unfold the threads">›</button></div>
 <div id="thread-rows" class="trows"></div></nav>
 <button type="button" class="sw-sum" data-swtoggle aria-expanded="false" aria-controls="switcher" hidden></button>

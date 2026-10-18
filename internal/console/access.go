@@ -144,6 +144,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/chat/proposals/{id}": rProject,
 	"POST /projects/{name}/chat/undo/{token}":   rProject,
 	"POST /projects/{name}/autonomy":            {need: approver, scope: scProject, what: "change the autonomy level"},
+	"POST /projects/{name}/intake":              {need: approver, scope: scProject, what: "switch the project's intake"},
 	"POST /projects/{name}/export":              {need: writer | approver, scope: scProject, what: "export it to GitHub"},
 	"POST /projects/{name}/export/remove":       {need: writer | approver, scope: scProject, what: "remove its GitHub export"},
 	"POST /projects/{name}/export/sync":         {need: writer | approver, scope: scProject, what: "sync it from GitHub"},

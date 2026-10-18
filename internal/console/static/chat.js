@@ -657,6 +657,25 @@ var chatView = (function () {
       }
     }, true);
   }
+  // the intake switch in the chat's head (an approver's): a click flips
+  // it — closed refuses the agent's own wake filings, open takes them
+  // again, and the member's ask always files — and the button answers in
+  // place
+  var intakeBtn = document.getElementById("intake-btn");
+  if (intakeBtn) {
+    intakeBtn.addEventListener("click", function () {
+      var to = intakeBtn.dataset.intake === "closed" ? "open" : "closed";
+      fetch(base.replace(/\/chat$/, "/intake"), {method: "POST", body: new URLSearchParams({intake: to}).toString(),
+        headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+        if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
+        intakeBtn.dataset.intake = to;
+        intakeBtn.classList.toggle("closed", to === "closed");
+        intakeBtn.setAttribute("aria-pressed", to === "closed" ? "true" : "false");
+        var name = intakeBtn.querySelector(".intake-name");
+        if (name) name.textContent = to;
+      }).catch(failed);
+    });
+  }
   // a drawer's "From your chat thread" opens that thread here
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-open-thread]");

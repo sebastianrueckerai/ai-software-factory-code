@@ -440,6 +440,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
 		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},
 		{"POST /projects/{name}/autonomy", http.HandlerFunc(c.autonomyButton), nil},
+		{"POST /projects/{name}/intake", http.HandlerFunc(c.intakeButton), nil},
 		{"POST /projects/{name}/export", http.HandlerFunc(c.githubExport), mirrors},
 		{"POST /projects/{name}/export/remove", http.HandlerFunc(c.removeGithubExport), mirrors},
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},

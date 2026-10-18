@@ -1228,6 +1228,10 @@ type boardData struct {
 	// Levels the four states with their words; empty: no policy in force.
 	Autonomy string
 	Levels   []level
+	// IntakeClosed is the shown project's intake switch (the chat
+	// header's): closed refuses the wake's own filings while the member's
+	// ask still files.
+	IntakeClosed bool
 	// Docs is the shown project's document repository (chat.doc_repo),
 	// the drawer's Documents button and its reads; empty: the project
 	// has no documents (roadmap 277).
@@ -2072,6 +2076,13 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 	}
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
+	if d.Chat {
+		if closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, shown.Repository); err != nil {
+			log.Printf("console: the intake of %s: %v", shown.Name, err)
+		} else {
+			d.IntakeClosed = closed
+		}
+	}
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
 	wide := f.wide()
 	other := f
