@@ -10,5 +10,5 @@ package console
 // the /pulse read and the pulse context they covered. What they guarded
 // that stays is guarded elsewhere: the strip's counts and spend in
 // screen_test.go (TestStatusLineFigures), the panel it folds into in
-// review_test.go (TestStatusPanelListsInTheWideView), and the chat
+// review_test.go (TestStatusPanelListsNoCards), and the chat
 // budget's ask and raise path in chat_fund_test.go.
