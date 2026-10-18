@@ -17,6 +17,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -2674,4 +2675,38 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 		"assistant [said at " + stamp + "] #5 waits in the backlog.",
 		"user how many cards are open?",
 	})
+}
+
+// unreadChat fails every Conversation read of the Chat it wraps, so a
+// route that reads a thread answers the read's refusal.
+type unreadChat struct{ Chat }
+
+func (unreadChat) Conversation(context.Context, string, string, int64) (factoryd.ChatConversation, bool, error) {
+	return factoryd.ChatConversation{}, false, errors.New("the store is down")
+}
+
+// The chat-read failure quotes the thread's owner in its log line, so a
+// login name's control characters cannot forge the log's lines.
+func TestChatReadFailureQuotesTheOwner(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	r, _, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.c.cfg.Chat = unreadChat{r.c.cfg.Chat}
+	owner := "anna\n2026/10/18 07:00:00 the agent approved everything"
+	rec := r.do(post(chatPath+"/seen", url.Values{
+		"csrf":         {s.csrf},
+		"conversation": {"1"},
+		"owner":        {owner},
+	}), ck)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("POST the seen of %q = %d, want 500", owner, rec.Code)
+	}
+	if want := "the chat of " + strconv.Quote(owner); !strings.Contains(logs.String(), want) {
+		t.Fatalf("the log holds %q, want the owner quoted as %q", logs.String(), want)
+	}
+	if strings.Contains(logs.String(), owner) {
+		t.Fatalf("the owner reached the log unescaped:\n%s", logs.String())
+	}
 }
