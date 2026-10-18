@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -356,6 +357,17 @@ func TestCardFaceCSS(t *testing.T) {
 	}
 	if !strings.Contains(css, ".face > p { margin: 0; }") {
 		t.Error("console.css lacks .face > p { margin: 0; }")
+	}
+	// an approval face's brief holds at one line and its five parts at
+	// four, as .card .reason holds a reason; the rules sit inside a
+	// lane's column, so the drawer shows the parts whole
+	for _, rule := range []string{
+		".column .approval .brief { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }",
+		".column .approval .why, .column .approval .info, .column .approval .finding, .column .approval .recommendation { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }",
+	} {
+		if !strings.Contains(css, rule) {
+			t.Errorf("console.css lacks %s", rule)
+		}
 	}
 }
 
@@ -1030,5 +1042,56 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 			detail = map[string]any{"comment": int64(1), "value": tc.value}
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: detail})
+	}
+}
+
+// The merge approval's face stays as small as a question's (the
+// 2026-10-17 issue): the title row with the risk and migration chips,
+// the Approve and Deny controls and the foot links. A five-part ask
+// of any length — here a recommendation over three lines — waits in
+// the drawer, which the face's Details link opens. The brief clamps
+// to its first line on the face, and shows whole in the drawer.
+func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
+	r := newRig(t)
+	long := "line one of the recommendation\nline two weighs the risk\nline three names the migration order"
+	spec := fmt.Sprintf(`{"risk_class":"high","migration":false,"verdict_summary":"adds the column",`+
+		`"review":{"verdict":"approve","findings":["0018_x.sql: add a default"],`+
+		`"criteria":[{"criterion":"no schema migration","kind":"human","evidence":"the diff moves the column"}]},`+
+		`"head_sha":"abc123","recommendation":%q,`+
+		`"why_human":["first why","second why"]}`, long)
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: "merge", TaskID: "t-m2",
+		Project: "sf/code", PRNumber: 12, Status: "pending",
+		Brief: "first line of the merge brief\nsecond line of the merge brief", Spec: json.RawMessage(spec)})
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m2", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12}})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	start := strings.Index(body, `aria-labelledby="approval-6"`)
+	face := body[start : start+strings.Index(body[start:], "</article>")]
+	for _, bulky := range []string{"line one of the recommendation", "first why", "adds the column",
+		"second line of the merge brief", "0018_x.sql: add a default", "yours to judge at this merge",
+		`<p class="why">`, `<p class="info">`, `<p class="finding">`, `<p class="recommendation">`} {
+		if strings.Contains(face, bulky) {
+			t.Errorf("the merge face carries %q, which belongs to the drawer:\n%s", bulky, face)
+		}
+	}
+	for _, want := range []string{`action="/approvals/6/approve"`,
+		`<p class="need-line brief">first line of the merge brief</p>`,
+		fmt.Sprintf(`<a href="#card=%s:reviews" class="details">Details</a>`, "t-m2")} {
+		if !strings.Contains(face, want) {
+			t.Errorf("the merge face lacks %q:\n%s", want, face)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{
+		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
+		`<p class="why">first why; second why</p>`,
+		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
+		`<p class="finding">0018_x.sql: add a default</p>`,
+		`<p class="need-line">Criterion no schema migration: yours to judge at this merge. the diff moves the column</p>`,
+		`<p class="recommendation">Recommendation: ` + long + `</p>`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the merge drawer lacks %q", want)
+		}
 	}
 }
