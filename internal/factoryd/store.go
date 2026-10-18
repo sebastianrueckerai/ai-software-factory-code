@@ -797,6 +797,28 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return s.oneTask(ctx, `id = $1`, id)
 }
 
+// TaskStatuses reads many cards' statuses at once, keyed by id: a card
+// with no row gets no entry.
+func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, status FROM tasks WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, status string
+		if err := rows.Scan(&id, &status); err != nil {
+			return nil, err
+		}
+		out[id] = status
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
 }

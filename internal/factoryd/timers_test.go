@@ -374,3 +374,149 @@ func TestWatchOnePerCard(t *testing.T) {
 		t.Fatalf("the watch after the re-watch: %v %+v", err, w)
 	}
 }
+
+// A due timer on a dead chat budget files the month-cap card once, not a
+// wake; the row waits, and a raised cap lets it fire.
+func TestDeadBudgetTimerAsksForMoney(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+	})
+	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddChatTimer(t.Context(), "sf/wake", "sebastian", conv, clock.Add(-time.Minute), "Check the build.", ""); err != nil {
+		t.Fatal(err)
+	}
+	humanCards := func() int {
+		var n int
+		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for i := range 2 {
+		if err := w.Pass(t.Context()); err != nil {
+			t.Fatalf("Pass: %v", err)
+		}
+		if n := humanCards(); n != 1 {
+			t.Fatalf("pass %d: %d month-cap cards, want 1", i+1, n)
+		}
+		if calls := starter.recorded(); len(calls) != 0 {
+			t.Fatalf("pass %d: %d wakes on a dead budget, want 0", i+1, len(calls))
+		}
+	}
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET budget_eur = budget_eur + 5 WHERE id = $1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 || calls[0].birth != "wake_timer" {
+		t.Fatalf("%d wakes after the cap rose, want the timer's: %+v", len(calls), calls)
+	}
+}
+
+// A heartbeat on a dead chat budget files the month-cap card once, not a
+// wake; a raised cap lets it fire.
+func TestDeadBudgetHeartbeatAsksForMoney(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+	})
+	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	w.Pulse = func(context.Context, string) (bool, bool, error) { return false, false, nil }
+	humanCards := func() int {
+		var n int
+		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	for i := range 2 {
+		if err := w.Pass(t.Context()); err != nil {
+			t.Fatalf("Pass: %v", err)
+		}
+		if n := humanCards(); n != 1 {
+			t.Fatalf("pass %d: %d month-cap cards, want 1", i+1, n)
+		}
+		if calls := starter.recorded(); len(calls) != 0 {
+			t.Fatalf("pass %d: %d wakes on a dead budget, want 0", i+1, len(calls))
+		}
+	}
+	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET budget_eur = budget_eur + 5 WHERE id = $1`, task.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 || calls[0].birth != "wake_heartbeat" {
+		t.Fatalf("%d wakes after the cap rose, want the heartbeat's: %+v", len(calls), calls)
+	}
+}
+
+// The heartbeat reads no pulse while its own gates hold it: a held turn
+// or both cadence marks fresh skip the board read, and with no gate the
+// pulse is read.
+func TestHeartbeatGatesBeforeThePulse(t *testing.T) {
+	assisted := func() map[string]policy.ProjectConfig {
+		return map[string]policy.ProjectConfig{
+			"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
+		}
+	}
+	pulse := 0
+	counts := func() int { n := pulse; pulse = 0; return n }
+
+	// a held turn
+	w, s, _, clock := newWakeRig(t, assisted())
+	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
+	if err := s.WakeMark(t.Context(), "sf/wake", "turn", *clock); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if n := counts(); n != 0 {
+		t.Fatalf("%d pulse reads inside a held turn, want 0", n)
+	}
+
+	// both cadence marks fresh
+	w, s, _, clock = newWakeRig(t, assisted())
+	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
+	if err := s.WakeMark(t.Context(), "sf/wake", "hb:open", *clock); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.WakeMark(t.Context(), "sf/wake", "hb:idle", *clock); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if n := counts(); n != 0 {
+		t.Fatalf("%d pulse reads behind both fresh marks, want 0", n)
+	}
+
+	// no gate: the pulse is read
+	w, s, _, _ = newWakeRig(t, assisted())
+	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if n := counts(); n != 1 {
+		t.Fatalf("%d pulse reads with no gate, want 1", n)
+	}
+}

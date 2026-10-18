@@ -201,10 +201,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		return err
 	}
 	if !live {
-		if len(pending) > 0 {
-			return w.askBudget(ctx, p.Repository, task, now) // the ask path owns the month-cap card
-		}
-		return nil // a raised cap lets the next pass wake
+		return w.askBudget(ctx, p.Repository, task, now) // a raised cap lets the next pass wake
 	}
 	if len(watched) > 0 {
 		c := watched[0]
@@ -279,10 +276,10 @@ func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p 
 	} else if held {
 		return nil
 	}
-	if _, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
+	if task, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
 		return err
 	} else if !live {
-		return nil // the ask path owns the month-cap card; the row waits
+		return w.askBudget(ctx, p.Repository, task, now) // the row waits; a raised cap lets it fire
 	}
 	if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
 		if errors.Is(err, ErrWakeVenueGone) {
@@ -303,9 +300,25 @@ func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p 
 // woke it: every hour while work sits open, every day otherwise, on
 // projects at assisted and above. A pulse that says a card waits on a
 // human holds it — the needs-you card already has the member's eye — and
-// so do a held turn, a dead chat budget and a missing member.
+// so do a held turn and a missing member. A dead chat budget holds it
+// too; the pass files the month-cap card.
 func (w *Waker) heartbeat(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
 	if w.Pulse == nil || p.Autonomy == policy.AutonomyManual {
+		return nil
+	}
+	// the gates that need no pulse run before it: a held turn, and both
+	// cadence marks fresh, so whichever cadence the pulse would pick is
+	// already marked
+	if held, err := w.held(ctx, p.Repository, now); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
+	if open, err := w.markedWithin(ctx, p.Repository, "hb:open", time.Hour, now); err != nil {
+		return err
+	} else if idle, err := w.markedWithin(ctx, p.Repository, "hb:idle", 24*time.Hour, now); err != nil {
+		return err
+	} else if open && idle {
 		return nil
 	}
 	workOpen, waitingHuman, err := w.Pulse(ctx, p.Repository)
@@ -321,15 +334,10 @@ func (w *Waker) heartbeat(ctx context.Context, v policy.Version, name string, p 
 	} else if marked {
 		return nil
 	}
-	if held, err := w.held(ctx, p.Repository, now); err != nil {
-		return err
-	} else if held {
-		return nil
-	}
-	if _, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
+	if task, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
 		return err
 	} else if !live {
-		return nil
+		return w.askBudget(ctx, p.Repository, task, now)
 	}
 	logins := pokeTo(v.Tree, p.Repository)
 	if len(logins) == 0 {
