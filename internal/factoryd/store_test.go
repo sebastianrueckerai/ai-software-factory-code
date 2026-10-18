@@ -1637,6 +1637,58 @@ func TestPGStore(t *testing.T) {
 	}
 }
 
+// A build card's Ships data reaches the store and the review gate's
+// read of every card citing the ruling: the parsed ruling and clauses
+// round-trip through CreateTask's plain INSERT — the conflict clauses
+// insertTask appends (report, plan and chat cards) are all DO NOTHING
+// and none of those kinds ever carries a Ships line — and TasksByRuling
+// lists the citing cards oldest first, whatever their status.
+// Re-creating an existing card is a loud unique violation, never a
+// silent upsert that could drop its stated clauses.
+func TestPGStoreShipsRuling(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
+	for _, c := range []Task{
+		{ID: "t-band", Status: "done", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at, ShipsRuling: "C20", ShipsClauses: []int{1, 3}},
+		{ID: "t-panel", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(time.Hour), ShipsRuling: "C20", ShipsClauses: []int{2}},
+		{ID: "t-uncited", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(2 * time.Hour)},
+	} {
+		if err := s.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	if got, _, _ := s.Task(ctx, "t-band"); got.ShipsRuling != "C20" || !reflect.DeepEqual(got.ShipsClauses, []int{1, 3}) {
+		t.Fatalf("t-band ships %q %v, want C20 [1 3]", got.ShipsRuling, got.ShipsClauses)
+	}
+	citing, err := s.TasksByRuling(ctx, "sf/r", "C20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(citing) != 2 || citing[0].ID != "t-band" || citing[1].ID != "t-panel" {
+		var ids []string
+		for _, c := range citing {
+			ids = append(ids, c.ID)
+		}
+		t.Fatalf("TasksByRuling = %v, want [t-band t-panel]", ids)
+	}
+	dup := Task{ID: "t-band", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", ShipsRuling: "C20", ShipsClauses: []int{1, 2, 3}}
+	if err := s.CreateTask(ctx, dup); err == nil {
+		t.Fatal("re-creating t-band was accepted, want a unique violation")
+	}
+	if got, _, _ := s.Task(ctx, "t-band"); !reflect.DeepEqual(got.ShipsClauses, []int{1, 3}) {
+		t.Fatalf("t-band clauses after the refused re-create = %v, want [1 3]", got.ShipsClauses)
+	}
+}
+
 func TestPGStoreApprovals(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
