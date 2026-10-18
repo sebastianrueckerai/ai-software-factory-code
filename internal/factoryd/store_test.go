@@ -3128,3 +3128,39 @@ func TestTaskStatuses(t *testing.T) {
 		t.Fatalf("TaskStatuses of none = %v, %v, want empty", empty, err)
 	}
 }
+
+// One card per issue (roadmap 298): the store refuses a second task still
+// live on the same issue number of the same repository, naming the card
+// that holds it; a final one frees the issue, and another repository's
+// same number is another issue. Identity only — likeness never judged.
+func TestPGStoreOneCardPerIssue(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "sf/ai-software-factory-code"
+	file := func(id string, issue int64, repo string) error {
+		return s.CreateTask(ctx, Task{ID: id, Status: "queued", Repository: repo, Kind: "agent", Source: "webhook", IssueNumber: issue})
+	}
+	if err := file("t-first", 1109, repo); err != nil {
+		t.Fatal(err)
+	}
+	err = file("t-second", 1109, repo)
+	if err == nil || !strings.Contains(err.Error(), "t-first already holds issue 1109") {
+		t.Fatalf("a second live card on issue 1109: %v", err)
+	}
+	if err := file("t-other-repo", 1109, "sf/another-repo"); err != nil {
+		t.Fatalf("another repository's issue 1109: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't-first'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := file("t-second", 1109, repo); err != nil {
+		t.Fatalf("a done card frees its issue: %v", err)
+	}
+}

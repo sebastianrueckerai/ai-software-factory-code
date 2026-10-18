@@ -697,7 +697,25 @@ func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 // clause, so a retry's transaction reuses it (Task 135).
 func insertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }, t Task, onConflict string) error {
+	// One card per issue (roadmap 298): a second task still live on the
+	// same issue number of the same repository is refused, naming the card
+	// that holds the issue. Identity only — likeness is never judged.
+	if t.IssueNumber != 0 {
+		var holderID, holderStatus string
+		err := db.QueryRowContext(ctx, `SELECT id, status FROM tasks
+			WHERE repository = $1 AND issue_number = $2 AND id <> $3 AND status <> ALL($4)
+			ORDER BY created_at LIMIT 1`, t.Repository, t.IssueNumber, t.ID, FinalStatuses).
+			Scan(&holderID, &holderStatus)
+		switch {
+		case err == nil:
+			return fmt.Errorf("card %s already holds issue %d of %s and is still %s", holderID, t.IssueNumber, t.Repository, holderStatus)
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+	}
 	caps, err := toJSON(t.RequiredCapabilities)
 	if err != nil {
 		return err
