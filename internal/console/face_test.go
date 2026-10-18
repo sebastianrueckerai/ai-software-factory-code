@@ -990,6 +990,61 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
 }
 
+// The one-click buttons of a shaped question post their value alone, no
+// answer field, so doAnswerValue takes the choice's own label as the
+// answer text: each click is the label's sentence on the issue as the
+// member with its question_answered row, and park and keep waiting reach
+// their nothing-posted route.
+func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
+	question := func() *factoryd.HumanQuestion {
+		return &factoryd.HumanQuestion{
+			Ask:  "The check-in's share of the budget is spent: 0.90 EUR of the 6.00 EUR budget. Which way on?",
+			Why:  "the check-in's share of the budget is spent",
+			Info: "Fund raises the card's budget. Park holds it. Keep waiting holds it and waits for the budget's next window.",
+			Choices: []factoryd.QuestionChoice{
+				{Value: "fund", Label: "Fund the card"},
+				{Value: "park", Label: "Park it"},
+				{Value: "keep_waiting", Label: "Wait for the window"},
+			},
+		}
+	}
+	setup := func(t *testing.T) (*rig, *fakeEvents, *http.Cookie, *session) {
+		r, ev := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "add the feed"},
+			Escalation: "the check-in's share of the budget is spent", Question: question()}}
+		ck, s := r.loggedIn(t)
+		return r, ev, ck, s
+	}
+	for _, tc := range []struct {
+		value, label string
+		posted       bool
+	}{
+		{"fund", "Fund the card", true},
+		{"park", "Park it", false},
+		{"keep_waiting", "Wait for the window", false},
+	} {
+		r, ev, ck, s := setup(t)
+		before := ev.count()
+		rec := r.do(post("/tasks/t-q/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+			"value": {tc.value}}), ck)
+		if rec.Code != http.StatusSeeOther {
+			t.Fatalf("the %s click = %d %q, want 303", tc.value, rec.Code, rec.Body.String())
+		}
+		got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]
+		if tc.posted && got != tc.label {
+			t.Fatalf("the %s click posted %q, want the label %q", tc.value, got, tc.label)
+		}
+		if !tc.posted && got != "" {
+			t.Fatalf("the %s click posted %q, want no comment", tc.value, got)
+		}
+		detail := map[string]any{"answer": tc.label, "value": tc.value}
+		if tc.posted {
+			detail = map[string]any{"comment": int64(1), "value": tc.value}
+		}
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: detail})
+	}
+}
+
 // The merge approval's face stays as small as a question's (the
 // 2026-10-17 issue): the title row with the risk and migration chips,
 // the Approve and Deny controls and the foot links. A five-part ask
