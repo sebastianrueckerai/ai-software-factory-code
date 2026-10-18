@@ -131,13 +131,34 @@ pre { background: var(--bg-panel); border: 1px solid var(--line); color: var(--t
 .reason, .need p { line-height: 1.45; }
 kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid var(--btn-line); border-bottom-width: 2px; border-radius: 3px; color: var(--text); font-size: 11.5px; text-align: center; }
 
-/* the top bar: one quiet 44 px row */
-header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; min-height: 44px; padding: 0 14px; border-bottom: 1px solid var(--line); background: var(--bg); }
+/* the top bar (C23): sparse words in three groups on one 44 px row, the
+   open page's word cyan with a short underline, New task the only
+   bordered word; under 1200 the tail groups fold into a More menu, on
+   the phone Board and the bordered + stay in the bar and Menu opens the
+   sheet of 44 px rows */
+header { position: relative; z-index: 15; display: flex; align-items: center; gap: 0 18px; height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); background: var(--bg); }
 header .home { color: var(--text); font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
 header .home:hover { color: var(--accent); }
-header nav { display: flex; align-self: stretch; flex: 1; gap: 0; }
-header nav a { display: flex; align-items: center; padding: 0 9px; color: var(--text-muted); font-size: 13px; text-decoration: none; white-space: nowrap; transition: color .12s; }
+header nav { display: flex; align-self: stretch; flex: 1; gap: 0 24px; min-width: 0; }
+header nav .ng { display: flex; align-self: stretch; gap: 0 2px; }
+header nav a { display: flex; align-items: center; padding: 0 8px; color: var(--text-muted); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; text-decoration: none; white-space: nowrap; transition: color .12s; }
 header nav a:hover { color: var(--text); }
+header nav a[aria-current=page] { color: var(--accent); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 7px; }
+header nav .act { margin: auto 0; height: 24px; padding: 0 10px; border: 1px solid var(--btn-line); border-radius: 3px; color: var(--text); }
+header nav .act .p { display: none; }
+/* the More menu under 1200, the Menu sheet on the phone */
+.menu { display: none; position: relative; align-self: stretch; }
+.menu summary { display: flex; align-items: center; padding: 0 10px; color: var(--text-muted); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; cursor: pointer; list-style: none; white-space: nowrap; }
+.menu summary::-webkit-details-marker { display: none; }
+.menu summary:hover { color: var(--text); }
+.menu .p { display: none; }
+.menu .sheet { position: absolute; top: 100%; right: 0; min-width: 230px; padding: 4px 0 6px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }
+.menu .sg + .sg { margin-top: 10px; }
+.menu .sheet a { display: flex; align-items: center; height: 44px; padding: 0 18px; color: var(--text); font-size: 13.5px; font-variant-caps: all-small-caps; letter-spacing: .06em; text-decoration: none; white-space: nowrap; }
+.menu .sheet a:hover { background: var(--bg-hover); }
+.menu .sheet a[aria-current=page] { color: var(--accent); }
+.menu .s-out { display: none; margin: 10px 0 0; padding: 0 10px 4px 18px; }
+.menu .s-out button { width: 100%; height: 36px; padding: 0 12px; border-color: var(--btn-line); color: var(--text); font-size: 13px; }
 .logout button { height: 24px; padding: 0 8px; border-color: transparent; color: var(--text-muted); font-size: 13px; }
 .logout button:hover { color: var(--text); border-color: var(--btn-line); }
 /* the theme selector (C15): moon and sun in a thin frame, a 1 px outline
@@ -347,6 +368,15 @@ form.move button { padding: 0 6px; }
 /* a need's five parts, on whatever card asks: the why under the ask, the
    info a review holds, the recommendation, a review's findings; the
    fold carries what a member copies, not what they must read first */
+/* the board's faces whisper, every part of them: whatever a need's card
+   carries, its column copy shows at most its first lines — the drawer
+   holds the whole text. The clamp sits on the board's card list itself,
+   so a part added tomorrow is small the day it lands (ruling 293) */
+.cards .card :is(.ask, .why, .info, .finding, .need-line, .brief, .recommendation) { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
+.cards .card .ask { -webkit-line-clamp: 3; }
+.cards .card :is(.why, .info, .finding, .need-line, .brief) { -webkit-line-clamp: 2; }
+.cards .card .recommendation { -webkit-line-clamp: 3; }
+.cards .card.plan > p { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; -webkit-line-clamp: 3; }
 .need .ask { margin: 4px 0 0; font-size: 13px; line-height: 1.45; color: var(--text); overflow-wrap: anywhere; }
 .need .why, .approval .why { margin: 2px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
 .need .info, .approval .info { margin: 4px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--text-muted); overflow-wrap: anywhere; }
@@ -360,7 +390,7 @@ form.move button { padding: 0 6px; }
 .need .why :is(h1, h2, h3, h4), .need .info :is(h1, h2, h3, h4) { margin: 6px 0 0; font-size: 12.5px; line-height: 1.4; color: var(--text); }
 .need .why :is(ul, ol), .need .info :is(ul, ol) { margin: 2px 0 0; padding-left: 16px; font-size: 12.5px; }
 .need .why p, .need .info p { margin: 2px 0 0; font-size: 12.5px; }
-.need .why pre, .need .info pre { margin: 4px 0 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.5 var(--font-mono); white-space: pre; overflow-x: auto; }
+.need .why pre, .need .info pre { margin: 4px 0 0; padding: 5px 7px; border: 1px solid var(--line); border-radius: 4px; font: 11px/1.5 var(--font-mono); white-space: pre; overflow: auto; max-height: 40vh; }
 .need .why code, .need .info code { font-family: var(--font-mono); font-size: 11.5px; }
 /* the nested face is the item's headline and state row: its parts become
    the item's own children so the question and the choices come between
@@ -872,22 +902,40 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   /* the phone's order: Needs you, In progress, Queued, Done */
   .lane.five #needs-you { order: -2; }
   .lane.five .column:nth-child(3) { order: -1; }
-  header.top { gap: 10px; }
+  header.top { gap: 0 10px; }
   header nav a { padding: 0 6px; }
+}
+/* under 1200 the reference and governance groups leave the bar for the
+   More menu, which then holds the six folded destinations */
+@media (max-width: 1199px) {
+  header nav .ng-ref, header nav .ng-gov { display: none; }
+  .menu { display: block; }
+  .menu .sheet .g-work { display: none; }
 }
 /* the phone: one column, the chat first, the board below as stacked
    sections, the drawer over the whole screen */
 @media (max-width: 899px) {
   body:has(#screen) { height: auto; display: block; }
   body:has(#screen) > main { display: block; }
-  header.top { gap: 10px; padding: 6px 12px; }
-  header nav { flex-wrap: wrap; flex-basis: 100%; }
-  .theme-switch::before { width: 44px; height: 44px; }
-  [data-theme=light] .theme-switch::before { transform: translateX(44px); }
-  .theme-switch button { width: 44px; height: 44px; }
-  .theme-switch svg { width: 22px; height: 22px; }
-  header nav a { height: 32px; padding: 0 10px 0 0; }
-  .switch { flex: 1; min-width: 0; }
+  header.top { gap: 0 8px; padding: 0 10px; }
+  header .home { display: none; }
+  header nav { gap: 0 8px; }
+  header nav a { padding: 0 5px; font-size: 13px; }
+  header nav .act { padding: 0 8px; }
+  header nav .act .w { display: none; }
+  header nav .act .p { display: inline; }
+  .menu summary { padding: 0 8px; font-size: 13px; }
+  .menu .w { display: none; }
+  .menu .p { display: inline; }
+  .menu .sheet { position: fixed; left: 0; right: 0; top: 44px; min-width: 0; }
+  .menu .sheet .g-work { display: block; }
+  .menu .s-out { display: flex; }
+  .logout { display: none; }
+  .theme-switch::before { width: 34px; height: 30px; }
+  [data-theme=light] .theme-switch::before { transform: translateX(34px); }
+  .theme-switch button { width: 34px; height: 30px; }
+  .theme-switch svg { width: 18px; height: 18px; }
+  .switch { flex: 0 1 auto; max-width: 40%; min-width: 0; }
   .switch select { width: 100%; max-width: none; }
   .status { margin: 10px 12px 0; }
   .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
@@ -997,6 +1045,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .trow.unread .ttitle { color: var(--text); font-weight: 600; }
 .trow .ttitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .trow .tat { color: var(--text-faint); font: 11px var(--font-mono); white-space: nowrap; }
+.trow.others .twhose { color: var(--text-faint); font-weight: 400; }
 .tmark { display: inline-flex; align-items: center; justify-content: flex-start; width: 22px; height: 12px; flex: none; }
 .tmark.inbox { color: var(--need-text); font: 13px/1 var(--font-mono); }
 .tmark.working .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-running); color: var(--st-running); animation: live 2.2s ease-in-out infinite; }
@@ -1058,6 +1107,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .msg.settled.expanded .said { display: block; }
 .msg.settled.expanded .settled-why { display: block; }
 .msg.settled.expanded .esc-b { display: block; }
+/* a wake turn is one row (the main agent concept): folded to its first line, opened on a click */
+.msg.wake .wake-b { display: none; }
+.msg.wake .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
+.msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
+.msg.wake .fold .fw { flex: none; color: var(--text-muted); }
+.msg.wake .fold .ft { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.msg.wake .fold .ft a { color: inherit; }
+.msg.wake.expanded .fold { display: none; }
+.msg.wake.expanded .wake-b { display: block; }
 .msg.sum .av { border-style: dashed; color: var(--text-faint); font: 12px/1 var(--font-mono); }
 .msg.sum .av::before { content: none; }
 .msg.sum .said { color: var(--text-muted); font-size: 13px; }
@@ -1074,10 +1132,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .cmds { display: inline-flex; gap: 4px; }
 .cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
-.thread-link { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
+.thread-link, .thread-door { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .chat-form.arch .prompt, .chat-form.arch .own { display: none; }
 .arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
 .arch-note[hidden] { display: none; }
+#chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }
 #level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
@@ -1130,7 +1189,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat.sw-collapsed .ttable { display: none; }
   .chat.sw-collapsed .sw-sum { display: flex; }
   .msg .choices button { width: 100%; height: 44px; }
-  .msg.settled .fold { min-height: 44px; align-items: center; }
+  .msg.settled .fold, .msg.wake .fold { min-height: 44px; align-items: center; }
   .cmd { min-height: 44px; }
   .thead .tacts button { height: 44px; }
   .answer button { width: 100%; height: 44px; }
@@ -1152,3 +1211,18 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
   .cursor { display: none; }
 }
+
+/* C24: the secondary pages follow one readout grammar — a small-caps
+   section label, one line of figures, then rows on the page ground */
+.project > h3, .ro > h3 { margin: 18px 0 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.pagehead h2 { margin: 16px 0 8px; }
+.figs { margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.figs a { color: var(--text-muted); }
+.figs code { font-size: 1em; }
+.daycap { margin: 2px 0; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.daycap strong { color: var(--text); font-weight: 600; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+tr.standing > td { border-top: 2px solid var(--btn-line); }
+ul.rows { list-style: none; margin: 6px 0; padding: 0; }
+ul.rows li { padding: 5px 0; border-bottom: 1px solid var(--line); }

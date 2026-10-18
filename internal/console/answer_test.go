@@ -294,7 +294,27 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 
 	g.replies = [][]string{{call(1, "rerun_checks", `{"task_id":"t-m"}`)}, {say("They run again.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
-	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL rerun_checks t-m #9 by sebastian"})
+	// the card's read of the head's current checks (#1013) lands between:
+	// the tool describes the card before it acts
+	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
+		"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1", "SIGNAL rerun_checks t-m #9 by sebastian"})
+}
+
+// A chat turn's board read carries a red-checks merge request's healed
+// head (#1013) read as the chat's own actor: the turn that opens the
+// conversation reads the head's current checks as the member who chats,
+// the one forge call the turn makes.
+func TestChatTurnReadsAHealedHeadAsItsOwnActor(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	r.fg.calls = nil
+	g.replies = [][]string{{say("Its checks are green again.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"is #5 still red?"}})
+	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
 }
 
 // The settle rule's table (the notification-settling concept, section 3):

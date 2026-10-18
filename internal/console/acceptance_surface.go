@@ -530,6 +530,19 @@ func (a *AcceptanceRig) DeleteConsoleSession(_ context.Context, hash string) err
 	return nil
 }
 
+func (a *AcceptanceRig) ConsoleSessionsForUser(_ context.Context, login string) ([]factoryd.ConsoleSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var out []factoryd.ConsoleSession
+	for _, row := range a.sessions {
+		if row.Login == login {
+			out = append(out, row)
+		}
+	}
+	slices.SortFunc(out, func(x, y factoryd.ConsoleSession) int { return y.CreatedAt.Compare(x.CreatedAt) })
+	return out, nil
+}
+
 func (a *AcceptanceRig) TouchConsoleSession(_ context.Context, hash string, seenAt time.Time) (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -836,6 +849,10 @@ func (a *AcceptanceRig) Conversations(context.Context, string, string) ([]factor
 	return nil, nil
 }
 
+func (a *AcceptanceRig) ProjectConversations(context.Context, string) ([]factoryd.ChatConversation, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) ProposalStates(_ context.Context, _, _ string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1000,6 +1017,26 @@ func (a *AcceptanceRig) MarkSeen(context.Context, string, string, int64) error {
 func (a *AcceptanceRig) MarkCleared(context.Context, string, string, int64) error { return nil }
 
 func (a *AcceptanceRig) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
+
+func (a *AcceptanceRig) EnsureCardThread(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (a *AcceptanceRig) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
+func (a *AcceptanceRig) AddChatWatch(context.Context, string, string, int64, string) error {
+	return nil
+}
+
+func (a *AcceptanceRig) RemoveChatWatch(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+
+func (a *AcceptanceRig) AddChatTimer(context.Context, string, string, int64, time.Time, string, string) error {
+	return nil
+}
 
 func (a *AcceptanceRig) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil

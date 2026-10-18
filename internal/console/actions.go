@@ -1608,8 +1608,9 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // task (one commission of that spec; the project's envelope is its file's,
 // ruling 183); a merge request gets the member's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge. A factory pull request's red checks
-// merge never: its approval refuses, naming the re-run and the close.
+// which merges as factory-merge. A red-checks merge request merges only
+// once the same head's checks turned green again (#1013: a re-run); still
+// red, its approval refuses naming what fits the card.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -1648,11 +1649,19 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
 		}
 		if spec.RedChecks {
-			remedy := "return it to the agent with what to change (deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close)"
-			if spec.Factory {
-				remedy = "run them again (rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close)"
+			// the flag froze the head red at open; green at the same head
+			// now (a re-run) heals the request (#1013), and it merges again
+			green, err := c.headChecksGreen(ctx, a, q.Project, spec.HeadSHA)
+			if err != nil {
+				return "", err
 			}
-			return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
+			if !green {
+				remedy := "return it to the agent with what to change (deny_merge with request_changes, the card's Return) or close it (deny_merge with reject, the card's Close)"
+				if spec.Factory {
+					remedy = "run them again (rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close)"
+				}
+				return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks were red when its request opened, so it cannot merge: %s.", q.PRNumber, remedy))
+			}
 		}
 		// a card the plan has passed cannot merge (roadmap 291): the
 		// request opened before the revision landed

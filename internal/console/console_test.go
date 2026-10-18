@@ -1422,7 +1422,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		`<option value="backlog" data-projects="ai-software-factory-code demo-app linkshort">Backlog</option>`,
 		`<option value="plan" data-projects="linkshort">Plan</option>`,
 		`<option value="ready" data-projects="ai-software-factory-code demo-app linkshort" selected>Ready</option>`,
-		`<option value="human">Human lane</option>`,
+		`<option value="human">Human track</option>`,
 	} {
 		if !strings.Contains(form, want) {
 			t.Errorf("the lane select lacks %q", want)
@@ -1753,12 +1753,12 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		"<strong>3.7500 EUR</strong> of the 20.0000 EUR day cap",
-		"<th scope=\"row\">" + today + "</th><td>1.2500</td><td>0.0000</td><td>2.0000</td><td>0.5000</td><td>3.7500</td>",
-		"<th scope=\"row\">2026-09-20</th><td>0.5000</td>",
-		`<a href="/tasks/t-big/timeline">t-big</a></th><td>3.2500</td>`,
-		`<tr class="line"><td>model coding-cheap</td><td>3.1250</td></tr>`,
-		`<tr class="line"><td>model review/review-frontier</td><td>0.1250</td></tr>`,
-		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td>0.0005</td>`,
+		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.2500</td><td class=\"num\">0.0000</td><td class=\"num\">2.0000</td><td class=\"num\">0.5000</td><td class=\"num\">3.7500</td>",
+		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.5000</td>",
+		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.2500</td>`,
+		`<tr class="line"><td>model coding-cheap</td><td class="num">3.1250</td></tr>`,
+		`<tr class="line"><td>model review/review-frontier</td><td class="num">0.1250</td></tr>`,
+		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">0.0005</td>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/costs lacks %q", want)
@@ -1769,7 +1769,7 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 }
 
-// The configuration page shows the version in force read-only: its
+// The policy page shows the version in force read-only: its
 // commit, the policy, the projects and the processes, each linked to its
 // file at that commit.
 func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
@@ -1777,7 +1777,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
 	at := "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"
-	for _, want := range []string{"<dd>4</dd>", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
+	for _, want := range []string{"version 4 · commit ", "2026-09-27T22:50:07Z", "2026-09-27T22:56:38Z", `&#34;day_eur&#34;: 20`,
 		`&#34;agent_time&#34;: &#34;20m0s&#34;`,
 		`<a href="` + at + `"><code>c9d98bb0aa11</code></a>`,
 		`<a href="` + at + `/policy.yaml">policy.yaml</a>`,
@@ -1786,8 +1786,8 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 		`<a href="` + at + `/projects/infra.yaml">infra</a>`,
 		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
 		"<td>demo-app/demo-app</td><td>auto</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
-		"<td>screening</td><td>human</td><td>no</td><td>outsider</td>",
-		"<td>checks</td><td>agent</td><td>yes</td><td></td>",
+		"<td>screening</td><td>human</td><td><i class=\"lamp\" aria-hidden=\"true\"></i>no</td><td>outsider</td>",
+		"<td>checks</td><td>agent</td><td><i class=\"lamp on\" aria-hidden=\"true\"></i>yes</td><td></td>",
 		`<a href="https://git.example/sf/infra/src/branch/main/factory">`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/policy lacks %q", want)
@@ -1977,8 +1977,9 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Pull request #9's checks were red when its request opened, so it cannot merge: run them again "+
-		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") || len(r.fg.calls) != 0 {
-		t.Fatalf("approve on red = %d %q, calls %q: want the refusal and no review", rec.Code, rec.Body, r.fg.calls)
+		"(rerun_checks, the card's Re-run the checks) or close it with your words (deny_merge, the card's Close).") ||
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	if rec := r.do(post("/approvals/4/rerun", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("re-run = %d: %s", rec.Code, rec.Body)
@@ -1986,8 +1987,8 @@ func TestFactoryPullRequestApprovalFitsItsHead(t *testing.T) {
 	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "note": {"the template's CI file is not ours"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
-	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
-		"SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
+	equal(t, "the calls", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
+		"SIGNAL rerun_checks t-m #9 by sebastian", "SIGNAL changes_requested t-m #9 by sebastian: the template's CI file is not ours"})
 
 	factory(false)
 	got = item()
@@ -2039,8 +2040,9 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	}
 	r.fg.calls = nil
 	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") || len(r.fg.calls) != 0 {
-		t.Fatalf("approve on red = %d %q, calls %q: want the refusal naming both ways and no review", rec.Code, rec.Body, r.fg.calls)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "return it to the agent") || !strings.Contains(rec.Body.String(), "close it") ||
+		len(r.fg.reviews) != 0 || fmt.Sprint(r.fg.calls) != fmt.Sprint([]string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"}) {
+		t.Fatalf("approve on red = %d %q, reviews %v, calls %q: want the refusal naming both ways, no review and only the head's read", rec.Code, rec.Body, r.fg.reviews, r.fg.calls)
 	}
 	rec = r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"make the stub match the interface"}}), ck)
 	if rec.Code != http.StatusSeeOther {
@@ -2048,6 +2050,102 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	}
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" || r.fg.reviews[0]["body"] != "make the stub match the interface" {
 		t.Fatalf("reviews = %v: want one REQUEST_CHANGES with the note", r.fg.reviews)
+	}
+}
+
+// A merge request opened on red checks (#1013: the head healed after a
+// re-run) approves once the recorded head's checks are green again — the
+// approval re-reads the head's current verdicts, so no spec is written by
+// hand — and a head still red keeps the refusal and its remedies.
+func TestApproveOnRedChecksOnceTheHeadTurnedGreen(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+
+	// the head still red: the refusal stands, and nothing was posted
+	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure","description":"exit 1"}]}`}
+	r.fg.calls = nil
+	rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(),
+		"checks were red when its request opened, so it cannot merge: return it to the agent") || len(r.fg.reviews) != 0 {
+		t.Fatalf("approve on a still-red head = %d %q, reviews %v", rec.Code, rec.Body, r.fg.reviews)
+	}
+
+	// the same head green after the re-run: the approve goes through
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	rec = r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("approve on the healed head = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "APPROVED" || r.fg.reviews[0]["commit_id"] != "abc123" {
+		t.Fatalf("reviews = %v: want one APPROVED at the recorded head", r.fg.reviews)
+	}
+	if !slices.Contains(r.fg.calls, "SIGNAL approved t-m #9 by sebastian") {
+		t.Fatalf("calls = %q: want the approved signal", r.fg.calls)
+	}
+}
+
+// The card of a red-checks merge request whose head's checks turned green
+// says so and offers the Approve again; still red keeps what fits a red
+// head, the return and the close.
+func TestHealedRedChecksCardOffersApprove(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	item := func() string {
+		t.Helper()
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+		start := strings.Index(body, `action="/approvals/4/`)
+		if start < 0 {
+			t.Fatalf("the board shows no form of request 4:\n%s", body)
+		}
+		start = strings.LastIndex(body[:start], "<article")
+		return body[start : start+strings.Index(body[start:], "</article>")]
+	}
+
+	r.fg.statuses = map[string]string{"abc123": `{"state":"failure","statuses":[{"context":"ci / test","status":"failure"}]}`}
+	if got := item(); strings.Contains(got, `action="/approvals/4/approve"`) || strings.Contains(got, "checks healed after a re-run") {
+		t.Errorf("the still-red card offers an approve or says the checks healed:\n%s", got)
+	}
+
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	r.fg.calls = nil
+	got := item()
+	for _, want := range []string{`action="/approvals/4/approve"`, "checks healed after a re-run"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the healed card lacks %q:\n%s", want, got)
+		}
+	}
+	for _, not := range []string{`action="/approvals/4/rerun"`, `aria-controls="deny-4">Return or close</button>`} {
+		if strings.Contains(got, not) {
+			t.Errorf("the healed card shows %q:\n%s", not, got)
+		}
+	}
+	// the button path reads the head's current checks as the viewer who
+	// asked for the board (#1013), the one forge call the read makes
+	equal(t, "the head's read", r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1"})
+}
+
+// A red-checks card whose head's current checks cannot be read keeps the
+// red face and says so (#1013): a failed read fails closed, and the card
+// names it instead of failing silently.
+func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.failAPI = true
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if !strings.Contains(body, "The head's current checks could not be read") {
+		t.Errorf("the card does not say the head's checks were unread:\n%s", body)
+	}
+	if strings.Contains(body, "checks healed after a re-run") || strings.Contains(body, `action="/approvals/4/approve"`) {
+		t.Errorf("the unread card offers an approve or says the checks healed:\n%s", body)
 	}
 }
 
@@ -2130,20 +2228,20 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
-		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td>0.0144</td>", "<td>0.0288</td>", "<td>live</td>",
-		"none: standing (made standing by alice)", "released by sebastian", "<td>deleted</td>", `href="/tasks/t-res/timeline"`,
+		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.0288</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
+		"none: standing (made standing by alice)", "released by sebastian", "<td><i class=\"lamp\" aria-hidden=\"true\"></i>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
 		`<span id="promote-11" class="meta">standing, about 10.1340 EUR a month against the standing block&#39;s 0.00 EUR (0.0000 standing now)</span>`,
 		// sf/code is in no file of this configuration: the policy's default
 		"No project file names this repository: the policy's envelope_default applies.",
-		"Task block: 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB",
+		"task block 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month 0.0000 EUR used or reserved, 0 servers open",
 		// demo-app's file, read-only, linked at the version's commit
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml">change it in Git</a>.`,
-		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
-		"This month: 1.5000 EUR used or reserved, 1 server open",
+		"task block 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
+		"this month 1.5000 EUR used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
-		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
-		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources">Resources</a>`,
+		"standing block 12.00 EUR a month, types cx23, 2 servers · standing now 1 server, 5.9900 EUR a month",
+		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/resources lacks %q", want)
@@ -2442,14 +2540,14 @@ func TestTimelineDurationsTable(t *testing.T) {
 	}
 	// the longest is the first session: 20 min, 1200 s
 	want := []string{
-		`intake |  | 2026-09-28 10:00:00 | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
-		`session | 1 | 2026-09-28 10:01:00 | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
-		`session | 2 | 2026-09-28 10:22:00 | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
-		`checks | 2 | 2026-09-28 10:30:05 | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
+		`intake |  | <time>2026-09-28 10:00:00</time> | 30 s | webhook | <meter min="0" max="1200" value="30">30 s</meter>`,
+		`session | 1 | <time>2026-09-28 10:01:00</time> | 20 min | no_push | <meter min="0" max="1200" value="1200">20 min</meter>`,
+		`session | 2 | <time>2026-09-28 10:22:00</time> | 8 min | pushed | <meter min="0" max="1200" value="480">8 min</meter>`,
+		`checks | 2 | <time>2026-09-28 10:30:05</time> | 6 min 55 s | success | <meter min="0" max="1200" value="415">6 min 55 s</meter>`,
 		`job test | 2 |  | 4 min 18 s | success, queued 30 s | <meter min="0" max="1200" value="258">4 min 18 s</meter>`,
 		`job vet | 2 |  | 2 min 26 s | success | <meter min="0" max="1200" value="146">2 min 26 s</meter>`,
-		`reproduction | 2 | 2026-09-28 10:37:10 | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
-		`approval | 2 | ` + since.UTC().Format("2006-01-02 15:04:05") + ` | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
+		`reproduction | 2 | <time>2026-09-28 10:37:10</time> | 1 min 50 s | failed (exit 1) | <meter min="0" max="1200" value="110">1 min 50 s</meter>`,
+		`approval | 2 | <time>` + since.UTC().Format("2006-01-02 15:04:05") + `</time> | open for 12 min | open | <meter min="0" max="1200" value="740">open for 12 min</meter>`,
 	}
 	if !slices.Equal(rows, want) {
 		t.Fatalf("gate rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))
@@ -2475,7 +2573,9 @@ func TestTimelineClosedGateIsNotOpen(t *testing.T) {
 
 // /alerts lists the alerts newest first; an open human alert takes a
 // verdict from an approver, on the page and on the escalation's card.
-func TestAlertsPageAndVerdicts(t *testing.T) {
+// The alerts page is gone: the open human escalation's verdict buttons
+// ride its board card, and POST /alerts/{id}/verdict keeps its rules.
+func TestAlertVerdicts(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
@@ -2484,26 +2584,12 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
 		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
 			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
-		// a resolution with a diagnosis and no action still says it
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600,
-			Detail: map[string]any{"diagnosis": "the attempt ended before the supervisor looked"}},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
 	}
 	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
 	r.tasks.tasks[0].EscalationAlert = 3
-	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
-	i3, i2, i1 := strings.Index(page, "<td>escalation</td>"), strings.Index(page, "<td>supervisor_trip</td>"), strings.Index(page, "<td>gate_bound</td>")
-	if i3 < 0 || i2 < i3 || i1 < i2 {
-		t.Fatalf("alerts not newest first: %d %d %d", i3, i2, i1)
-	}
-	for _, want := range []string{`href="/tasks/t-c/timeline"`, "WaitChecks past 600 s", "noise (supervisor)", `<a href="/alerts">Alerts</a>`,
-		"<td>the attempt ended before the supervisor looked</td>",
-		`action="/alerts/3/verdict"`, `value="real"`, "real problem", `value="noise"`} {
-		if !strings.Contains(page, want) {
-			t.Errorf("/alerts lacks %q", want)
-		}
-	}
-	if strings.Count(page, `/verdict"`) != 2 {
-		t.Errorf("verdict forms on /alerts = %d, want the open human alert's two", strings.Count(page, `/verdict"`))
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /alerts = %d, want 404: the page is gone", rec.Code)
 	}
 	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if strings.Count(board, `action="/alerts/3/verdict"`) != 2 {
@@ -2526,7 +2612,8 @@ func TestAlertsPageAndVerdicts(t *testing.T) {
 	}
 }
 
-// Only the factory's approvers judge alerts: no buttons, and a 403.
+// Only the factory's approvers judge alerts: no buttons on the board,
+// and a 403.
 func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	r := newRig(t)
 	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
@@ -2534,9 +2621,8 @@ func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
 	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
 	r.tasks.tasks[0].EscalationAlert = 3
-	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
 	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(page, "/verdict") || strings.Contains(board, "/verdict") || !strings.Contains(page, "Only the factory's approvers may judge an alert.") {
+	if strings.Contains(board, "/verdict") {
 		t.Fatal("a non-approver is offered the verdict buttons")
 	}
 	for _, v := range []string{"real", "maybe"} {
@@ -2573,7 +2659,7 @@ func TestTimelineCommissioningEndsAtLive(t *testing.T) {
 	r.objects["sessions/t-1/timeline.jsonl"] = []byte(`{"step":"commissioned","time":"2026-09-28T10:01:44Z","started":"2026-09-28T10:00:00Z","live":"2026-09-28T10:01:35Z","server_type":"cx23"}
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
-	if !strings.Contains(body, "<td>commissioning</td><td></td><td>2026-09-28 10:00:00</td><td>1 min 35 s</td><td>cx23</td>") {
+	if !strings.Contains(body, "<td>commissioning</td><td></td><td><time>2026-09-28 10:00:00</time></td><td>1 min 35 s</td><td>cx23</td>") {
 		t.Fatalf("durations: %s", body[strings.Index(body, "<caption>Gates"):])
 	}
 }
@@ -2618,9 +2704,10 @@ func TestTimelineApprovalWaitOutcomes(t *testing.T) {
 
 // A machine alert shows what the supervisor did and why; a human
 // escalation's detail stays off the page.
-func TestAlertsShowTheSupervisorsActionAndDiagnosis(t *testing.T) {
-	r := newRig(t)
-	ck, _ := r.loggedIn(t)
+// The chat's alerts read carries the supervisor's action and diagnosis
+// on resolved machine alerts; an escalation's detail stays private.
+func TestAlertsReadTheSupervisorsActionAndDiagnosis(t *testing.T) {
+	r, _, g := newChatRig(t)
 	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	r.alerts.rows = []factoryd.Alert{
 		{ID: 3, Kind: factoryd.AlertEscalation, Source: "supervisor", TaskID: "t-e", RaisedAt: raised, Detail: map[string]any{"reason": "a private reason"}},
@@ -2629,16 +2716,16 @@ func TestAlertsShowTheSupervisorsActionAndDiagnosis(t *testing.T) {
 		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 30, Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
 			Detail: map[string]any{"action": "escalate", "diagnosis": "no runner serves the label", "recommendation": "register a runner"}},
 	}
-	page := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck).Body.String()
-	for _, want := range []string{`<th scope="col">Supervisor</th>`,
-		"<td><strong>redirect</strong>: stop rereading the spec; write the handler</td>",
-		"<td><strong>escalate</strong>: no runner serves the label Recommendation: register a runner</td>"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("/alerts lacks %q", want)
+	text := strings.Join(reads(t, r, g, "alerts", `{"state":"all"}`), "")
+	for _, want := range []string{
+		"verdict real by supervisor, redirect: stop rereading the spec; write the handler",
+		"verdict real by supervisor, escalate: no runner serves the label Recommendation: register a runner"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the alerts read lacks %q:\n%s", want, text)
 		}
 	}
-	if strings.Contains(page, "a private reason") {
-		t.Error("/alerts shows an escalation's detail")
+	if strings.Contains(text, "a private reason") {
+		t.Error("the alerts read shows an escalation's detail")
 	}
 }
 
@@ -2675,7 +2762,7 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 `)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-1/timeline", nil), ck).Body.String()
 	for _, want := range []string{
-		`<td title="2026-10-17T12:41:47.048126987Z">2026-10-17 12:41:47</td>`,
+		`<td title="2026-10-17T12:41:47.048126987Z"><time>2026-10-17 12:41:47</time></td>`,
 		`<td>not a time</td>`,
 	} {
 		if !strings.Contains(body, want) {

@@ -254,7 +254,7 @@ type labScene struct {
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene}
+	"history": historyScene, "wake": wakeScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -316,6 +316,26 @@ func escalationScene(now time.Time) labScene {
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
 			Content: "#603 needs you: Which store keeps the nightly board snapshots? Postgres shares the factory's backups; SQLite keeps them beside the export and off the cluster.",
 			Choices: []string{"Postgres", "SQLite", "Ask the author"}})
+	s.seen[5] = int64(len(s.chat))
+	return s
+}
+
+// wakeScene is the threads scene with the inbox open at autonomous and
+// one wake turn in it (the main agent concept): the factory woke the agent
+// on #603's ask; the turn's rows are one row that folds to the wake's
+// first line and opens on a click, the settled row's fold.
+func wakeScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 5
+	s.chat = append(s.chat,
+		factoryd.ChatMessage{Conversation: 5, Role: "user", BirthKind: "wake_ask", At: ago(15 * time.Minute),
+			Content: "#603: Which store keeps the nightly board snapshots?\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done."},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 30*time.Second), ToolCalls: []factoryd.ChatToolCall{{
+			ID: "call_w", Name: "card", Arguments: `{"task_id":"#603"}`,
+			Result: "#603 asks which store keeps the nightly board snapshots; the plan names Postgres."}}},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 45*time.Second),
+			Content: "Both stores hold the snapshots: the plan names Postgres, the brief allows SQLite for one replica. The night read is small; either keeps it."})
 	s.seen[5] = int64(len(s.chat))
 	return s
 }

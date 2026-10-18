@@ -10,13 +10,13 @@ const { chromium } = require("playwright");
 const base = process.env.BASE || "http://127.0.0.1:8090";
 const labDir = process.env.CONSOLE_LAB_DIR || "/tmp/claude-1000/console-lab";
 const out = process.env.OUT || path.join(labDir, "shots");
-const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation"];
+const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake"];
 const themes = ["dark", "light"];
 const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
 const tall = { width: 1440, height: 2600 };
 const phone = { width: 390, height: 844 };
-const pages = ["costs", "alerts", "resources", "projects", "policy", "notifications"];
+const pages = ["costs", "resources", "settings", "policy", "notifications"];
 
 const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").trim().split(/=(.*)/s);
 

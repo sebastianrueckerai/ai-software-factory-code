@@ -118,13 +118,14 @@ const DefaultChatWindow = 128000
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
 	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
-	"alerts", "resources", "projects", "policy",
+	"alerts", "resources", "settings", "policy",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
-	"notes_read", "notes_write", "escalate", "active_threads", "board_view", "board_view_reset"}
+	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
+	"watch_card", "unwatch_card", "set_timer"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}

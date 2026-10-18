@@ -26,8 +26,11 @@ import (
 func columnItems(t *testing.T, body, title string) []string {
 	t.Helper()
 	var out []string
+	// an escalation article shares its face's data-card, which the
+	// face's place marks: drop the article's copy before the walk
+	esc := regexp.MustCompile(`(<article class="card escalation" id="need-[^"]+") data-card="[^"]*"`)
 	re := regexp.MustCompile(`<article class="card approval[^"]*" data-card="[^"]*" aria-labelledby="approval-(\d+)"|data-card="([^"]+)"`)
-	for _, m := range re.FindAllStringSubmatch(col(t, body, title), -1) {
+	for _, m := range re.FindAllStringSubmatch(esc.ReplaceAllString(col(t, body, title), "$1"), -1) {
 		if m[1] != "" {
 			out = append(out, "approval "+m[1])
 		} else {
@@ -107,8 +110,10 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 			t.Errorf("the header of %s lacks the count %s, its menu or its body", title, counts[title])
 		}
 		for _, id := range items {
-			if id[0] == 't' && strings.Count(body, `data-card="`+id+`"`) != 1 {
-				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`"`))
+			// an escalation article shares its face's data-card; the
+			// face alone carries it with a place, which names one column
+			if id[0] == 't' && strings.Count(body, `data-card="`+id+`" data-place="`) != 1 {
+				t.Errorf("%s shows %d times, want once", id, strings.Count(body, `data-card="`+id+`" data-place="`))
 			}
 		}
 	}
@@ -577,7 +582,7 @@ func TestDrawerOverview(t *testing.T) {
 		`<div class="drawer-content" data-drawer="t-c4">`,
 		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
-			tab("t-c4", "chat", "Chat", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
+			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
@@ -644,12 +649,18 @@ func TestDrawerActivity(t *testing.T) {
 		t.Errorf("the activity's tables are not the timeline page's:\n%s\nwant\n%s", got, tables(page))
 	}
 	for _, want := range []string{
-		`<tr><td>session</td><td>1</td><td>2026-10-11 10:00:00</td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
-		`<tr><td title="2026-10-11T10:05:00Z">2026-10-11 10:05:00</td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td>session</td><td>1</td><td><time>2026-10-11 10:00:00</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
+		`<tr><td title="2026-10-11T10:05:00Z"><time>2026-10-11 10:05:00</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)
 		}
+	}
+	// the <time> cells keep to one line only through the stylesheet's
+	// nowrap rule; the wrapper and the rule stand together
+	css := r.do(httptest.NewRequest(http.MethodGet, "/static/console.css", nil)).Body.String()
+	if !strings.Contains(css, "td time { white-space: nowrap; }") {
+		t.Error("console.css lacks td time { white-space: nowrap; }")
 	}
 	r.c.cfg.Timelines = failingObjects{}
 	failed := drawer(t, r, ck, "t-run", "activity")
@@ -730,7 +741,7 @@ func TestDrawerChat(t *testing.T) {
 	}
 	running := drawer(t, r, ck, "t-run", "")
 	for _, want := range []string{
-		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Chat", true) +
+		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Session", true) +
 			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="meta">Session 2 · coding-frontier · running</p>
@@ -796,7 +807,7 @@ func TestDrawerSteer(t *testing.T) {
 	if !slices.Equal(steered, []string{"t-run sebastian: Rebase on main first."}) {
 		t.Errorf("steered %q", steered)
 	}
-	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Chat", true),
+	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Session", true),
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="note" role="status">The session of #11 has your message.</p>`,
 		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>` + row.At.UTC().Format("01-02 15:04") +
@@ -866,7 +877,7 @@ func TestVerdictReturnsToTheFilteredBoard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
 		{ID: 6, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/alerts"}} {
+	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/"}} {
 		rec := r.do(post("/alerts/"+id+"/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {back[0]}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != back[1] {
 			t.Errorf("verdict with back %q = %d to %q, want %q", back[0], rec.Code, rec.Header().Get("Location"), back[1])

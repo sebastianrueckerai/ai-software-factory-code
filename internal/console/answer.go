@@ -32,9 +32,9 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id, _ := strconv.ParseInt(r.PostFormValue("message"), 10, 64)
 	choice := r.PostFormValue("choice")
-	rows, err := c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.a.s.user, t.conv, chatHistory)
+	rows, err := c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, chatHistory)
 	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
 		return
 	}
@@ -55,14 +55,14 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		note = "The answer did not land: " + t.sentence(err)
 	}
-	queued, land := c.Behind(t.p.Repository, t.a.s.user, t.conv)
+	queued, land := c.Behind(t.p.Repository, t.owner, t.conv)
 	var ids []int64
 	defer func() { land(ids...) }()
 	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: choice}, {Role: "assistant", Kind: factoryd.MessagePoke, Content: note, TaskID: rows[i].TaskID}} {
 		m.Conversation, m.Queued = t.conv, queued
-		id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.a.s.user, m)
+		id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, m)
 		if err != nil {
-			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 			http.Error(w, "cannot store the answer", http.StatusInternalServerError)
 			return
 		}
