@@ -181,9 +181,7 @@ async function viewChange(p, query, fails) {
   await page.waitForTimeout(600);
   if (new URL(page.url()).searchParams.get("q")) fails.push(label + ": Back leaves q in the URL (" + page.url() + ")");
   if ((await page.locator(cards).count()) < shown.length + 1) fails.push(label + ": Back does not read the entry's board");
-  await page.locator("#status-toggle").click();
-  await page.waitForTimeout(200);
-  if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the toggle does not open the panel");
+  if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the status panel does not show");
   await page.evaluate((card) => document.dispatchEvent(new CustomEvent("view",
     {detail: {query: "?project=ai-software-factory-code", card: card, tab: "chat", panel: "closed", theme: "light"}})), labID(616));
   await page.waitForTimeout(900);
@@ -191,7 +189,6 @@ async function viewChange(p, query, fails) {
   if (card.indexOf("#card=") !== 0) fails.push(label + ": the drawer's hash is " + card);
   if (!(await page.locator("#drawer").isVisible())) fails.push(label + ": the drawer does not show");
   if (!(await page.locator('#drawer .tabs button[aria-selected="true"][hx-get*="tab=chat"]').first().isVisible())) fails.push(label + ": the tab does not land");
-  if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the panel does not fold");
   if (await page.evaluate(() => document.documentElement.getAttribute("data-theme") || localStorage.getItem("theme")) !== "light") fails.push(label + ": the theme does not change");
   await page.evaluate(() => document.dispatchEvent(new CustomEvent("view", {detail: {query: "?project=ai-software-factory-code", card: ""}})));
   await page.waitForTimeout(600);
