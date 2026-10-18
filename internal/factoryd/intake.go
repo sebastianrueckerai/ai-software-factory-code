@@ -514,11 +514,63 @@ func askedDirectories(body string) []string {
 	return dirs
 }
 
+// askedShips is the issue body's line "Ships: <ruling> clauses <n>, <n>"
+// (a lone "clause <n>" reads the same), key in any case, the last one
+// winning: the design ruling a build card cites ("C20", a C-entry of
+// the design decisions in the project's document repository) and the
+// clauses of the ruling's screen after the card ships, 1-based in the
+// entry's order. A ruling named with no clause numbers cites the entry
+// but states none: the review gate's design scope check refuses it
+// until a card names the clauses it ships. "" when the line names no
+// ruling.
+func askedShips(body string) (ruling string, clauses []int) {
+	for l := range strings.Lines(body) {
+		key, v, _ := strings.Cut(l, ":")
+		if !strings.EqualFold(strings.TrimSpace(key), "ships") {
+			continue
+		}
+		name, rest, _ := strings.Cut(strings.TrimSpace(v), " ")
+		if !isRulingID(name) {
+			continue
+		}
+		ruling = strings.ToUpper(name)
+		clauses = nil
+		rest = strings.TrimSpace(rest)
+		for _, keyword := range []string{"clauses", "clause"} {
+			if strings.HasPrefix(strings.ToLower(rest), keyword) {
+				rest = strings.TrimSpace(rest[len(keyword):])
+				break
+			}
+		}
+		for _, f := range strings.Fields(strings.ReplaceAll(rest, ",", " ")) {
+			if n, err := strconv.Atoi(f); err == nil && n > 0 {
+				clauses = append(clauses, n)
+			}
+		}
+		slices.Sort(clauses)
+		clauses = slices.Compact(clauses)
+	}
+	return ruling, clauses
+}
+
+// isRulingID: a design decision's C-entry id, "C20" in any case.
+func isRulingID(s string) bool {
+	if len(s) < 2 || (s[0] != 'C' && s[0] != 'c') {
+		return false
+	}
+	for _, r := range s[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // briefObjective is objective as a model's brief carries it: its body
-// without the lines the intake reads into the card's fields (Size, Budget,
-// Rung), and when mapped, without the card's directories line, which the
-// brief's repository map lists (roadmap 201). Every other line stands as
-// its author wrote it.
+// without the lines the intake reads into the card's fields (Size,
+// Budget, Rung, Ships), and when mapped, without the card's directories
+// line, which the brief's repository map lists (roadmap 201). Every
+// other line stands as its author wrote it.
 func briefObjective(objective string, mapped bool) string {
 	title, body, ok := strings.Cut(objective, "\n\n")
 	if !ok {
@@ -528,9 +580,10 @@ func briefObjective(objective string, mapped bool) string {
 	for l := range strings.Lines(body) {
 		size, eur := askedBudget(l)
 		rung, _ := askedRung(l)
+		ruling, _ := askedShips(l)
 		key, _, _ := strings.Cut(l, ":")
 		dirs := strings.EqualFold(strings.TrimSpace(key), "directories") || strings.TrimSpace(key) == cardDirectories
-		if size == "" && eur == 0 && rung == "" && (!mapped || !dirs) {
+		if size == "" && eur == 0 && rung == "" && ruling == "" && (!mapped || !dirs) {
 			kept.WriteString(l)
 		}
 	}
@@ -766,6 +819,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	size, eur := askedBudget(issue.Body)
 	rung := rungOf(issue.Body, size)
+	shipsRuling, shipsClauses := askedShips(issue.Body)
 	task := Task{
 		ID:           NewTaskID(),
 		Priority:     priorityFromLabels(names),
@@ -773,6 +827,8 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		BudgetEUR:    policy.CardBudget(in.Policy().Document.Budget, p.Budget, size, rung == RungFrontier, eur),
 		Size:         size,
 		Rung:         rung,
+		ShipsRuling:  shipsRuling,
+		ShipsClauses: shipsClauses,
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",

@@ -189,6 +189,26 @@ func (s *accBatchTasks) TasksByPR(_ context.Context, repository string, pr int64
 	return cards, nil
 }
 
+// TasksByRuling lists repository's cards citing design ruling ruling,
+// oldest first, whatever their status, as the SQL store does.
+func (s *accBatchTasks) TasksByRuling(_ context.Context, repository, ruling string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cards []factoryd.Task
+	for _, bt := range s.tasks {
+		if bt.Task.Repository == repository && bt.Task.ShipsRuling == ruling {
+			cards = append(cards, bt.Task)
+		}
+	}
+	slices.SortFunc(cards, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return cards, nil
+}
+
 func (s *accBatchTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -510,6 +530,9 @@ func (s *accBatchStore) TaskByPR(ctx context.Context, repository string, pr int6
 }
 func (s *accBatchStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]factoryd.Task, error) {
 	return s.tasks.TasksByPR(ctx, repository, pr)
+}
+func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]factoryd.Task, error) {
+	return s.tasks.TasksByRuling(ctx, repository, ruling)
 }
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")

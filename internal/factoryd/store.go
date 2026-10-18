@@ -100,6 +100,14 @@ type Task struct {
 	// "" for the ladder's start) and Size its card size, both from its
 	// filing (roadmap 222, item 5).
 	Rung, Size string
+	// ShipsRuling is the design ruling a build card cites on its issue's
+	// Ships line ("C20", a design decision's C-entry of the project's
+	// document repository) and ShipsClauses the clauses of the ruling's
+	// screen after the card ships, 1-based in the entry's order: the
+	// review gate unions the clause lists of every card citing the ruling
+	// and fails a card whose screen-after clause is left to no card.
+	ShipsRuling  string
+	ShipsClauses []int
 	// HumanSummary is what a writer of the task's project says the card
 	// is about, shown on its face instead of the generated title; "" when
 	// nothing is set (the column is NULL).
@@ -309,6 +317,10 @@ type Store interface {
 	// newest first: a webhook on a factory pull request resolves the
 	// still-open card of its number among them (roadmap 275).
 	TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error)
+	// TasksByRuling lists repository's cards that cite design ruling
+	// ruling on their Ships line, whatever their status: the review gate
+	// unions their stated clauses over the ruling's screen after.
+	TasksByRuling(ctx context.Context, repository, ruling string) ([]Task, error)
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
@@ -690,6 +702,12 @@ func insertTask(ctx context.Context, db interface {
 	if err != nil {
 		return err
 	}
+	ships := []byte("[]")
+	if len(t.ShipsClauses) > 0 {
+		if ships, err = json.Marshal(t.ShipsClauses); err != nil {
+			return err
+		}
+	}
 	var created *time.Time
 	if !t.CreatedAt.IsZero() {
 		created = &t.CreatedAt
@@ -699,17 +717,17 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, finished_at)
-		 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
-	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
-	         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
-	         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27,
-	         CASE WHEN $7 IN ('done', 'failed', 'closed') THEN COALESCE($16, now()) END)
-		 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, ships_ruling, ships_clauses, finished_at)
+	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
+         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
+         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
+         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $28, $29::jsonb,
+         CASE WHEN $7 IN ('done', 'failed', 'closed') THEN COALESCE($16, now()) END)
+	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships)
 	return err
 }
 
@@ -762,22 +780,30 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
-	var caps []byte
+	var caps, ships []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships); err != nil {
 		return Task{}, err
 	}
 	var err error
 	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
 		return Task{}, fmt.Errorf("required_capabilities: %w", err)
+	}
+	if len(ships) > 0 {
+		if err := json.Unmarshal(ships, &t.ShipsClauses); err != nil {
+			return Task{}, fmt.Errorf("ships_clauses: %w", err)
+		}
+		if len(t.ShipsClauses) == 0 {
+			t.ShipsClauses = nil // "[]" reads as the card states no clause
+		}
 	}
 	return t, nil
 }
@@ -836,6 +862,13 @@ func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Ta
 
 func (s *PGStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND pr_number = $2 ORDER BY created_at DESC, id DESC`, repository, pr)
+}
+
+// TasksByRuling lists repository's cards that cite design ruling ruling
+// on their Ships line, oldest first, whatever their status: the review
+// gate unions their stated clauses over the ruling's screen after.
+func (s *PGStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND ships_ruling = $2 ORDER BY created_at, id`, repository, ruling)
 }
 
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {

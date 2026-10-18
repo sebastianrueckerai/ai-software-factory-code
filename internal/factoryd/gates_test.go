@@ -47,6 +47,9 @@ type gateForgejo struct {
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
 	comments    []string
+	// raw serves GET raw of other repositories (the document repo's
+	// design decisions): "owner/name/raw/<path>" to its content.
+	raw map[string]string
 }
 
 func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
@@ -104,6 +107,14 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			f.comments = append(f.comments, body.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 800+len(f.comments))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
+			rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
+			if c, ok := f.raw[rest]; ok {
+				io.WriteString(w, c)
+				return
+			}
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, `{"message":"Not Found"}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)
