@@ -107,17 +107,32 @@ func TestShapedQuestionFamilies(t *testing.T) {
 	}
 }
 
-// The agent's own tail shapes nothing: a model-written check-in reason, a
-// provider refusal, a split ask keep today's path.
-func TestShapedQuestionLeavesTheAgentsTailUnshaped(t *testing.T) {
+// A reason no template covers still gets the five parts: the plain
+// question, whose summary is the reason's first line and whose choices
+// are the answers a stopped card takes; an agent's ask keeps its own
+// question as the headline.
+func TestShapedQuestionShapesTheUntemplatedTail(t *testing.T) {
 	for _, reason := range []string{
 		checkinSpendAsk + "the work is nearly done and one more call would finish it",
 		providerRefused + "session 3's first call",
 		"The card was moved out of the merge queue: is its place gone?",
 	} {
-		if q := ShapedQuestion(reason, QuestionFacts{}); q != nil {
-			t.Errorf("ShapedQuestion(%q) shaped %v, want nil", reason, q.Ask)
+		q := ShapedQuestion(reason, QuestionFacts{})
+		if q == nil {
+			t.Fatalf("ShapedQuestion(%q) = nil, want the plain question", reason)
 		}
+		if q.Ask != "This card stopped and needs your decision: how should it go on?" {
+			t.Errorf("ShapedQuestion(%q).Ask = %q, want the plain headline", reason, q.Ask)
+		}
+		if q.Why != escalationQuestion(reason) {
+			t.Errorf("ShapedQuestion(%q).Why = %q, want the reason's first line %q", reason, q.Why, escalationQuestion(reason))
+		}
+		if q.Info != plainInfo || len(q.Choices) != 3 {
+			t.Errorf("ShapedQuestion(%q) = %+v, want the plain info and three choices", reason, q)
+		}
+	}
+	if q := ShapedQuestion(AgentAsks+"Which file?\nWhy: open", QuestionFacts{}); q.Ask != "Which file?" {
+		t.Errorf("an agent's ask keeps its question as the headline, got %q", q.Ask)
 	}
 }
 

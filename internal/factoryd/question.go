@@ -92,10 +92,10 @@ type QuestionFacts struct {
 	CheckinShare float64 // EUR, the policy's check-in share of the budget
 }
 
-// ShapedQuestion shapes the question the escalation reason asks, by
-// template. It returns nil for a reason no template covers: the agent's
-// own tail -- a handover's question, a screen's -- keeps today's path,
-// shaped only when the agent's tool hands the five fields over.
+// ShapedQuestion shapes the question the escalation reason asks: by
+// template for the deterministic stops, and from the reason itself for
+// every other ask (plainQuestion), so no question reaches a card without
+// its five parts.
 func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	switch {
 	case strings.HasPrefix(reason, checkinSpendAsk+"check-in call cap reached"),
@@ -115,8 +115,30 @@ func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	case strings.HasPrefix(reason, "The card was quiet for "):
 		return quietQuestion(reason)
 	}
-	return nil
+	return plainQuestion(reason)
 }
+
+// plainQuestion is the question an ask no template covers gets, so no
+// card puts words alone to a person: an agent's ask keeps its question
+// as the headline, every other stop gets one that names the decision;
+// the reason's first line is the summary, and the answers a stopped
+// card always takes are the choices.
+func plainQuestion(reason string) *HumanQuestion {
+	first := escalationQuestion(reason)
+	ask := "This card stopped and needs your decision: how should it go on?"
+	if strings.HasPrefix(reason, AgentAsks) {
+		ask = first
+	}
+	return &HumanQuestion{
+		Ask:     ask,
+		Why:     first,
+		Info:    plainInfo,
+		Choices: continueChoices(),
+	}
+}
+
+// plainInfo is what an answer does at a stop no template covers.
+const plainInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. 'Leave it waiting' holds the card here; 'End the card' closes the task and its pull request."
 
 // continueChoices are the answers a spend stop takes: yes goes on, park
 // and close end the wait.
