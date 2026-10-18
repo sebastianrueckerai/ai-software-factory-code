@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -331,10 +332,16 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 
 // headChecksGreen reads whether commit sha's checks are green in project
 // now, as a's member: a merge request opened on red checks heals once the
-// same head's checks turn green (#1013: a re-run) and may merge then.
-// Green mirrors factoryd's checksResult: a head that reports no statuses
+// same head's checks turn green (#1013: a re-run) and may merge then. An
+// actor that carries no session — the pulse's render, which no member
+// asked for — fails closed as unread instead of following the nil
+// session: a member session is not required to paint a card. Green
+// mirrors factoryd's checksResult: a head that reports no statuses
 // is still pending, and warning counts as green.
 func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
+	if a.s == nil {
+		return false, &forgejoRefusal{"read the head's checks", errors.New("the actor carries no session, so the head's current checks were not read")}
+	}
 	repo, err := factoryd.SplitRepo(project)
 	if err != nil {
 		return false, err
