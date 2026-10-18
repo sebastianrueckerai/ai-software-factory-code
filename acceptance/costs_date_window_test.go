@@ -634,6 +634,24 @@ func (f *acceptChat) MarkCleared(context.Context, string, string, int64) error {
 
 func (f *acceptChat) EnsureInbox(context.Context, string, string) (int64, error) { return 0, nil }
 
+func (f *acceptChat) EnsureCardThread(context.Context, string, string, string) (int64, error) {
+	return 0, nil
+}
+
+func (f *acceptChat) CardThreadFor(context.Context, string, string) (string, int64, bool, error) {
+	return "", 0, false, nil
+}
+
+func (f *acceptChat) AddChatWatch(context.Context, string, string, int64, string) error { return nil }
+
+func (f *acceptChat) RemoveChatWatch(context.Context, string, string, string) (bool, error) {
+	return true, nil
+}
+
+func (f *acceptChat) AddChatTimer(context.Context, string, string, int64, time.Time, string, string) error {
+	return nil
+}
+
 func (f *acceptChat) ArchiveConversation(context.Context, string, string, int64, bool) (bool, error) {
 	return true, nil
 }
@@ -690,6 +708,28 @@ func (f *acceptChat) Conversations(_ context.Context, repository, login string) 
 		}
 		out[i].LastAt = m.At
 		out[i].Messages++
+	}
+	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int { return cmp.Compare(b.Number, a.Number) })
+	return out, nil
+}
+
+func (f *acceptChat) ProjectConversations(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatConversation
+	for key, msgs := range f.msgs {
+		repo, login, _ := strings.Cut(key, " ")
+		if repo != repository {
+			continue
+		}
+		for _, m := range msgs {
+			i := slices.IndexFunc(out, func(c factoryd.ChatConversation) bool { return c.Login == login && c.Number == m.Conversation })
+			if i < 0 {
+				out, i = append(out, factoryd.ChatConversation{Login: login, Number: m.Conversation, FirstAt: m.At}), len(out)
+			}
+			out[i].LastAt = m.At
+			out[i].Messages++
+		}
 	}
 	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int { return cmp.Compare(b.Number, a.Number) })
 	return out, nil
@@ -1164,3 +1204,16 @@ func (f *acceptChat) SaveSummary(context.Context, string, string, int64, factory
 func (f *acceptChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
 
 func (f *acceptChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }
+
+func (f *acceptSessions) ConsoleSessionsForUser(_ context.Context, login string) ([]factoryd.ConsoleSession, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ConsoleSession
+	for _, row := range f.rows {
+		if row.Login == login {
+			out = append(out, row)
+		}
+	}
+	slices.SortFunc(out, func(a, b factoryd.ConsoleSession) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return out, nil
+}

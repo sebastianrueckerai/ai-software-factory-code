@@ -108,6 +108,10 @@ type Chat interface {
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
+	// ProjectConversations lists every member's threads on the project
+	// with each thread's owner named: threads are project-visible, there
+	// are no private ones.
+	ProjectConversations(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
@@ -126,6 +130,15 @@ type Chat interface {
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
+	// the card's own thread (the card door): one per card, the first
+	// caller binds it, every later caller gets the same one
+	EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error)
+	CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error)
+	// the thread's own subscriptions (the timers concept): its watches of
+	// cards and its one-shot timers, which the Waker wakes it on
+	AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error
+	RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error)
+	AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error
 	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
@@ -154,6 +167,9 @@ type Sessions interface {
 	// ConsoleSessionByHash reads the row of the hash; false when there is
 	// none or it expired, an expired row deleted.
 	ConsoleSessionByHash(ctx context.Context, hash string) (factoryd.ConsoleSession, bool, error)
+	// ConsoleSessionsForUser reads the login's live rows newest first:
+	// the wake turn's source of the member's tokens.
+	ConsoleSessionsForUser(ctx context.Context, login string) ([]factoryd.ConsoleSession, error)
 	// DeleteConsoleSession removes the row of the hash (a logout).
 	DeleteConsoleSession(ctx context.Context, hash string) error
 	// TouchConsoleSession moves the row's last_seen to the store's now

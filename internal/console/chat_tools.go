@@ -32,6 +32,7 @@ type toolInput struct {
 	Text       string `json:"text,omitempty"`
 	Question   int    `json:"question,omitempty"`
 	Note       string `json:"note,omitempty"`
+	Minutes    int    `json:"minutes,omitempty"`
 	Action     string `json:"action,omitempty"`
 	Revision   int    `json:"revision,omitempty"`
 	SHA256     string `json:"sha256,omitempty"`
@@ -39,6 +40,7 @@ type toolInput struct {
 	Accent     string `json:"accent,omitempty"`
 	Login      string `json:"login,omitempty"`
 	N          int    `json:"n,omitempty"`
+	Thread     int64  `json:"thread,omitempty"`
 	Ref        string `json:"ref,omitempty"`
 	Path       string `json:"path,omitempty"`
 	SHA        string `json:"sha,omitempty"`
@@ -73,10 +75,13 @@ type toolInput struct {
 	Info           string   `json:"info,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
-	Old            string   `json:"old,omitempty"`
-	New            string   `json:"new,omitempty"`
-	BaseSHA256     string   `json:"base_sha256,omitempty"`
-	Find           string   `json:"find,omitempty"`
+	// Found is the analysis the attach_analysis tool records inside an
+	// ask.
+	Found      string `json:"found,omitempty"`
+	Old        string `json:"old,omitempty"`
+	New        string `json:"new,omitempty"`
+	BaseSHA256 string `json:"base_sha256,omitempty"`
+	Find       string `json:"find,omitempty"`
 	// Answers are every open question of a plan revision, answered at
 	// once by the answer tool.
 	Answers []PlanAnswerInput `json:"answers,omitempty"`
@@ -1096,8 +1101,8 @@ var tools = []chatTool{
 			s, err := t.c.resourcesText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
-	{name: "projects", title: "Read the projects",
-		about: "The factory's projects.",
+	{name: "settings", title: "Read the settings",
+		about: "Every project's settings.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.c.projectsText(t.r.Context(), t.a)
 			return s, nil, err
@@ -1443,12 +1448,28 @@ var tools = []chatTool{
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
-	{name: "active_threads", title: "Read the member's threads",
-		about: "The member's other active threads on the project, then the scratchpad's tail.",
+	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
+		params: map[string]any{"task_id": taskParam,
+			"found":          str("what you learned about the ask, the facts with their numbers"),
+			"recommendation": str("the answer you would pick and where you read it")},
+		required: []string{"task_id", "found"},
+		about:    "Record what you found inside a card's open ask, for the human who reads it.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.attachAnalysis(in)
+			return s, nil, err
+		}},
+	{name: "active_threads", title: "Read the project's threads",
+		about: "The project's active threads, every member's with its owner named, then the scratchpad's tail.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.activeThreads()
 			return s, nil, err
 		}},
+	{name: "chat_search", title: "Search the project's threads",
+		params: map[string]any{"query": str("the text to find, any case"),
+			"thread": map[string]any{"type": "integer", "description": "one of your own thread's numbers to search only it", "minimum": 1}},
+		required: []string{"query"},
+		about:    "Search every thread of the project, every member's, for a text, at most 20 hits.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
 		about:  "Works the board's view controls as a click does: menus, find, routines, card, panel, theme.",
 		params: boardViewParams(),
@@ -1458,6 +1479,23 @@ var tools = []chatTool{
 		about: "Clears the board's view controls to the default and closes the drawer.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { return t.setView(toolInput{}, true) },
 	},
+	{name: "watch_card", title: "Watch a card",
+		params:   map[string]any{"task_id": taskParam},
+		required: []string{"task_id"},
+		about:    "Watch a card: its moves wake this thread.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.watchCard(in); return s, nil, err }},
+	{name: "unwatch_card", title: "End a watch",
+		params:   map[string]any{"task_id": taskParam},
+		required: []string{"task_id"},
+		about:    "End this thread's watch on a card.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.unwatchCard(in); return s, nil, err }},
+	{name: "set_timer", title: "Set a timer",
+		params: map[string]any{"minutes": map[string]any{"type": "integer", "description": "the minutes from now, 1 to 1440", "minimum": 1, "maximum": 1440},
+			"note":    str("the note the wake carries, 1 to 200 characters"),
+			"task_id": str("the card this timer dies with, its task id or issue number")},
+		required: []string{"minutes", "note"},
+		about:    "Set a one-shot timer that wakes this thread with its note.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},
 	{name: "unmove_card", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
@@ -1499,7 +1537,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 
 // toolNotes are what the tools' sentences leave to the manual, each
 // stated once.
-var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.
+var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
   new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
@@ -1509,6 +1547,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, projec
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
+  attach_analysis records what you found inside a card's open ask; the members read it with the question.
 `
 
 func (t *turn) systemText() (string, error) {

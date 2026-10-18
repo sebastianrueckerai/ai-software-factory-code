@@ -166,7 +166,7 @@ func TestChatGithubExport(t *testing.T) {
 	tool := func(result string) string {
 		return `tool {"arguments":` + ran + `,"duration_ms":0,"name":"github_export","result":"` + result + `"}`
 	}
-	none := "Refused: demo-app has no GitHub token for an export. Set the export's token on the project page: https://console.example/projects#export-demo-app"
+	none := "Refused: demo-app has no GitHub token for an export. Set the export's token on the settings page: https://console.example/settings?project=demo-app#export-demo-app"
 	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it first.")}}
 	_, events, _ := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
 	equal(t, "without a token", events, []string{tool(none), `text {"text":"Set it first."}`, `done {}`})
@@ -236,7 +236,7 @@ func TestProjectsPageGithubExport(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	page := func(ck *http.Cookie) string {
-		return r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck).Body.String()
+		return r.do(httptest.NewRequest(http.MethodGet, "/settings?project=demo-app", nil), ck).Body.String()
 	}
 	form := `<form method="post" action="/projects/demo-app/export"`
 	if body := page(ck); !strings.Contains(body, form) || !strings.Contains(body, "<li>GitHub export: none</li>") ||
@@ -336,11 +336,11 @@ func TestNewProjectImportsFromGitHub(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	ck, s := r.loggedIn(t)
-	page := r.do(httptest.NewRequest(http.MethodGet, "/projects/new", nil), ck).Body.String()
+	page := r.do(httptest.NewRequest(http.MethodGet, "/settings/new", nil), ck).Body.String()
 	for _, want := range []string{`<label for="source">GitHub repository (owner/name)</label>`, `<input id="source" name="source" type="text"`,
 		`<label for="token">GitHub token</label>`, `<input id="token" name="token" type="password" autocomplete="off"`} {
 		if !strings.Contains(page, want) {
-			t.Errorf("GET /projects/new lacks %q", want)
+			t.Errorf("GET /settings/new lacks %q", want)
 		}
 	}
 	form := func(source, token string) url.Values {

@@ -46,6 +46,14 @@ type fakeChat struct {
 	// login; archived the archived threads by repository, login and thread
 	inboxes  map[string]factoryd.ChatConversation
 	archived map[string]bool
+	// cards are the bound card threads (the card door) by repository and
+	// task
+	cards map[string]boundThread
+	// watches are the stored card watches and timers the stored one-shot
+	// timers: the watch_card, unwatch_card and set_timer tools' rows
+	// (the timers concept)
+	watches []storedWatch
+	timers  []storedTimer
 	// summaries are the threads' compactions by repository, login and
 	// thread; tokens the newest call's tokens by thread reference, which a
 	// test sets, and totals its calls' sums
@@ -64,6 +72,28 @@ type fakeChat struct {
 type fakeProposal struct {
 	factoryd.ChatProposal
 	used time.Time
+}
+
+// boundThread is a card thread's binding: the member who opened the card's
+// door first and the thread's number under them.
+type boundThread struct {
+	login string
+	n     int64
+}
+
+// storedWatch is a fakeChat watch row: the member's thread that watches
+// the card.
+type storedWatch struct {
+	repository, login, taskID string
+	conversation              int64
+}
+
+// storedTimer is a fakeChat timer row: the thread it wakes, its due time
+// and its note.
+type storedTimer struct {
+	repository, login, note, taskID string
+	conversation                    int64
+	due                             time.Time
 }
 
 // spendRow is a ledger row of a task of repository on day, chat when the
@@ -152,6 +182,72 @@ func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int
 	return f.inboxes[k].Number, nil
 }
 
+func (f *fakeChat) EnsureCardThread(_ context.Context, repository, login, taskID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + taskID
+	if b, ok := f.cards[k]; ok {
+		return b.n, nil
+	}
+	if f.cards == nil {
+		f.cards = map[string]boundThread{}
+	}
+	n := f.highest(repository, login) + 1
+	f.cards[k] = boundThread{login: login, n: n}
+	if f.titles == nil {
+		f.titles = map[string]string{}
+	}
+	f.titles[fmt.Sprint(repository, " ", login, " ", n)] = "#" + taskID
+	return n, nil
+}
+
+func (f *fakeChat) CardThreadFor(_ context.Context, repository, taskID string) (string, int64, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.cards[repository+" "+taskID]
+	return b.login, b.n, ok, nil
+}
+
+func (f *fakeChat) AddChatWatch(_ context.Context, repository, login string, conversation int64, taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, w := range f.watches {
+		if w.repository == repository && w.taskID == taskID && w.login != login {
+			return &factoryd.WatchTakenError{Login: w.login}
+		}
+	}
+	for i, w := range f.watches {
+		if w.repository == repository && w.login == login && w.taskID == taskID {
+			f.watches[i].conversation = conversation
+			return nil
+		}
+	}
+	f.watches = append(f.watches, storedWatch{repository, login, taskID, conversation})
+	return nil
+}
+
+func (f *fakeChat) RemoveChatWatch(_ context.Context, repository, login, taskID string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, w := range f.watches {
+		if w.repository == repository && w.login == login && w.taskID == taskID {
+			f.watches = append(f.watches[:i], f.watches[i+1:]...)
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeChat) AddChatTimer(_ context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if n := len(f.watches) + len(f.timers); n >= factoryd.WakeTimersMax {
+		return fmt.Errorf("%w: it holds %d of %d, end one first.", factoryd.ErrChatWakeCap, n, factoryd.WakeTimersMax)
+	}
+	f.timers = append(f.timers, storedTimer{repository, login, note, taskID, conversation, due})
+	return nil
+}
+
 func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -201,6 +297,42 @@ func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([
 	return f.threads(repository, login), nil
 }
 
+// ProjectConversations lists every member's threads on the repository,
+// the listing's order: the inboxes first, then the rest by their last
+// row, the owner's name on each.
+func (f *fakeChat) ProjectConversations(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var logins []string
+	for k := range f.msgs {
+		if repo, login, ok := strings.Cut(k, " "); ok && repo == repository && !slices.Contains(logins, login) {
+			logins = append(logins, login)
+		}
+	}
+	for k := range f.inboxes {
+		if repo, login, ok := strings.Cut(k, " "); ok && repo == repository && !slices.Contains(logins, login) {
+			logins = append(logins, login)
+		}
+	}
+	var out []factoryd.ChatConversation
+	for _, login := range logins {
+		out = append(out, f.threads(repository, login)...)
+	}
+	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
+		rank := func(c factoryd.ChatConversation) int {
+			switch {
+			case c.Inbox:
+				return 0
+			case c.State == factoryd.ThreadArchived:
+				return 2
+			}
+			return 1
+		}
+		return cmp.Or(cmp.Compare(rank(a), rank(b)), b.LastAt.Compare(a.LastAt), cmp.Compare(b.Login, a.Login), cmp.Compare(b.Number, a.Number))
+	})
+	return out, nil
+}
+
 // threads is the member's threads as the store lists them; f.mu held.
 func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation {
 	k := repository + " " + login
@@ -236,6 +368,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
 			out[i].Unread++
 		}
+	}
+	for i := range out {
+		out[i].Login = login
 	}
 	slices.SortFunc(out, func(a, b factoryd.ChatConversation) int {
 		rank := func(c factoryd.ChatConversation) int {
@@ -759,7 +894,7 @@ func TestChatTextReply(t *testing.T) {
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
-		`{"conversation":1,"thread":{"number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
+		`{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
@@ -864,15 +999,16 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
-			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "projects", "policy",
+			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "settings", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "active_threads", "board_view", "board_view_reset"}},
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"active_threads", "board_view", "board_view_reset"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -1026,7 +1162,7 @@ func TestChatThreadBeforeItsFirstMessageHasNoTimes(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	body := rec.Body.String()
-	if rec.Code != 200 || !strings.Contains(body, `"thread":{"number":1,"title":"","state":"active","messages":0,"unread":0}`) {
+	if rec.Code != 200 || !strings.Contains(body, `"thread":{"login":"sebastian","number":1,"title":"","state":"active","messages":0,"unread":0}`) {
 		t.Fatalf("GET = %d %s, want thread 1 with no first_at or last_at", rec.Code, body)
 	}
 }
@@ -1166,7 +1302,7 @@ func TestSystemTool(t *testing.T) {
 	contains(got, first+"\n",
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
-		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, projects and policy read what their console pages show.\n",
+		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.\n",
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
 			"  assisted: the agent starts and files ready work by itself; direction, money and merges still ask\n"+
@@ -2026,18 +2162,18 @@ func TestChatNewConversation(t *testing.T) {
 		}
 		return strings.TrimSpace(rec.Body.String())
 	}
-	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"number":2,"title":"world","state":"active","current":true,`+
+	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
-	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"number":1,"title":"hello","state":"active","current":true,`+
+	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
-		`[{"number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
-			`{"number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
-			`{"number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
+		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
+			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
+			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)
 	}
@@ -2314,7 +2450,7 @@ func TestChatScrubsAGitHubToken(t *testing.T) {
 	g.replies = [][]string{{say("Noted.")}, {say("Yes.")}}
 	_, events, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"export to acme/app, my token is " + token}})
 	const notice = "I removed a GitHub token from your message; it was not stored or sent. " +
-		"Set the export's token on the project page: https://console.example/projects#export-demo-app"
+		"Set the export's token on the settings page: https://console.example/settings?project=demo-app#export-demo-app"
 	equal(t, "stream", events, []string{`text {"text":"` + notice + `\n\n"}`, `text {"text":"Noted."}`, `done {}`})
 	scrubbed := map[string]any{"role": "user", "content": "export to acme/app, my token is [token]"}
 	equal(t, "the model's messages after the system's", messages(t, g.calls()[0])[1:], []map[string]any{scrubbed})

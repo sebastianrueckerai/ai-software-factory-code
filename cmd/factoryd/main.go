@@ -564,8 +564,9 @@ func main() {
 			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by)
 			return t.IssueNumber, err
 		},
-		Operator: operator,
-		Pulses:   store,
+		AttachAnalysis: store.AttachAnalysis,
+		Operator:       operator,
+		Pulses:         store,
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo
@@ -582,6 +583,22 @@ func main() {
 	}
 	go (&factoryd.Pulser{Store: store, Bus: eventBus, Model: operator, Context: consoleHandler.PulseContext}).Run(ctx)
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
+	// the wake: an ask the project agent did not file wakes one turn of
+	// its own on the venue member's inbox
+	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler,
+		Forgejo: forgejo, Timeline: runner.Timeline(),
+		Pulse: func(ctx context.Context, repository string) (bool, bool, error) {
+			projects, err := store.Projects(ctx)
+			if err != nil {
+				return false, false, err
+			}
+			for _, p := range projects {
+				if p.Repository == repository {
+					return consoleHandler.PulseState(ctx, p)
+				}
+			}
+			return false, false, fmt.Errorf("no project %s", repository)
+		}}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)

@@ -1,36 +1,34 @@
 {{template "head" .}}
 <h2>Resources</h2>
-<p>Servers agents commissioned in the agent cloud project, open now or closed in the last 7 days. Promote makes a commission standing: the project's, with no lease and no agent access, until a human releases it. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
+<p class="meta">Servers agents commission in the agent cloud project, open now or closed in the last 7 days. Promote makes a commission standing: the project's, with no lease and no agent access, until a human releases it. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
 <h3 id="project-{{.Project}}">{{.Project}}</h3>
-<table>
-<caption>Commissioned resources by task</caption>
-<thead><tr><th scope="col">Task</th><th scope="col">Resource</th><th scope="col">Type</th><th scope="col">IPv4</th><th scope="col">Lease ends</th><th scope="col">EUR/h</th><th scope="col">Cost so far, EUR</th><th scope="col">State</th><th scope="col">Actions</th></tr></thead>
+<p class="figs">task block {{printf "%.2f" .Envelope.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{servers .Envelope.MaxCount}} at once, leases up to {{.Envelope.MaxLeaseHours}} h, volumes up to {{.Envelope.VolumeMaxGB}} GB · this month {{eur4 .Envelope.Use.MonthEUR}} EUR used or reserved, {{servers .Envelope.Use.OpenServers}} open · standing block {{printf "%.2f" .Envelope.Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{servers .Envelope.Standing.MaxCount}} · standing now {{servers .Envelope.StandingUse.Count}}, {{eur4 .Envelope.StandingUse.MonthlyEUR}} EUR a month</p>
+<p class="meta">{{if .Envelope.File}}The project's file sets it: <a href="{{.Envelope.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
+{{if .Rows}}<table aria-label="Commissioned resources by task">
+<thead><tr><th scope="col">Task</th><th scope="col">Resource</th><th scope="col">Type</th><th scope="col">IPv4</th><th scope="col">Lease ends</th><th scope="col" class="num">EUR/h</th><th scope="col" class="num">Cost so far</th><th scope="col">State</th><th scope="col">Acts</th></tr></thead>
 <tbody>
-{{range .Rows}}<tr>
+{{range .Rows}}<tr{{if eq .Lifetime "standing"}} class="standing"{{end}}>
 <td><a href="/tasks/{{.OwnerRef}}/timeline">{{.OwnerRef}}</a></td>
 <td>{{.ID}} {{.Kind}}{{if .Purpose}}<br><span class="meta">{{.Purpose}}</span>{{end}}</td>
 <td>{{.Size}}</td>
 <td>{{.Address}}</td>
 <td>{{if eq .Lifetime "standing"}}none: standing (made standing by {{.PromotedBy}}){{else}}{{utc .LeaseExpires}}{{end}}{{if .ReleasedBy}}<br><span class="meta">released by {{.ReleasedBy}}</span>{{end}}</td>
-<td>{{eur4 .PricePerHourEUR}}</td>
-<td>{{eur4 .AccruedEUR}}</td>
-<td>{{.State}}</td>
+<td class="num">{{eur4 .PricePerHourEUR}}</td>
+<td class="num">{{eur4 .AccruedEUR}}</td>
+<td><i class="lamp{{if eq .State "live"}} on{{end}}" aria-hidden="true"></i>{{.State}}</td>
 <td>{{if .Actions}}{{if and $.Approver .Promotable}}<form method="post" action="/resources/{{.ID}}/promote" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" aria-label="Promote {{.Size}} {{.Kind}} {{.ID}} of {{.OwnerRef}}" aria-describedby="promote-{{.ID}}">Promote</button> <span id="promote-{{.ID}}" class="meta">{{.PromoteNote}}</span></form>{{end}}
 <form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny" aria-label="Release {{.Size}} {{.Kind}} {{.ID}} of {{.OwnerRef}}">Release</button></form>{{end}}</td>
 </tr>
-{{else}}<tr><td colspan="9">No resources.</td></tr>{{end}}
-</tbody>
-</table>
-{{template "envelope" .Envelope}}
+{{end}}</tbody>
+</table>{{end}}
 </section>
 {{end}}
-{{with .Jobs}}<section aria-labelledby="jobs">
+{{with .Jobs}}<section class="ro" aria-labelledby="jobs">
 <h3 id="jobs">Jobs of the cluster</h3>
 {{if .Failed}}<p>The cluster did not answer.</p>
-{{else}}<table>
-<caption>The cluster's scheduled jobs by namespace</caption>
-<thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last scheduled</th><th scope="col">Last successful</th><th scope="col">Suspended</th></tr></thead>
+{{else}}<table aria-label="The cluster's scheduled jobs by namespace">
+<thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last run</th><th scope="col">Last ok</th><th scope="col">Suspended</th></tr></thead>
 <tbody>
 {{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.Namespace}}</td><td title="{{.Schedule}}">{{schedule .Schedule}}</td>{{template "age" .LastScheduled}}{{if .RecordsSuccess}}{{template "age" .LastSuccessful}}{{else}}<td>not reported</td>{{end}}<td>{{if .Suspended}}yes{{else}}no{{end}}</td></tr>
 {{else}}<tr><td colspan="7">No jobs.</td></tr>{{end}}
@@ -40,13 +38,3 @@
 {{end}}
 {{template "foot"}}
 {{define "age"}}{{if .IsZero}}<td>never</td>{{else}}<td title="{{utc .}}">{{ago .}}</td>{{end}}{{end}}
-{{define "envelope"}}<div class="envelope">
-<h4>Envelope: what tasks may commission without a human</h4>
-<p class="meta">{{if .File}}The project's file sets it: <a href="{{.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
-<ul>
-<li>Task block: {{printf "%.2f" .MonthlyEUR}} EUR a month, types {{range $i, $t := .ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{servers .MaxCount}} at once, leases up to {{.MaxLeaseHours}} h, volumes up to {{.VolumeMaxGB}} GB</li>
-<li>This month: {{eur4 .Use.MonthEUR}} EUR used or reserved, {{servers .Use.OpenServers}} open</li>
-<li>Standing block: {{printf "%.2f" .Standing.MonthlyEUR}} EUR a month, types {{range $i, $t := .Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{servers .Standing.MaxCount}}</li>
-<li>Standing now: {{servers .StandingUse.Count}}, {{eur4 .StandingUse.MonthlyEUR}} EUR a month</li>
-</ul>
-</div>{{end}}

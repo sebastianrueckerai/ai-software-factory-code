@@ -248,6 +248,10 @@ type Config struct {
 	// EscalateToHuman); nil: the escalate tool says the factory files
 	// none.
 	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
+	// AttachAnalysis records what the chat agent found about a card's
+	// open ask inside the ask itself (factoryd.PGStore.AttachAnalysis);
+	// nil: the attach_analysis tool says the factory records none.
+	AttachAnalysis func(ctx context.Context, repository, taskID, found, recommendation, by string) error
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.
@@ -355,9 +359,8 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /costs", c.costs, "costs", ""},
 		{"GET /policy", c.policy, "policy", ""},
 		{"GET /resources", c.resources, "resources", ""},
-		{"GET /alerts", c.alerts, "alerts", ""},
-		{"GET /projects", c.projects, "projects", ""},
-		{"GET /projects/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
+		{"GET /settings", c.settings, "settings", ""},
+		{"GET /settings/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
 		{"GET /projects/{name}/status", c.projectStatus, "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
 		{"GET /projects/{name}/events", c.projectEvents, "", "a project's event feed fragment: the history tool reads the chat project's events"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
@@ -398,6 +401,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
+		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
 		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
 		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
@@ -776,9 +780,9 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 // marks the open page's word (C23); the board and the project status
 // pages carry their own Page on their structs.
 var pageOf = map[string]string{
-	"new.html": "new", "projects.html": "projects", "project_new.html": "projects",
+	"new.html": "new", "settings.html": "settings", "project_new.html": "settings",
 	"resources.html": "resources", "costs.html": "costs", "policy.html": "policy",
-	"alerts.html": "alerts", "notifications.html": "notifications",
+	"notifications.html": "notifications",
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {

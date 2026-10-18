@@ -173,7 +173,7 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 	pageFixture(r)
 	resources := "demo-app/demo-app:\n  12 volume live 1.0000 EUR/month, releasable\n" +
 		"sf/code:\n  14 firewall live 0.0000 EUR/month\n  11 server live 4.1616 EUR/month, promotable, releasable"
-	equal(t, "the reads", reads(t, r, g, "alerts", `{}`, "alerts", `{"state":"all"}`, "resources", `{}`, "projects", `{}`, "policy", `{}`,
+	equal(t, "the reads", reads(t, r, g, "alerts", `{}`, "alerts", `{"state":"all"}`, "resources", `{}`, "settings", `{}`, "policy", `{}`,
 		"costs", `{"by":"day"}`, "costs", `{"by":"card"}`, "costs", `{"by":"tier"}`), []string{
 		"Open alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open",
 		"Alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open\n6 supervisor trip detector \"t-m\" since 2026-10-10 08:00 UTC, verdict noise by sebastian",
