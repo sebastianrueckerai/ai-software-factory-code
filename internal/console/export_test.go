@@ -298,14 +298,14 @@ func TestStatusLineGithubExport(t *testing.T) {
 	line := func() string {
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 		start := strings.Index(body, `<div id="status-line">`)
-		return body[start : start+strings.Index(body[start:], `<button type="button" class="cell xp"`)]
+		return body[start : start+strings.Index(body[start:], "\n<div class=\"sp\"")]
 	}
 	if got := line(); strings.Contains(got, "GitHub") {
 		t.Fatalf("status line without an export: %s", got)
 	}
 	r.mirrors.rows["ai-software-factory-code export"] = factoryd.Mirror{Project: "ai-software-factory-code", Direction: factoryd.MirrorExport,
 		Remote: "acme/app", State: "synced"}
-	if got := line(); !strings.HasSuffix(got, "\n<span class=\"cell gh\">GitHub: synced</span>\n") {
+	if got := line(); !strings.HasSuffix(got, "\n<span class=\"cell gh\">GitHub: synced</span>\n</div>") {
 		t.Fatalf("status line = %q, want it to end with GitHub: synced", got)
 	}
 	g.replies = [][]string{{say("ok")}}
@@ -316,7 +316,7 @@ func TestStatusLineGithubExport(t *testing.T) {
 	}
 	r.mirrors.rows["ai-software-factory-code export"] = factoryd.Mirror{Project: "ai-software-factory-code", Direction: factoryd.MirrorExport,
 		Remote: "acme/app", State: "failed: auth"}
-	if got := line(); !strings.HasSuffix(got, "\n<span class=\"cell gh\">GitHub: failed</span>\n") {
+	if got := line(); !strings.HasSuffix(got, "\n<span class=\"cell gh\">GitHub: failed</span>\n</div>") {
 		t.Fatalf("status line = %q, want it to end with GitHub: failed", got)
 	}
 }

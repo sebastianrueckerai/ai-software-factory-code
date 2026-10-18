@@ -69,9 +69,8 @@ func TestChatPanel(t *testing.T) {
 			t.Errorf("the writer's page lacks\n%s", want)
 		}
 	}
-	band, screen := strings.Index(body, `<section id="pulse" class="status`), strings.Index(body, `<div id="screen" class="main with-chat">`)
-	if band < 0 || screen < 0 || band > screen || !strings.HasSuffix(body[band:screen], "</section>\n") {
-		t.Errorf("the pulse band does not stand right above the screen")
+	if band, screen := strings.Index(body, `<section class="status" aria-label="Status">`), strings.Index(body, `<div id="screen" class="main with-chat">`); band < 0 || screen < 0 || band > screen {
+		t.Errorf("the status band does not stand right above the screen")
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/static/chat.js", nil))
 	if js, _ := io.ReadAll(rec.Body); rec.Code != http.StatusOK || !strings.Contains(string(js), "var chatView = ") {

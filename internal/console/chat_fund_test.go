@@ -13,7 +13,7 @@ import (
 )
 
 // spentChat is the project's chat task of this month with its budget of
-// 5 EUR spent, as the pulse's month leaves it, on the rig's tasks.
+// 5 EUR spent, as its month leaves it, on the rig's tasks.
 func spentChat(r *rig, t *testing.T) factoryd.Task {
 	t.Helper()
 	chat := factoryd.Task{ID: factoryd.ChatTaskID("ai-software-factory-code", time.Now()), Kind: factoryd.KindChat,
@@ -22,7 +22,7 @@ func spentChat(r *rig, t *testing.T) factoryd.Task {
 	return chat
 }
 
-// A spent chat budget stands the pulse and the chat, and the strip says
+// A spent chat budget stands the chat, and the strip says
 // so beside the spend; the approver's Fund the chat raises the budget by
 // the stated amount and lands as the raise's one event row.
 func TestChatFundRaisesASpentChatBudget(t *testing.T) {
@@ -76,7 +76,7 @@ func TestChatFundRefusesWhatNeedsNoRaise(t *testing.T) {
 		{"a budget not spent", url.Values{"csrf": {s.csrf}, "eur": {"1.5"}, "reason": {"no"}}, http.StatusConflict,
 			"the chat's budget of €5.00 is not spent: it needs no raise"},
 		{"no chat task", url.Values{"csrf": {s.csrf}, "eur": {"1.5"}, "reason": {"no"}}, http.StatusConflict,
-			"the project's chat has spent no budget: its task starts with the chat's or the pulse's first turn of the month"},
+			"the project's chat has spent no budget: its task starts with the chat's first turn of the month"},
 		{"no amount", url.Values{"csrf": {s.csrf}, "eur": {"0"}, "reason": {"no"}}, http.StatusBadRequest,
 			"an amount in EUR above zero is required"},
 		{"no reason", url.Values{"csrf": {s.csrf}, "eur": {"1.5"}, "reason": {""}}, http.StatusBadRequest,
