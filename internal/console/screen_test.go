@@ -581,7 +581,7 @@ func TestDrawerOverview(t *testing.T) {
 		`<div class="drawer-content" data-drawer="t-c4">`,
 		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
-			tab("t-c4", "chat", "Chat", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
+			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
@@ -740,7 +740,7 @@ func TestDrawerChat(t *testing.T) {
 	}
 	running := drawer(t, r, ck, "t-run", "")
 	for _, want := range []string{
-		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Chat", true) +
+		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Session", true) +
 			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="meta">Session 2 · coding-frontier · running</p>
@@ -806,7 +806,7 @@ func TestDrawerSteer(t *testing.T) {
 	if !slices.Equal(steered, []string{"t-run sebastian: Rebase on main first."}) {
 		t.Errorf("steered %q", steered)
 	}
-	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Chat", true),
+	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Session", true),
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
 <p class="note" role="status">The session of #11 has your message.</p>`,
 		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>` + row.At.UTC().Format("01-02 15:04") +
@@ -876,7 +876,7 @@ func TestVerdictReturnsToTheFilteredBoard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
 		{ID: 6, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/alerts"}} {
+	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/"}} {
 		rec := r.do(post("/alerts/"+id+"/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {back[0]}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != back[1] {
 			t.Errorf("verdict with back %q = %d to %q, want %q", back[0], rec.Code, rec.Header().Get("Location"), back[1])

@@ -134,7 +134,7 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 }
 
 // key is the turn's thread's key in the gate.
-func (t *turn) key() string { return threadKey(t.p.Repository, t.a.s.user, t.conv) }
+func (t *turn) key() string { return threadKey(t.p.Repository, t.owner, t.conv) }
 
 // takeTurn waits for the thread's turn: the stream says queued with its
 // place while one runs. The returned leave ends it.
@@ -152,8 +152,11 @@ func (t *turn) detach() {
 }
 
 // thread resolves the thread the request names in field conversation,
-// the member's current one when it names none: 400 for no number, 404
-// for no thread of theirs. writable refuses an archived thread.
+// the member's current one when it names none, and in field owner the
+// member whose thread it is: another member's thread, which everyone who
+// writes the project may read and talk in, resolves by their name. 400
+// for no number, 404 for no thread of theirs. writable refuses an
+// archived thread.
 func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation, error) {
 	ctx := r.Context()
 	var n int64
@@ -170,14 +173,21 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 		}
 		n = cur
 	}
-	th, ok, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.a.s.user, n)
+	owner := t.a.s.user
+	if s := cmp.Or(r.FormValue("owner"), r.URL.Query().Get("owner")); s != "" {
+		owner = s
+	}
+	th, ok, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, owner, n)
 	switch {
 	case err != nil:
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the chat of %s on %s: %v", owner, t.p.Repository, err) // #nosec G706 -- the owner is a member's login name, named as given
 		return th, refuse(http.StatusInternalServerError, "cannot read the conversation")
 	case !ok:
+		if owner != t.a.s.user {
+			return th, refuse(http.StatusNotFound, fmt.Sprintf("There is no conversation %d of %s's.", n, owner))
+		}
 		// the current thread before its first message has no row yet
-		th = factoryd.ChatConversation{Number: n, State: factoryd.ThreadActive}
+		th = factoryd.ChatConversation{Number: n, Login: owner, State: factoryd.ThreadActive}
 		if r.FormValue("conversation") != "" || r.URL.Query().Get("conversation") != "" {
 			if cur, _ := t.c.cfg.Chat.CurrentConversation(ctx, t.p.Repository, t.a.s.user); cur != n {
 				return th, refuse(http.StatusNotFound, fmt.Sprintf("There is no conversation %d.", n))
@@ -186,8 +196,18 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 	case writable && th.State == factoryd.ThreadArchived:
 		return th, refuse(http.StatusConflict, fmt.Sprintf("Conversation %d is archived: restore it to write in it.", n))
 	}
-	t.conv, t.a.thread = n, n
+	t.conv, t.a.thread, t.owner = n, n, owner
 	return th, nil
+}
+
+// mine refuses another member's thread's controls: its rows are
+// everyone's to read and talk in, its markers and its title, archive and
+// delete its owner's.
+func (t *turn) mine() error {
+	if t.owner != t.a.s.user {
+		return refuse(http.StatusForbidden, fmt.Sprintf("%s's thread: read it and talk in it; its controls stay %s's.", t.owner, t.owner))
+	}
+	return nil
 }
 
 // chatRename answers POST /projects/{name}/chat/rename: the thread's new
@@ -206,7 +226,11 @@ func (c *Console) chatRename(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	switch ok, err := c.cfg.Chat.RenameConversation(r.Context(), t.p.Repository, t.a.s.user, t.conv, title); {
+	if err := t.mine(); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	switch ok, err := c.cfg.Chat.RenameConversation(r.Context(), t.p.Repository, t.owner, t.conv, title); {
 	case err != nil:
 		log.Printf("console: rename the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot rename the conversation", http.StatusInternalServerError)
@@ -228,8 +252,12 @@ func (c *Console) chatSeen(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	if err := c.cfg.Chat.MarkSeen(r.Context(), t.p.Repository, t.a.s.user, t.conv); err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	if err := t.mine(); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if err := c.cfg.Chat.MarkSeen(r.Context(), t.p.Repository, t.owner, t.conv); err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		http.Error(w, "cannot mark the conversation read", http.StatusInternalServerError)
 		return
 	}
@@ -246,14 +274,16 @@ func (c *Console) chatArchive(w http.ResponseWriter, r *http.Request) {
 	}
 	th, err := t.thread(r, false)
 	if err == nil {
-		err = t.idle(th)
+		if err = t.mine(); err == nil {
+			err = t.idle(th)
+		}
 	}
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
 	restore := r.PostFormValue("restore") == "1"
-	done, err := c.cfg.Chat.ArchiveConversation(r.Context(), t.p.Repository, t.a.s.user, t.conv, !restore)
+	done, err := c.cfg.Chat.ArchiveConversation(r.Context(), t.p.Repository, t.owner, t.conv, !restore)
 	switch {
 	case err != nil:
 		log.Printf("console: archive the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
@@ -277,13 +307,15 @@ func (c *Console) chatDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	th, err := t.thread(r, false)
 	if err == nil {
-		err = t.idle(th)
+		if err = t.mine(); err == nil {
+			err = t.idle(th)
+		}
 	}
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	gone, err := c.cfg.Chat.DeleteConversation(r.Context(), t.p.Repository, t.a.s.user, t.conv)
+	gone, err := c.cfg.Chat.DeleteConversation(r.Context(), t.p.Repository, t.owner, t.conv)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
 		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))

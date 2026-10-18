@@ -79,8 +79,8 @@ func TestChatNotes(t *testing.T) {
 	equal(t, "text and old", err.Error(), "notes_write takes text to append, or old and new to replace a passage")
 }
 
-// active_threads: the member's other active threads with their newest
-// message and a running turn's mark, then the scratchpad's tail.
+// active_threads: the project's every member's active threads with their
+// newest message and a running turn's mark, then the scratchpad's tail.
 func TestChatActiveThreads(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.c.cfg.Notes = &fakeNotes{notes: map[string]factoryd.Notes{"sf/code": {Content: "round 12", By: "anna", At: at}}}
@@ -96,7 +96,7 @@ func TestChatActiveThreads(t *testing.T) {
 	trn.conv = 2
 	got, err := trn.activeThreads()
 	th, _, _ := chat.Conversation(t.Context(), "sf/code", "sebastian", 1)
-	equal(t, "the read", []any{got, err}, []any{"sebastian's other active threads on ai-software-factory-code:\n" +
+	equal(t, "the read", []any{got, err}, []any{"The project's active threads on ai-software-factory-code:\n" +
 		`- thread 1 "Plan the members page", last turn ` + th.LastAt.UTC().Format(stampLayout) + `, a turn running: sebastian's newest message "Plan the members page"` + "\n" +
 		"\n\nThe scratchpad's tail (written by anna at 2026-10-11 09:30Z):\nround 12", error(nil)})
 }

@@ -62,6 +62,12 @@ type ChatMessage struct {
 	// are derived, never stored.
 	Settled bool   `json:"settled,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Thread is the conversation bound to the ask's card (the card door),
+	// the reader's own; derived, never stored.
+	Thread int64 `json:"thread,omitempty"`
+	// ThreadOwner is that thread's member when it is another member's;
+	// derived, never stored.
+	ThreadOwner string `json:"thread_owner,omitempty"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -175,6 +181,9 @@ const (
 // unread turns, the open asks and the rest (the notification-settling
 // concept).
 type ChatConversation struct {
+	// Login is the thread's owner, the member whose conversation number
+	// it is; every listing fills it, the project's threads included.
+	Login    string    `json:"login,omitempty"`
 	Number   int64     `json:"number"`
 	Title    string    `json:"title"`
 	State    string    `json:"state"`
@@ -211,19 +220,25 @@ type ChatConversation struct {
 // row.
 const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
 
-const conversationSelect = `SELECT c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
+const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
 	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
 	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0)
 	FROM chat_conversations c
 	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
 	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
-	WHERE c.repository = $1 AND c.login = $2`
+	WHERE c.repository = $1`
+
+// conversationGroup is every conversation query's grouping and order: the
+// inbox first, then the threads by their last message, newest first, the
+// archived last, each member's threads their own.
+const conversationGroup = ` GROUP BY c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
+	ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.login DESC, c.conversation DESC`
 
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
+	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}
@@ -233,9 +248,26 @@ func scanConversation(scan func(...any) error) (ChatConversation, error) {
 // Conversations lists login's threads on repository: the inbox first,
 // then the active by their last message, newest first, the archived last.
 func (s *PGStore) Conversations(ctx context.Context, repository, login string) ([]ChatConversation, error) {
-	rows, err := s.db.QueryContext(ctx, conversationSelect+`
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
-		ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.conversation DESC`, repository, login)
+	rows, err := s.db.QueryContext(ctx, conversationSelect+` AND c.login = $2`+conversationGroup, repository, login)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatConversation
+	for rows.Next() {
+		c, err := scanConversation(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ProjectConversations lists every member's threads on repository, each
+// named by its owner, the busiest first; there are no private threads.
+func (s *PGStore) ProjectConversations(ctx context.Context, repository string) ([]ChatConversation, error) {
+	rows, err := s.db.QueryContext(ctx, conversationSelect+conversationGroup, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -253,8 +285,7 @@ func (s *PGStore) Conversations(ctx context.Context, repository, login string) (
 
 // Conversation is login's thread n on repository; false for none.
 func (s *PGStore) Conversation(ctx context.Context, repository, login string, n int64) (ChatConversation, bool, error) {
-	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.conversation = $3
-		GROUP BY c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id`, repository, login, n).Scan)
+	c, err := scanConversation(s.db.QueryRowContext(ctx, conversationSelect+` AND c.login = $2 AND c.conversation = $3`+conversationGroup, repository, login, n).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ChatConversation{}, false, nil
 	}
@@ -442,10 +473,240 @@ func ensureInbox(ctx context.Context, db sqlRunner, repository, login string) (i
 	return n, err
 }
 
+// cardThreadOf answers the login and conversation of repository's thread
+// bound to card taskID, if it has one.
+func cardThreadOf(ctx context.Context, db sqlRunner, repository, taskID string) (string, int64, bool, error) {
+	var login string
+	var n int64
+	err := db.QueryRowContext(ctx, `SELECT login, conversation FROM chat_conversations
+		WHERE repository = $1 AND task_id = $2`, repository, taskID).Scan(&login, &n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, err
+	}
+	return login, n, true, nil
+}
+
+// CardThreadFor answers the login and conversation of repository's thread
+// bound to card taskID, if it has one.
+func (s *PGStore) CardThreadFor(ctx context.Context, repository, taskID string) (string, int64, bool, error) {
+	return cardThreadOf(ctx, s.db, repository, taskID)
+}
+
+// CardThread is a card's bound thread: the member whose thread it is and
+// its conversation number.
+type CardThread struct {
+	Login        string
+	Conversation int64
+}
+
+// CardThreads is CardThreadFor over many cards at once: one query for the
+// project's bindings. A card with no thread gets no entry.
+func (s *PGStore) CardThreads(ctx context.Context, repository string, ids []string) (map[string]CardThread, error) {
+	out := map[string]CardThread{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id, login, conversation FROM chat_conversations
+		WHERE repository = $1 AND task_id = ANY($2)`, repository, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var c CardThread
+		if err := rows.Scan(&id, &c.Login, &c.Conversation); err != nil {
+			return nil, err
+		}
+		out[id] = c
+	}
+	return out, rows.Err()
+}
+
+// EnsureCardThread answers the conversation bound to repository's card
+// taskID, making it for login when the card has none: the first caller
+// binds the thread, titled #taskID, and every later caller, whoever they
+// are, gets the same one (the card door).
+func (s *PGStore) EnsureCardThread(ctx context.Context, repository, login, taskID string) (int64, error) {
+	for i := 0; i < 3; i++ {
+		// another racing maker can eat this number; a card bound meanwhile
+		// answers below
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, task_id)
+			SELECT $1, $2, coalesce(max(conversation), 0) + 1, $3, $4 FROM chat_conversations WHERE repository = $1 AND login = $2
+			ON CONFLICT DO NOTHING`, repository, login, "#"+taskID, taskID); err != nil {
+			return 0, err
+		}
+		_, n, ok, err := cardThreadOf(ctx, s.db, repository, taskID)
+		switch {
+		case err != nil:
+			return 0, err
+		case ok:
+			return n, nil
+		}
+	}
+	return 0, fmt.Errorf("the thread of card %s on %s lost every race to be made", taskID, repository)
+}
+
 // threadTitle is a thread's title from its first message: its words on
 // one line, at most 80 characters.
 func threadTitle(content string) string {
 	return textutil.Truncate(strings.Join(strings.Fields(content), " "), 80)
+}
+
+// ChatWatch is a member's stored subscription on a card: the card's
+// moves wake the watching thread (the timers concept).
+type ChatWatch struct {
+	Repository   string
+	Login        string
+	Conversation int64
+	TaskID       string
+}
+
+// ChatTimer is a stored one-shot timer: the Waker wakes its thread with
+// its note when it comes due and the row is gone, so a rearm is a new
+// row. TaskID binds it to a card, whose end takes it with the watch.
+type ChatTimer struct {
+	ID           int64
+	Repository   string
+	Login        string
+	Conversation int64
+	DueAt        time.Time
+	Note         string
+	TaskID       string
+}
+
+// wakeCapped is the refusal of an add past a project's cap of watches
+// and timers: it names the count, so the tool's answer carries it.
+func wakeCapped(n int) error {
+	return fmt.Errorf("%w: it holds %d of %d, end one first.", ErrChatWakeCap, n, WakeTimersMax)
+}
+
+// WatchTakenError names the member whose watch already holds a card:
+// one watch per card, a second member's row would wake nobody new.
+type WatchTakenError struct{ Login string }
+
+func (e *WatchTakenError) Error() string {
+	return fmt.Sprintf("%s already watches this card", e.Login)
+}
+
+// AddChatWatch stores login's watch of taskID on the thread
+// conversation, the row it already has for the card when there is one.
+// A card another member watches is refused with the watcher named.
+func (s *PGStore) AddChatWatch(ctx context.Context, repository, login string, conversation int64, taskID string) error {
+	var other string
+	err := s.db.QueryRowContext(ctx, `SELECT login FROM chat_watches
+		WHERE repository = $1 AND task_id = $2 AND login <> $3 LIMIT 1`,
+		repository, taskID, login).Scan(&other)
+	if err == nil {
+		return &WatchTakenError{Login: other}
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	// a watch the member already holds replaces itself, so it never meets
+	// the cap
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM chat_watches WHERE repository = $1)
+		+ (SELECT count(*) FROM chat_timers WHERE repository = $1)
+		- count(*) FROM chat_watches WHERE repository = $1 AND login = $2 AND task_id = $3`,
+		repository, login, taskID).Scan(&n); err != nil {
+		return err
+	}
+	if n >= WakeTimersMax {
+		return wakeCapped(n)
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO chat_watches (repository, login, conversation, task_id)
+		VALUES ($1, $2, $3, $4) ON CONFLICT (repository, login, task_id) DO UPDATE SET conversation = excluded.conversation`,
+		repository, login, conversation, taskID)
+	return err
+}
+
+// RemoveChatWatch ends login's watch of taskID and says whether there
+// was one.
+func (s *PGStore) RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM chat_watches WHERE repository = $1 AND login = $2 AND task_id = $3`,
+		repository, login, taskID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// AddChatTimer stores a one-shot timer that wakes the thread
+// conversation with its note at due, bound to taskID's card when it is
+// not empty.
+func (s *PGStore) AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error {
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM chat_watches WHERE repository = $1)
+		+ (SELECT count(*) FROM chat_timers WHERE repository = $1)`, repository).Scan(&n); err != nil {
+		return err
+	}
+	if n >= WakeTimersMax {
+		return wakeCapped(n)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_timers (repository, login, conversation, due_at, note, task_id)
+		VALUES ($1, $2, $3, $4, $5, nullif($6, ''))`, repository, login, conversation, due, note, taskID)
+	return err
+}
+
+// DueChatTimers answers repository's timers due by now, the oldest
+// first.
+func (s *PGStore) DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, repository, login, conversation, due_at, note, coalesce(task_id, '')
+		FROM chat_timers WHERE repository = $1 AND due_at <= $2 ORDER BY due_at, id`, repository, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ts []ChatTimer
+	for rows.Next() {
+		var t ChatTimer
+		if err := rows.Scan(&t.ID, &t.Repository, &t.Login, &t.Conversation, &t.DueAt, &t.Note, &t.TaskID); err != nil {
+			return nil, err
+		}
+		ts = append(ts, t)
+	}
+	return ts, rows.Err()
+}
+
+// DeleteChatTimer takes repository's timer id, the fired row.
+func (s *PGStore) DeleteChatTimer(ctx context.Context, repository string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM chat_timers WHERE repository = $1 AND id = $2`, repository, id)
+	return err
+}
+
+// ChatWatchesFor answers repository's watches of taskID's card, the
+// oldest first.
+func (s *PGStore) ChatWatchesFor(ctx context.Context, repository, taskID string) ([]ChatWatch, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository, login, conversation, task_id
+		FROM chat_watches WHERE repository = $1 AND task_id = $2 ORDER BY id`, repository, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ws []ChatWatch
+	for rows.Next() {
+		var w ChatWatch
+		if err := rows.Scan(&w.Repository, &w.Login, &w.Conversation, &w.TaskID); err != nil {
+			return nil, err
+		}
+		ws = append(ws, w)
+	}
+	return ws, rows.Err()
+}
+
+// DeleteChatWatchesOfTask ends every watch of taskID's card on
+// repository and takes the timers bound to the card with them.
+func (s *PGStore) DeleteChatWatchesOfTask(ctx context.Context, repository, taskID string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM chat_watches WHERE repository = $1 AND task_id = $2`, repository, taskID); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM chat_timers WHERE repository = $1 AND task_id = $2`, repository, taskID)
+	return err
 }
 
 // AddChatMessage appends m to login's thread m.Conversation on
@@ -575,6 +836,121 @@ func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]Cha
 		out = append(out, m)
 	}
 	return out, rows.Err()
+}
+
+// ErrNoAsk says a card has no ask row in the chat: nothing waits on a
+// person there for an analysis to enrich.
+var ErrNoAsk = errors.New("the card asks nothing")
+
+// AskSettledError says the ask an analysis targeted is settled already:
+// Word the settling event's reason word, By its actor.
+type AskSettledError struct{ Word, By string }
+
+func (e *AskSettledError) Error() string {
+	if e.By != "" {
+		return fmt.Sprintf("the ask is %s by %s", e.Word, e.By)
+	}
+	return "the ask is " + e.Word
+}
+
+// AttachAnalysis records what the chat agent found about the card's open
+// ask (the main agent concept): an analysis_attached row on the spine and
+// the ask's escalation rows rewritten to carry the findings after the
+// question, so every member reads them with the ask. A settled ask
+// refuses as AskSettledError, a card without an ask row as ErrNoAsk.
+func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found, recommendation, by string) error {
+	t, ok, err := s.Task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNoAsk
+	}
+	events, err := s.TaskEvents(ctx, taskID, 500)
+	if err != nil {
+		return err
+	}
+	var ask *Event
+	for i := range events { // newest first
+		if events[i].Kind == EventQuestionAsked {
+			ask = &events[i]
+			break
+		}
+	}
+	if ask == nil {
+		return ErrNoAsk
+	}
+	if st := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: ask.At},
+		events, t.Status == "waiting-human", false); !st.Open {
+		return &AskSettledError{Word: st.Word, By: st.By}
+	}
+	// the ask's rows: the poke line the Poker wrote, alone or with an
+	// earlier analysis a new attach replaces; rows of an older ask keep
+	// their own question
+	question, _ := ask.Detail["question"].(string)
+	ref := cardRef(*ask, t)
+	plain := ref + " needs you: " + question
+	budget := ref + " is stopped by its budget: " + question
+	analysis := "\nAnalysis: " + found
+	if recommendation != "" {
+		analysis += "\nRecommendation: " + recommendation
+	}
+	detail := map[string]any{"found": found, "source": "agent"}
+	if recommendation != "" {
+		detail["recommendation"] = recommendation
+	}
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	rows, err := tx.QueryContext(ctx, `SELECT id, content FROM chat_messages
+		WHERE repository = $1 AND task_id = $2 AND kind = $3 AND birth_kind = $4`,
+		repository, taskID, MessageEscalation, EventQuestionAsked)
+	if err != nil {
+		return err
+	}
+	var ids []int64
+	var bases []string
+	for rows.Next() {
+		var id int64
+		var content string
+		if err := rows.Scan(&id, &content); err != nil {
+			rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
+			return err
+		}
+		switch {
+		case content == plain, content == budget:
+			ids, bases = append(ids, id), append(bases, content)
+		case strings.HasPrefix(content, plain+"\nAnalysis: "):
+			ids, bases = append(ids, id), append(bases, plain)
+		case strings.HasPrefix(content, budget+"\nAnalysis: "):
+			ids, bases = append(ids, id), append(bases, budget)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close() // #nosec G104 -- best effort before the failed walk returns its own error
+		return err
+	}
+	rows.Close() // #nosec G104 -- the walk ended; the updates below fail on their own
+	if len(ids) == 0 {
+		return ErrNoAsk
+	}
+	for i, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, bases[i]+analysis, id); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
+		VALUES (now(), $1, $2, $3, $4, $5, $6, $7::jsonb)`,
+		repository, taskID, t.IssueNumber, EventAnalysisAttached, by, ViaChat, b); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ProposalState is a proposal's state as GET /chat answers it: pending

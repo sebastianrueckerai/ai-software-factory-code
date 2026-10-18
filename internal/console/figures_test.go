@@ -38,7 +38,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
-	d, err := r.c.boardOf(req, urlFilter(req))
+	d, err := r.c.boardOf(req, urlFilter(req), button(req))
 	if err != nil {
 		t.Fatal(err)
 	}

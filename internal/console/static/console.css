@@ -1078,6 +1078,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .trow.unread .ttitle { color: var(--text); font-weight: 600; }
 .trow .ttitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .trow .tat { color: var(--text-faint); font: 11px var(--font-mono); white-space: nowrap; }
+.trow.others .twhose { color: var(--text-faint); font-weight: 400; }
 .tmark { display: inline-flex; align-items: center; justify-content: flex-start; width: 22px; height: 12px; flex: none; }
 .tmark.inbox { color: var(--need-text); font: 13px/1 var(--font-mono); }
 .tmark.working .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--st-running); color: var(--st-running); animation: live 2.2s ease-in-out infinite; }
@@ -1139,6 +1140,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .msg.settled.expanded .said { display: block; }
 .msg.settled.expanded .settled-why { display: block; }
 .msg.settled.expanded .esc-b { display: block; }
+/* a wake turn is one row (the main agent concept): folded to its first line, opened on a click */
+.msg.wake .wake-b { display: none; }
+.msg.wake .fold { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin: 0 0 2px; color: var(--text-faint); font: 11.5px var(--font-mono); cursor: pointer; }
+.msg.wake .fold:hover, .msg.wake .fold:focus-visible { color: var(--text-muted); }
+.msg.wake .fold .fw { flex: none; color: var(--text-muted); }
+.msg.wake .fold .ft { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.msg.wake .fold .ft a { color: inherit; }
+.msg.wake.expanded .fold { display: none; }
+.msg.wake.expanded .wake-b { display: block; }
 .msg.sum .av { border-style: dashed; color: var(--text-faint); font: 12px/1 var(--font-mono); }
 .msg.sum .av::before { content: none; }
 .msg.sum .said { color: var(--text-muted); font-size: 13px; }
@@ -1155,10 +1165,11 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .cmds { display: inline-flex; gap: 4px; }
 .cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
-.thread-link { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
+.thread-link, .thread-door { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .chat-form.arch .prompt, .chat-form.arch .own { display: none; }
 .arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
 .arch-note[hidden] { display: none; }
+#chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }
 #level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
@@ -1211,7 +1222,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat.sw-collapsed .ttable { display: none; }
   .chat.sw-collapsed .sw-sum { display: flex; }
   .msg .choices button { width: 100%; height: 44px; }
-  .msg.settled .fold { min-height: 44px; align-items: center; }
+  .msg.settled .fold, .msg.wake .fold { min-height: 44px; align-items: center; }
   .cmd { min-height: 44px; }
   .thead .tacts button { height: 44px; }
   .answer button { width: 100%; height: 44px; }
@@ -1234,3 +1245,18 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .cursor { display: none; }
   .typing i { animation: none; opacity: .7; }
 }
+
+/* C24: the secondary pages follow one readout grammar — a small-caps
+   section label, one line of figures, then rows on the page ground */
+.project > h3, .ro > h3 { margin: 18px 0 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.pagehead h2 { margin: 16px 0 8px; }
+.figs { margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.figs a { color: var(--text-muted); }
+.figs code { font-size: 1em; }
+.daycap { margin: 2px 0; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
+.daycap strong { color: var(--text); font-weight: 600; }
+th.num, td.num { text-align: right; white-space: nowrap; }
+tr.standing > td { border-top: 2px solid var(--btn-line); }
+ul.rows { list-style: none; margin: 6px 0; padding: 0; }
+ul.rows li { padding: 5px 0; border-bottom: 1px solid var(--line); }

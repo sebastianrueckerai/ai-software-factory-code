@@ -8,20 +8,8 @@ import (
 	"strings"
 )
 
-// alertsLimit bounds the alerts one page shows.
+// alertsLimit bounds the alerts one chat read shows.
 const alertsLimit = 200
-
-func (c *Console) alerts(w http.ResponseWriter, r *http.Request) {
-	rows, err := c.cfg.Alerts.Alerts(r.Context(), alertsLimit)
-	if err != nil {
-		log.Printf("console: alerts: %v", err)
-		http.Error(w, "cannot read the alerts", http.StatusInternalServerError)
-		return
-	}
-	s := current(r)
-	c.render(w, "alerts.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Alerts": rows, "Approver": c.approver(r),
-		"Limit": alertsLimit})
-}
 
 // verdict is a factory approver's verdict on an open escalation alert.
 func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
@@ -34,9 +22,9 @@ func (c *Console) verdict(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	// back to the alerts, or to the board under its filter: a path on
-	// this host, never another
-	back := "/alerts"
+	// back to the board under its filter: a path on this host, never
+	// another
+	back := "/"
 	if b := r.PostFormValue("back"); b == "/" || strings.HasPrefix(b, "/?") {
 		back = b
 	}

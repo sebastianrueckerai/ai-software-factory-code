@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -54,46 +53,72 @@ func projectRows() []factoryd.Project {
 	}
 }
 
-// Ruling 179, 183: /projects shows every project read-only, each linked to
-// its file at the version in force, with no form; its envelope is the
-// file's, its use the registry's.
-func TestProjectsPage(t *testing.T) {
+// The settings page is one project at a time behind the bar's select:
+// the file's settings with no edits, its environments and its export to
+// an approver alone; the envelope lives on Resources, not here.
+func TestSettingsPage(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
-	body := rec.Body.String()
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /projects = %d: %s", rec.Code, body)
+	page := func(q string) string {
+		rec := r.do(httptest.NewRequest(http.MethodGet, q, nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d: %s", q, rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	body := page("/settings")
+	for _, want := range []string{
+		"<h2>Settings</h2>", `<a href="/settings" aria-current="page">Settings</a>`, `<a href="/settings/new">New project</a>`,
+		`<option value="ai-software-factory-code" selected>`, `<option value="ai-software-factory-infra">`,
+		`<option value="demo-app">`, `<option value="gone">`,
+		"Objects: seed: the infra repository and the seed make them, factoryd reads and reports",
+		"Tokens: read forgejo-ci-registrar, Actions forgejo-ci-registrar, merge forgejo-merge",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/settings lacks %q", want)
+		}
+	}
+	if strings.Contains(body, "Repository: demo-app/demo-app") {
+		t.Errorf("/settings shows a second project under the first")
 	}
 	const at = "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/"
+	demo := page("/settings?project=demo-app")
 	for _, want := range []string{
-		`<h3 id="project-demo-app">demo-app</h3>`, `Settings from <a href="` + at + `demo-app.yaml">projects/demo-app.yaml</a>.`,
+		`change them <a href="` + at + `demo-app.yaml">in Git</a>`,
 		"Repository: demo-app/demo-app", "Objects: factory", "Agents: coder", "Merge rule: auto",
 		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
-		"Task block: 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h",
-		"Standing block: 12.00 EUR a month, types cx23, 2 servers", "Standing now: 1 server, 5.9900 EUR a month",
 		"demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world",
-		"hostname: demo-staging.aisoftwarefactory.world", // the gateway YAML
 		"Forgejo: organisation, repository, CI user and tokens made",
-		`<h3 id="project-ai-software-factory-code">ai-software-factory-code</h3>`, `href="` + at + `ai-software-factory-code.yaml"`,
-		"Objects: seed: the infra repository and the seed make them, factoryd reads and reports",
-		"Tokens: read forgejo-ci-registrar, Actions forgejo-ci-registrar, merge forgejo-merge",
-		"Agents: none: every issue goes to the human lane", "Tokens: read forgejo-config",
-		"No file projects/gone.yaml in the configuration: nothing acts on this project",
-		`<a href="/projects/new">New project</a>`,
-		`<a href="/projects" aria-current="page">Projects</a>`,
+		"hostname: demo-staging.aisoftwarefactory.world", // the gateway YAML
+		`<form method="post" action="/projects/demo-app/export"`,
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("/projects lacks %q", want)
+		if !strings.Contains(demo, want) {
+			t.Errorf("/settings?project=demo-app lacks %q", want)
 		}
 	}
-	settings := strings.ReplaceAll(body, `<form method="post" action="/projects/demo-app/export"`, "")
-	for _, leak := range []string{"secret-git-token", "secret-merge-token", "secret-pull-token", ">h<", "<form method=\"post\" action=\"/projects"} {
-		if strings.Contains(settings, leak) {
-			t.Errorf("/projects shows %q", leak)
+	blanked := strings.ReplaceAll(demo, `<form method="post" action="/projects/demo-app/export"`, "")
+	for _, leak := range []string{"secret-git-token", "secret-merge-token", "secret-pull-token", ">h<", `<form method="post" action="/projects`} {
+		if strings.Contains(blanked, leak) {
+			t.Errorf("/settings?project=demo-app shows %q", leak)
 		}
+	}
+	for _, envelope := range []string{"Task block:", "Standing block:", "Standing now:"} {
+		if strings.Contains(demo, envelope) {
+			t.Errorf("/settings carries %q; the envelope is Resources'", envelope)
+		}
+	}
+	infra := page("/settings?project=ai-software-factory-infra")
+	for _, want := range []string{"Agents: none: every issue goes to the human lane", "Tokens: read forgejo-config"} {
+		if !strings.Contains(infra, want) {
+			t.Errorf("/settings?project=ai-software-factory-infra lacks %q", want)
+		}
+	}
+	if gone := page("/settings?project=gone"); !strings.Contains(gone, "No file projects/gone.yaml in the configuration: nothing acts on this project") {
+		t.Errorf("/settings?project=gone lacks its no-file line:\n%s", gone)
+	}
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=unknown", nil), ck); rec.Code != http.StatusNotFound {
+		t.Errorf("GET /settings?project=unknown = %d, want 404", rec.Code)
 	}
 }
 
@@ -158,29 +183,35 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 	readOnce := []string{"broken-first/broken", "broken-gone/broken", "broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken",
 		"demo-prod/demo-app", "demo-staging/demo-app"}
 
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /projects = %d: %s", rec.Code, rec.Body)
-	}
-	for _, want := range []string{
-		"Environments: demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
-			"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</li>",
-		"Environments: broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
-			"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
-			"broken-locked: deploy/locked (deploy state unreadable); " +
-			"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory); " +
-			"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)</li>",
-		"Environments: waiting-staging: deploy/staging (no Flux Kustomization yet)</li>",
+	demoLine := "Environments: demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
+		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</li>"
+	brokenLine := "Environments: broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
+		"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
+		"broken-locked: deploy/locked (deploy state unreadable); " +
+		"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory); " +
+		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)</li>"
+	for _, page := range []struct {
+		project string
+		line    string
+		reads   []string
+	}{
+		{"demo-app", demoLine, []string{"demo-prod/demo-app", "demo-staging/demo-app"}},
+		{"broken", brokenLine, []string{"broken-first/broken", "broken-gone/broken", "broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken"}},
 	} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("/projects lacks %q", want)
+		read = nil
+		rec := r.do(httptest.NewRequest(http.MethodGet, "/settings?project="+page.project, nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET /settings?project=%s = %d: %s", page.project, rec.Code, rec.Body)
 		}
+		if !strings.Contains(rec.Body.String(), page.line) {
+			t.Errorf("/settings?project=%s lacks %q", page.project, page.line)
+		}
+		slices.Sort(read)
+		equal(t, "the page's reads", read, page.reads)
 	}
-	slices.Sort(read)
-	equal(t, "the page's reads", read, readOnce)
 
 	read = nil
-	equal(t, "the tool's read", reads(t, r, g, "projects", `{}`), []string{"Projects (4):\n" +
+	equal(t, "the tool's read", reads(t, r, g, "settings", `{}`), []string{"Projects (4):\n" +
 		"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none\n" +
 		"demo-app (demo-app/demo-app): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
 		"environments demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready), " +
@@ -231,9 +262,9 @@ func TestProjectsReadTheKustomizationsAtOnce(t *testing.T) {
 		mu.Unlock()
 		return factoryd.FluxState{Ready: "True"}, nil
 	}
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects", nil), ck)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=wide", nil), ck)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /projects = %d: %s", rec.Code, rec.Body)
+		t.Fatalf("GET /settings?project=wide = %d: %s", rec.Code, rec.Body)
 	}
 	equal(t, "the reads at once at most", most, fluxReads)
 	equal(t, "the ready environments", strings.Count(rec.Body.String(), "deploy/staging (ready)"), fluxReads+2)
@@ -503,13 +534,13 @@ func TestNewProjectRefusedByCheck(t *testing.T) {
 			`projects/linkshort.yaml: template "ts-go": no directory templates/ts-go/ (templates: none)`}, nil
 	}
 	ck, s := r.loggedIn(t)
-	form := r.do(httptest.NewRequest(http.MethodGet, "/projects/new", nil), ck)
+	form := r.do(httptest.NewRequest(http.MethodGet, "/settings/new", nil), ck)
 	body := form.Body.String()
 	for _, want := range []string{`<form method="post" action="/projects"`, `name="name"`, `pattern="[a-z0-9][a-z0-9\-]{0,35}[a-z0-9]"`,
 		`<option value="maintenance">maintenance</option>`, `<option value="" selected>none</option>`,
 		`<option value="human" selected>human</option>`, `<option value="auto">auto</option>`} {
 		if form.Code != http.StatusOK || !strings.Contains(body, want) {
-			t.Errorf("GET /projects/new = %d, lacks %q", form.Code, want)
+			t.Errorf("GET /settings/new = %d, lacks %q", form.Code, want)
 		}
 	}
 	today := time.Now().UTC().Format(time.DateOnly)
@@ -590,7 +621,7 @@ func TestNewProjectOpensPullRequestAsHuman(t *testing.T) {
 	if rec := other.do(post("/projects", linkshortForm(os.csrf)), ock); rec.Code != http.StatusForbidden {
 		t.Errorf("POST /projects by a non-approver = %d, want 403", rec.Code)
 	}
-	if rec := other.do(httptest.NewRequest(http.MethodGet, "/projects/new", nil), ock); rec.Code != http.StatusOK {
+	if rec := other.do(httptest.NewRequest(http.MethodGet, "/settings/new", nil), ock); rec.Code != http.StatusOK {
 		t.Errorf("GET /projects/new by a writer = %d, want 200", rec.Code)
 	}
 	otherInfra.mu.Lock()
@@ -741,8 +772,8 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s := newStatusRig(t)
 			c.setup(s)
 			body := s.status(t)
-			if !strings.Contains(body, `<a href="/projects" aria-current="page">Projects</a>`) {
-				t.Error("the status page's bar does not mark Projects current")
+			if hdr := body[:strings.Index(body, "</header>")]; strings.Contains(hdr, `aria-current="page"`) {
+				t.Error("the status page's bar marks a word current")
 			}
 			names, states, tips := steps(body)
 			if want := []string{"Pull request opened", "Approved and merged", "Repository created", "Board ready"}; !slices.Equal(names, want) {
