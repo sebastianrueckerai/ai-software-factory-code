@@ -4,7 +4,7 @@
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
 <h3 id="project-{{.Project}}">{{.Project}}</h3>
 <p class="figs">task block {{eur2 .Envelope.MonthlyEUR}} a month, types {{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{servers .Envelope.MaxCount}} at once, leases up to {{.Envelope.MaxLeaseHours}} h, volumes up to {{.Envelope.VolumeMaxGB}} GB · this month €{{eur4 .Envelope.Use.MonthEUR}} used or reserved, {{servers .Envelope.Use.OpenServers}} open · standing block {{eur2 .Envelope.Standing.MonthlyEUR}} a month, types {{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{servers .Envelope.Standing.MaxCount}} · standing now {{servers .Envelope.StandingUse.Count}}, €{{eur4 .Envelope.StandingUse.MonthlyEUR}} a month</p>
-<p class="meta">{{if .Envelope.File}}The project's file sets it: <a href="{{.Envelope.File}}">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
+<p class="meta">{{if .Envelope.File}}The project's file sets it: <a href="{{.Envelope.File}}" target="_blank" rel="noopener">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
 {{if .Rows}}<table aria-label="Commissioned resources by task">
 <thead><tr><th scope="col">Task</th><th scope="col">Resource</th><th scope="col">Type</th><th scope="col">IPv4</th><th scope="col">Lease ends</th><th scope="col" class="num">€/h</th><th scope="col" class="num">Cost so far</th><th scope="col">State</th><th scope="col">Acts</th></tr></thead>
 <tbody>

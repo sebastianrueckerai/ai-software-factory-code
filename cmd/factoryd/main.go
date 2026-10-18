@@ -380,6 +380,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
+	mux.Handle("GET /versionz", health.Version(version))
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
 		if err := store.Ping(r.Context()); err != nil {
 			http.Error(w, "store unreachable: "+err.Error(), http.StatusServiceUnavailable)
