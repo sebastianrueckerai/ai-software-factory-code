@@ -1733,11 +1733,11 @@ func TestRollStateHandler(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, url, nil))
 		return rec.Code, rec.Body.String()
 	}
-	if code, body := get("/internal/roll-state?sha="+commitC1); code != 200 ||
+	if code, body := get("/internal/roll-state?sha=" + commitC1); code != 200 ||
 		body != `{"state":"opened","task":"t-9","run":57}`+"\n" {
 		t.Fatalf("an opened roll: %d %s", code, body)
 	}
-	if code, body := get("/internal/roll-state?sha="+commitC2); code != 200 ||
+	if code, body := get("/internal/roll-state?sha=" + commitC2); code != 200 ||
 		body != `{"state":"none","task":"","run":0}`+"\n" {
 		t.Fatalf("an unjudged commit: %d %s", code, body)
 	}
