@@ -277,6 +277,20 @@ func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Depen
 	return append(open, done...), nil
 }
 
+func (s *fakeTasks) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]string{}
+	for _, id := range ids {
+		for _, t := range s.tasks {
+			if t.ID == id {
+				out[id] = t.Status
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeTasks) Dependents(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

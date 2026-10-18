@@ -350,3 +350,42 @@ func receive(t *testing.T, ch chan Event) Event {
 		return Event{}
 	}
 }
+
+// TaskEventsFor is TaskEvents for many cards at once: each card its own
+// newest-first rows under its own limit, a card with no event no entry.
+func TestPGStoreTaskEventsFor(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardFiled, Actor: "alice", Via: ViaButton})
+	time.Sleep(time.Millisecond)
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardMoved, Actor: "bob", Via: ViaButton})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventPlanStarted, Actor: "carol", Via: ViaButton})
+	for _, limit := range []int{1, 8} {
+		got, err := s.TaskEventsFor(ctx, []string{"t-1", "t-2", "t-missing"}, limit)
+		if err != nil {
+			t.Fatalf("TaskEventsFor %d: %v", limit, err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("TaskEventsFor %d = %d entries, want 2", limit, len(got))
+		}
+		want1, _ := s.TaskEvents(ctx, "t-1", limit)
+		want2, _ := s.TaskEvents(ctx, "t-2", limit)
+		if !reflect.DeepEqual(got["t-1"], want1) || !reflect.DeepEqual(got["t-2"], want2) {
+			t.Fatalf("TaskEventsFor %d = t-1 %+v t-2 %+v, want the per-card reads", limit, got["t-1"], got["t-2"])
+		}
+		if _, ok := got["t-missing"]; ok {
+			t.Fatal("t-missing should have no entry")
+		}
+	}
+	if got, err := s.TaskEventsFor(ctx, nil, 8); err != nil || len(got) != 0 {
+		t.Fatalf("TaskEventsFor of none = %v, %v, want empty", got, err)
+	}
+}

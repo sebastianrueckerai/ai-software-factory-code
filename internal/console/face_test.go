@@ -514,11 +514,11 @@ func TestTopBarSparseNav(t *testing.T) {
 		t.Error("the reference group sits after governance")
 	}
 	for target, want := range map[string][2]string{
-		"/settings":  {`<a href="/settings" aria-current="page">Settings</a>`, `href="/" aria-current="page"`},
-		"/tasks/new": {`<a class="act" href="/tasks/new" aria-current="page">`, `href="/" aria-current="page"`},
-		"/costs":     {`<a href="/costs" aria-current="page">Costs</a>`, `href="/" aria-current="page"`},
-		"/policy":    {`<a href="/policy" aria-current="page">Policy</a>`, `href="/" aria-current="page"`},
-		"/resources": {`<a href="/resources" aria-current="page">Resources</a>`, `href="/" aria-current="page"`},
+		"/settings":   {`<a href="/settings" aria-current="page">Settings</a>`, `href="/" aria-current="page"`},
+		"/tasks/new":  {`<a class="act" href="/tasks/new" aria-current="page">`, `href="/" aria-current="page"`},
+		"/costs":      {`<a href="/costs" aria-current="page">Costs</a>`, `href="/" aria-current="page"`},
+		"/policy":     {`<a href="/policy" aria-current="page">Policy</a>`, `href="/" aria-current="page"`},
+		"/resources":  {`<a href="/resources" aria-current="page">Resources</a>`, `href="/" aria-current="page"`},
 	} {
 		body := get(target)
 		if !strings.Contains(body, want[0]) {

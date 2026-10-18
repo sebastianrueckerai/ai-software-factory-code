@@ -3005,3 +3005,33 @@ func TestPGStoreBudgetRefused(t *testing.T) {
 		}
 	}
 }
+
+// TaskStatuses reads many cards' statuses at once: a card with no row no
+// entry.
+func TestTaskStatuses(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_statuses"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES
+		('t-wait', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL),
+		('t-run', 1, 0, 'running', 'sf/r', 'agent', 'webhook', NULL),
+		('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.TaskStatuses(ctx, []string{"t-wait", "t-run", "t-missing"})
+	if err != nil {
+		t.Fatalf("TaskStatuses: %v", err)
+	}
+	if len(got) != 2 || got["t-wait"] != "waiting-human" || got["t-run"] != "running" {
+		t.Fatalf("TaskStatuses = %v, want the two rows' statuses", got)
+	}
+	if empty, err := s.TaskStatuses(ctx, nil); err != nil || len(empty) != 0 {
+		t.Fatalf("TaskStatuses of none = %v, %v, want empty", empty, err)
+	}
+}

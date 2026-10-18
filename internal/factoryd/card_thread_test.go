@@ -162,3 +162,30 @@ func TestProjectConversationsNamesEveryOwner(t *testing.T) {
 		t.Fatalf("%d threads, %d inboxes: want 4 threads, one inbox per member: %+v", len(list), inboxes, list)
 	}
 }
+
+// CardThreads is CardThreadFor for many cards at once: one read of the
+// project's bindings, cards with no thread left out.
+func TestCardThreads(t *testing.T) {
+	s := newCardThreadStore(t)
+	ctx := t.Context()
+	one, err := s.EnsureCardThread(ctx, "sf/code", "sebastian", "t-1")
+	if err != nil {
+		t.Fatalf("bind t-1: %v", err)
+	}
+	two, err := s.EnsureCardThread(ctx, "sf/code", "bob", "t-2")
+	if err != nil {
+		t.Fatalf("bind t-2: %v", err)
+	}
+	if _, err := s.NewConversation(ctx, "sf/code", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := s.CardThreads(ctx, "sf/code", []string{"t-1", "t-2", "t-9"})
+	if err != nil {
+		t.Fatalf("CardThreads: %v", err)
+	}
+	if len(threads) != 2 ||
+		threads["t-1"] != (CardThread{Login: "sebastian", Conversation: one}) ||
+		threads["t-2"] != (CardThread{Login: "bob", Conversation: two}) {
+		t.Fatalf("CardThreads = %+v, want sebastian %d and bob %d", threads, one, two)
+	}
+}

@@ -3153,7 +3153,10 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status == "waiting-human", false); !s.Open {
 		return
 	}
-	question, _ := ask.Detail["question"].(string)
+	question, _ := ask.Detail["ask"].(string) // the wake path writes "ask", older rows "question"
+	if question == "" {
+		question, _ = ask.Detail["question"].(string)
+	}
 	ref := ask.TaskID
 	switch {
 	case bt.IssueNumber != 0:
