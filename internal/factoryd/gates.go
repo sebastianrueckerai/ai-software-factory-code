@@ -1174,6 +1174,16 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if ctx.Err() != nil {
 		return Review{}, ctx.Err()
 	}
+	// the ruling's screen after is the card's contract (the design
+	// decisions' C-entries): a clause left to no card citing the ruling
+	// fails the review whatever the model said, and so does a broken
+	// Ships statement
+	if findings, err := r.designScope(ctx, t, gates.Pin); err != nil {
+		return Review{}, err
+	} else if len(findings) > 0 {
+		rv.Findings = append(rv.Findings, findings...)
+		rv.Verdict = "concerns"
+	}
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr.Number, r.untrusted(t, reviewComment(model, commit, rv, read))); err != nil {
 		log.Printf("task %s: comment the model review: %v", t.ID, err)
 	}

@@ -339,6 +339,27 @@ func (s *acceptanceStore) TasksByPR(_ context.Context, repository string, number
 	return cards, nil
 }
 
+// TasksByRuling lists repository's cards citing design ruling ruling on
+// their Ships line, oldest first, whatever their status, as the SQL
+// store does: the review gate unions their stated clauses.
+func (s *acceptanceStore) TasksByRuling(_ context.Context, repository, ruling string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var cards []factoryd.Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.ShipsRuling == ruling {
+			cards = append(cards, t)
+		}
+	}
+	slices.SortFunc(cards, func(a, b factoryd.Task) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			return a.CreatedAt.Compare(b.CreatedAt)
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	return cards, nil
+}
+
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

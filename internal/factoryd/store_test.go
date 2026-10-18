@@ -310,6 +310,17 @@ func (s *fakeStore) TasksByPR(ctx context.Context, repository string, pr int64) 
 	return out, nil
 }
 
+func (s *fakeStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.ShipsRuling == ruling {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), strings.Compare(a.ID, b.ID)) })
+	return out, nil
+}
+
 func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) {
 	return slices.ContainsFunc(s.events, func(e Event) bool {
 		return e.TaskID == id && e.Kind == EventTaskStatus && e.Detail["status"] == "in-review"
