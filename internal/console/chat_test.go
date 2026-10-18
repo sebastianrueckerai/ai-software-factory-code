@@ -208,6 +208,18 @@ func (f *fakeChat) CardThreadFor(_ context.Context, repository, taskID string) (
 	return b.login, b.n, ok, nil
 }
 
+func (f *fakeChat) CardThreads(_ context.Context, repository string, ids []string) (map[string]factoryd.CardThread, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]factoryd.CardThread{}
+	for _, id := range ids {
+		if b, ok := f.cards[repository+" "+id]; ok {
+			out[id] = factoryd.CardThread{Login: b.login, Conversation: b.n}
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeChat) AddChatWatch(_ context.Context, repository, login string, conversation int64, taskID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

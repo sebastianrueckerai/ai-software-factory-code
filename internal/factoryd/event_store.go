@@ -158,6 +158,9 @@ type Events interface {
 	ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	// TaskEvents lists task id's events newest first, at most limit.
 	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
+	// TaskEventsFor is TaskEvents over many cards at once, keyed by task
+	// id. A card with no event gets no entry.
+	TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]Event, error)
 	// NewestTaskEvents are the newest event of each of tasks, keyed by task
 	// id: the board's activity line. A task with no event gets no entry.
 	NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error)
@@ -228,6 +231,32 @@ func (s *PGStore) ProjectEvents(ctx context.Context, repository string, after in
 
 func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {
 	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, id, limit)
+}
+
+// TaskEventsFor is TaskEvents over many cards at once, keyed by task id:
+// one query, each card its own newest-first rows under its own limit. A
+// card with no event gets no entry.
+func (s *PGStore) TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]Event, error) {
+	out := map[string][]Event{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+eventColumns+` FROM
+		(SELECT *, row_number() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
+			FROM events WHERE task_id = ANY($1)) ranked
+		WHERE rn <= $2 ORDER BY task_id, id DESC`, ids, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		e, err := scanEvent(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out[e.TaskID] = append(out[e.TaskID], e)
+	}
+	return out, rows.Err()
 }
 
 // ReachedReview reads changeStatus's record: a task_status event that

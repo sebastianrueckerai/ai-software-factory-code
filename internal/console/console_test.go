@@ -277,6 +277,20 @@ func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Depen
 	return append(open, done...), nil
 }
 
+func (s *fakeTasks) TaskStatuses(_ context.Context, ids []string) (map[string]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string]string{}
+	for _, id := range ids {
+		for _, t := range s.tasks {
+			if t.ID == id {
+				out[id] = t.Status
+			}
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeTasks) Dependents(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1802,6 +1816,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-res", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 21})
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 9}})
 	// the human lane's approvals column is the wide view's, its cards as
 	// brief as the narrow view's: each title opens its task's drawer,
 	// which holds the facts in full
@@ -1817,20 +1832,25 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 		`<p class="need-line">5 h · 8.9900 EUR per month, this lease 0.0720 EUR · sf/code</p>`,
 		"a lease of 300 minutes exceeds the envelope&#39;s 4 h", `href="https://git.example/sf/code/issues/21"`,
 		`href="/tasks/t-res/timeline"`, `action="/approvals/3/approve"`, "Approves this task's request once; a wider envelope for the project is a change to its file in Git.",
-		// the merge request: the PR, the chips, the five-part ask — why a
-		// human, the model review, the recommendation
+		// the merge request: the PR, the chips and the forms; the
+		// five-part ask lives in the drawer
 		`<article class="card approval" data-card="t-m"`,
 		`<a href="#card=t-m" class="open">Merge</a> <a href="https://git.example/sf/code/pulls/9">PR #9</a>`,
 		`<span class="chip risk">high risk</span>`, `<span class="chip migration">migration</span>`,
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
-		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
-		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
 		`<a href="#card=t-m:reviews" class="details">Details</a>`,
 		`action="/approvals/4/approve"`, `action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, `name="action" value="reject"`,
 		`name="csrf" value="` + s.csrf + `"`, `<label for="note-4">`, `<textarea id="note-4" name="note"`,
 	} {
 		if !strings.Contains(lane, want) {
 			t.Errorf("approval lane lacks %q", want)
+		}
+	}
+	// the drawer carries the merge request's five-part ask: why a
+	// human, the model review's verdict and summary, the recommendation
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the merge drawer lacks %q", want)
 		}
 	}
 	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation"} {

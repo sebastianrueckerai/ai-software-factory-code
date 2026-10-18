@@ -264,26 +264,27 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askFacts reads the settle rule's wait facts for each card named: the
+// askFacts reads the settle rule's wait facts for the cards named: the
 // board's Needs-you fact, the card's status waiting-human, with its
 // events. A card in a final state settled its asks already, so its
-// events are not read.
+// events are not read. One query per fact, whatever the cards' number.
 func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, map[string][]factoryd.Event) {
 	waits, events := map[string]bool{}, map[string][]factoryd.Event{}
+	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
+	if err != nil {
+		log.Printf("console: the cards' statuses: %v", err)
+	}
+	var live []string
 	for _, id := range ids {
-		k, _, err := c.cfg.Tasks.Task(ctx, id)
-		if err != nil {
-			log.Printf("console: the card %s: %v", id, err)
+		waits[id] = statuses[id] == "waiting-human"
+		if statuses[id] != "" && !factoryd.Final(statuses[id]) {
+			live = append(live, id)
 		}
-		waits[id] = err == nil && k.Status == "waiting-human"
-		if err != nil || factoryd.Final(k.Status) {
-			continue
-		}
-		if evs, err := c.cfg.Events.TaskEvents(ctx, id, startEvents); err != nil {
-			log.Printf("console: the events of %s: %v", id, err)
-		} else {
-			events[id] = evs
-		}
+	}
+	if evs, err := c.cfg.Events.TaskEventsFor(ctx, live, startEvents); err != nil {
+		log.Printf("console: the cards' events: %v", err)
+	} else {
+		events = evs
 	}
 	return waits, events
 }
@@ -308,9 +309,9 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 	// a card's own thread (the card door): an open ask row names it,
 	// whosever binding it carries
 	threads, whose := map[string]int64{}, map[string]string{}
-	for _, id := range ids {
-		if who, n, ok, err := t.c.cfg.Chat.CardThreadFor(ctx, t.p.Repository, id); err == nil && ok {
-			threads[id], whose[id] = n, who
+	if ts, err := t.c.cfg.Chat.CardThreads(ctx, t.p.Repository, ids); err == nil {
+		for id, th := range ts {
+			threads[id], whose[id] = th.Conversation, th.Login
 		}
 	}
 	for i, m := range msgs {
