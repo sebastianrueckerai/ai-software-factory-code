@@ -275,6 +275,7 @@ func TestStatusLineDependencies(t *testing.T) {
 	}
 	const down = `<span class="cell deps down" title="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
 	const warn = `<span class="cell deps warn" title="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	const up = `<span class="cell deps up" title="every factory dependency answers; the status in detail lists them"><i class="dot" aria-hidden="true"></i>dependencies</span>`
 	if got := line(); strings.Contains(got, "deps") {
 		t.Fatalf("no rows, strip holds a deps cell:\n%s", got)
 	}
@@ -290,11 +291,11 @@ func TestStatusLineDependencies(t *testing.T) {
 		t.Fatalf("one degraded row:\n%s\nwant the amber cell only", got)
 	}
 	r.deps.rows = []factoryd.DependencyState{{Name: "temporal", State: "up", CheckedAt: time.Now()}}
-	if got := line(); strings.Contains(got, "deps") {
-		t.Fatalf("every row up, strip holds a deps cell:\n%s", got)
+	if got := line(); !strings.Contains(got, up) || strings.Contains(got, down) || strings.Contains(got, warn) {
+		t.Fatalf("every row up:\n%s\nwant the green cell only", got)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<h3>Dependencies</h3>`, `<dt>temporal</dt>`, `>up · under a minute ago</dd>`} {
+	for _, want := range []string{`<h3>Dependencies</h3>`, `<dt>temporal</dt>`, `><i class="dot" aria-hidden="true"></i>up · under a minute ago</dd>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the panel lacks %q", want)
 		}
