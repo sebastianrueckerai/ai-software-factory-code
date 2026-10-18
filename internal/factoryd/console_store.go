@@ -21,7 +21,9 @@ import (
 // shaped it (nil on the older and unshaped rows); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
-// liveness warning.
+// liveness warning. RollState is the newest roll request that carries the
+// card's pull request ("" for none): a done card reads it to track its
+// own deploy (roadmap 296).
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -33,7 +35,20 @@ type BoardTask struct {
 	QueueAhead      int
 	Question        *HumanQuestion
 	AnswersPending  int
+	RollState       string
 }
+
+// deployLive is the SQL test that a finished card's change runs on the
+// cluster (roadmap 296): a card that never opened a pull request, or whose
+// roll request merged or skipped — the roll task's own rollout wait
+// confirmed the merge runs — or that no roll names at all and that
+// finished before the roller began recording the pull requests its rolls
+// carry (no such roll yet: every card, while none is recorded). A roll
+// that names it as open, refused or failed keeps it waiting.
+const deployLive = `(tasks.pr_number = 0
+	OR EXISTS (SELECT 1 FROM roll_requests rr WHERE rr.prs @> ARRAY[tasks.pr_number] AND rr.state IN ('merged', 'skipped'))
+	OR NOT EXISTS (SELECT 1 FROM roll_requests rr WHERE rr.prs @> ARRAY[tasks.pr_number])
+	   AND COALESCE((SELECT min(created_at) FROM roll_requests WHERE cardinality(prs) > 0), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
 // kind and $2 the escalation alert's kind; the caller adds the WHERE.
@@ -52,7 +67,9 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id),
 		        esc.question,
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
-		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0))`
+		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
+		        COALESCE((SELECT rr.state FROM roll_requests rr WHERE tasks.pr_number > 0 AND rr.prs @> ARRAY[tasks.pr_number]
+		        ORDER BY rr.run_id DESC LIMIT 1), '')`
 
 const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
@@ -63,7 +80,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.RollState)...)
 	})
 	if err != nil {
 		return b, err
@@ -80,11 +97,13 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most
-// urgent first; a chat task is no card. The escalation reason comes from
-// the escalation's intake event, so a poll reads no timeline object.
+// urgent first; a chat task is no card. A done task whose change is not
+// live yet stays listed: its card tracks its own deploy (roadmap 296). The
+// escalation reason comes from the escalation's intake event, so a poll
+// reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE repository = $4 AND kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
+		 WHERE repository = $4 AND kind <> $3 AND (status NOT IN ('done', 'failed', 'closed') OR status = 'done' AND NOT (`+deployLive+`))
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, IntakeEscalation, AlertEscalation, KindChat, repository)
 	if err != nil {
 		return nil, err
@@ -136,12 +155,14 @@ func arrival(t Task) time.Time {
 
 // FinishedTasks lists the page q asks for, and how many cards the read
 // leaves from the page on, the page's own included; a chat task is no
-// card, nor a finished human task.
+// card, nor a finished human task. A done card whose change is not live
+// yet is no finished card: it waits in the board's progress (roadmap 296).
 func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTask, int, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+boardTaskColumns+`, count(*) OVER ()`+boardTaskFrom+`
 		 WHERE repository = $3 AND status = ANY($4) AND kind NOT IN ($5, 'human')
 		   AND (finished_at > $6 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
+		   AND (`+deployLive+`)
 		   AND ($8 = '' OR COALESCE(finished_at, created_at) = $7 AND tasks.id > $8
 		       OR CASE WHEN $9 THEN COALESCE(finished_at, created_at) > $7 ELSE COALESCE(finished_at, created_at) < $7 END)
 		 ORDER BY CASE WHEN $9 THEN COALESCE(finished_at, created_at) END, COALESCE(finished_at, created_at) DESC, tasks.id
@@ -187,7 +208,9 @@ func SortBoardTasks(tasks []BoardTask) {
 
 // FinishedPage is FinishedTasks over tasks in memory, for the fakes,
 // which keep no dependencies: a card without a finish stamp is in the
-// window.
+// window. A done card whose change is not live yet is no finished card, as
+// FinishedTasks reads it; the fakes model a roll row as the task's
+// RollState at its CreatedAt.
 func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	order := func(a, b Task) int {
 		by := arrival(b).Compare(arrival(a))
@@ -199,7 +222,8 @@ func FinishedPage(tasks []BoardTask, q FinishedQuery) ([]BoardTask, int) {
 	var out []BoardTask
 	for _, t := range tasks {
 		if t.Repository == q.Repository && slices.Contains(q.Statuses, t.Status) && t.Kind != KindChat && t.Kind != "human" &&
-			(t.FinishedAt == nil || t.FinishedAt.After(q.Since)) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) {
+			(t.FinishedAt == nil || t.FinishedAt.After(q.Since)) && (q.After.ID == "" || order(Task{ID: q.After.ID, FinishedAt: &q.After.At}, t.Task) < 0) &&
+			(t.Status != "done" || DeployLive(tasks, t)) {
 			out = append(out, t)
 		}
 	}
@@ -223,4 +247,23 @@ func byFinish(a, b Task) int {
 		return -1
 	}
 	return b.FinishedAt.Compare(*a.FinishedAt)
+}
+
+// DeployLive is deployLive for the fakes: a card without a pull request,
+// or whose roll merged or skipped, or that no roll names and that arrived
+// before the first roll the set records. A roll that names it as open,
+// refused or failed keeps it waiting.
+func DeployLive(tasks []BoardTask, t BoardTask) bool {
+	if t.PRNumber == 0 || slices.Contains([]string{RollMerged, RollSkipped}, t.RollState) {
+		return true
+	}
+	if t.RollState != "" {
+		return false
+	}
+	for _, o := range tasks {
+		if o.RollState != "" && !arrival(o.Task).After(arrival(t.Task)) {
+			return false
+		}
+	}
+	return true
 }

@@ -64,7 +64,7 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 
 	task("rt1", "in-review")
-	insert(RollRequest{SHA: "b", Repository: repo, RunID: 11, State: RollOpened, TaskID: "rt1",
+	insert(RollRequest{SHA: "b", Repository: repo, RunID: 11, State: RollOpened, TaskID: "rt1", PRs: []int64{12},
 		Changes: map[string]string{"worker": "sha256:w1"}, Summary: "b summary"})
 	insert(RollRequest{SHA: "c", Repository: repo, RunID: 12, State: RollOpened, TaskID: "rt1",
 		Changes: map[string]string{"gateway": "sha256:g2", "factoryd": "sha256:g2"}, Summary: "c summary"})
@@ -159,6 +159,18 @@ func TestPGStoreRollRequests(t *testing.T) {
 	}
 	if sha, ok, err := s.LastMergedRoll(ctx, repo); err != nil || !ok || sha != "b" {
 		t.Fatalf("last merged roll %q %v %v, want b", sha, ok, err)
+	}
+	if rolls, err := s.TaskRolls(ctx, "rt1"); err != nil || len(rolls) != 2 ||
+		!reflect.DeepEqual(rolls[0].PRs, []int64{12}) || len(rolls[1].PRs) != 0 {
+		t.Fatalf("task rolls %+v, want b carrying pull request 12", rolls)
+	}
+	bySHA, ok, err := s.RollRequestBySHA(ctx, "b")
+	if err != nil || !ok || bySHA.State != RollMerged || bySHA.TaskID != "rt1" ||
+		!reflect.DeepEqual(bySHA.Changes, map[string]string{"worker": "sha256:w1"}) {
+		t.Fatalf("roll request by sha %+v %v %v", bySHA, ok, err)
+	}
+	if _, ok, err := s.RollRequestBySHA(ctx, "zz"); err != nil || ok {
+		t.Fatalf("an unknown sha answered %v %v", ok, err)
 	}
 	if err := s.DeleteRollRequest(ctx, "a"); err != nil || seen("a") {
 		t.Fatalf("delete a: %v, seen %v", err, seen("a"))

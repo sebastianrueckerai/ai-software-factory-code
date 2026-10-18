@@ -403,6 +403,8 @@ func main() {
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	// the gateway's hand-over of an audit session's hold-out verdict
 	mux.Handle("POST /internal/holdout-verdict", requireBearer(gatewayToken, runner.AuditVerdictHandler))
+	// CI's rollout job polls a commit's roll state until the change is live (roadmap 296)
+	mux.Handle("GET /internal/roll-state", requireBearer(intakeToken, factoryd.RollStateHandler(store)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {

@@ -1272,8 +1272,10 @@ func (d boardData) cols() []column {
 	return d.Columns
 }
 
-// Final is a done, failed or closed card: a two-line row on the board.
-func (k card) Final() bool { return factoryd.Final(k.Status) }
+// Final is a done, failed or closed card: a two-line row on the board. A
+// done card that tracks its own deploy wears a stage, so it stays a full
+// card until its change runs live (roadmap 296).
+func (k card) Final() bool { return k.Stage == "" && factoryd.Final(k.Status) }
 
 // Glyph is the final state's mark beside its word.
 func (k card) Glyph() string {
@@ -1671,7 +1673,7 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	merging         map[string]bool // a pending merge approval cards the task's merge decision
+	deploys         map[string]bool // a done card whose change is not live yet: it tracks its own deploy (roadmap 296)
 	unchecked       bool            // a may-move check failed, logged once per render
 	problems        []string
 }
@@ -1691,7 +1693,6 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
-		v.merging[a.TaskID] = v.merging[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -1702,7 +1703,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
-		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, merging: map[string]bool{}}
+		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, deploys: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -1715,12 +1716,35 @@ func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []fact
 }
 
 // humanLane: t has no agent, so its card is in the human lane: a human
-// task, or a roll task whose merge decision is its one remaining action —
-// a pending merge approval or a waiting-human state (ruling 219); while
-// its checks or review run the status mapping places it like any task.
+// task. A roll is no card (Sebastian, 2026-10-18): each card tracks its
+// own deploy, so the roll tasks the roller files never show.
 func (v *boardView) humanLane(t factoryd.Task) bool {
-	return t.Kind == "human" || t.Source == factoryd.SourceRoll && !factoryd.Final(t.Status) &&
-		(t.Status == "waiting-human" || v.merging[t.ID])
+	return t.Kind == "human"
+}
+
+// column is bt's column: the status mapping, except a done card whose
+// change is not live yet, which stays in progress until its deploy lands
+// (roadmap 296): no card is done before it is usable.
+func (v *boardView) column(bt factoryd.BoardTask, viewer string) int {
+	col := fiveColumn(bt.Task, viewer)
+	if col == colDone && bt.Status == "done" && v.deploys[bt.ID] {
+		return colProgress
+	}
+	return col
+}
+
+// deployStage is the chain position a done card shows while its change is
+// not live yet: where its deploy sits (roadmap 296).
+func deployStage(state string) string {
+	switch state {
+	case factoryd.RollOpened:
+		return "rolling"
+	case factoryd.RollRefused:
+		return "roll refused"
+	case factoryd.RollFailed:
+		return "roll failed"
+	}
+	return "waiting for the roll"
 }
 
 // escalated: t waits on an escalation of its own; a waiting plan's card is
@@ -1758,7 +1782,13 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	t := bt.Task
 	k := c.card(t)
 	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
-		fiveColumn(t, v.user))
+		v.column(bt, v.user))
+	if v.deploys[t.ID] {
+		k.Stage = deployStage(bt.RollState)
+		if t.FinishedAt != nil {
+			k.StageAge = minutes(time.Since(*t.FinishedAt))
+		}
+	}
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
@@ -2128,15 +2158,24 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	if err != nil {
 		return d, fmt.Errorf("tasks: %w", err)
 	}
+	// a done card the store still lists is merged, its change not
+	// confirmed live yet: it tracks its own deploy (roadmap 296). The
+	// finished page holds done cards that are live.
+	for _, bt := range tasks {
+		v.byID[bt.ID] = bt.Task
+		if bt.Status == "done" && bt.Source != factoryd.SourceRoll {
+			v.deploys[bt.ID] = true
+		}
+	}
 	if shown.Name != "" {
 		finished, err := c.readFinished(ctx, &d, f, shown.Repository)
 		if err != nil {
 			return d, fmt.Errorf("finished tasks: %w", err)
 		}
 		tasks = append(tasks, finished...)
-	}
-	for _, bt := range tasks {
-		v.byID[bt.ID] = bt.Task
+		for _, bt := range finished {
+			v.byID[bt.ID] = bt.Task
+		}
 	}
 	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
@@ -2150,7 +2189,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		human, col := v.humanLane(t), fiveColumn(t, v.user)
+		if t.Source == factoryd.SourceRoll {
+			continue // a roll is no card (Sebastian, 2026-10-18)
+		}
+		human, col := v.humanLane(t), v.column(bt, v.user)
 		// the status line counts the project's cards, whatever the accent;
 		// a plan that waits on its acceptance counts as its approval
 		switch {
@@ -2181,6 +2223,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 		case wide:
 			i, ok := byStatus[t.Status]
+			if v.deploys[t.ID] {
+				i, ok = byStatus["running"], true // done, its deploy not live yet
+			}
 			switch t.Status {
 			case "backlog":
 				i, ok = byLane[policy.LaneBacklog]

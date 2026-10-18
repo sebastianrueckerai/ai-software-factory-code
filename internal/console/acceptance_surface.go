@@ -623,7 +623,8 @@ func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]fact
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(a.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+		return t.Repository != repository || t.Kind == factoryd.KindChat ||
+			factoryd.Final(t.Status) && (t.Status != "done" || factoryd.DeployLive(a.tasks, t))
 	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil

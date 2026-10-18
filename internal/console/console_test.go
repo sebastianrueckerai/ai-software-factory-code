@@ -454,12 +454,14 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
-// order: a chat task is none.
+// order: a chat task is none, and a done card whose change is not live
+// yet stays, tracking its own deploy (roadmap 296).
 func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) &&
+			(t.Status != "done" || factoryd.DeployLive(s.tasks, t))
 	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
@@ -1393,6 +1395,64 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()
 	if !strings.HasPrefix(frag, `<div id="board"`) || strings.Contains(frag, "<html") || !strings.Contains(frag, "stuck work") {
 		t.Fatalf("/board is not the bare board fragment: %.200s", frag)
+	}
+}
+
+// A done card whose change is not live yet stays in progress, wearing
+// where its deploy sits (roadmap 296): rolling while its roll runs,
+// waiting for the roll until the roller judges its commit, roll refused
+// or roll failed at the end states. A done card whose roll merged or
+// skipped sits in Done, and one that finished before the roller began
+// recording the pull requests its rolls carry does too. A roll task is
+// no card.
+func TestBoardTracksEachCardsDeploy(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	at := func(mins int) *time.Time { t := time.Now().Add(-time.Duration(mins) * time.Minute); return &t }
+	card := func(id string, pr int64, state string, finished int) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "done", Repository: "sf/code",
+			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, RollState: state}
+	}
+	// t-era finished before the first roll the set records; t-wait after
+	// t-roll's roll opened, so the era no longer holds it live
+	r.tasks.tasks = []factoryd.BoardTask{
+		card("t-era", 8, "", 90),
+		card("t-roll", 9, factoryd.RollOpened, 40),
+		card("t-wait", 10, "", 30),
+		card("t-refused", 11, factoryd.RollRefused, 25),
+		card("t-failed", 12, factoryd.RollFailed, 20),
+		card("t-live", 13, factoryd.RollMerged, 15),
+		card("t-skip", 14, factoryd.RollSkipped, 10),
+		{Task: factoryd.Task{ID: "t-rollcard", Kind: "agent", Status: "done", Source: factoryd.SourceRoll,
+			Repository: "sf/code", PRNumber: 15, Objective: "the roll itself", FinishedAt: at(35)}},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	progress, done := col(t, body, "In progress"), col(t, body, "Done")
+	for id, stage := range map[string]string{
+		"t-roll":    ">rolling</span>",
+		"t-wait":    ">waiting for the roll</span>",
+		"t-refused": ">roll refused</span>",
+		"t-failed":  ">roll failed</span>",
+	} {
+		if !strings.Contains(progress, `data-card="`+id+`"`) || !strings.Contains(progress, stage) {
+			t.Errorf("In progress lacks %s wearing %q:\n%s", id, stage, progress)
+		}
+	}
+	for _, id := range []string{"t-era", "t-live", "t-skip"} {
+		if !strings.Contains(done, `data-card="`+id+`"`) {
+			t.Errorf("Done lacks the live card %s:\n%s", id, done)
+		}
+		if strings.Contains(progress, `data-card="`+id+`"`) {
+			t.Errorf("In progress holds the live card %s", id)
+		}
+	}
+	for _, id := range []string{"t-roll", "t-wait", "t-refused", "t-failed"} {
+		if strings.Contains(done, `data-card="`+id+`"`) {
+			t.Errorf("Done holds %s, whose change is not live", id)
+		}
+	}
+	if strings.Contains(body, `data-card="t-rollcard"`) {
+		t.Error("the roll task rendered a card")
 	}
 }
 
@@ -2887,7 +2947,10 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 // the one remaining action (ruling 219): at a pending merge approval or
 // in a waiting-human state; while its checks or review run the status
 // mapping places it in the verifying column.
-func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
+// A roll task is no card (Sebastian, 2026-10-18): the change's own card
+// tracks its deploy. But a roll's pending merge decision still reaches
+// the human: its approval card stands in needs you.
+func TestBoardShowsARollsMergeApprovalWithoutACard(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("", []factoryd.Task{
@@ -2896,44 +2959,17 @@ func TestBoardMapsARollByStatusUntilItsMergeDecision(t *testing.T) {
 		// decision is the one remaining action
 		{ID: "t-m", Kind: "agent", Source: factoryd.SourceRoll, Status: "in-review", Objective: "roll c2c2c2c: worker", Repository: "sf/code", PRNumber: 9},
 		{ID: "t-branch", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c3c3c3c: console", Repository: "sf/code"},
-		{ID: "t-wait", Kind: "agent", Source: factoryd.SourceRoll, Status: "waiting-human", Objective: "roll c4c4c4c: intake", Repository: "sf/code"},
 	}...)
-	column := func(body, id string) string {
-		start := strings.Index(body, `id="`+id+`"`)
-		if start < 0 {
-			t.Fatalf("column %s missing", id)
-		}
-		return body[start : start+strings.Index(body[start:], "</section>")]
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if strings.Contains(body, "roll c1c1c1c") || strings.Contains(body, "roll c3c3c3c") {
+		t.Errorf("a roll without a decision left a card:\n%s", body)
 	}
-	// the four columns: needs you, queued, in progress, done (C8)
-	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	needs, verifying := column(five, "needs-you"), column(five, "col-2")
-	if strings.Contains(needs, "roll c1c1c1c") || !strings.Contains(verifying, "roll c1c1c1c") {
-		t.Errorf("the roll with its checks in flight is not in the verifying column only:\nneeds you %s\nverifying %s", needs, verifying)
-	}
-	if !strings.Contains(needs, "roll c2c2c2c") || strings.Contains(verifying, "roll c2c2c2c") {
-		t.Errorf("the roll at its pending merge approval is not in needs you only:\nneeds you %s\nverifying %s", needs, verifying)
-	}
+	needs := col(t, body, "Needs you")
 	if !strings.Contains(needs, `id="approval-4"`) {
-		t.Errorf("the pending merge approval of roll c2c2c2c is not in needs you:\nneeds you %s", needs)
+		t.Errorf("the pending merge approval of roll c2c2c2c is not in needs you:\n%s", needs)
 	}
-	if !strings.Contains(needs, "roll c4c4c4c") {
-		t.Errorf("the roll waiting on a human is not in needs you:\nneeds you %s", needs)
-	}
-	// the wide view's human lane and state columns
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	human, waiting, working, review := column(body, "col-human"), column(body, "col-3"), column(body, "col-2"), column(body, "col-5")
-	if strings.Contains(human, "roll c1c1c1c") || !strings.Contains(review, "roll c1c1c1c") {
-		t.Errorf("the roll with its checks in flight is not in the review column only:\nhuman %s\nreview %s", human, review)
-	}
-	if !strings.Contains(human, "roll c2c2c2c") || strings.Contains(review, "roll c2c2c2c") {
-		t.Errorf("the roll at its pending merge approval is not in the human lane only:\nhuman %s\nreview %s", human, review)
-	}
-	if !strings.Contains(human, "roll c4c4c4c") || strings.Contains(waiting, "roll c4c4c4c") {
-		t.Errorf("the roll waiting on a human is not in the human lane only:\nhuman %s\nwaiting %s", human, waiting)
-	}
-	if !strings.Contains(working, "roll c3c3c3c") && strings.Contains(human+review, "roll c3c3c3c") {
-		t.Errorf("the roll writing its branch is not in the working column only:\nhuman %s\nworking %s\nreview %s", human, working, review)
+	if c := col(t, body, "In progress"); strings.Contains(c, "roll c2c2c2c") {
+		t.Errorf("the approval's roll task rendered a card too:\n%s", c)
 	}
 }
 
