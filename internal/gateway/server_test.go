@@ -1907,24 +1907,26 @@ func TestFactorydReviewCall(t *testing.T) {
 	}
 }
 
-// The project agent's call (purpose operator) and the pulse's (purpose
-// pulse) are a chat task's: each runs on its alias, books under the task,
-// and stops at its budget; an agent task's account takes neither.
+// The project agent's call (purpose operator) and a chat thread's
+// compaction (purpose compact) are a chat task's: each runs on its
+// alias, books under the task, and stops at its budget; an agent task's
+// account takes neither.
 func TestOperatorCallOnTheChatTask(t *testing.T) {
 	prices := fakePrices{"operator": testPrice, "pulse": testPrice, "coding-frontier": testPrice, "review-frontier": testPrice, "supervisor": testPrice}
 	chat := []string{policy.ClassChat}
 	for name, tc := range map[string]struct {
 		task   Task
 		use    string // the purpose, "" for operator
+		alias  string // the model the body names
 		status int
 		header string
 		ledger []ledgerRow
 	}{
 		"the chat task": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, status: 200,
 			ledger: []ledgerRow{{"t-chat-x-2026-10", "operator/operator", 0.125, policy.KindModel}}},
-		"the pulse": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposePulse, status: 200,
-			ledger: []ledgerRow{{"t-chat-x-2026-10", "pulse/pulse", 0.125, policy.KindModel}}},
-		"the pulse on an agent task": {task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposePulse,
+		"the compaction": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposeCompact, alias: policy.PulseModel, status: 200,
+			ledger: []ledgerRow{{"t-chat-x-2026-10", "compact/pulse", 0.125, policy.KindModel}}},
+		"the compaction on an agent task": {task: Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}, use: policy.PurposeCompact, alias: policy.PulseModel,
 			status: 403, header: "refused_capability"},
 		"its budget spent": {task: Task{Classes: chat, ID: "t-chat-x-2026-10", BudgetEUR: 5, SpentEUR: 5, Status: "running"},
 			status: 402, header: "refused_budget"},
@@ -1940,7 +1942,7 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
 				LiteLLMURL: stub.URL, Prices: prices, FactorydToken: testFactorydToken})
 			use := cmp.Or(tc.use, policy.PurposeOperator)
-			rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, tc.task.ID, use, chatBody(use))
+			rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, tc.task.ID, use, chatBody(cmp.Or(tc.alias, use)))
 			if rr.Code != tc.status || rr.Header().Get(HeaderDecision) != tc.header {
 				t.Fatalf("status %d decision %q, want %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), tc.status, tc.header, rr.Body)
 			}

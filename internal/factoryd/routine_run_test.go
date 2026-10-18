@@ -225,7 +225,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 // While the last run's card #781 is open, a routine that holds files
 // nothing: the run ends held, names the card in its note and keeps no
 // task of its own, so the card's end finds the run that filed it. A held
-// run is pulse material and pokes nobody, under tell inbox too (rule 7).
+// run is board material and pokes nobody, under tell inbox too (rule 7).
 // File files a second card beside it: a new issue, since #781, the bot's
 // open issue of the same title, is the open card's. Once #781 ends, the
 // next run files.
