@@ -1174,18 +1174,12 @@ type statusLine struct {
 	RoutineCell string
 	RoutineHeld bool
 	// ChatSpent: the project's chat task spent its monthly budget, which
-	// stands the pulse and the chat until a raise (the Fund the chat
-	// form) or the month's turn; ChatTask is its task id. Approver: the
-	// viewer may fund it.
+	// stands the chat until a raise (the Fund the chat form) or the
+	// month's turn; ChatTask is its task id. Approver: the viewer may
+	// fund it.
 	ChatSpent bool
 	ChatTask  string
 	Approver  bool
-	// PulseCell is the strip's cell for the newest pulse's age once older
-	// than two minutes ("pulse 4 h old"); PulseFrozen marks one past the
-	// backoff on a project with an event in the last hour — stale, not
-	// quiet (the warn class).
-	PulseCell   string
-	PulseFrozen bool
 }
 
 // waiting is "; n waiting on the provider", "" for none.
@@ -1220,7 +1214,6 @@ type boardData struct {
 	whole       []column // the columns before the find narrowed them, the status panel's
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
-	Pulse       *factoryd.Pulse // the shown project's newest pulse
 	Columns     []column
 	HumanTasks  []card
 	Escalations []need
@@ -2302,8 +2295,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		arrange(&d, f)
 	}
 	if shown.Name != "" {
-		// the pulse first: its age is one of the strip's cells
-		d.Pulse = c.pulseOf(r, shown)
 		c.statusLine(ctx, v, f, shown, &d)
 		if c.cfg.Routines != nil {
 			c.placeGhosts(ctx, &d)
@@ -2360,7 +2351,7 @@ func (c *Console) readFinished(ctx context.Context, d *boardData, f boardFilter,
 // statusLine completes the board's status line with the project's state
 // word, its spend this UTC month (its chat's included) and its month cap:
 // its file's budget.month_eur, else the policy's; the spent state of its
-// chat's monthly budget, and the age of its newest pulse once stale.
+// chat's monthly budget.
 func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p factoryd.Project, d *boardData) {
 	s := &d.Status
 	s.Project, s.Filter = p.Name, f
@@ -2391,21 +2382,6 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		d.Problems = append(d.Problems, "the chat's budget could not be read")
 	} else if ok && t.Kind == factoryd.KindChat && t.Status == "running" && t.SpentEUR >= t.BudgetEUR {
 		s.ChatSpent, s.ChatTask = true, t.ID
-	}
-	if d.Pulse != nil {
-		if age := time.Since(d.Pulse.At); age > 2*time.Minute {
-			s.PulseCell = "pulse " + coarse(age) + " old"
-			// stale past the backoff means the pulse stopped computing:
-			// a project with events in the last hour should have one
-			// fresher, a quiet one may not
-			if age > 20*time.Minute && c.cfg.Events != nil {
-				if es, err := c.cfg.Events.ProjectEvents(ctx, p.Repository, 0, 1); err != nil {
-					log.Printf("console: the events of %s: %v", p.Repository, err)
-				} else if len(es) > 0 && time.Since(es[0].At) < time.Hour {
-					s.PulseFrozen = true
-				}
-			}
-		}
 	}
 	if c.cfg.Mirrors == nil {
 		return

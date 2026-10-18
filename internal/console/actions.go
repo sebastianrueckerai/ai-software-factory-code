@@ -879,7 +879,10 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // doAnswerValue answers card id with text. value is the clicked choice's
 // value when the answer came from a shaped question's button; a typed
 // answer's value resolves from the card's question when its words are one
-// of the question's labels. park and keep waiting record the answer and
+// of the question's labels. A click posts the value alone, no answer
+// field, so an empty text with a value takes the choice's own label as
+// the answer text; the empty-text refusal then applies only when neither
+// text nor value arrived. park and keep waiting record the answer and
 // leave the card waiting on its person: no comment is posted, because a
 // posted comment would start the attempt the person declined to start.
 // fund raises the card's budget by the shortfall its question names while
@@ -887,8 +890,8 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // answer, the label retrying the card.
 func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
-	if err := answerFits(text); err != nil {
-		return "", err
+	if len(text) > factoryd.MaxAnswer {
+		return "", answerFits(text)
 	}
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -903,6 +906,12 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	if value == "" && bt.Question != nil {
 		value = bt.Question.ChoiceValue(text)
+	}
+	if text == "" && value != "" && bt.Question != nil {
+		text = bt.Question.ChoiceLabel(value)
+	}
+	if err := answerFits(text); err != nil {
+		return "", err
 	}
 	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
 		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
@@ -1113,7 +1122,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
 		return refuse(http.StatusInternalServerError, "cannot read the chat task")
 	case !ok || t.Kind != factoryd.KindChat || t.Status != "running":
-		return refuse(http.StatusConflict, "the project's chat has spent no budget: its task starts with the chat's or the pulse's first turn of the month")
+		return refuse(http.StatusConflict, "the project's chat has spent no budget: its task starts with the chat's first turn of the month")
 	case t.SpentEUR < t.BudgetEUR:
 		return refuse(http.StatusConflict, fmt.Sprintf("the chat's budget of €%.2f is not spent: it needs no raise", t.BudgetEUR))
 	}

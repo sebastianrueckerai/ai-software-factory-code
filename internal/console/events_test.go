@@ -614,10 +614,10 @@ func skipPings(t *testing.T, br *bufio.Reader) []string {
 }
 
 // A member who only reads the project follows its stream read-only: no
-// replay and no rows, as they carry steers and the agent's text, and the
-// pulse's under the board's own rule, but event board after them, the
-// pulse's included, which swaps their board; each heartbeat checks that
-// they still read it, and the stream ends once they do not.
+// replay and no rows, as they carry steers and the agent's text, but a
+// live event other than the agent's text swaps their board; each
+// heartbeat checks that they still read it, and the stream ends once
+// they do not.
 func TestStreamFollowsReadOnly(t *testing.T) {
 	wait, beat := countersWait, heartbeat
 	countersWait, heartbeat = 10*time.Millisecond, 50*time.Millisecond
@@ -644,12 +644,6 @@ func TestStreamFollowsReadOnly(t *testing.T) {
 	for got := skipPings(t, br); !slices.Equal(got, []string{"event: board", "data:"}); got = skipPings(t, br) {
 		if len(got) == 0 || got[0] != "event: counters" {
 			t.Fatalf("bob's stream sent %q before event board", got)
-		}
-	}
-	row(factoryd.EventPulse, map[string]any{"sentence": "All is well."})
-	for got := skipPings(t, br); !slices.Equal(got, []string{"event: board", "data:"}); got = skipPings(t, br) {
-		if len(got) == 0 || got[0] != "event: counters" {
-			t.Fatalf("bob's stream sent %q after the pulse, want event board", got)
 		}
 	}
 	forgejo.reads.Store(false)
@@ -1429,15 +1423,15 @@ console.log(JSON.stringify(out));
 // does and the tab is clicked once the drawer's settle is in, a settle
 // that never comes leaving the listener armed for the next one, a second
 // event before it replacing the shot. Card ""
-// closes the drawer. The panel works the fold and the theme the theme's
+// closes the drawer. The theme works the theme's
 // own button. Back reads the board under the entry's query and puts the
 // entry's q in the box without running the find; an entry that differs
 // from the board's query only by doc= or the fields' order reads nothing.
 // The find's box takes the event's q when the read goes out, held or not,
 // without an input event, and a query without q clears it; one Back
 // supersedes, for the box waits for the query it names. An event whose
-// query the board already stands on — a card, a tab, the panel or the
-// theme alone — pushes no entry, the drawer's hash a card click leaves.
+// query the board already stands on — a card, a tab or the theme alone —
+// pushes no entry, the drawer's hash a card click leaves.
 func TestConsoleViewEvent(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1461,7 +1455,7 @@ themeSwitch.querySelectorAll = function () { return [themeLight]; };
 var box = el({id: "q", value: ""}), typed = [];
 box.dispatchEvent = function (ev) { typed.push(ev.type); };
 var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), drawer: drawer,
-  "status-panel": el(), "theme-switch": themeSwitch, live: el(), q: box};
+  "theme-switch": themeSwitch, live: el(), q: box};
 function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
 EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
 EventSource.prototype.close = function () { this.closed = true; };
@@ -1541,17 +1535,13 @@ fire("htmx:afterSettle", {target: byID.drawer});
 out.tab = tabBtn.clicks;
 fire("view", {card: ""});
 out.closed = [byID.drawer.hidden, sandbox.location.hash, replaced.slice()];
-fire("view", {panel: "closed"});
-out.panel = byID["status-panel"].hidden;
 fire("view", {theme: "light"});
 out.theme = themeLight.clicks;
-// a card, the panel or the theme alone, the event's query the board
-// already stands on, pushes no entry: the drawer's hash is the one a
-// card click leaves, and the panel and the theme push none at all
+// a card or the theme alone, the event's query the board already stands
+// on, pushes no entry: the drawer's hash is the one a card click leaves,
+// and the theme pushes none at all
 var entries = pushed.length, tabsBefore = tabBtn.clicks;
 requests = [];
-fire("view", {query: "?project=code", panel: "closed"});
-out.flatPanel = [pushed.length - entries, byID["status-panel"].hidden, requests.slice()];
 fire("view", {query: "?project=code", theme: "light"});
 out.flatTheme = [pushed.length - entries, themeLight.clicks];
 fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
@@ -1626,7 +1616,7 @@ console.log(JSON.stringify(out));
 	want := `{"pushed":["/?project=code&q=exp&doc=docs%2Fa.md"],"box":"exp","query":["?project=code&q=exp",["GET /board?project=code&q=exp"]],` +
 		`"queued":["GET /board?project=code&q=exp","GET /board?project=code"],"queuedBox":"","card":["#card=t-9",true],` +
 		`"opened":[false,["GET /cards/t-9/drawer"]],"tabBeforeSettle":0,"tab":1,"closed":[true,"",[[null,"/?project=code&doc=docs%2Fa.md"]]],` +
-		`"panel":true,"theme":1,"flatPanel":[0,true,["GET /board?project=code"]],` +
+		`"theme":1,` +
 		`"flatTheme":[0,2],"flatCard":[0,false],"flatTab":1,"noboard":[2,0],"popped":[[],"",["GET /board?project=code"]],"popDoc":["",0,"?project=code"],` +
 		`"popOrder":["?project=code&q=exp&view=wide",0],"backBox":["old",["GET /board?project=code&q=lock","GET /board?project=code&q=old"]],` +
 		`"twoShots":[0,1],"streams":1}`
