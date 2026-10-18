@@ -2149,6 +2149,32 @@ func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
 	}
 }
 
+// The pulse renders its board through an actor that carries no session
+// (pulseTurn's turn): a red-checks merge request's healed-head read
+// (#1013) fails closed as HeadUnread instead of following the nil
+// session, which crashed factoryd — a member session is not required to
+// paint a card, and nothing is asked of Forgejo as a member.
+func TestNilActorRedChecksBoard(t *testing.T) {
+	r := newRig(t)
+	r.approvals.mu.Lock()
+	r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true,"why_human":["session cap reached"]}`)
+	r.approvals.mu.Unlock()
+	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+	r.fg.calls = nil
+	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, &session{}))
+	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
+	if err != nil {
+		t.Fatalf("boardOf through a sessionless actor: %v", err)
+	}
+	i := slices.IndexFunc(d.Approvals, func(k approvalCard) bool { return k.ID == 4 })
+	if i < 0 || !d.Approvals[i].HeadUnread || d.Approvals[i].Healed {
+		t.Fatalf("the merge card = %+v: want the head unread, not healed", d.Approvals)
+	}
+	if len(r.fg.calls) != 0 {
+		t.Fatalf("the sessionless read asked Forgejo as a member: %q", r.fg.calls)
+	}
+}
+
 // A factory pull request's merge request on red checks fits its re-run and
 // its close, not an approval, wherever a refusal names what fits a card; on
 // green checks approve and deny decide it as any merge request.
