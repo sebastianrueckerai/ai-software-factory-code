@@ -117,7 +117,7 @@ func TestCardGitHubPullRequest(t *testing.T) {
 			GitHubPRState: "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"})
 	ck, _ := r.loggedIn(t)
 	for id, want := range map[string]string{
-		"t-x": `<span class="github">GitHub: <a href="https://github.com/acme/app/pull/12">PR #12</a> merged</span>`,
+		"t-x": `<span class="github">GitHub: <a href="https://github.com/acme/app/pull/12" target="_blank" rel="noopener">PR #12</a> merged</span>`,
 		"t-y": `<span class="github">GitHub: failed: GitHub refused the pull request: GitHub answered 422 Validation Failed</span>`,
 	} {
 		if face := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id, nil), ck).Body.String(); !strings.Contains(face, want) {

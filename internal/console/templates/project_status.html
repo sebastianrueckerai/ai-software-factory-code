@@ -7,7 +7,7 @@
 {{define "status-panel"}}<section id="status" class="status" aria-live="polite" aria-label="The steps of project {{.Name}}"{{if not .Final}} hx-get="/projects/{{.Name}}/status" hx-trigger="every 3s" hx-swap="outerHTML"{{end}}>
 {{if .Error}}<p class="problem" role="alert">{{.Error}}</p>
 {{end}}<ol class="steps">
-{{range .Steps}}<li class="step {{.State}}" tabindex="0" title="{{.Tip}}"><span class="name">{{.Name}}</span> <span class="state">{{.State}}</span><br><span class="detail">{{if .Link}}<a href="{{.Link}}">{{.Detail}}</a>{{else}}{{.Detail}}{{end}}</span></li>
+{{range .Steps}}<li class="step {{.State}}" tabindex="0" title="{{.Tip}}"><span class="name">{{.Name}}</span> <span class="state">{{.State}}</span><br><span class="detail">{{if .Link}}<a href="{{.Link}}"{{if away .Link}} target="_blank" rel="noopener"{{end}}>{{.Detail}}</a>{{else}}{{.Detail}}{{end}}</span></li>
 {{end}}</ol>
 {{if .CanMerge}}<form method="post" action="/projects/{{.Name}}/merge" hx-post="/projects/{{.Name}}/merge" hx-target="#status" hx-swap="outerHTML" hx-sync="closest section:replace" hx-indicator="find button">
 <input type="hidden" name="csrf" value="{{.CSRF}}">

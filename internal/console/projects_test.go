@@ -84,7 +84,7 @@ func TestSettingsPage(t *testing.T) {
 	const at = "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/"
 	demo := page("/settings?project=demo-app")
 	for _, want := range []string{
-		`change them <a href="` + at + `demo-app.yaml">in Git</a>`,
+		`change them <a href="` + at + `demo-app.yaml" target="_blank" rel="noopener">in Git</a>`,
 		"Repository: demo-app/demo-app", "Objects: factory", "Agents: coder", "Merge rule: auto",
 		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
 		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
@@ -724,7 +724,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 		{"nothing", func(s *statusRig) {}, []string{"waiting", "waiting", "waiting", "waiting"},
 			[]string{"No pull request from branch project-linkshort into main yet."}, []string{`action="/projects/linkshort/merge"`, `type="password"`}},
 		{"pull request open", func(s *statusRig) { s.infra.set(openPull) }, []string{"done", "waiting", "waiting", "waiting"},
-			[]string{`<a href="https://git.example/sf/infra/pulls/12">#12, filed by sebastian</a>`, "Waiting for an approver to merge #12.",
+			[]string{`<a href="https://git.example/sf/infra/pulls/12" target="_blank" rel="noopener">#12, filed by sebastian</a>`, "Waiting for an approver to merge #12.",
 				`action="/projects/linkshort/merge"`, `hx-post="/projects/linkshort/merge"`, `>Merge</button>`}, []string{`type="password"`}},
 		{"pull request closed", func(s *statusRig) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
@@ -996,7 +996,7 @@ func TestMergeActsOnTheLastFiling(t *testing.T) {
 	s.filed(t, 13)
 	s.infra.set(map[string]any{"number": 13, "state": "open", "merged": false, "html_url": "https://git.example/sf/infra/pulls/13",
 		"user": map[string]any{"login": "sebastian"}})
-	if body := s.status(t); !strings.Contains(body, `<a href="https://git.example/sf/infra/pulls/13">#13, filed by sebastian</a>`) {
+	if body := s.status(t); !strings.Contains(body, `<a href="https://git.example/sf/infra/pulls/13" target="_blank" rel="noopener">#13, filed by sebastian</a>`) {
 		t.Errorf("the panel lacks #13:\n%s", body)
 	}
 	if rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck); rec.Code != http.StatusSeeOther {
