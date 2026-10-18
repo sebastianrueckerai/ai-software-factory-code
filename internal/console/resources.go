@@ -139,7 +139,7 @@ func (c *Console) resources(w http.ResponseWriter, r *http.Request) {
 		}
 		for i := range pv.Rows {
 			if pv.Rows[i].Actions {
-				pv.Rows[i].PromoteNote = fmt.Sprintf("standing, about %.4f EUR a month against the standing block's %.2f EUR (%.4f standing now)",
+				pv.Rows[i].PromoteNote = fmt.Sprintf("standing, about €%.4f a month against the standing block's €%.2f (€%.4f standing now)",
 					monthly[pv.Rows[i].HoldID], pv.Envelope.Standing.MonthlyEUR, pv.Envelope.StandingUse.MonthlyEUR)
 			}
 		}

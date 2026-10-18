@@ -54,6 +54,17 @@ var funcs = template.FuncMap{
 	// ago and schedule word a cluster job's last runs and cron
 	"ago":      jobAge,
 	"schedule": jobSchedule,
+	// until words a lease's end from either side of now, as ago words a past run
+	"until": func(t time.Time) string {
+		if t.IsZero() {
+			return "never"
+		}
+		d := time.Until(t)
+		if d > 0 {
+			return "in " + coarse(d)
+		}
+		return coarse(-d) + " ago"
+	},
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct":    pct,
@@ -288,7 +299,7 @@ func label(options []option, value string) string {
 // behind the face (plan:558, stage:verifying, status:failed, is:failed
 // and the other exceptional states, by:sebastian, model:coding-cheap,
 // pr:612), and every term must match. Each column keeps its whole count;
-// the columns given stay as they were, for the status panel.
+// the columns given stay as they were, for the column menus.
 func find(cols []column, q string) []column {
 	terms := strings.Fields(strings.ToLower(q))
 	out := make([]column, len(cols))
@@ -915,15 +926,6 @@ type need struct {
 	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
-// anchor is where the item is on the page: an escalation's article, else
-// the card's drawer.
-func (n need) anchor() string {
-	if n.Escalated {
-		return "#need-" + n.Card.ID
-	}
-	return "#card=" + n.Card.ID
-}
-
 // Waiting is how long the item has waited for a member, in minutes or
 // hours and minutes; empty when the item's start is unknown.
 func (n need) Waiting() string {
@@ -1211,7 +1213,7 @@ type boardData struct {
 	Messengers  bool     // the layout's notifications link
 	ToggleQuery string   // the filter with the other view
 	ClearQuery  string   // the filter without the find, the ×'s link (C13)
-	whole       []column // the columns before the find narrowed them, the status panel's
+	whole       []column // the columns before the find narrowed them, the menus'
 	Projects    []string // the projects the viewer writes, and the shown one
 	Status      statusLine
 	Columns     []column
@@ -1255,67 +1257,12 @@ func pct(spent, cap float64) int {
 }
 
 // cols are the columns as read, before the find narrowed them: the
-// status panel lists the project's cards, not the find's.
+// column menus read the project's cards, not the find's.
 func (d boardData) cols() []column {
 	if d.whole != nil {
 		return d.whole
 	}
 	return d.Columns
-}
-
-// InProgress are the cards in progress for the status panel, with their
-// stage, in the columns' order.
-func (d boardData) InProgress() []card {
-	var out []card
-	for _, col := range d.cols() {
-		for _, k := range col.Cards {
-			if k.Stage != "" {
-				out = append(out, k)
-			}
-		}
-	}
-	return out
-}
-
-// needLink is one Needs you item in the status panel: its headline and
-// the anchor of the item in the column.
-type needLink struct{ Words, Href string }
-
-// NeedLinks are the Needs you items for the status panel: the first
-// column's in the four columns; in the wide view, which keeps them in
-// its own lists, the approvals, the escalations and the human tasks.
-func (d boardData) NeedLinks() []needLink {
-	var out []needLink
-	if len(d.Columns) == 0 {
-		return nil
-	}
-	needs := d.cols()[0].Needs
-	if needs == nil {
-		for i := range d.Approvals {
-			needs = append(needs, need{Since: d.Approvals[i].CreatedAt, Approval: &d.Approvals[i]})
-		}
-		for _, n := range d.Escalations {
-			needs = append(needs, n)
-		}
-		for _, k := range d.HumanTasks {
-			needs = append(needs, need{Since: k.CreatedAt, Card: k})
-		}
-	}
-	for _, n := range needs {
-		switch {
-		case n.Approval != nil && n.Approval.Kind == factoryd.ApprovalMerge:
-			out = append(out, needLink{fmt.Sprintf("Merge PR #%d", n.Approval.PRNumber), fmt.Sprintf("#approval-%d", n.Approval.ID)})
-		case n.Approval != nil && n.Approval.Kind == factoryd.ApprovalPlan:
-			out = append(out, needLink{fmt.Sprintf("Plan #%d", n.Approval.Issue), fmt.Sprintf("#approval-%d", n.Approval.ID)})
-		case n.Approval != nil:
-			out = append(out, needLink{"Resource request", fmt.Sprintf("#approval-%d", n.Approval.ID)})
-		case n.Card.IssueNumber > 0:
-			out = append(out, needLink{fmt.Sprintf("#%d %s", n.Card.IssueNumber, n.Card.Title), n.anchor()})
-		default:
-			out = append(out, needLink{n.Card.Title, n.anchor()})
-		}
-	}
-	return out
 }
 
 // Final is a done, failed or closed card: a two-line row on the board.

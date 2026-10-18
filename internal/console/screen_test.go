@@ -1026,7 +1026,8 @@ func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
 // question), is:, status: and by: against the facts, every term matching;
 // an emptied column says "none match" and the Needs you column keeps its
 // amber (lit) from its whole count. The forms, the board's query and the
-// clear link carry q, and the status panel lists the whole project.
+// clear link carry q, and the status panel keeps its two sections with
+// the whole project's figures.
 func TestFindNarrowsTheColumns(t *testing.T) {
 	r, ck := screenRig(t)
 	page := func(q string) string {
@@ -1068,10 +1069,14 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	if n := strings.Count(body, `<p class="none-match">none match</p>`); n != 3 {
 		t.Errorf("%d columns say none match, want 3", n)
 	}
-	panel := body[strings.Index(body, "<section><h3>Needs you</h3>"):]
-	panel = panel[:strings.Index(panel, "</section>")]
-	if n := strings.Count(panel, `class="sp-link"`); n != 5 {
-		t.Errorf("the status panel lists %d Needs you items under the find, want the whole 5", n)
+	// the panel keeps spend, provider, GitHub and the configuration
+	// version (C9), under a find as without one
+	for _, want := range []string{`<h3>Spend</h3>`, `<span class="fig">€0.00 of €20.00 day cap</span>`,
+		`<h3>Provider, GitHub, configuration</h3>`, `<dt>provider</dt><dd>ok</dd>`, `<dt>GitHub</dt><dd>none</dd>`,
+		`<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory"><code>c9d98bb0aa11</code></a></dd>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("under the find the status panel lacks %s", want)
+		}
 	}
 	asked := page("which region")
 	for _, want := range []string{`<input type="hidden" name="q" value="which region">`, `name="back" value="/?project=ai-software-factory-code&amp;q=which&#43;region"`} {
