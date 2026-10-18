@@ -514,3 +514,48 @@ func TestChatClearsOldRows(t *testing.T) {
 		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
 	}
 }
+
+// Clear old past the compaction fold: the sweep's read answers no
+// summary, so the chat shows no summary card over rows the member swept;
+// the stored thread keeps its summary and the turns still read it.
+func TestChatClearPastTheSummary(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	seedTurns(t, chat, "a", "b")
+	if err := chat.SaveSummary(ctx, "sf/code", "sebastian", 1, factoryd.ThreadSummary{Text: "the cache was fixed", Upto: 2}); err != nil {
+		t.Fatal(err)
+	}
+	read := func() chatGetAnswer {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=1", nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET = %d: %s", rec.Code, rec.Body.String())
+		}
+		var answer chatGetAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	answer := read()
+	equal(t, "before the sweep", []any{len(answer.Messages), answer.Thread.Summary, answer.Thread.SummaryUpto},
+		[]any{4, "the cache was fixed", int64(2)})
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {"1"}}); code != http.StatusNoContent {
+		t.Fatalf("POST clear = %d: %s", code, body)
+	}
+	answer = read()
+	equal(t, "the sweep past the fold answers no summary", []any{len(answer.Messages), int(answer.Thread.Cleared), answer.Thread.Summary, answer.Thread.SummaryUpto},
+		[]any{0, 4, "", int64(0)})
+	th, ok, err := chat.Conversation(ctx, "sf/code", "sebastian", 1)
+	if err != nil || !ok {
+		t.Fatalf("the thread: %v, %v", ok, err)
+	}
+	equal(t, "the stored thread keeps its summary", []any{th.Summary, th.SummaryUpto, th.Compactions},
+		[]any{"the cache was fixed", int64(2), 1})
+	g.replies = [][]string{{say("done")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"c1"}})
+	if !strings.HasSuffix(systemOf(t, g.calls()[0]), "This thread before its recent turns, summarised:\nthe cache was fixed") {
+		t.Errorf("the turn after the sweep reads no summary: %q", systemOf(t, g.calls()[0]))
+	}
+}
