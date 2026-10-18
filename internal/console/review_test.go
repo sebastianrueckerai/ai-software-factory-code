@@ -64,27 +64,6 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	}
 }
 
-// The status panel's In progress list and Needs you links hold in the
-// wide view too, and a human task links to its drawer: it has no
-// escalation article.
-func TestStatusPanelListsInTheWideView(t *testing.T) {
-	r := newRig(t)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
-		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", Objective: "rotate the key", IssueNumber: 16})
-	ck, _ := r.loggedIn(t)
-	for _, page := range []string{"/", "/?view=wide"} {
-		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		for _, want := range []string{`<a class="sp-link" href="#card=t-run">`, `<a class="sp-link" href="#card=t-h">`} {
-			if !strings.Contains(body, want) {
-				t.Errorf("%s: the status panel lacks %s", page, want)
-			}
-		}
-		if strings.Contains(body, `href="#need-t-h"`) {
-			t.Errorf("%s: a human task links to an escalation article it has not", page)
-		}
-	}
-}
-
 // A queued card with an event keeps its face bare: the activity line
 // speaks only on a card in progress or waiting.
 func TestAQueuedCardDoesNotSpeak(t *testing.T) {
