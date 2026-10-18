@@ -704,6 +704,9 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .sp-dl dd { margin: 0; color: var(--text-muted); }
 .sp-dl dd.warn { color: var(--need-text); }
 .cell.deps.down, .cell.deps.down .dot { color: var(--st-failed); }
+.cell.deps.up, .cell.deps.up .dot { color: var(--st-done); }
+.sp-dl dd .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+.sp-dl dd.up .dot { color: var(--st-done); }
 .sp-dl dd.down { color: var(--st-failed); }
 
 /* the main area: the chat left at 40 percent, the board right, one

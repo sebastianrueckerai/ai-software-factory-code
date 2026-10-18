@@ -1186,12 +1186,13 @@ type statusLine struct {
 	ChatTask  string
 	Approver  bool
 	// Dependencies are the factory's own dependencies' latest health with
-	// each row's age, the panel's list (roadmap 299); DepsDown names any
-	// down and DepsDegraded any degraded, the strip's dot, which whispers
-	// while all is up.
+	// each row's age, the panel's list (roadmap 299); the strip's one dot
+	// carries the worst of them: DepsDown red, DepsDegraded amber, DepsUp
+	// green (Sebastian, 2026-10-19).
 	Dependencies []depRow
 	DepsDown     bool
 	DepsDegraded bool
+	DepsUp       bool
 }
 
 // depRow is one dependency's state as the panel shows it: its latest
@@ -2396,6 +2397,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 					s.DepsDegraded = true
 				}
 			}
+			s.DepsUp = len(deps) > 0 && !s.DepsDown && !s.DepsDegraded
 		}
 	}
 	var err error
