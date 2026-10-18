@@ -153,7 +153,9 @@ func TestIssueFaultsHeldFixed(t *testing.T) {
 // every part a merge approval's face carries is bounded where the face
 // is assembled, and the stylesheet clamps whatever a board face shows,
 // so no field or card kind can grow the column's copy again (ruling
-// 295). The drawer keeps the whole text.
+// 295). The lane face holds no part of the ask — only the brief, at
+// one line, when the ask carries one — and the drawer keeps the whole
+// text (the 2026-10-17 card).
 func TestMergeFaceWhispers(t *testing.T) {
 	r := newRig(t)
 	pad := func(n int) string {
@@ -180,8 +182,8 @@ func TestMergeFaceWhispers(t *testing.T) {
 		t.Fatal("no merge approval card on the board")
 	}
 	face := body[start : start+strings.Index(body[start:], "</article>")]
-	if s := askline(reco); !strings.Contains(face, s[:40]) {
-		t.Errorf("FIX MISSING: the face does not whisper the recommendation's first line:\n%s", face)
+	if s := askline(reco); strings.Contains(face, s[:40]) {
+		t.Errorf("FAULT STILL PRESENT: the face carries the recommendation's first line:\n%s", face)
 	}
 	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "EVIDENCE_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```"} {
 		if strings.Contains(face, tail) {
