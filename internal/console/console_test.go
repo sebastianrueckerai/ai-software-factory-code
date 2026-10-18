@@ -1766,7 +1766,7 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		"<strong>3.7500 EUR</strong> of the 20.0000 EUR day cap",
+		"<strong>€3.7500</strong> of the €20.0000 day cap",
 		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.2500</td><td class=\"num\">0.0000</td><td class=\"num\">2.0000</td><td class=\"num\">0.5000</td><td class=\"num\">3.7500</td>",
 		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.5000</td>",
 		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.2500</td>`,
@@ -2263,6 +2263,8 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	lease := time.Now().UTC().Add(2 * time.Hour).Truncate(time.Minute)
 	at := lease.Format("2006-01-02 15:04 UTC")
+	ended := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Minute)
+	atEnded := ended.Format("2006-01-02 15:04 UTC")
 	r.resources.rows = []cloudres.Resource{
 		{ID: 10, Kind: "firewall", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", LeaseExpires: lease},
 		{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "cx33", Address: "203.0.113.9",
@@ -2270,7 +2272,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		{ID: 14, Kind: "volume", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live", Size: "20GB",
 			LeaseExpires: lease, PricePerHourEUR: 1.144 / 730, MonthlyEUR: 1.144},
 		{ID: 12, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 8, State: "live", Size: "cx23", Lifetime: cloudres.LifetimeStanding, PromotedBy: "alice"},
-		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", ReleasedBy: "sebastian"},
+		{ID: 13, Kind: "server", Repo: "sf/code", OwnerRef: "t-old", HoldID: 6, State: "deleted", Size: "cx23", LeaseExpires: ended, ReleasedBy: "sebastian"},
 	}
 	r.resources.use = map[string]cloudres.EnvelopeUse{"demo-app/demo-app": {OpenServers: 1, MonthEUR: 1.5}}
 	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
@@ -2281,19 +2283,20 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 	body := rec.Body.String()
 	for _, want := range []string{
 		`<h3 id="project-sf/code">sf/code</h3>`, `<h3 id="project-demo-app/demo-app">demo-app/demo-app</h3>`, `<h3 id="project-sf/infra">sf/infra</h3>`,
-		"<td>cx33</td>", "<td>203.0.113.9</td>", "<td>" + at + "</td>", "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.0288</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
+		"<td>cx33</td>", "<td>203.0.113.9</td>", `<td title="` + at + `">in 1 h</td>`, `<tr class="closed">`, `<tr class="standing">`,
+		`<td title="` + atEnded + ` · released by sebastian">2 h ago</td>`, "<td class=\"num\">0.0144</td>", "<td class=\"num\">0.0288</td>", "<td><i class=\"lamp on\" aria-hidden=\"true\"></i>live</td>",
 		"none: standing (made standing by alice)", "released by sebastian", "<td><i class=\"lamp\" aria-hidden=\"true\"></i>deleted</td>", `href="/tasks/t-res/timeline"`,
 		// the commission's catalogue month: cx33 8.49 + IPv4 0.50 + 20 GB x 0.0572 = 10.134, the firewall free
-		`<span id="promote-11" class="meta">standing, about 10.1340 EUR a month against the standing block&#39;s 0.00 EUR (0.0000 standing now)</span>`,
+		`<span id="promote-11" class="meta">standing, about €10.1340 a month against the standing block&#39;s €0.00 (€0.0000 standing now)</span>`,
 		// sf/code is in no file of this configuration: the policy's default
 		"No project file names this repository: the policy's envelope_default applies.",
-		"task block 10.00 EUR a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month 0.0000 EUR used or reserved, 0 servers open",
+		"task block €10.00 a month, types cx23, 2 servers at once, leases up to 4 h, volumes up to 20 GB · this month €0.0000 used or reserved, 0 servers open",
 		// demo-app's file, read-only, linked at the version's commit
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml">change it in Git</a>.`,
-		"task block 30.00 EUR a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
-		"this month 1.5000 EUR used or reserved, 1 server open",
+		"task block €30.00 a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
+		"this month €1.5000 used or reserved, 1 server open",
 		// the standing monthly line (ruling 147)
-		"standing block 12.00 EUR a month, types cx23, 2 servers · standing now 1 server, 5.9900 EUR a month",
+		"standing block €12.00 a month, types cx23, 2 servers · standing now 1 server, €5.9900 a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
 		if !strings.Contains(body, want) {

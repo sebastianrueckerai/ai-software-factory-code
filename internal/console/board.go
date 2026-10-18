@@ -54,6 +54,17 @@ var funcs = template.FuncMap{
 	// ago and schedule word a cluster job's last runs and cron
 	"ago":      jobAge,
 	"schedule": jobSchedule,
+	// until words a lease's end from either side of now, as ago words a past run
+	"until": func(t time.Time) string {
+		if t.IsZero() {
+			return "never"
+		}
+		d := time.Until(t)
+		if d > 0 {
+			return "in " + coarse(d)
+		}
+		return coarse(-d) + " ago"
+	},
 	// pct is spend of cap in whole percent, 0 without a cap; gaugeClass
 	// is the gauge's class: warn from 80 percent, over past the cap
 	"pct":    pct,
