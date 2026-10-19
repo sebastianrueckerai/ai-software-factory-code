@@ -428,7 +428,7 @@ func (r *alertRig) projectAlerts(t *testing.T, ns string) []ProjectAlert {
 	kube := newFakeProjectKube()
 	kube.deploys = map[string][]DeploymentState{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(projects, r.store, kube))
+	mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(projects, r.store, kube, &fakeRollRecords{}))
 	rec := getAlerts(mux, "/projects/demo-app/alerts?namespace="+ns, token)
 	var got []ProjectAlert
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != http.StatusOK {
