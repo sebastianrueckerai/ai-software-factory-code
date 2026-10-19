@@ -578,7 +578,7 @@ func chatImages(r *http.Request) ([]chatImage, string) {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
 		data, err := io.ReadAll(io.LimitReader(f, chatImageBytes+1))
-		f.Close()
+		f.Close() // #nosec G104 -- the read has the whole part; the form file's close carries nothing
 		if err != nil {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
