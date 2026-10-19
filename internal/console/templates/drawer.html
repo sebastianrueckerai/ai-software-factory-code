@@ -1,7 +1,7 @@
 <div class="drawer-content" data-drawer="{{.Card.ID}}">
 <div class="drawer-head">
-<button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer" title="Close (Escape)">✕</button>
-<div class="dr-title">{{with .Card}}{{if .IssueURL}}<a class="dr-ref" href="{{.IssueURL}}" target="_blank" rel="noopener" title="the issue">#{{.IssueNumber}}</a>{{else}}<span class="dr-ref">{{.ID}}</span>{{end}}<h2 tabindex="-1">{{.Title}}</h2>{{end}}</div>
+<button type="button" id="drawer-close" class="drawer-close" aria-label="Close the drawer" data-tip="Close (Escape)">✕</button>
+<div class="dr-title">{{with .Card}}{{if .IssueURL}}<a class="dr-ref" href="{{.IssueURL}}" target="_blank" rel="noopener" data-tip="the issue">#{{.IssueNumber}}</a>{{else}}<span class="dr-ref">{{.ID}}</span>{{end}}<h2 tabindex="-1">{{.Title}}</h2>{{end}}</div>
 <p class="drawer-facts"><span class="pill {{.Card.StatusClass}}">{{.Word}}</span>{{with .Age}} <span class="sep"></span><span>{{.}}</span>{{end}}{{with .Card.Checks}} <span class="sep"></span><span>{{.}} checks</span>{{end}}{{if gt .Card.BudgetEUR 0.0}} <span class="sep"></span><span class="spend{{if .Card.NearBudget}} near{{end}}">{{eur2 .Card.SpentEUR}} / {{eur2 .Card.BudgetEUR}}{{if .Card.NearBudget}} ⚠ near its budget{{end}}</span>{{end}}{{if eq .Card.Lane "plan"}} <span class="chip plan">plan</span>{{end}}{{range .Card.Fine}} <span class="pill fine {{.Class}}">{{.Words}}</span>{{end}}{{with .Card.ModelAlias}} <span class="chip model">{{.}}</span>{{end}}{{if .Card.PRURL}} <a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a>{{end}}</p>
 <nav class="tabs" role="tablist" aria-label="The card's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/cards/{{$.Card.ID}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>

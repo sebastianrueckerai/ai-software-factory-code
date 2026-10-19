@@ -625,7 +625,12 @@ document.addEventListener("view", function (e) {
     }
     if (e.key === "Escape") {
       if (keys() && !keys().hidden) showKeys(false);
-      else closeDrawer();
+      else {
+        closeDrawer();
+        var dr = document.getElementById("drawer");
+        var fbtn = document.getElementById("chat-full");
+        if ((!dr || dr.hidden) && fbtn && document.getElementById("screen").classList.contains("chat-only")) fbtn.click();
+      }
       return;
     }
     if (e.target.closest("input, textarea, select, [contenteditable]")) return;

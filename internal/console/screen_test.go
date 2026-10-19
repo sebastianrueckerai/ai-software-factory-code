@@ -273,9 +273,9 @@ func TestStatusLineDependencies(t *testing.T) {
 		return body[start : start+strings.Index(body[start:], `</summary>
 <div class="sp"`)]
 	}
-	const down = `<span class="cell deps down" title="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
-	const warn = `<span class="cell deps warn" title="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
-	const up = `<span class="cell deps up" title="every factory dependency answers; the status in detail lists them"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	const down = `<span class="cell deps down" data-tip="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	const warn = `<span class="cell deps warn" data-tip="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>`
+	const up = `<span class="cell deps up" data-tip="every factory dependency answers; the status in detail lists them"><i class="dot" aria-hidden="true"></i>dependencies</span>`
 	if got := line(); strings.Contains(got, "deps") {
 		t.Fatalf("no rows, strip holds a deps cell:\n%s", got)
 	}
@@ -295,7 +295,7 @@ func TestStatusLineDependencies(t *testing.T) {
 		t.Fatalf("every row up:\n%s\nwant the green cell only", got)
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`<h3>Dependencies</h3>`, `<dt>temporal</dt>`, `><i class="dot" aria-hidden="true"></i>up · under a minute ago</dd>`} {
+	for _, want := range []string{`<h3>Factory</h3>`, `data-tip="up · under a minute ago"><i class="dot" aria-hidden="true"></i>temporal</span>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the panel lacks %q", want)
 		}
@@ -660,7 +660,7 @@ func TestDrawerOverview(t *testing.T) {
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" title="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
+		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
@@ -1152,8 +1152,8 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	// the panel keeps spend, provider, GitHub and the configuration
 	// version (C9), under a find as without one
 	for _, want := range []string{`<h3>Spend</h3>`, `<span class="fig">€0.00 of €20.00 day cap</span>`,
-		`<h3>Provider, GitHub, configuration</h3>`, `<dt>provider</dt><dd>ok</dd>`, `<dt>GitHub</dt><dd>none</dd>`,
-		`<dt>configuration</dt><dd>version 4 · <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener"><code>c9d98bb0aa11</code></a></dd>`} {
+		`<h3>Factory</h3>`, `<p class="none">unknown</p>`,
+		`<a class="lchip" href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory" target="_blank" rel="noopener" data-tip="version 4 · c9d98bb0aa11">config</a>`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("under the find the status panel lacks %s", want)
 		}
