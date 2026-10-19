@@ -72,32 +72,33 @@ var (
 // both dispatchers read this table.
 var accessTable = map[string]accessRule{
 	// GET routes
-	"GET /static/":                            {},
-	"GET /login":                              {},
-	"GET /notifications":                      rMember,
-	"GET /messengers/discord/start":           rMember,
-	"GET /messengers/discord/callback":        rMember,
-	"GET /auth/callback":                      {},
-	"GET /{$}":                                rMember,
-	"GET /board":                              rMember,
-	"GET /board/finished":                     rMember,
-	"GET /tasks/new":                          rFactory,
-	"GET /tasks/{id}/timeline":                {need: writer, scope: scTask},
-	"GET /costs":                              rFactory,
-	"GET /policy":                             rFactory,
-	"GET /resources":                          rFactory,
-	"GET /settings":                           rFactory,
-	"GET /settings/new":                       rFactory,
-	"GET /projects/{name}/status":             rFactory,
-	"GET /projects/{name}/events":             rProject,
-	"GET /projects/{name}/events/stream":      rMember, // follows() judges the project's sight
-	"GET /cards/{id}":                         {need: writer, scope: scCard, hide: true},
-	"GET /cards/{id}/drawer":                  rCard,
-	"GET /routines/{project}/{name}/drawer":   rProject,
-	"GET /projects/{name}/chat":               rProject,
-	"GET /projects/{name}/chat/conversations": rProject,
-	"GET /projects/{name}/docs/{path...}":     rMember, // docRead judges the project's sight, as the stream does
-	"POST /projects/{name}/docs/{path...}":    rMember, // docWrite judges the project's sight; Forgejo the member's commit
+	"GET /static/":                               {},
+	"GET /login":                                 {},
+	"GET /notifications":                         rMember,
+	"GET /messengers/discord/start":              rMember,
+	"GET /messengers/discord/callback":           rMember,
+	"GET /auth/callback":                         {},
+	"GET /{$}":                                   rMember,
+	"GET /board":                                 rMember,
+	"GET /board/finished":                        rMember,
+	"GET /tasks/new":                             rFactory,
+	"GET /tasks/{id}/timeline":                   {need: writer, scope: scTask},
+	"GET /costs":                                 rFactory,
+	"GET /policy":                                rFactory,
+	"GET /resources":                             rFactory,
+	"GET /settings":                              rFactory,
+	"GET /settings/new":                          rFactory,
+	"GET /projects/{name}/status":                rFactory,
+	"GET /projects/{name}/events":                rProject,
+	"GET /projects/{name}/events/stream":         rMember, // follows() judges the project's sight
+	"GET /cards/{id}":                            {need: writer, scope: scCard, hide: true},
+	"GET /cards/{id}/drawer":                     rCard,
+	"GET /routines/{project}/{name}/drawer":      rProject,
+	"GET /projects/{name}/chat":                  rProject,
+	"GET /projects/{name}/chat/conversations":    rProject,
+	"GET /projects/{name}/chat/attachments/{id}": rProject, // any member reads any thread's images, as its rows
+	"GET /projects/{name}/docs/{path...}":        rMember,  // docRead judges the project's sight, as the stream does
+	"POST /projects/{name}/docs/{path...}":       rMember,  // docWrite judges the project's sight; Forgejo the member's commit
 
 	// POST routes
 	"POST /messengers/telegram":                 {}, // the header secret is the route's own check

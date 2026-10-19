@@ -8,6 +8,7 @@
 package acceptance
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -771,6 +773,7 @@ func (p accBatchPolicies) CurrentPolicy(context.Context) (policy.Version, bool, 
 type accBatchChat struct {
 	mu        sync.Mutex
 	msgs      []factoryd.ChatMessage
+	atts      []factoryd.ChatAttachment
 	proposals []accBatchProposal
 	tasks     *accBatchTasks
 }
@@ -877,6 +880,36 @@ func (f *accBatchChat) ChatMessages(_ context.Context, _, _ string, _ int64, lim
 		all = all[len(all)-limit:]
 	}
 	return all, nil
+}
+
+func (f *accBatchChat) AddChatAttachment(_ context.Context, _, _ string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	a.ID, a.At = f.nextID(), time.Now()
+	f.atts = append(f.atts, a)
+	return a, nil
+}
+
+func (f *accBatchChat) ChatAttachments(_ context.Context, _, _ string, conversation int64) ([]factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatAttachment
+	for _, a := range f.atts {
+		if a.Conversation == conversation {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (f *accBatchChat) ChatAttachmentByID(_ context.Context, _ string, id int64) (factoryd.ChatAttachment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := slices.IndexFunc(f.atts, func(a factoryd.ChatAttachment) bool { return a.ID == id })
+	if i < 0 {
+		return factoryd.ChatAttachment{}, false, nil
+	}
+	return f.atts[i], true, nil
 }
 
 func (f *accBatchChat) CurrentConversation(context.Context, string, string) (int64, error) {
@@ -1229,12 +1262,16 @@ func (r *batchRig) get(path string, cookies ...*http.Cookie) *httptest.ResponseR
 // postChat sends one chat message as the member and reads back the
 // stream's events as "event data".
 func (r *batchRig) postChat(message string) (int, []string) {
-	form := url.Values{"message": {message}, "csrf": {r.csrf}}
-	req, err := http.NewRequest(http.MethodPost, r.srv.URL+"/projects/"+accBatchProject+"/chat", strings.NewReader(form.Encode()))
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	w.WriteField("message", message)
+	w.WriteField("csrf", r.csrf)
+	w.Close()
+	req, err := http.NewRequest(http.MethodPost, r.srv.URL+"/projects/"+accBatchProject+"/chat", &buf)
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.AddCookie(r.ck)
 	resp, err := r.srv.Client().Do(req)
 	if err != nil {

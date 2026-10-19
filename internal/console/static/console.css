@@ -801,6 +801,15 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-queue .queued-text { flex: 1; height: auto; min-height: 26px; padding: 2px 8px; justify-content: flex-start; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); border: 1px dashed var(--btn-line); font-size: 13px; font-weight: 400; }
 .chat-queue textarea { flex: 1; max-width: none; resize: none; }
 .chat-queue .queued-remove { width: 26px; padding: 0; }
+/* the images riding the next message: chips above the prompt, and the
+   thumbnails under a sent row */
+.chat-images { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-images li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-images img { width: 22px; height: 22px; object-fit: cover; border-radius: 3px; display: block; }
+.chat-images .queued-remove { width: 20px; height: 20px; padding: 0; }
+.chat-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.chat-thumbs a { display: block; }
+.chat-thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 4px; border: 1px solid var(--btn-line); display: block; }
 /* the drawer docks at the right edge of the main area, over the board
    and never over the chat */
 .drawer { position: absolute; top: 12px; right: 0; bottom: 12px; width: min(46%, 720px); z-index: 20; overflow-y: auto; padding: 14px 18px 28px; background: var(--bg-raised); border: 1px solid var(--line-strong); border-left: 1px solid var(--accent); border-right: 0; box-shadow: var(--drawer-shadow); animation: drin .16s ease-out; }

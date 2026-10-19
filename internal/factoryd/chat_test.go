@@ -22,7 +22,7 @@ func chatStore(t *testing.T) *PGStore {
 	}
 	t.Cleanup(func() { s.db.Close() })
 	s.SetSealKey([]byte("0123456789abcdef0123456789abcdef"))
-	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_conversations, chat_proposals, chat_seen, ledger, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(t.Context(), `TRUNCATE tasks, chat_messages, chat_attachments, chat_conversations, chat_proposals, chat_seen, ledger, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	return s
@@ -118,6 +118,45 @@ func TestPGStoreChatMessages(t *testing.T) {
 	newest, err := s.ChatMessages(ctx, "linkshort/linkshort", "anna", 0, 2)
 	if err != nil || len(newest) != 2 || newest[0].ID != all[1].ID || newest[1].ID != all[2].ID {
 		t.Fatalf("newest 2 = %+v, %v", newest, err)
+	}
+}
+
+// Chat attachments store with their message and list oldest first under
+// the conversation; by id a row of any member's thread reads, another
+// project's id is none.
+func TestPGStoreChatAttachments(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	id, err := s.AddChatMessage(ctx, "linkshort/linkshort", "anna", ChatMessage{Role: "user", Content: "look", Conversation: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.AddChatAttachment(ctx, "linkshort/linkshort", "anna", ChatAttachment{Conversation: 1, MessageID: id,
+		Name: "img1", FileName: "shot.png", ContentType: "image/png", Bytes: 95})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.AddChatAttachment(ctx, "linkshort/linkshort", "anna", ChatAttachment{Conversation: 1, MessageID: id,
+		Name: "img2", FileName: "chart.png", ContentType: "image/png", Bytes: 95})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID == 0 || first.At.IsZero() || first.ID == second.ID {
+		t.Fatalf("attachments without ids or times: %+v %+v", first, second)
+	}
+	atts, err := s.ChatAttachments(ctx, "linkshort/linkshort", "anna", 1)
+	if err != nil || len(atts) != 2 || atts[0].Name != "img1" || atts[0].FileName != "shot.png" ||
+		atts[0].ContentType != "image/png" || atts[0].Bytes != 95 || atts[0].MessageID != id || atts[1].Name != "img2" {
+		t.Fatalf("the conversation's attachments = %+v, %v", atts, err)
+	}
+	if other, err := s.ChatAttachments(ctx, "linkshort/linkshort", "bob", 1); err != nil || len(other) != 0 {
+		t.Fatalf("another member's attachments = %+v, %v: want none", other, err)
+	}
+	got, ok, err := s.ChatAttachmentByID(ctx, "linkshort/linkshort", first.ID)
+	if err != nil || !ok || got.Name != "img1" || got.Conversation != 1 {
+		t.Fatalf("by id = %+v, %v, %v", got, ok, err)
+	}
+	if _, ok, err := s.ChatAttachmentByID(ctx, "sf/code", first.ID); err != nil || ok {
+		t.Fatalf("another project's id = %v, %v: want none", ok, err)
 	}
 }
 

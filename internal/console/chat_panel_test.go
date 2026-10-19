@@ -51,6 +51,7 @@ func TestChatPanel(t *testing.T) {
 <p class="arch-note" hidden>archived, read-only <button type="button" class="linkbtn" data-restore-open>restore</button></p>
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">[{"name":"compact","words":"the older turns of this thread become a summary"},{"name":"new","words":"a new thread"}]</script>
+<ol id="chat-images" class="chat-images" aria-label="Images riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
 <button type="button" id="chat-grow" class="chat-grow" aria-pressed="false" title="Grow the box for a long message">Grow</button>
@@ -178,8 +179,8 @@ console.log(JSON.stringify({
     choices: ["Retry", "Leave it"], settled: true, reason: "moved on · 09:16"}),
   queue: (function () {
     var started = [], drawn = [], busy = false;
-    var q = chatView.queue(function (text) { started.push(text); busy = true; }, function () { return busy; },
-      function (items) { drawn.push(items.join("|")); });
+    var q = chatView.queue(function (it) { started.push(it.text); busy = true; }, function () { return busy; },
+      function (items) { drawn.push(items.map(function (it) { return it.text; }).join("|")); });
     q.add("first");
     q.add("second");
     q.add("third");
@@ -192,7 +193,8 @@ console.log(JSON.stringify({
     }
     return JSON.stringify({started: started, drawn: drawn});
   })(),
-  queueHTML: chatView.queueHTML(["a <b>", "c"]),
+  queueHTML: chatView.queueHTML([{text: "a <b>"}, {text: "c"}]),
+  queueHTMLImages: chatView.queueHTML([{text: "look"}, {text: "see", images: [{}, {}]}]),
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)])
 }));`
@@ -283,6 +285,10 @@ console.log(JSON.stringify({
 		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
 			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: c">c</button>` +
+			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
+		{"queueHTMLImages", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: look">look</button>` +
+			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
+			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: see">see · 2 images</button>` +
 			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
 		{"share", `[300,288,720,500.25]`},
 	} {

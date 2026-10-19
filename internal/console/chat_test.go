@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
 	"maps"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -64,6 +66,8 @@ type fakeChat struct {
 	totals    map[string][2]float64
 	next      int64
 	spend     []spendRow
+	// atts are the stored image rows, any member's, in arrival order
+	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored
 	proposals []*fakeProposal
 	// intake is the repositories' closed intake switches
@@ -106,6 +110,12 @@ type spendRow struct {
 	day        time.Time
 	eur        float64
 	chat       bool
+}
+
+// storedAttachment is a fakeChat image row: whose thread it rides.
+type storedAttachment struct {
+	repository, login string
+	a                 factoryd.ChatAttachment
 }
 
 func (f *fakeChat) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
@@ -536,6 +546,38 @@ func (f *fakeChat) ChatMessages(_ context.Context, repository, login string, con
 	return all[max(0, len(all)-limit):], nil
 }
 
+func (f *fakeChat) AddChatAttachment(_ context.Context, repository, login string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.next++
+	a.ID, a.At = f.next, at.Add(time.Duration(f.next)*time.Second)
+	f.atts = append(f.atts, storedAttachment{repository: repository, login: login, a: a})
+	return a, nil
+}
+
+func (f *fakeChat) ChatAttachments(_ context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatAttachment
+	for _, s := range f.atts {
+		if s.repository == repository && s.login == login && s.a.Conversation == conversation {
+			out = append(out, s.a)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeChat) ChatAttachmentByID(_ context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, s := range f.atts {
+		if s.repository == repository && s.a.ID == id {
+			return s.a, true, nil
+		}
+	}
+	return factoryd.ChatAttachment{}, false, nil
+}
+
 func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -779,33 +821,74 @@ func chatPost(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, fo
 // postStream is chatPost without the test: a goroutine's post, its error
 // returned.
 func postStream(r *rig, ck *http.Cookie, s *session, path string, form url.Values) (int, []string, []string, error) {
+	return postFiles(r, ck, s, path, form)
+}
+
+// testFile is one file part of a multipart send.
+type testFile struct {
+	name string
+	data []byte
+}
+
+// chatPostFiles is chatPost with files riding the form as image parts.
+func chatPostFiles(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, form url.Values, files ...testFile) (int, []string, []string) {
+	t.Helper()
+	code, events, tokens, err := postFiles(r, ck, s, path, form, files...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, events, tokens
+}
+
+// postFiles is postStream with files riding the form as image parts: the
+// composer's send, fields and images in one multipart body.
+func postFiles(r *rig, ck *http.Cookie, s *session, path string, form url.Values, files ...testFile) (int, []string, []string, error) {
 	srv := httptest.NewServer(r.c)
 	defer srv.Close()
-	f := url.Values{}
-	for k, v := range form {
-		f[k] = v
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	for k, vs := range form {
+		for _, v := range vs {
+			if err := w.WriteField(k, v); err != nil {
+				return 0, nil, nil, err
+			}
+		}
 	}
-	f.Set("csrf", s.csrf)
-	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(f.Encode()))
+	if err := w.WriteField("csrf", s.csrf); err != nil {
+		return 0, nil, nil, err
+	}
+	for _, f := range files {
+		fw, err := w.CreateFormFile("images", f.name)
+		if err != nil {
+			return 0, nil, nil, err
+		}
+		if _, err := fw.Write(f.data); err != nil {
+			return 0, nil, nil, err
+		}
+	}
+	if err := w.Close(); err != nil {
+		return 0, nil, nil, err
+	}
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, &body)
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.AddCookie(ck)
 	resp, err := srv.Client().Do(req)
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
-		return resp.StatusCode, []string{strings.TrimSpace(string(body))}, nil, nil
+		return resp.StatusCode, []string{strings.TrimSpace(string(raw))}, nil, nil
 	}
 	var events, tokens []string
-	for _, msg := range strings.Split(strings.TrimSuffix(string(body), "\n\n"), "\n\n") {
+	for _, msg := range strings.Split(strings.TrimSuffix(string(raw), "\n\n"), "\n\n") {
 		event, _ := strings.CutPrefix(strings.Split(msg, "\n")[0], "event: ")
 		data, _ := strings.CutPrefix(strings.Split(msg, "\n")[1], "data: ")
 		for _, m := range tokenField.FindAllStringSubmatch(data, -1) {
@@ -1967,6 +2050,102 @@ func TestChatAskBounds(t *testing.T) {
 		if m.Kind == "ask" {
 			t.Fatalf("a refused ask stored a row: %+v", m)
 		}
+	}
+}
+
+// png1x1 is a real 1×1 PNG: an image body small enough to ride every
+// upload test.
+var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
+
+// A pasted image rides the composer's send like a file rides it: the
+// message and its images land as one user row with named attachments,
+// the bytes in the object store under the conversation, the read serving
+// them back for the row's thumbnails, and the model's context told the
+// names it can be asked about — never the bytes.
+func TestChatImagesRideTheMessage(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got them.")}}
+	code, events, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"look at img1 and img2 first"}},
+		testFile{name: "shot.png", data: png1x1}, testFile{name: "chart.png", data: png1x1})
+	if code != 200 {
+		t.Fatalf("the send with images = %d, want 200", code)
+	}
+	equal(t, "the turn", events, []string{`text {"text":"Got them."}`, `done {}`})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Messages) != 2 || answer.Messages[0].Role != "user" || answer.Messages[0].Content != "look at img1 and img2 first" {
+		t.Fatalf("the rows = %+v", answer.Messages)
+	}
+	atts := answer.Messages[0].Attachments
+	if len(atts) != 2 || atts[0].Name != "img1" || atts[0].FileName != "shot.png" || atts[1].Name != "img2" || atts[1].FileName != "chart.png" ||
+		atts[0].ContentType != "image/png" || atts[0].Bytes != int64(len(png1x1)) || atts[1].ContentType != "image/png" {
+		t.Fatalf("the attachments = %+v", atts)
+	}
+	for _, a := range atts {
+		if got := r.objects[fmt.Sprintf("attachments/%d/%d", answer.Conversation, a.ID)]; !bytes.Equal(got, png1x1) {
+			t.Fatalf("the object of %s = %d bytes, want the image", a.Name, len(got))
+		}
+	}
+	resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[0].ID, 10), nil), ck)
+	if resp.Code != 200 || resp.Header().Get("Content-Type") != "image/png" || !bytes.Equal(resp.Body.Bytes(), png1x1) {
+		t.Fatalf("serving img1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
+	}
+	if resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck); resp.Code != 404 {
+		t.Fatalf("an unknown image = %d, want 404", resp.Code)
+	}
+	// the turn after it: the model's context carries the member's words
+	// with the images named, meta only
+	g.replies = [][]string{{say("Seen.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what do you see"}, "conversation": {strconv.FormatInt(answer.Conversation, 10)}})
+	saw := ""
+	for _, m := range g.calls()[1]["messages"].([]any) {
+		um := m.(map[string]any)
+		if um["role"] == "user" && strings.Contains(um["content"].(string), "look at img1") {
+			saw = um["content"].(string)
+		}
+	}
+	if !strings.Contains(saw, "[attached images: img1 (shot.png, ") || !strings.Contains(saw, "img2 (chart.png, ") || len(saw) > 400 {
+		t.Fatalf("the replayed row = %q, want the images named, no bytes", saw)
+	}
+}
+
+// The composer's bounds are the server's: five images refuse, so does a
+// file that is not an image whatever its name, an image past 8 MiB, and
+// a send of images with no words. None of them reaches the model.
+func TestChatImageBounds(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("words")}}
+	five := make([]testFile, 5)
+	for i := range five {
+		five[i] = testFile{name: "one.png", data: png1x1}
+	}
+	for _, w := range []struct {
+		files  []testFile
+		answer string
+	}{
+		{files: five, answer: "at most 4 images"},
+		{files: []testFile{{name: "note.png", data: []byte("just words, not an image")}}, answer: "note.png) is not a PNG, JPEG, WebP or GIF"},
+	} {
+		code, events, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"go"}}, w.files...)
+		if code != 400 || len(events) != 1 || !strings.Contains(events[0], w.answer) {
+			t.Fatalf("the send with %s = %d %v", w.answer, code, events)
+		}
+	}
+	big := make([]byte, 8<<20+1)
+	copy(big, png1x1)
+	code, events, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"go"}}, testFile{name: "huge.png", data: big})
+	if code != 400 || len(events) != 1 || !strings.Contains(events[0], "an image is at most 8 MiB") {
+		t.Fatalf("the oversize image = %d %v", code, events)
+	}
+	if code, events, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {" "}}, testFile{name: "x.png", data: png1x1}); code != 400 {
+		t.Fatalf("an image with no words = %d %v, want the message required", code, events)
+	}
+	if n := len(g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none", n)
 	}
 }
 

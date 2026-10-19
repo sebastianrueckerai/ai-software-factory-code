@@ -42,6 +42,7 @@ type AcceptanceRig struct {
 	approvals []factoryd.ApprovalRequest
 	events    []factoryd.Event
 	msgs      []accMessage
+	atts      []factoryd.ChatAttachment
 	proposals []*accProposal
 	sessions  map[string]factoryd.ConsoleSession
 	reviews   []map[string]string
@@ -839,6 +840,31 @@ func (a *AcceptanceRig) nextID() int64 {
 		n = max(n, m.ID)
 	}
 	return n + 1
+}
+
+func (a *AcceptanceRig) AddChatAttachment(_ context.Context, _ string, _ string, at factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	at.ID, at.At, at.Conversation = a.nextID(), time.Now(), 1
+	a.atts = append(a.atts, at)
+	return at, nil
+}
+
+func (a *AcceptanceRig) ChatAttachments(_ context.Context, _ string, _ string, _ int64) ([]factoryd.ChatAttachment, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.atts), nil
+}
+
+func (a *AcceptanceRig) ChatAttachmentByID(_ context.Context, _ string, id int64) (factoryd.ChatAttachment, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, at := range a.atts {
+		if at.ID == id {
+			return at, true, nil
+		}
+	}
+	return factoryd.ChatAttachment{}, false, nil
 }
 
 func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string, _ int64, limit int) ([]factoryd.ChatMessage, error) {

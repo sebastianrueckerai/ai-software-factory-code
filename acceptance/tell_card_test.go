@@ -1,8 +1,10 @@
 package acceptance
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -51,11 +53,19 @@ func postChat(t *testing.T, r *console.AcceptanceRig, path string, ck *http.Cook
 	t.Helper()
 	srv := httptest.NewServer(r.Handler())
 	defer srv.Close()
-	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(form.Encode()))
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	for k, vs := range form {
+		for _, v := range vs {
+			w.WriteField(k, v)
+		}
+	}
+	w.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, &buf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.AddCookie(ck)
 	resp, err := srv.Client().Do(req)
 	if err != nil {

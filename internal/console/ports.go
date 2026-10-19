@@ -108,6 +108,14 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	// AddChatAttachment stores an image row of a message (its MessageID
+	// and Conversation set) and answers it with its id; ChatAttachments
+	// are a conversation's image rows oldest first; ChatAttachmentByID is
+	// one row by id, of any member's thread, ok false when the project
+	// has no such row.
+	AddChatAttachment(ctx context.Context, repository, login string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error)
+	ChatAttachments(ctx context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error)
+	ChatAttachmentByID(ctx context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error)
 	// ChatAsks are login's ask rows on repository, every thread's, the
 	// settle rule's read for the switcher's badge (the
 	// notification-settling concept)

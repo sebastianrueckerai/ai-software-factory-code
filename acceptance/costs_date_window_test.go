@@ -6,6 +6,7 @@
 package acceptance
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -584,6 +586,7 @@ func (m *acceptMirrors) DeletePushMirror(_ context.Context, repo factoryd.Repo, 
 type acceptChat struct {
 	mu        sync.Mutex
 	msgs      map[string][]factoryd.ChatMessage
+	atts      map[string][]factoryd.ChatAttachment
 	convs     map[string]int64
 	next      int64
 	at        time.Time
@@ -597,7 +600,7 @@ type acceptProposal struct {
 }
 
 func newAcceptChat(tasks *acceptTasks) *acceptChat {
-	return &acceptChat{msgs: map[string][]factoryd.ChatMessage{}, convs: map[string]int64{},
+	return &acceptChat{msgs: map[string][]factoryd.ChatMessage{}, atts: map[string][]factoryd.ChatAttachment{}, convs: map[string]int64{},
 		at: time.Date(2026, 10, 11, 12, 0, 0, 0, time.UTC), tasks: tasks}
 }
 
@@ -629,6 +632,40 @@ func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string,
 		f.convs[k] = m.Conversation
 	}
 	return m.ID, nil
+}
+
+func (f *acceptChat) AddChatAttachment(_ context.Context, repository, login string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.next++
+	a.ID, a.At = f.next, f.at.Add(time.Duration(f.next)*time.Second)
+	f.atts[repository+" "+login] = append(f.atts[repository+" "+login], a)
+	return a, nil
+}
+
+func (f *acceptChat) ChatAttachments(_ context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatAttachment
+	for _, a := range f.atts[repository+" "+login] {
+		if a.Conversation == conversation {
+			out = append(out, a)
+		}
+	}
+	return out, nil
+}
+
+func (f *acceptChat) ChatAttachmentByID(_ context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, atts := range f.atts {
+		for _, a := range atts {
+			if a.ID == id {
+				return a, true, nil
+			}
+		}
+	}
+	return factoryd.ChatAttachment{}, false, nil
 }
 
 func (f *acceptChat) Conversation(_ context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error) {
@@ -1078,12 +1115,16 @@ func cookieOf(rec *httptest.ResponseRecorder, name string) *http.Cookie {
 // post sends the chat message as the logged-in member and reads back the
 // stream's events as "event data".
 func (r *rig) post(message string) (int, []string) {
-	form := url.Values{"message": {message}, "csrf": {r.csrf}}
-	req, err := http.NewRequest(http.MethodPost, r.srv.URL+chatPath, strings.NewReader(form.Encode()))
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	w.WriteField("message", message)
+	w.WriteField("csrf", r.csrf)
+	w.Close()
+	req, err := http.NewRequest(http.MethodPost, r.srv.URL+chatPath, &buf)
 	if err != nil {
 		panic(err)
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Content-Type", w.FormDataContentType())
 	req.AddCookie(r.ck)
 	resp, err := r.srv.Client().Do(req)
 	if err != nil {

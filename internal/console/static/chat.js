@@ -58,9 +58,16 @@ var chatView = (function () {
   function whoHTML(name, at) {
     return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
   }
-  function userHTML(login, text, at, queued) {
+  function userHTML(login, text, at, queued, images) {
+    // the row's images: their own names as thumbnails, the optimistic
+    // object URLs until the read carries the stored ids
+    var thumbs = (images || []).map(function (im) {
+      var src = im.url ? im.url : base + "/attachments/" + im.id;
+      return "<a class=\"thumb\" href=\"" + esc(src) + "\" target=\"_blank\" rel=\"noopener\"><img loading=\"lazy\" src=\"" + esc(src) + "\" alt=\"" + esc(im.name || "an image") + "\"></a>";
+    }).join("");
     return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
-      "<p class=\"said\">" + esc(text) + "</p>" + (queued ? "<p class=\"meta chat-queued\">queued: it goes out when the turn before it ends</p>" : "") + "</div>";
+      "<p class=\"said\">" + esc(text) + "</p>" + (thumbs ? "<div class=\"chat-thumbs\">" + thumbs + "</div>" : "") +
+      (queued ? "<p class=\"meta chat-queued\">queued: it goes out when the turn before it ends</p>" : "") + "</div>";
   }
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
@@ -147,7 +154,7 @@ var chatView = (function () {
           wake = {text: m.content, at: m.at, parts: []};
           return;
         }
-        out.push(userHTML(login, m.content, m.at, m.queued));
+        out.push(userHTML(login, m.content, m.at, m.queued, m.attachments));
         return;
       }
       var dst = wake ? wake.parts : parts;
@@ -386,7 +393,7 @@ var chatView = (function () {
   // order, each editable and removable until it goes out: whenever busy()
   // is false (the turn before it ended, no edit open) flush starts the
   // first as its own turn, and shown(items) draws the rest after every
-  // change.
+  // change. An item is the text and the images riding it.
   function queue(start, busy, shown) {
     var items = [];
     function flush() {
@@ -394,13 +401,13 @@ var chatView = (function () {
       shown(items.slice());
     }
     return {
-      add: function (text) {
-        items.push(text);
+      add: function (text, images) {
+        items.push({text: text, images: images || null});
         flush();
       },
       edit: function (i, text) {
         text = text.trim();
-        if (text) items[i] = text;
+        if (text) items[i].text = text;
         else items.splice(i, 1);
         flush();
       },
@@ -412,8 +419,9 @@ var chatView = (function () {
     };
   }
   function queueHTML(items) {
-    return items.map(function (text, i) {
-      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + ": " + esc(text) + "\">" + esc(text) +
+    return items.map(function (it, i) {
+      var label = it.text + (it.images && it.images.length ? " · " + it.images.length + (it.images.length > 1 ? " images" : " image") : "");
+      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + ": " + esc(it.text) + "\">" + esc(label) +
         "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
     }).join("");
   }
@@ -498,6 +506,55 @@ var chatView = (function () {
     });
   }
 
+  // the images riding the next message: pasted into the input or dropped
+  // on the composer, named img1.. in arrival order — the names the text
+  // refers to and the server keeps — removable until Send, gone with the
+  // message. They live in this page: a reload drops them.
+  var imagesEl = document.getElementById("chat-images"), pendingImages = [];
+  function drawImages() {
+    if (!imagesEl) return;
+    imagesEl.innerHTML = pendingImages.map(function (im, i) {
+      return "<li><img src=\"" + chatView.esc(im.url) + "\" alt=\"\" width=\"22\" height=\"22\"><span>" + chatView.esc(im.name) + "</span>" +
+        "<button type=\"button\" class=\"queued-remove\" data-unimage=\"" + i + "\" aria-label=\"Remove " + chatView.esc(im.name) + "\">×</button></li>";
+    }).join("");
+    imagesEl.hidden = pendingImages.length === 0;
+  }
+  function addImages(files) {
+    for (var i = 0; i < files.length && pendingImages.length < 4; i++) {
+      var f = files[i];
+      if (!f || !/^image\/(png|jpeg|gif|webp)$/.test(f.type) || f.size > 8 * 1024 * 1024) continue;
+      pendingImages.push({name: "img" + (pendingImages.length + 1), file: f, url: URL.createObjectURL(f)});
+    }
+    drawImages();
+  }
+  if (input) input.addEventListener("paste", function (e) {
+    var files = [];
+    for (var i = 0; e.clipboardData && e.clipboardData.items && i < e.clipboardData.items.length; i++) {
+      var it = e.clipboardData.items[i];
+      if (it.kind === "file" && /^image\//.test(it.type) && it.getAsFile()) files.push(it.getAsFile());
+    }
+    if (files.length) {
+      e.preventDefault();
+      addImages(files);
+    }
+  });
+  if (form) {
+    form.addEventListener("dragover", function (e) { e.preventDefault(); });
+    form.addEventListener("drop", function (e) {
+      e.preventDefault();
+      if (e.dataTransfer && e.dataTransfer.files.length) addImages(e.dataTransfer.files);
+    });
+  }
+  if (imagesEl) imagesEl.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-unimage]");
+    if (!b) return;
+    pendingImages.splice(Number(b.dataset.unimage), 1);
+    // the names stay dense img1..imgN, what the server hands back
+    pendingImages.forEach(function (im, i) { im.name = "img" + (i + 1); });
+    drawImages();
+    input.focus();
+  });
+
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
   }
@@ -547,6 +604,11 @@ var chatView = (function () {
     running[k] = (running[k] || 0) + 1;
     lock();
     listThreads();
+    // a string body posts urlencoded; a FormData one (the send with
+    // images) leaves the type to the browser, which sets the multipart
+    // boundary
+    var headers = {"X-CSRF-Token": form.elements.csrf.value};
+    if (typeof body === "string") headers["Content-Type"] = "application/x-www-form-urlencoded";
     function event(ev) {
       var d = JSON.parse(ev.data);
       if (wait && ev.event !== "queued") {
@@ -581,8 +643,7 @@ var chatView = (function () {
       else if (ev.event === "error") add(into, "<p class=\"chat-error\">" + chatView.esc(d.message) + "</p>");
       ended = ended || ev.event === "done" || ev.event === "error";
     }
-    return fetch(url, {method: "POST", body: body,
-      headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+    return fetch(url, {method: "POST", body: body, headers: headers}).then(function (resp) {
       if (resp.status === 404 && onMissing) {
         ended = true;
         onMissing();
@@ -630,7 +691,10 @@ var chatView = (function () {
     var text = input.value.trim();
     if (!text || readOnly) return;
     input.value = "";
-    queueOf(openRef()).add(text);
+    var images = pendingImages;
+    pendingImages = [];
+    drawImages();
+    queueOf(openRef()).add(text, images);
   }
   // pageQuery is the view the page stands on (282): the board's query the
   // chat's POST carries, so the agent's view tools work the page the
@@ -639,7 +703,7 @@ var chatView = (function () {
     var b = document.getElementById("board");
     return b && b.dataset.query ? b.dataset.query : "";
   }
-  function turn(k, text) {
+  function turn(k, text, images) {
     var at = k.indexOf("@"), n = Number(k.slice(0, at)), owner = k.slice(at + 1);
     var shown = k === openRef(), command = text === "/compact";
     if (shown) {
@@ -648,12 +712,18 @@ var chatView = (function () {
     }
     var into = document.createElement("div");
     if (shown) {
-      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date()));
+      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images));
       add(log, chatView.agentHTML(new Date(), ""));
       scrollEnd(true);
       into = log.lastElementChild;
     }
-    run(n, owner, base, new URLSearchParams({message: text, conversation: n, owner: owner, view: pageQuery()}).toString(), into).then(function () {
+    var body = new FormData();
+    body.append("message", text);
+    body.append("conversation", n);
+    body.append("owner", owner);
+    body.append("view", pageQuery());
+    (images || []).forEach(function (im) { body.append("images", im.file, im.file.name); });
+    run(n, owner, base, body, into).then(function () {
       if (command && k === openRef()) return load(n, owner);
     }).then(function () {
       if (document.activeElement === document.body) input.focus();

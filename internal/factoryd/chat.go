@@ -68,6 +68,24 @@ type ChatMessage struct {
 	// ThreadOwner is that thread's member when it is another member's;
 	// derived, never stored.
 	ThreadOwner string `json:"thread_owner,omitempty"`
+	// Attachments are the images this row's member sent with it, named
+	// img1.., laid under the row at read; never stored on it.
+	Attachments []ChatAttachment `json:"attachments,omitempty"`
+}
+
+// ChatAttachment is an image a member sent with a chat message: the
+// member's name for it (img1, img2, …), the file's own name, its sniffed
+// type and size, its bytes in the object store under
+// attachments/{conversation}/{id}.
+type ChatAttachment struct {
+	ID           int64     `json:"id"`
+	Conversation int64     `json:"conversation"`
+	MessageID    int64     `json:"message_id"`
+	Name         string    `json:"name"`
+	FileName     string    `json:"file_name"`
+	ContentType  string    `json:"content_type"`
+	Bytes        int64     `json:"bytes"`
+	At           time.Time `json:"at"`
 }
 
 // ChatToolCall is one tool call of the agent and what it answered.
@@ -816,7 +834,55 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	return out, rows.Err()
 }
 
-// ChatAsks are login's ask rows on repository, every thread's, oldest
+// AddChatAttachment stores a, its MessageID and Conversation already set,
+// and answers it with its id. The bytes stay in the object store; this is
+// the meta row.
+func (s *PGStore) AddChatAttachment(ctx context.Context, repository, login string, a ChatAttachment) (ChatAttachment, error) {
+	if err := s.db.QueryRowContext(ctx, `INSERT INTO chat_attachments (repository, login, conversation, message_id, name, file_name, content_type, bytes)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
+		repository, login, a.Conversation, a.MessageID, a.Name, a.FileName, a.ContentType, a.Bytes).Scan(&a.ID, &a.At); err != nil {
+		return ChatAttachment{}, err
+	}
+	return a, nil
+}
+
+// ChatAttachments are login's conversation's images on repository,
+// oldest first, laid under their message rows at read.
+func (s *PGStore) ChatAttachments(ctx context.Context, repository, login string, conversation int64) ([]ChatAttachment, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation, message_id, name, file_name, content_type, bytes, created_at
+		FROM chat_attachments WHERE repository = $1 AND login = $2 AND conversation = $3 ORDER BY id`, repository, login, conversation)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatAttachment
+	for rows.Next() {
+		var a ChatAttachment
+		if err := rows.Scan(&a.ID, &a.Conversation, &a.MessageID, &a.Name, &a.FileName, &a.ContentType, &a.Bytes, &a.At); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// ChatAttachmentByID is id's image row on repository — a row of any
+// member's thread, as threads are project-visible — ok false when no
+// such row is the project's.
+func (s *PGStore) ChatAttachmentByID(ctx context.Context, repository string, id int64) (ChatAttachment, bool, error) {
+	var a ChatAttachment
+	err := s.db.QueryRowContext(ctx, `SELECT id, conversation, message_id, name, file_name, content_type, bytes, created_at
+		FROM chat_attachments WHERE repository = $1 AND id = $2`, repository, id).
+		Scan(&a.ID, &a.Conversation, &a.MessageID, &a.Name, &a.FileName, &a.ContentType, &a.Bytes, &a.At)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChatAttachment{}, false, nil
+	}
+	if err != nil {
+		return ChatAttachment{}, false, err
+	}
+	return a, true, nil
+}
+
 // first: the poke rows about a card that waits for a person, whose state
 // the settle rule derives at read (the notification-settling concept).
 func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatMessage, error) {

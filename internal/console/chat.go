@@ -6,11 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
+	"mime"
 	"net/http"
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +33,12 @@ const (
 	chatTTL        = 30 * time.Minute // a proposal's and an undo's life
 	chatMessageMax = 8 << 10
 	chatViewMax    = 4 << 10 // the view field a chat's POST carries
+	// the composer's images: how many ride one message, each one's size
+	// cap, and the whole post's room (the four images, the text and the
+	// multipart overhead) the reader stops at
+	chatImageMax   = 4
+	chatImageBytes = 8 << 20
+	chatPostRoom   = 40 << 20
 	// chatWindow bounds each write of a chat stream: longer than a model
 	// call, during which the stream writes nothing.
 	chatWindow = 3 * time.Minute
@@ -214,6 +223,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the conversation", http.StatusInternalServerError)
 		return
 	}
+	t.attachRows(ctx, msgs)
 	t.settleRows(ctx, msgs, th.SeenUpto)
 	// the owner's Clear old swept the rows up to their marker from view;
 	// an open ask stays whatever the marker says, and the record keeps
@@ -271,6 +281,44 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// chatAttachment answers GET /projects/{name}/chat/attachments/{id}: an
+// image's bytes from the object store, its sniffed type on it. Any
+// member of the project reads any thread's image, as they read its rows;
+// another project's or a made-up id is no image at all.
+func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		http.NotFound(w, r)
+		return
+	}
+	a, ok, err := c.cfg.Chat.ChatAttachmentByID(r.Context(), t.p.Repository, id)
+	if err != nil {
+		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		return
+	}
+	b, err := c.cfg.Timelines.Get(r.Context(), fmt.Sprintf("attachments/%d/%d", a.Conversation, a.ID))
+	if err != nil {
+		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		return
+	}
+	if !ok || len(b) == 0 {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", a.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if _, err := w.Write(b); err != nil {
+		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+	}
+}
+
 // askFacts reads the settle rule's wait facts for the cards named: the
 // board's Needs-you fact, the card's status waiting-human, with its
 // events. A card in a final state settled its asks already, so its
@@ -294,6 +342,24 @@ func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, m
 		events = evs
 	}
 	return waits, events
+}
+
+// attachRows lays the conversation's images under their message rows, for
+// the read and the turn's context alike: each row's Attachments, names
+// first. Nothing is written; the rows derive at read.
+func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
+	atts, err := t.c.cfg.Chat.ChatAttachments(ctx, t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: the images of %s on %s: %v", t.owner, t.p.Repository, err)
+		return
+	}
+	by := make(map[int64][]factoryd.ChatAttachment, len(atts))
+	for _, a := range atts {
+		by[a.MessageID] = append(by[a.MessageID], a)
+	}
+	for i := range msgs {
+		msgs[i].Attachments = by[msgs[i].ID]
+	}
 }
 
 // settleRows stamps each poke row's derived state onto the log (the
@@ -396,8 +462,24 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 // error, which ends it). Every GitHub token in the message is scrubbed
 // before it is stored or sent, and the turn starts with the server's
 // line saying so. A command of the config tree's, /name alone, sends its
-// message; any other /word is text.
+// message; any other /word is text. The body is one multipart form —
+// chat.js, the only client, sends it so — whose images field carries the
+// images riding the message, stored with it and named img1.. by arrival.
 func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
+	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
+		http.Error(w, "the chat's message form changed; reload the page", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, chatPostRoom)
+	if err := r.ParseMultipartForm(chatImageBytes); err != nil {
+		http.Error(w, "the message form did not read; it holds at most 4 images of 8 MiB each beside the text", http.StatusBadRequest)
+		return
+	}
+	images, refusal := chatImages(r)
+	if refusal != "" {
+		http.Error(w, refusal, http.StatusBadRequest)
+		return
+	}
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
@@ -446,6 +528,18 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot store the message", http.StatusInternalServerError)
 		return
 	}
+	for _, img := range images {
+		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
+			Name: img.name, FileName: img.fileName, ContentType: img.contentType, Bytes: int64(len(img.data))})
+		if err == nil {
+			err = c.cfg.Timelines.Put(ctx, fmt.Sprintf("attachments/%d/%d", t.conv, a.ID), img.data)
+		}
+		if err != nil {
+			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			http.Error(w, "cannot store the message", http.StatusInternalServerError)
+			return
+		}
+	}
 	t.detach()
 	t.open(w)
 	t.takeTurn(pos, wait)
@@ -459,6 +553,52 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	release := c.turns.slot(t.p.Repository, t.parallelTurns())
 	defer release()
 	t.run(task.ID, notice)
+}
+
+// chatImage is one image riding a message: its canonical name, the file's
+// own name, its sniffed type and its bytes.
+type chatImage struct {
+	name, fileName, contentType string
+	data                        []byte
+}
+
+// chatImages are the form's images parts in order, named img1.. by
+// arrival — the names the member's text refers to — each within the
+// bounds and typed by its leading bytes, never by a name or header a
+// client sends; a refusal names the rule it broke.
+func chatImages(r *http.Request) ([]chatImage, string) {
+	files := r.MultipartForm.File["images"]
+	if len(files) > chatImageMax {
+		return nil, fmt.Sprintf("at most %d images ride one message", chatImageMax)
+	}
+	out := make([]chatImage, 0, len(files))
+	for i, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			return nil, fmt.Sprintf("%s did not read", fh.Filename)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, chatImageBytes+1))
+		f.Close()
+		if err != nil {
+			return nil, fmt.Sprintf("%s did not read", fh.Filename)
+		}
+		name := fmt.Sprintf("img%d", i+1)
+		fileName := []rune(fh.Filename)
+		if len(fileName) > 200 {
+			fileName = fileName[:200]
+		}
+		if int64(len(data)) > chatImageBytes {
+			return nil, fmt.Sprintf("%s (%s): an image is at most %d MiB", name, string(fileName), chatImageBytes>>20)
+		}
+		ct := http.DetectContentType(data)
+		switch ct {
+		case "image/png", "image/jpeg", "image/webp", "image/gif":
+		default:
+			return nil, fmt.Sprintf("%s (%s) is not a PNG, JPEG, WebP or GIF image", name, string(fileName))
+		}
+		out = append(out, chatImage{name: name, fileName: string(fileName), contentType: ct, data: data})
+	}
+	return out, ""
 }
 
 // scrubTokens is text with every GitHub token replaced by tokenMask, and
@@ -835,6 +975,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if err != nil {
 		return nil, err
 	}
+	t.attachRows(t.r.Context(), history)
 	system := t.prompt() + "\n\nThe project now:\n" + sanitize.Inbound(strings.TrimSuffix(status, "\n"))
 	if th.Summary != "" {
 		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
@@ -860,6 +1001,18 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		if earlier && m.Role == "assistant" && m.Content != "" {
 			om.Content = "[said at " + t.since(m.At) + "] " + m.Content
 		}
+		if len(m.Attachments) > 0 {
+			// the member's images ride the row as their names and meta
+			// only: the model reads them by tool, never from here
+			names := make([]string, len(m.Attachments))
+			for i, a := range m.Attachments {
+				names[i] = fmt.Sprintf("%s (%s, %s)", a.Name, a.FileName, imageSize(a.Bytes))
+			}
+			if om.Content != "" {
+				om.Content += "\n"
+			}
+			om.Content += "[attached images: " + strings.Join(names, ", ") + "]"
+		}
 		for _, call := range m.ToolCalls {
 			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: objectArgs(call.Arguments)})
 		}
@@ -874,6 +1027,14 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		}
 	}
 	return msgs
+}
+
+// imageSize is n bytes as the replay's names line shows it.
+func imageSize(n int64) string {
+	if n < 1024 {
+		return fmt.Sprintf("%d B", n)
+	}
+	return fmt.Sprintf("%.1f KiB", float64(n)/1024)
 }
 
 // since is at as a replayed row shows it: its time and its age at the
