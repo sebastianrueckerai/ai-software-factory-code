@@ -1134,6 +1134,9 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 	var found *factoryd.ChatAttachment
 	var names []string
 	for i := len(atts) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(atts[i].ContentType, "image/") {
+			continue
+		}
 		if !slices.Contains(names, atts[i].Name) {
 			names = append(names, atts[i].Name)
 		}
@@ -1156,6 +1159,44 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s (%s): %s", found.Name, found.FileName, look), nil
+}
+
+// readAttachment is the read_attachment tool's run: the conversation's
+// newest document under in.Name, read by read_doc's engine with its chip
+// label. A name no member sent refuses naming the documents there are; a
+// PDF refuses as not text.
+func (t *turn) readAttachment(in toolInput) (string, error) {
+	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		return "", err
+	}
+	var found *factoryd.ChatAttachment
+	var names []string
+	for i := len(atts) - 1; i >= 0; i-- {
+		if strings.HasPrefix(atts[i].ContentType, "image/") {
+			continue
+		}
+		if !slices.Contains(names, atts[i].Name) {
+			names = append(names, atts[i].Name)
+		}
+		if atts[i].Name == in.Name && found == nil {
+			found = &atts[i]
+		}
+	}
+	if found == nil {
+		if len(names) == 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: this conversation holds no document", in.Name))
+		}
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
+	}
+	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
+	if err != nil {
+		return "", err
+	}
+	if found.ContentType == "application/pdf" {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+	}
+	return readTextDocument(fmt.Sprintf("%s (%s)", found.Name, found.FileName), b, in.From, in.To, in.Find, in.Regex)
 }
 
 // since is at as a replayed row shows it: its time and its age at the

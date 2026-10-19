@@ -141,8 +141,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 38 || len(tools) != 69 {
-		t.Fatalf("%d of %d tools checked as writes: want 38 of 69", writes, len(tools))
+	if writes != 38 || len(tools) != 70 {
+		t.Fatalf("%d of %d tools checked as writes: want 38 of 70", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for

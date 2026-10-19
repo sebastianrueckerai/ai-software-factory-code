@@ -1151,12 +1151,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image"}},
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2309,18 +2309,103 @@ func TestChatAnalyzeImageLooksAtTheMembersImage(t *testing.T) {
 	}
 }
 
-// A name no member sent refuses, and names the images there are.
+// A name no member sent refuses, and names the images there are; a
+// document riding the same thread is not among them.
 func TestChatAnalyzeImageUnknownNameRefuses(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{say("Got it.")}}
-	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"see img1"}}, testFile{name: "shot.png", data: png1x1}); code != 200 {
+	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"see img1"}}, testFile{name: "shot.png", data: png1x1},
+		testFile{field: "documents", name: "spec.md", data: []byte("notes\n")}); code != 200 {
 		t.Fatalf("the send with the image = %d, want 200", code)
 	}
 	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img9"}`)}, {say("There is no img9.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img9?"}})
 	if len(events) != 3 || !strings.Contains(events[0], `"result":"Refused: no image \"img9\": the conversation's images are img1"`) {
 		t.Fatalf("the unknown name = %v", events)
+	}
+}
+
+// read_attachment reads a document the thread holds with read_doc's
+// depth: the chip label's head, a line range, a find by text or pattern,
+// and the engine's refusals word for word.
+func TestReadAttachmentHeadRangesAndFind(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	const doc = "one alpha\ntwo beta\nthree gamma\n"
+	g.replies = [][]string{{say("Got it.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"read doc1"}}, testFile{name: "spec.md", data: []byte(doc)}); code != 200 {
+		t.Fatalf("the send with the document = %d, want 200", code)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	p, _, err := r.c.projectOf(context.Background(), "ai-software-factory-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, chatPath, nil)
+	trn := &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p, owner: s.user, conv: answer.Conversation}
+	head := "doc1 (spec.md): 31 bytes, 3 lines, base_sha256 " + factoryd.ContentHash(doc) + "."
+	for _, w := range []struct {
+		name  string
+		find  string
+		from  int
+		to    int
+		regex bool
+		want  string
+	}{
+		{"the whole small document", "", 0, 0, false, head + "\n\n" + doc},
+		{"a range", "", 2, 3, false, head + "\n\nline 2: two beta\nline 3: three gamma\n"},
+		{"a find by text", "one", 0, 0, false, head + "\n\nline 1: one alpha\n"},
+		{"a find by pattern", "tw.", 0, 0, true, head + "\n\nline 2: two beta\n"},
+		{"a pattern that matches nothing", "zz+", 0, 0, true, head + " No line matches the pattern \"zz+\": widen it, or read a line range with from and to."},
+		{"a bad range", "", 5, 9, false, head + " from 5 and to 9 name no line range of its 3 lines: name from at or before to, inside lines 1 to 3."},
+		{"find beside a range", "one", 1, 1, false, head + " find and a line range do not combine: find searches every line, from and to read one."},
+	} {
+		got, err := trn.readAttachment(toolInput{Name: "doc1", Find: w.find, From: w.from, To: w.to, Regex: w.regex})
+		equal(t, w.name, []any{got, err}, []any{w.want, error(nil)})
+	}
+}
+
+// A name no member sent refuses naming the documents there are, a PDF
+// refuses as not text, and two rows under one name resolve newest-first.
+func TestReadAttachmentRefusalNamesState(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got it.")}, {say("Got it.")}, {say("Got it.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"read doc1"}}, testFile{name: "spec.md", data: []byte("the first one\n")}); code != 200 {
+		t.Fatalf("the first send = %d, want 200", code)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	conv := strconv.FormatInt(answer.Conversation, 10)
+	p, _, err := r.c.projectOf(context.Background(), "ai-software-factory-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, chatPath, nil)
+	trn := &turn{c: r.c, r: req, a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat}, p: p, owner: s.user, conv: answer.Conversation}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"doc1 again"}, "conversation": {conv}}, testFile{name: "newer.md", data: []byte("the newer one\n")}); code != 200 {
+		t.Fatalf("the second send = %d, want 200", code)
+	}
+	got, err := trn.readAttachment(toolInput{Name: "doc1"})
+	equal(t, "the newest doc1", []any{got, err}, []any{"doc1 (newer.md): 14 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("the newer one\n") + ".\n\nthe newer one\n", error(nil)})
+	pdf := append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte("x"), 64)...)
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"doc1 as a PDF"}, "conversation": {conv}}, testFile{name: "report.pdf", data: pdf}); code != 200 {
+		t.Fatalf("the third send = %d, want 200", code)
+	}
+	_, err = trn.readAttachment(toolInput{Name: "doc1"})
+	var no *refusal
+	if !errors.As(err, &no) || no.msg != "doc1 (report.pdf) is a PDF, not text: paste the words you need as text, or attach an image of the page." {
+		t.Fatalf("the PDF read = %v", err)
+	}
+	_, err = trn.readAttachment(toolInput{Name: "doc9"})
+	if !errors.As(err, &no) || no.msg != `no document "doc9": the conversation's documents are doc1` {
+		t.Fatalf("the unknown name = %v", err)
 	}
 }
 

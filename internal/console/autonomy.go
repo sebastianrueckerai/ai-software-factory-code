@@ -439,11 +439,20 @@ func (c *Console) readDoc(ctx context.Context, docRepo, path, find string, from,
 	case !present:
 		return path + " does not exist on master: write_doc with content makes it.", nil
 	}
+	return readTextDocument(fmt.Sprintf("%s on %s@master", path, docRepo), []byte(content), from, to, find, regex)
+}
+
+// readTextDocument is the reading engine read_doc and the chat's
+// attachment reader share: label's head with its bytes, its lines and
+// base_sha256, then the first docShown bytes, the lines from..to, or the
+// lines holding find, by literal text or a regular expression.
+func readTextDocument(label string, data []byte, from, to int, find string, regex bool) (string, error) {
+	content := string(data)
 	lines := strings.Split(content, "\n")
 	if strings.HasSuffix(content, "\n") {
 		lines = lines[:len(lines)-1]
 	}
-	head := fmt.Sprintf("%s on %s@master: %d bytes, %d lines, base_sha256 %s.", path, docRepo, len(content), len(lines), factoryd.ContentHash(content))
+	head := fmt.Sprintf("%s: %d bytes, %d lines, base_sha256 %s.", label, len(content), len(lines), factoryd.ContentHash(content))
 	if find != "" && (from > 0 || to > 0) {
 		return head + " find and a line range do not combine: find searches every line, from and to read one.", nil
 	}
