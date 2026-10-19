@@ -1,0 +1,41 @@
+{{template "head" .}}
+<div class="page page-metrics">
+<div class="mhead">
+<div>
+<h2>Metrics</h2>
+<p class="mintro">How the project runs its work, over the window and against the one before.</p>
+</div>
+<p class="mwin" aria-label="Window">{{range .Windows}}<a href="{{.Href}}" aria-pressed="{{if .Active}}true{{else}}false{{end}}">{{.Days}} days</a>
+{{end}}</p>
+</div>
+{{$r := .Report}}
+<section class="msec" aria-labelledby="m-delivery"><h3 id="m-delivery">Delivery</h3><ul class="mrows">
+<li class="mrow"><span class="mname">deploys / week</span><span class="mval">{{mCount $r.Deploys.Value}}</span>{{if and $r.Deploys.Has $r.Deploys.PrevHas}}<span class="mmove">{{mCountMove (msub $r.Deploys.Value $r.Deploys.Prev)}}</span>{{end}}{{sparkSVG $r.Deploys.Weeks}}</li>
+<li class="mrow"><span class="mname">lead time, push to live</span><span class="mval">{{if $r.LeadTime.Has}}{{mDur $r.LeadTime.Value}}{{else}}—{{end}}</span>{{if and $r.LeadTime.Has $r.LeadTime.PrevHas}}<span class="mmove">{{mDurMove (msub $r.LeadTime.Value $r.LeadTime.Prev)}}</span>{{end}}{{sparkSVG $r.LeadTime.Weeks}}</li>
+<li class="mrow"><span class="mname">card cycle</span><span class="mval">{{if $r.CardCycle.Has}}{{mDur $r.CardCycle.Value}}{{else}}—{{end}}</span>{{if and $r.CardCycle.Has $r.CardCycle.PrevHas}}<span class="mmove">{{mDurMove (msub $r.CardCycle.Value $r.CardCycle.Prev)}}</span>{{end}}{{sparkSVG $r.CardCycle.Weeks}}</li>
+<li class="mrow"><span class="mname">throughput</span><span class="mval">{{mCount $r.Throughput.Value}} cards</span>{{if and $r.Throughput.Has $r.Throughput.PrevHas}}<span class="mmove">{{mCountMove (msub $r.Throughput.Value $r.Throughput.Prev)}}</span>{{end}}{{sparkSVG $r.Throughput.Weeks}}</li>
+</ul></section>
+<section class="msec" aria-labelledby="m-stability"><h3 id="m-stability">Stability</h3><ul class="mrows">
+<li class="mrow"><span class="mname">change failure</span><span class="mval">{{if $r.ChangeFailure.Has}}{{mPct $r.ChangeFailure.Value}}{{else}}—{{end}}</span>{{if and $r.ChangeFailure.Has $r.ChangeFailure.PrevHas}}<span class="mmove">{{mPctMove (msub $r.ChangeFailure.Value $r.ChangeFailure.Prev)}}</span>{{end}}{{sparkSVG $r.ChangeFailure.Weeks}}</li>
+<li class="mrow"><span class="mname">reverted · refiled</span><span class="mval">{{mCount $r.RevertedRefiled.Reverted}} · {{mCount $r.RevertedRefiled.Refiled}}</span>{{sparkSVG $r.RevertedRefiled.Weeks}}</li>
+<li class="mrow"><span class="mname">time to restore</span><span class="mval">{{if $r.TimeToRestore.Has}}{{mDur $r.TimeToRestore.Value}}{{else}}—{{end}}</span>{{if and $r.TimeToRestore.Has $r.TimeToRestore.PrevHas}}<span class="mmove">{{mDurMove (msub $r.TimeToRestore.Value $r.TimeToRestore.Prev)}}</span>{{end}}{{sparkSVG $r.TimeToRestore.Weeks}}</li>
+</ul></section>
+<section class="msec" aria-labelledby="m-cost"><h3 id="m-cost">Cost</h3><ul class="mrows">
+<li class="mrow"><span class="mname">spend / week</span><span class="mval">{{mEur $r.Spend.Value}}</span>{{if and $r.Spend.Has $r.Spend.PrevHas}}<span class="mmove">{{mEurMove (msub $r.Spend.Value $r.Spend.Prev)}}</span>{{end}}{{sparkSVG $r.Spend.Weeks}}</li>
+<li class="mrow"><span class="mname">per card, median</span><span class="mval">{{if $r.PerCard.Has}}{{mEur $r.PerCard.Value}}{{else}}—{{end}}</span>{{if and $r.PerCard.Has $r.PerCard.PrevHas}}<span class="mmove">{{mEurMove (msub $r.PerCard.Value $r.PerCard.Prev)}}</span>{{end}}{{sparkSVG $r.PerCard.Weeks}}</li>
+<li class="mrow"><span class="mname">tokens / card</span><span class="mval">{{if $r.TokensPerCard.Has}}{{mK $r.TokensPerCard.Value}}{{else}}—{{end}}</span>{{sparkSVG $r.TokensPerCard.Weeks}}</li>
+<li class="mrow"><span class="mname">model mix</span><span class="mval long">{{mMix $r.ModelMix}}</span></li>
+</ul></section>
+<section class="msec" aria-labelledby="m-autonomy"><h3 id="m-autonomy">Autonomy</h3><ul class="mrows">
+<li class="mrow"><span class="mname">interventions / card</span><span class="mval">{{if $r.Interventions.Has}}{{mDec $r.Interventions.Value}}{{else}}—{{end}}</span>{{if and $r.Interventions.Has $r.Interventions.PrevHas}}<span class="mmove">{{mDecMove (msub $r.Interventions.Value $r.Interventions.Prev)}}</span>{{end}}{{sparkSVG $r.Interventions.Weeks}}</li>
+<li class="mrow"><span class="mname">escalations</span><span class="mval">{{mCount $r.Escalations.Value}}</span>{{sparkSVG $r.Escalations.Weeks}}</li>
+<li class="mrow"><span class="mname">human-blocked</span><span class="mval">{{if $r.HumanBlocked.Has}}{{mPct $r.HumanBlocked.Value}}{{else}}—{{end}}</span>{{if and $r.HumanBlocked.Has $r.HumanBlocked.PrevHas}}<span class="mmove">{{mPctMove (msub $r.HumanBlocked.Value $r.HumanBlocked.Prev)}}</span>{{end}}{{sparkSVG $r.HumanBlocked.Weeks}}</li>
+<li class="mrow"><span class="mname">review acceptance</span><span class="mval">{{if $r.ReviewAcceptance.Has}}{{mPct $r.ReviewAcceptance.Value}}{{else}}—{{end}}</span>{{if and $r.ReviewAcceptance.Has $r.ReviewAcceptance.PrevHas}}<span class="mmove">{{mPctMove (msub $r.ReviewAcceptance.Value $r.ReviewAcceptance.Prev)}}</span>{{end}}{{sparkSVG $r.ReviewAcceptance.Weeks}}</li>
+</ul></section>
+<section class="msec" aria-labelledby="m-factory"><h3 id="m-factory">The factory itself</h3><ul class="mrows">
+<li class="mrow"><span class="mname">self-deploys / week</span><span class="mval">{{mCount $r.SelfDeploys.Value}}</span>{{sparkSVG $r.SelfDeploys.Weeks}}</li>
+<li class="mrow"><span class="mname">diff size, median</span><span class="mval">{{mDiff $r.DiffSize}}</span>{{sparkSVG $r.DiffSize.Weeks}}</li>
+<li class="mrow"><span class="mname">chat tool work</span><span class="mval">{{mChat $r.ChatWork}}</span>{{if gt $r.ChatWork.PrevCalls 0.0}}<span class="mmove">{{mCountMove (msub $r.ChatWork.Calls $r.ChatWork.PrevCalls)}}</span>{{end}}{{sparkSVG $r.ChatWork.Weeks}}</li>
+</ul></section>
+</div>
+{{template "foot"}}

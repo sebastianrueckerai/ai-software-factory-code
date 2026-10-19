@@ -1282,6 +1282,45 @@ tr.closed td a { color: inherit; }
 .facts dt::after { content: ":"; }
 .facts dd { margin: 0; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
 
+/* the metrics page (C30): one column of figure rows on the secondary
+   measure, name · value · move · the window's weeks as a spark */
+.page-metrics { max-width: 62rem; }
+.mhead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 26px 0 6px; }
+.mhead h2 { margin: 0 0 6px; }
+.mintro { margin: 0; color: var(--text-muted); font-size: 13px; }
+.mwin { display: flex; align-items: baseline; gap: 10px; margin: 0; color: var(--text-faint); font: 400 12px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .07em; white-space: nowrap; }
+.mwin a { color: var(--text-muted); text-decoration: none; }
+.mwin a + a::before { content: "·"; margin-right: 10px; color: var(--text-faint); }
+.mwin a:hover { color: var(--text); }
+.mwin a[aria-pressed="true"] { color: var(--text); }
+.msec { margin-top: 36px; }
+.msec:first-of-type { margin-top: 26px; }
+.msec > h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.mrows { list-style: none; margin: 0; padding: 0; }
+.mrow { display: grid; grid-template-columns: 16rem minmax(0, max-content) minmax(0, max-content) minmax(24px, 1fr) 24rem; align-items: center; padding: 10px 0; }
+.mrow + .mrow { border-top: 1px solid var(--line); }
+.mname { grid-column: 1; color: var(--text-muted); font-size: 13px; padding-right: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mval { grid-column: 2; color: var(--text); font: 600 15px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mval.long { grid-column: 2 / 6; white-space: normal; }
+.mmove { grid-column: 3; padding-left: 12px; color: var(--text-muted); font: 400 12.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.mspark { grid-column: 5; display: block; width: 100%; height: 30px; }
+.mspark path { fill: none; stroke: var(--text-faint); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }
+.mspark circle { fill: var(--text); }
+@media (min-width: 721px) and (max-width: 1023px) {
+  .mrow { grid-template-columns: 13rem minmax(0, max-content) minmax(0, max-content) minmax(12px, 1fr) minmax(150px, 16rem); }
+  .mval { font-size: 14px; }
+}
+@media (max-width: 720px) {
+  .mhead { display: block; margin-top: 22px; }
+  .mwin { margin-top: 12px; }
+  .msec { margin-top: 30px; }
+  .mrow { display: block; padding: 12px 0; }
+  .mname { display: block; white-space: normal; line-height: 1.35; margin-bottom: 5px; }
+  .mmove { display: inline; padding-left: 10px; }
+  .mval.long { white-space: normal; line-height: 1.5; }
+  .mspark { display: block; margin-top: 9px; height: 26px; }
+}
+
 /* round 11 (the compact screen reorganized): the panel's lamp chips, the
    flipping window glyph, the divider's grip and the input's drag seam,
    every quiet control painted by its data-tip */

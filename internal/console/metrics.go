@@ -2,9 +2,16 @@ package console
 
 import (
 	"encoding/json"
+	"fmt"
+	"html/template"
 	"log"
+	"math"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
 // metricsDays is the metrics page's default window of UTC days, today
@@ -58,6 +65,132 @@ func (c *Console) projectMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s := current(r)
-	c.render(w, "metrics.html", map[string]any{"User": s.user, "CSRF": s.csrf,
-		"Project": p, "Report": report, "From": from, "To": to})
+	days := int(to.Sub(from).Hours()/24) + 1
+	wins := make([]metricsWindowLink, 0, 3)
+	for _, d := range []int{7, 28, 90} {
+		wins = append(wins, metricsWindowLink{
+			Days:   d,
+			Href:   fmt.Sprintf("/projects/%s/metrics?from=%s&to=%s", p.Name, to.AddDate(0, 0, -(d-1)).Format("2006-01-02"), to.Format("2006-01-02")),
+			Active: days == d,
+		})
+	}
+	c.render(w, "metrics.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true,
+		"Project": p.Name, "Report": report, "Windows": wins})
+}
+
+// metricsWindowLink is one word of the window control: the days it
+// names and the href that asks for them, keeping the window's end.
+type metricsWindowLink struct {
+	Days   int
+	Href   string
+	Active bool
+}
+
+// msign is the sign a move carries: U+2212 for a fall, + for a rise.
+func msign(v float64) string {
+	if v < 0 {
+		return "−"
+	}
+	return "+"
+}
+
+func mCount(n float64) string     { return strconv.FormatInt(int64(math.Round(n)), 10) }
+func mCountMove(d float64) string { return msign(d) + mCount(math.Abs(d)) }
+func mDec(v float64) string       { return fmt.Sprintf("%.1f", v) }
+func mDecMove(d float64) string   { return msign(d) + mDec(math.Abs(d)) }
+func mPct(ratio float64) string   { return mCount(ratio*100) + " %" }
+func mPctMove(d float64) string   { return msign(d) + mCount(math.Abs(d)*100) }
+func mEur(v float64) string       { return fmt.Sprintf("€%.2f", v) }
+func mEurMove(d float64) string   { return msign(d) + mEur(math.Abs(d)) }
+
+// mK reads token counts: whole thousands as k, fractions to one digit.
+func mK(n float64) string {
+	if n < 1000 {
+		return mCount(n)
+	}
+	if k := n / 1000; k == math.Trunc(k) {
+		return mCount(k) + " k"
+	} else {
+		return mDec(k) + " k"
+	}
+}
+
+// mDur reads milliseconds as the deck's durations: hours and padded
+// minutes, bare minutes, bare seconds under a minute.
+func mDur(ms float64) string {
+	min := math.Round(ms / 60000)
+	switch {
+	case min < 1:
+		return mCount(math.Round(ms/1000)) + " s"
+	case min < 60:
+		return mCount(min) + " m"
+	default:
+		total := int64(min)
+		h, m := total/60, total%60
+		if m == 0 {
+			return strconv.FormatInt(h, 10) + " h"
+		}
+		return fmt.Sprintf("%d h %02d", h, m)
+	}
+}
+
+func mDurMove(d float64) string { return msign(d) + mDur(math.Abs(d)) }
+
+func mMix(shares []factoryd.MixShare) string {
+	if len(shares) == 0 {
+		return "—"
+	}
+	parts := make([]string, len(shares))
+	for i, s := range shares {
+		parts[i] = fmt.Sprintf("%s %s %%", s.Alias, mCount(s.Share))
+	}
+	return strings.Join(parts, " · ")
+}
+
+func mDiff(d factoryd.DiffSize) string {
+	if !d.Has {
+		return "—"
+	}
+	files := "files"
+	if d.Files == 1 {
+		files = "file"
+	}
+	return fmt.Sprintf("%s %s · +%s −%s", mCount(d.Files), files, mCount(d.Insertions), mCount(d.Deletions))
+}
+
+func mChat(c factoryd.ChatWork) string {
+	return fmt.Sprintf("%s calls · %s min", mCount(c.Calls), mCount(c.Minutes))
+}
+
+func msub(a, b float64) float64 { return a - b }
+
+// sparkSVG renders one figure's weeks as a hairline trace with an
+// endpoint dot (C30). A range narrower than 15% of the weeks' middle
+// widens to 30% so a near-constant figure reads as flat, not swinging.
+func sparkSVG(weeks [7]float64) template.HTML {
+	lo, hi := weeks[0], weeks[0]
+	for _, v := range weeks {
+		lo, hi = math.Min(lo, v), math.Max(hi, v)
+	}
+	switch {
+	case hi == lo:
+		lo, hi = lo-1, hi+1
+	case hi-lo < 0.15*math.Abs((hi+lo)/2):
+		span := 0.30 * math.Abs((hi+lo)/2)
+		lo, hi = (hi+lo)/2-span/2, (hi+lo)/2+span/2
+	}
+	var b strings.Builder
+	b.WriteString(`<svg class="mspark" viewBox="0 0 240 30" aria-hidden="true"><path d="`)
+	x, y := 0.0, 0.0
+	for i, v := range weeks {
+		x = 1 + float64(i)*238/float64(len(weeks)-1)
+		y = 25 - (v-lo)/(hi-lo)*20
+		if i == 0 {
+			fmt.Fprintf(&b, "M%.1f %.1f", x, y)
+		} else {
+			fmt.Fprintf(&b, "L%.1f %.1f", x, y)
+		}
+	}
+	fmt.Fprintf(&b, `"/><circle cx="%.1f" cy="%.1f" r="2"/></svg>`, x, y)
+	return template.HTML(b.String()) // #nosec G203 -- the console's own spark; every number is its own formatting, no input
 }
