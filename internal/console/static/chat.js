@@ -58,16 +58,28 @@ var chatView = (function () {
   function whoHTML(name, at) {
     return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
   }
-  function userHTML(login, text, at, queued, images) {
-    // the row's images as thumbnails, each src resolved by the caller:
-    // the optimistic object URL on send, the serving route on a read
+  function userHTML(login, text, at, queued, images, docs) {
+    // the row's images: their own names as thumbnails, the optimistic
+    // object URLs until the read carries the stored ids; its documents:
+    // link chips of file name and size, the same object URLs until then
     var thumbs = (images || []).map(function (im) {
       var src = im.url;
       return "<a class=\"thumb\" href=\"" + esc(src) + "\" target=\"_blank\" rel=\"noopener\"><img loading=\"lazy\" src=\"" + esc(src) + "\" alt=\"" + esc(im.name || "an image") + "\"></a>";
     }).join("");
+    var chips = (docs || []).map(function (d) {
+      var href = d.url ? d.url : base + "/attachments/" + d.id;
+      return "<a class=\"chip\" href=\"" + esc(href) + "\" target=\"_blank\" rel=\"noopener\">" + esc(d.fileName || d.file_name) + " · " + sizeHTML(d.bytes) + "</a>";
+    }).join("");
     return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
       "<p class=\"said\">" + esc(text) + "</p>" + (thumbs ? "<div class=\"chat-thumbs\">" + thumbs + "</div>" : "") +
+      (chips ? "<div class=\"chat-chips\">" + chips + "</div>" : "") +
       (queued ? "<p class=\"meta chat-queued\">queued: it goes out when the turn before it ends</p>" : "") + "</div>";
+  }
+  // sizeHTML is n bytes as the chips show it, the replay line's own format.
+  function sizeHTML(n) {
+    if (n < 1024) return n + " B";
+    if (n < 1048576) return (n / 1024).toFixed(1) + " KiB";
+    return (n / 1048576).toFixed(1) + " MiB";
   }
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
@@ -154,7 +166,9 @@ var chatView = (function () {
           wake = {text: m.content, at: m.at, parts: []};
           return;
         }
-        out.push(userHTML(login, m.content, m.at, m.queued, m.attachments));
+        var ims = [], docs = [];
+        (m.attachments || []).forEach(function (a) { (/^image\//.test(a.content_type) ? ims : docs).push(a); });
+        out.push(userHTML(login, m.content, m.at, m.queued, ims, docs));
         return;
       }
       var dst = wake ? wake.parts : parts;
@@ -392,7 +406,7 @@ var chatView = (function () {
   // order, each editable and removable until it goes out: whenever busy()
   // is false (the turn before it ended, no edit open) flush starts the
   // first as its own turn, and shown(items) draws the rest after every
-  // change. An item is the text and the images riding it.
+  // change. An item is the text and the images and documents riding it.
   function queue(start, busy, shown) {
     var items = [];
     function flush() {
@@ -400,8 +414,8 @@ var chatView = (function () {
       shown(items.slice());
     }
     return {
-      add: function (text, images) {
-        items.push({text: text, images: images || null});
+      add: function (text, images, docs) {
+        items.push({text: text, images: images || null, docs: docs || null});
         flush();
       },
       edit: function (i, text) {
@@ -419,7 +433,8 @@ var chatView = (function () {
   }
   function queueHTML(items) {
     return items.map(function (it, i) {
-      var label = it.text + (it.images && it.images.length ? " · " + it.images.length + (it.images.length > 1 ? " images" : " image") : "");
+      var label = it.text + (it.images && it.images.length ? " · " + it.images.length + (it.images.length > 1 ? " images" : " image") : "") +
+        (it.docs && it.docs.length ? " · " + it.docs.length + (it.docs.length > 1 ? " documents" : " document") : "");
       return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + ": " + esc(it.text) + "\">" + esc(label) +
         "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
     }).join("");
@@ -432,7 +447,7 @@ var chatView = (function () {
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, levelConfirmHTML: levelConfirmHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
-    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML, clampShare: clampShare};
+    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML, sizeHTML: sizeHTML, clampShare: clampShare};
 })();
 
 (function () {
@@ -505,11 +520,13 @@ var chatView = (function () {
     });
   }
 
-  // the images riding the next message: pasted into the input or dropped
-  // on the composer, named img1.. in arrival order — the names the text
-  // refers to and the server keeps — removable until Send, gone with the
-  // message. They live in this page: a reload drops them.
+  // the images and documents riding the next message: pasted into the
+  // input or dropped on the composer, named img1.. and doc1.. in arrival
+  // order — the names the text refers to and the server keeps —
+  // removable until Send, gone with the message. They live in this
+  // page: a reload drops them.
   var imagesEl = document.getElementById("chat-images"), pendingImages = [];
+  var docsEl = document.getElementById("chat-docs"), pendingDocs = [];
   function drawImages() {
     if (!imagesEl) return;
     imagesEl.innerHTML = pendingImages.map(function (im, i) {
@@ -526,22 +543,50 @@ var chatView = (function () {
     }
     drawImages();
   }
+  function drawDocs() {
+    if (!docsEl) return;
+    docsEl.innerHTML = pendingDocs.map(function (d, i) {
+      return "<li><span>" + chatView.esc(d.name + " " + d.fileName + " " + chatView.sizeHTML(d.bytes)) + "</span>" +
+        "<button type=\"button\" class=\"queued-remove\" data-undoc=\"" + i + "\" aria-label=\"Remove " + chatView.esc(d.fileName) + "\">×</button></li>";
+    }).join("");
+    docsEl.hidden = pendingDocs.length === 0;
+  }
+  function addDocuments(files) {
+    for (var i = 0; i < files.length && pendingDocs.length < 4; i++) {
+      var f = files[i];
+      if (!f) continue;
+      pendingDocs.push({name: "doc" + (pendingDocs.length + 1), file: f, url: URL.createObjectURL(f), fileName: f.name, bytes: f.size});
+    }
+    drawDocs();
+  }
+  // routeFiles splits files by what they are: images to the image chips,
+  // everything else to the document chips — the server refuses at Send
+  // what rides wrong, with its own words.
+  function routeFiles(files) {
+    var ims = [], docs = [];
+    for (var i = 0; i < files.length; i++) {
+      if (/^image\//.test(files[i].type)) ims.push(files[i]);
+      else docs.push(files[i]);
+    }
+    if (ims.length) addImages(ims);
+    if (docs.length) addDocuments(docs);
+  }
   if (input) input.addEventListener("paste", function (e) {
     var files = [];
     for (var i = 0; e.clipboardData && e.clipboardData.items && i < e.clipboardData.items.length; i++) {
       var it = e.clipboardData.items[i];
-      if (it.kind === "file" && /^image\//.test(it.type) && it.getAsFile()) files.push(it.getAsFile());
+      if (it.kind === "file" && it.getAsFile()) files.push(it.getAsFile());
     }
     if (files.length) {
       e.preventDefault();
-      addImages(files);
+      routeFiles(files);
     }
   });
   if (form) {
     form.addEventListener("dragover", function (e) { e.preventDefault(); });
     form.addEventListener("drop", function (e) {
       e.preventDefault();
-      if (e.dataTransfer && e.dataTransfer.files.length) addImages(e.dataTransfer.files);
+      if (e.dataTransfer && e.dataTransfer.files.length) routeFiles(e.dataTransfer.files);
     });
   }
   if (imagesEl) imagesEl.addEventListener("click", function (e) {
@@ -551,6 +596,15 @@ var chatView = (function () {
     // the names stay dense img1..imgN, what the server hands back
     pendingImages.forEach(function (im, i) { im.name = "img" + (i + 1); });
     drawImages();
+    input.focus();
+  });
+  if (docsEl) docsEl.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-undoc]");
+    if (!b) return;
+    pendingDocs.splice(Number(b.dataset.undoc), 1);
+    // the names stay dense doc1..docN, what the server hands back
+    pendingDocs.forEach(function (d, i) { d.name = "doc" + (i + 1); });
+    drawDocs();
     input.focus();
   });
 
@@ -676,7 +730,7 @@ var chatView = (function () {
   var queues = {};
   function queueOf(k) {
     if (!queues[k]) {
-      queues[k] = chatView.queue(function (text) { turn(k, text); }, function () {
+      queues[k] = chatView.queue(function (it) { turn(k, it.text, it.images, it.docs); }, function () {
         return busy(k) || readOnly && k === openRef() || k === openRef() && !!queued.querySelector("textarea");
       }, function (items) {
         if (k !== openRef() || queued.querySelector("textarea")) return;
@@ -690,10 +744,12 @@ var chatView = (function () {
     var text = input.value.trim();
     if (!text || readOnly) return;
     input.value = "";
-    var images = pendingImages;
+    var images = pendingImages, docs = pendingDocs;
     pendingImages = [];
+    pendingDocs = [];
     drawImages();
-    queueOf(openRef()).add(text, images);
+    drawDocs();
+    queueOf(openRef()).add(text, images, docs);
   }
   // pageQuery is the view the page stands on (282): the board's query the
   // chat's POST carries, so the agent's view tools work the page the
@@ -702,7 +758,7 @@ var chatView = (function () {
     var b = document.getElementById("board");
     return b && b.dataset.query ? b.dataset.query : "";
   }
-  function turn(k, text, images) {
+  function turn(k, text, images, docs) {
     var at = k.indexOf("@"), n = Number(k.slice(0, at)), owner = k.slice(at + 1);
     var shown = k === openRef(), command = text === "/compact";
     if (shown) {
@@ -711,7 +767,7 @@ var chatView = (function () {
     }
     var into = document.createElement("div");
     if (shown) {
-      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images));
+      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images, docs));
       add(log, chatView.agentHTML(new Date(), ""));
       scrollEnd(true);
       into = log.lastElementChild;
@@ -722,6 +778,7 @@ var chatView = (function () {
     body.append("owner", owner);
     body.append("view", pageQuery());
     (images || []).forEach(function (im) { body.append("images", im.file, im.file.name); });
+    (docs || []).forEach(function (d) { body.append("documents", d.file, d.file.name); });
     run(n, owner, base, body, into).then(function () {
       if (command && k === openRef()) return load(n, owner);
     }).then(function () {

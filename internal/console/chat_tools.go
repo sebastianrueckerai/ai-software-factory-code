@@ -1533,6 +1533,25 @@ var tools = []chatTool{
 		required: []string{"name"},
 		about:    "One look at an image a member sent: the vision model's answer to a question about it.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
+	{name: "read_attachment", title: "Read a sent document",
+		params: map[string]any{"name": str("the document's name, doc1 as its row shows"), "find": str("the lines holding this text, case-insensitive"),
+			"from":  stepParam("the first line to read"),
+			"to":    stepParam("the last line to read"),
+			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
+		required: []string{"name"},
+		about:    "A document a member sent, with its base_sha256 and line count.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.readAttachment(in)
+			return s, nil, err
+		}},
+	{name: "summarize_attachment", title: "Summarise a sent document",
+		params:   map[string]any{"name": str("the document's name, doc1 as its row shows"), "ask": str("what the summary answers (default what the document says)")},
+		required: []string{"name"},
+		about:    "One model call over a document a member sent: its answer to a question about it.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.summarizeAttachment(in)
+			return s, nil, err
+		}},
 }
 
 // diffLimit bounds the diff the agent reads.
@@ -1577,6 +1596,8 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
   attach_analysis records what you found inside a card's open ask; the members read it with the question.
   analyze_image looks at an image a member sent, once per question; cite what you saw, and look again rather than guess. A member's image is spend they approved; the chat's monthly budget still bounds the looks.
+  read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
+  for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
 `
 
 func (t *turn) systemText() (string, error) {

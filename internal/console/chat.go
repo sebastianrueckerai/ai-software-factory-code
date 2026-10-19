@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -33,12 +35,14 @@ const (
 	chatTTL        = 30 * time.Minute // a proposal's and an undo's life
 	chatMessageMax = 8 << 10
 	chatViewMax    = 4 << 10 // the view field a chat's POST carries
-	// the composer's images: how many ride one message, each one's size
-	// cap, and the whole post's room (the four images, the text and the
-	// multipart overhead) the reader stops at
+	// the composer's images and documents: how many ride one message,
+	// each one's size cap, and the whole post's room (four of each, the
+	// text and the multipart overhead) the reader stops at
 	chatImageMax   = 4
 	chatImageBytes = 8 << 20
-	chatPostRoom   = 40 << 20
+	chatDocMax     = 4
+	chatDocBytes   = 32 << 20
+	chatPostRoom   = 168 << 20
 	// chatWindow bounds each write of a chat stream: longer than a model
 	// call, during which the stream writes nothing.
 	chatWindow = 3 * time.Minute
@@ -478,8 +482,9 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 // before it is stored or sent, and the turn starts with the server's
 // line saying so. A command of the config tree's, /name alone, sends its
 // message; any other /word is text. The body is one multipart form —
-// chat.js, the only client, sends it so — whose images field carries the
-// images riding the message, stored with it and named img1.. by arrival.
+// chat.js, the only client, sends it so — whose images and documents
+// fields carry the attachments riding the message, stored with it and
+// named img1.. and doc1.. by arrival.
 func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if mt, _, err := mime.ParseMediaType(r.Header.Get("Content-Type")); err != nil || mt != "multipart/form-data" {
 		http.Error(w, "the chat's message form changed; reload the page", http.StatusBadRequest)
@@ -487,10 +492,15 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, chatPostRoom)
 	if err := r.ParseMultipartForm(chatImageBytes); err != nil {
-		http.Error(w, "the message form did not read; it holds at most 4 images of 8 MiB each beside the text", http.StatusBadRequest)
+		http.Error(w, "the message form did not read; it holds at most 4 images of 8 MiB and 4 documents of 32 MiB each beside the text", http.StatusBadRequest)
 		return
 	}
 	images, refusal := chatImages(r)
+	if refusal != "" {
+		http.Error(w, refusal, http.StatusBadRequest)
+		return
+	}
+	docs, refusal := chatDocuments(r)
 	if refusal != "" {
 		http.Error(w, refusal, http.StatusBadRequest)
 		return
@@ -555,6 +565,18 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	for _, doc := range docs {
+		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
+			Name: doc.name, FileName: doc.fileName, ContentType: doc.contentType, Bytes: int64(len(doc.data))})
+		if err == nil {
+			err = c.cfg.Timelines.Put(ctx, fmt.Sprintf("attachments/%d/%d", t.conv, a.ID), doc.data)
+		}
+		if err != nil {
+			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			http.Error(w, "cannot store the message", http.StatusInternalServerError)
+			return
+		}
+	}
 	t.detach()
 	t.open(w)
 	t.takeTurn(pos, wait)
@@ -612,6 +634,48 @@ func chatImages(r *http.Request) ([]chatImage, string) {
 			return nil, fmt.Sprintf("%s (%s) is not a PNG, JPEG, WebP or GIF image", name, string(fileName))
 		}
 		out = append(out, chatImage{name: name, fileName: string(fileName), contentType: ct, data: data})
+	}
+	return out, ""
+}
+
+// chatDocument is one document riding a message, as chatImage is an image.
+type chatDocument struct {
+	name, fileName, contentType string
+	data                        []byte
+}
+
+// chatDocuments are the form's documents parts in order, named doc1.. by
+// arrival, each within the bounds and typed by its leading bytes: text
+// of any kind or a PDF, nothing else; a refusal names the rule it broke.
+func chatDocuments(r *http.Request) ([]chatDocument, string) {
+	files := r.MultipartForm.File["documents"]
+	if len(files) > chatDocMax {
+		return nil, fmt.Sprintf("at most %d documents ride one message", chatDocMax)
+	}
+	out := make([]chatDocument, 0, len(files))
+	for i, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			return nil, fmt.Sprintf("%s did not read", fh.Filename)
+		}
+		data, err := io.ReadAll(io.LimitReader(f, chatDocBytes+1))
+		f.Close()
+		if err != nil {
+			return nil, fmt.Sprintf("%s did not read", fh.Filename)
+		}
+		name := fmt.Sprintf("doc%d", i+1)
+		fileName := []rune(fh.Filename)
+		if len(fileName) > 200 {
+			fileName = fileName[:200]
+		}
+		if int64(len(data)) > chatDocBytes {
+			return nil, fmt.Sprintf("%s (%s): a document is at most %d MiB", name, string(fileName), chatDocBytes>>20)
+		}
+		ct := http.DetectContentType(data)
+		if !strings.HasPrefix(ct, "text/") && ct != "application/pdf" {
+			return nil, fmt.Sprintf("%s: a document is text or a PDF", string(fileName))
+		}
+		out = append(out, chatDocument{name: name, fileName: string(fileName), contentType: ct, data: data})
 	}
 	return out, ""
 }
@@ -1017,17 +1081,32 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		if earlier && m.Role == "assistant" && m.Content != "" {
 			om.Content = "[said at " + t.since(m.At) + "] " + m.Content
 		}
+		var lines []string
 		if len(m.Attachments) > 0 {
-			// the member's images ride the row as their names and meta
-			// only: the model reads them by tool, never from here
-			names := make([]string, len(m.Attachments))
-			for i, a := range m.Attachments {
-				names[i] = fmt.Sprintf("%s (%s, %s)", a.Name, a.FileName, imageSize(a.Bytes))
+			// the member's images and documents ride the row as their
+			// names and meta only: the model reads them by tool, never
+			// from here
+			var images, docs []string
+			for _, a := range m.Attachments {
+				name := fmt.Sprintf("%s (%s, %s)", a.Name, a.FileName, imageSize(a.Bytes))
+				if strings.HasPrefix(a.ContentType, "image/") {
+					images = append(images, name)
+				} else {
+					docs = append(docs, name)
+				}
 			}
+			if len(images) > 0 {
+				lines = append(lines, "[attached images: "+strings.Join(images, ", ")+"]")
+			}
+			if len(docs) > 0 {
+				lines = append(lines, "[attached documents: "+strings.Join(docs, ", ")+"]")
+			}
+		}
+		if len(lines) > 0 {
 			if om.Content != "" {
 				om.Content += "\n"
 			}
-			om.Content += "[attached images: " + strings.Join(names, ", ") + "]"
+			om.Content += strings.Join(lines, "\n")
 		}
 		for _, call := range m.ToolCalls {
 			om.ToolCalls = append(om.ToolCalls, factoryd.OperatorCall{ID: call.ID, Name: call.Name, Arguments: objectArgs(call.Arguments)})
@@ -1047,10 +1126,14 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 
 // imageSize is n bytes as the replay's names line shows it.
 func imageSize(n int64) string {
-	if n < 1024 {
+	switch {
+	case n < 1024:
 		return fmt.Sprintf("%d B", n)
+	case n < 1<<20:
+		return fmt.Sprintf("%.1f KiB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1<<20))
 	}
-	return fmt.Sprintf("%.1f KiB", float64(n)/1024)
 }
 
 // lookImage is the analyze_image tool's run: the conversation's newest
@@ -1065,6 +1148,9 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 	var found *factoryd.ChatAttachment
 	var names []string
 	for i := len(atts) - 1; i >= 0; i-- {
+		if !strings.HasPrefix(atts[i].ContentType, "image/") {
+			continue
+		}
 		if !slices.Contains(names, atts[i].Name) {
 			names = append(names, atts[i].Name)
 		}
@@ -1087,6 +1173,88 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s (%s): %s", found.Name, found.FileName, look), nil
+}
+
+// document resolves the conversation's newest document under in.Name
+// with its bytes. A name no member sent refuses naming the documents
+// there are; a PDF refuses as not text.
+func (t *turn) document(in toolInput) (*factoryd.ChatAttachment, []byte, error) {
+	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		return nil, nil, err
+	}
+	var found *factoryd.ChatAttachment
+	var names []string
+	for i := len(atts) - 1; i >= 0; i-- {
+		if strings.HasPrefix(atts[i].ContentType, "image/") {
+			continue
+		}
+		if !slices.Contains(names, atts[i].Name) {
+			names = append(names, atts[i].Name)
+		}
+		if atts[i].Name == in.Name && found == nil {
+			found = &atts[i]
+		}
+	}
+	if found == nil {
+		if len(names) == 0 {
+			return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: this conversation holds no document", in.Name))
+		}
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
+	}
+	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
+	if err != nil {
+		return nil, nil, err
+	}
+	if found.ContentType == "application/pdf" {
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+	}
+	return found, b, nil
+}
+
+// readAttachment is the read_attachment tool's run: the conversation's
+// newest document under in.Name, read by read_doc's engine with its chip
+// label.
+func (t *turn) readAttachment(in toolInput) (string, error) {
+	found, b, err := t.document(in)
+	if err != nil {
+		return "", err
+	}
+	return readTextDocument(fmt.Sprintf("%s (%s)", found.Name, found.FileName), b, in.From, in.To, in.Find, in.Regex)
+}
+
+// docSummarize bounds the bytes a one-shot summary reads of a document
+// past it.
+const docSummarize = 48 << 10
+
+// summarizeAttachment is the summarize_attachment tool's run: the
+// conversation's newest document under in.Name handed to one model call
+// of the ask on the chat task's account, its first docSummarize bytes at
+// a line boundary when it runs past. The answer carries the chip label's
+// prefix, the cut named.
+func (t *turn) summarizeAttachment(in toolInput) (string, error) {
+	found, b, err := t.document(in)
+	if err != nil {
+		return "", err
+	}
+	label := fmt.Sprintf("%s (%s)", found.Name, found.FileName)
+	if len(b) > docSummarize {
+		cut := b[:docSummarize]
+		for !utf8.Valid(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
+			cut = cut[:i+1]
+		}
+		label = fmt.Sprintf("%s (%s, the first %s of %s)", found.Name, found.FileName, imageSize(int64(len(cut))), imageSize(int64(len(b))))
+		b = cut
+	}
+	answer, err := t.c.cfg.Operator.Stream(t.r.Context(), t.task, t.cfg.Model, t.threadRef(),
+		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {})
+	if err != nil {
+		return "", err
+	}
+	return label + ": " + answer.Content, nil
 }
 
 // since is at as a replayed row shows it: its time and its age at the
