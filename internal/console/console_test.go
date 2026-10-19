@@ -871,6 +871,8 @@ type rig struct {
 	signalErr   error
 	retried     []string // "task by user" per RetryPlanCard
 	retryErr    error
+	handed      []string // "task by user" per GoCard
+	goErr       error
 	metrics     *sdkmetric.ManualReader
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
@@ -1023,6 +1025,10 @@ func newRig(t *testing.T) *rig {
 		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
+		},
+		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
+			r.handed = append(r.handed, taskID+" by "+by)
+			return 16, r.goErr
 		},
 		AddCollaborator: func(_ context.Context, repo factoryd.Repo, user, permission string) error {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)

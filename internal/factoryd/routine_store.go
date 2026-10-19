@@ -26,6 +26,11 @@ type RoutineState struct {
 	SkipNext         bool
 	SkipBy           string
 	Runs             int // runs so far, the next run's number is Runs+1
+	// NeedsMe is the live toggle's side: nil follows the config's files,
+	// else true waits on a person and false runs on its own. NeedsMeBy
+	// is who set it, "" with none.
+	NeedsMe   *bool
+	NeedsMeBy string
 }
 
 // RoutineRun is one run of a routine, written when it begins and ended
@@ -52,6 +57,10 @@ type RoutineStore interface {
 	RoutineStates(ctx context.Context, project string) ([]RoutineState, error)
 	SetRoutineMerges(ctx context.Context, project, routine string, merges int) error
 	SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error
+	// SetRoutineNeedsMe sets the routine's live side for by: nil follows
+	// the config's files, else true waits on a person and false runs on
+	// its own.
+	SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error
 	// BeginRoutineRun writes run Runs+1 of r's routine and returns it with
 	// began true. A run of the same due returns that run with began false.
 	// With skip a pending Skip once is consumed: the new run's outcome is
@@ -61,6 +70,10 @@ type RoutineStore interface {
 	// until EndRoutineRun. ErrNotFound for a run that never began or ended.
 	RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error
 	EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error
+	// RepointRoutineRun moves the open run that filed taskID onto
+	// newTaskID and its issue: the go action's hand-over, so the hold
+	// keeps holding and the run ends with the card that ran the work.
+	RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error
 	// RoutineRuns are the routine's last limit runs, newest first.
 	RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error)
 	// RoutineRunOfTask is the run that filed the task.
@@ -75,11 +88,11 @@ type RoutineStore interface {
 	CountRoutineMerges(ctx context.Context, through int64, merged map[string]int) error
 }
 
-const routineStateColumns = `project, routine, merges, skip_next, skip_by, runs`
+const routineStateColumns = `project, routine, merges, skip_next, skip_by, runs, needs_me, needs_me_by`
 
 func scanRoutineState(scan func(dest ...any) error) (RoutineState, error) {
 	var st RoutineState
-	err := scan(&st.Project, &st.Routine, &st.Merges, &st.SkipNext, &st.SkipBy, &st.Runs)
+	err := scan(&st.Project, &st.Routine, &st.Merges, &st.SkipNext, &st.SkipBy, &st.Runs, &st.NeedsMe, &st.NeedsMeBy)
 	return st, err
 }
 
@@ -142,6 +155,15 @@ func (s *PGStore) SetRoutineSkip(ctx context.Context, project, routine string, s
 	return err
 }
 
+func (s *PGStore) SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error {
+	if needsMe == nil {
+		by = ""
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO routine_state (project, routine, needs_me, needs_me_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (project, routine) DO UPDATE SET needs_me = EXCLUDED.needs_me, needs_me_by = EXCLUDED.needs_me_by`, project, routine, needsMe, by)
+	return err
+}
+
 const routineRunColumns = `project, routine, run, due, started, ended, trigger, task_id, issue_number, outcome, note, cost_eur::float8`
 
 func scanRoutineRun(scan func(dest ...any) error) (RoutineRun, error) {
@@ -198,6 +220,15 @@ func (s *PGStore) EndRoutineRun(ctx context.Context, project, routine string, ru
 	res, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET ended = now(), outcome = $4, note = $5, task_id = $6, issue_number = $7, cost_eur = $8
 		WHERE project = $1 AND routine = $2 AND run = $3`, project, routine, run, outcome, note, taskID, issue, costEUR)
 	return routineRunChanged(res, err, project, routine, run)
+}
+
+// RepointRoutineRun moves the open run that filed taskID onto newTaskID
+// and its issue: the go action's hand-over, so the hold keeps holding
+// and the run ends with the card that ran the work.
+func (s *PGStore) RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET task_id = $2, issue_number = $3
+		WHERE task_id = $1 AND ended IS NULL`, taskID, newTaskID, issue)
+	return err
 }
 
 // routineRunChanged is the update's error, ErrNotFound when no run matched.

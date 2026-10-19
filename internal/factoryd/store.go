@@ -324,6 +324,9 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// ReleaseHandover deletes the card's hand-over claim, the failed
+	// filing's, so a retry can claim it again.
+	ReleaseHandover(ctx context.Context, taskID string) error
 	// IntakeEvents lists a task's events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	// SetSignalled sets whether event id reached the task's workflow and
@@ -915,6 +918,13 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 		return 0, nil
 	}
 	return id, err
+}
+
+// ReleaseHandover deletes the card's hand-over claim, the failed filing's,
+// so a retry can claim it again.
+func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = 'handover'`, taskID)
+	return err
 }
 
 // intakeColumns are the intake_events columns the reads select, in scan

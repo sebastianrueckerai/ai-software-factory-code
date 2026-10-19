@@ -48,18 +48,20 @@ type fakeStore struct {
 	finished     map[string]time.Time
 	settled      map[string]bool
 	intakeEvents []IntakeEvent
-	events       []Event // newest last, as NewestTaskEvents reads them
-	deliveries   map[string]bool
-	pruned       []time.Duration
-	approvals    []ApprovalRequest
-	gates        []string // "task gate since", in order
-	projects     []Project
-	alertsMu     sync.Mutex
-	alerts       []Alert
-	rolls        []RollRequest
-	chain        []fakeChainRun
-	liveSessions map[string]LiveSession
-	pauses       map[string]QueuePause
+	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
+	failIntakeEvent error
+	events          []Event // newest last, as NewestTaskEvents reads them
+	deliveries      map[string]bool
+	pruned          []time.Duration
+	approvals       []ApprovalRequest
+	gates           []string // "task gate since", in order
+	projects        []Project
+	alertsMu        sync.Mutex
+	alerts          []Alert
+	rolls           []RollRequest
+	chain           []fakeChainRun
+	liveSessions    map[string]LiveSession
+	pauses          map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
 	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
 	// less daySpent
@@ -329,9 +331,13 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
+	if s.failIntakeEvent != nil {
+		return 0, s.failIntakeEvent
+	}
 	for _, have := range s.intakeEvents {
 		if (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
-			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) {
+			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) ||
+			(e.Kind == IntakeHandover && have.TaskID == e.TaskID && have.Kind == IntakeHandover) {
 			return 0, nil
 		}
 	}
@@ -341,6 +347,13 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return e.ID, nil
+}
+
+func (s *fakeStore) ReleaseHandover(ctx context.Context, taskID string) error {
+	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == IntakeHandover
+	})
+	return nil
 }
 
 func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
@@ -933,6 +946,16 @@ func (s *fakeStore) SetRoutineSkip(ctx context.Context, project, routine string,
 	return nil
 }
 
+func (s *fakeStore) SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error {
+	st, _ := s.RoutineState(ctx, project, routine)
+	st.NeedsMe, st.NeedsMeBy = needsMe, by
+	if needsMe == nil {
+		st.NeedsMeBy = ""
+	}
+	s.routineStates[project+"/"+routine] = st
+	return nil
+}
+
 func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (RoutineRun, bool, error) {
 	k := r.Project + "/" + r.Routine
 	for _, have := range s.routineRuns[k] {
@@ -972,6 +995,18 @@ func (s *fakeStore) EndRoutineRun(ctx context.Context, project, routine string, 
 		}
 	}
 	return fmt.Errorf("routine run %s/%s #%d: %w", project, routine, run, ErrNotFound)
+}
+
+func (s *fakeStore) RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error {
+	for _, runs := range s.routineRuns {
+		for i := range runs {
+			if runs[i].TaskID == taskID && runs[i].Ended.IsZero() {
+				runs[i].TaskID, runs[i].Issue = newTaskID, issue
+				return nil
+			}
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error) {

@@ -45,6 +45,22 @@ func (c *Console) routineRun(w http.ResponseWriter, r *http.Request) {
 	c.routineActed(w, r, note)
 }
 
+// routineNeedsMe is a routine's live toggle, and with the form's undo=1
+// its undo (doRoutineNeedsMe).
+func (c *Console) routineNeedsMe(w http.ResponseWriter, r *http.Request) {
+	var side *bool
+	if r.PostFormValue("undo") != "1" {
+		me := r.PostFormValue("needs_me") == "1"
+		side = &me
+	}
+	note, err := c.doRoutineNeedsMe(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), side)
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	c.routineActed(w, r, note)
+}
+
 // routineActed answers an act with note: the routine's drawer on the tab
 // its form sat on (from=drawer, tab), else the board.
 func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note string) {
@@ -82,6 +98,33 @@ func (c *Console) doRoutineSkip(ctx context.Context, a actor, project, name stri
 		return "Skipped once · next " + views[i].NextWords, nil
 	}
 	return "Skipped once", nil
+}
+
+// doRoutineNeedsMe sets project's routine name's live side for a: with
+// side true its runs wait on a person, with false they run on their
+// own, with nil the config's side files again.
+func (c *Console) doRoutineNeedsMe(ctx context.Context, a actor, project, name string, side *bool) (string, error) {
+	repository, err := c.routineRepository(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	if err := c.cfg.Routines.NeedsMe(ctx, project, name, side, a.s.user); err != nil {
+		return "", routineFailed(err, project, name)
+	}
+	what := "follows its config"
+	if side != nil {
+		what = map[bool]string{true: "needs you", false: "runs on its own"}[*side]
+	}
+	title := name
+	if views, err := c.cfg.Routines.Views(ctx, project); err != nil {
+		log.Printf("console: the routines of %s: %v", project, err)
+	} else if i := slices.IndexFunc(views, func(v factoryd.RoutineView) bool { return v.Routine.Name == name }); i >= 0 {
+		title = views[i].Routine.Title
+	}
+	log.Printf("console: %s set the side of routine %s of %s via %s", a.s.user, name, project, a.via)
+	c.record(ctx, a, repository, "", 0, factoryd.EventRoutineNeedsMe,
+		map[string]any{"project": project, "routine": name, "undo": side == nil, "needs_me": side != nil && *side})
+	return title + " " + what + ".", nil
 }
 
 // doRoutineRun starts a run of project's routine name now and waits for

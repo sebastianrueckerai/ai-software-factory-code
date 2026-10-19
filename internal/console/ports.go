@@ -116,9 +116,9 @@ type Chat interface {
 	AddChatAttachment(ctx context.Context, repository, login string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error)
 	ChatAttachments(ctx context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error)
 	ChatAttachmentByID(ctx context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error)
-	// ChatAsks are login's ask rows on repository, every thread's, the
-	// settle rule's read for the switcher's badge (the
-	// notification-settling concept)
+	// ChatAsks are login's ask and poke rows on repository, every
+	// thread's, the settle rule's read for the switcher's badge and the
+	// tab title's count (the notification-settling concept)
 	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
@@ -237,6 +237,9 @@ type Routines interface {
 	// Skip sets the routine's Skip once for by, or with skip false
 	// clears it.
 	Skip(ctx context.Context, project, routine string, skip bool, by string) error
+	// NeedsMe sets the routine's live side for by: true waits on a
+	// person, false runs on its own, nil follows the config's files.
+	NeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error
 	// RunNow starts a run due now and returns before its outcome.
 	RunNow(ctx context.Context, project, routine string) error
 }

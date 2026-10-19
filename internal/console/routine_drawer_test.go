@@ -114,6 +114,9 @@ func TestRoutineDrawerTabs(t *testing.T) {
 		return `<div class="acts"><form method="post" action="/routines/` + bumpKey + `/skip" hx-post="/routines/` + bumpKey + `/skip" hx-target="#drawer" hx-swap="innerHTML">` +
 			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="` + tab + `">` +
 			`<input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>` + "\n" +
+			`<form method="post" action="/routines/` + bumpKey + `/needs-me" hx-post="/routines/` + bumpKey + `/needs-me" hx-target="#drawer" hx-swap="innerHTML">` +
+			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="` + tab + `">` +
+			`<input type="hidden" name="needs_me" value="0"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Weekly bump runs on its own">Runs on its own</button></form>` + "\n" +
 			`<form method="post" action="/routines/` + bumpKey + `/run" hx-post="/routines/` + bumpKey + `/run" hx-target="#drawer" hx-swap="innerHTML">` +
 			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="` + tab + `">` +
 			`<input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form></div>`

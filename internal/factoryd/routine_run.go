@@ -89,7 +89,15 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 		}
 		return text
 	}
-	switch rt.Files {
+	files := rt.Files
+	if files == policy.FilesHuman || files == policy.FilesAgent {
+		st, err := r.Routines.RoutineState(ctx, in.Project, in.Routine)
+		if err != nil {
+			return RoutineRunResult{}, err
+		}
+		files = filesInForce(rt, st)
+	}
+	switch files {
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
 		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
@@ -102,7 +110,10 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)
-		body := strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + brief)
+		body := strings.TrimSpace(brief)
+		if rt.Skill != "" {
+			body = strings.TrimSpace("Run the skill " + rt.Skill + ".\n\n" + body)
+		}
 		t, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, rt.Title, body+"\n\n"+provenance, []string{"routine"},
 			Task{ID: NewTaskID(), RiskClass: "standard", BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: rt.Title + "\n\n" + body, Source: SourceRoutine})
 		if err != nil {
@@ -130,6 +141,19 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 // RoutineProvenance starts the line that ends the body of a routine's
 // card: "filed by the factory · routine weekly-bump · run 15".
 const RoutineProvenance = "filed by the factory · routine "
+
+// filesInForce is the side routine rt's next run files on: its files,
+// unless the live toggle set a side for a human or agent routine.
+func filesInForce(rt policy.Routine, st RoutineState) string {
+	switch {
+	case st.NeedsMe == nil, rt.Files != policy.FilesHuman && rt.Files != policy.FilesAgent:
+		return rt.Files
+	case *st.NeedsMe:
+		return policy.FilesHuman
+	default:
+		return policy.FilesAgent
+	}
+}
 
 // RoutineRunFailed records run in, whose activity failed for good, as
 // failed with note, the error's words: the run begins first when the

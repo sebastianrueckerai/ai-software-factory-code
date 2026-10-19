@@ -349,12 +349,9 @@ type staleEscalation struct {
 // runner's Escalate does: the state mirrored on the issue, the reason as
 // a comment whose first line is the question the card shows, the intake
 // event the answers reconcile from, a question_asked row and an
-// escalation alert. Its error is the transition alone: a mirror or record
-// that fails is logged, never a reason to stop half-way.
+// escalation alert. Its errors are the intake event and the transition:
+// the rest is logged, never a reason to stop half-way.
 func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, quiet time.Duration) error {
-	if err := store.TransitionTask(ctx, t.ID, []string{"running", "waiting-deps", "waiting-poster"}, "waiting-human"); err != nil {
-		return fmt.Errorf("task %s is %s, cannot wait for a human: %w", t.ID, t.Status, err)
-	}
 	state, action := staleNames(t.Status)
 	reason := fmt.Sprintf("The card was quiet for %s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
 		staleDuration(quiet), state, action)
@@ -363,7 +360,6 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 	if in != nil {
 		forgejo, timeline = in.Forgejo, in.Timeline
 	}
-	mirrorTaskState(ctx, forgejo, t, "waiting-human")
 	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	var comment int64
 	if forgejo != nil && t.IssueNumber != 0 {
@@ -383,10 +379,16 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 		}
 	}
 	shaped := ShapedQuestion(reason, QuestionFacts{})
+	// the intake row is the ask's durable anchor, written before the wait:
+	// a card in waiting-human without its row has no ask
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment,
 		Question: shaped}); err != nil {
-		log.Printf("task %s: record the stale escalation: %v", t.ID, err)
+		return fmt.Errorf("task %s: record the stale escalation: %w", t.ID, err)
 	}
+	if err := store.TransitionTask(ctx, t.ID, []string{"running", "waiting-deps", "waiting-poster"}, "waiting-human"); err != nil {
+		return fmt.Errorf("task %s is %s, cannot wait for a human: %w", t.ID, t.Status, err)
+	}
+	mirrorTaskState(ctx, forgejo, t, "waiting-human")
 	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
 	if shaped != nil {
 		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info

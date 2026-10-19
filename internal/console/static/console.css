@@ -630,6 +630,9 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .col-menu > summary:hover, .col-menu[open] > summary { color: var(--text); border-color: var(--line-strong); background: var(--bg-hover); }
 .col-menu > summary.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .menu-pop { position: absolute; right: 0; top: 30px; z-index: 15; min-width: 164px; padding: 4px 12px 8px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; }
+/* a closed details keeps its content's boxes (content-visibility), and the
+   absolutely placed menu then widens the page: gone when closed */
+.col-menu:not([open]) > .menu-pop { display: none; }
 [data-theme=light] .menu-pop { box-shadow: 0 12px 32px rgba(29, 53, 87, .18); }
 .menu-pop fieldset { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 6px 0; border: 0; }
 .menu-pop fieldset + fieldset { border-top: 1px solid var(--line); }
@@ -638,6 +641,7 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .menu-pop label:hover { color: var(--text); }
 .menu-pop input[type=radio] { margin: 0; accent-color: var(--accent); }
 .menu-pop input[type=radio]:checked + span { color: var(--text); }
+.menu-pop .apply { height: 24px; margin-top: 6px; padding: 0 10px; font-size: 12px; }
 .col-state { display: flex; align-items: center; gap: 6px; margin: 0; padding: 3px 6px 3px 10px; border-bottom: 1px solid var(--line); color: var(--accent); font: 11px/1.5 var(--font-mono); flex: none; }
 .col-state span { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .col-x { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--text-muted); font: 15px/1 var(--font-mono); text-decoration: none; }
@@ -720,7 +724,7 @@ body:has(#screen) #flash { flex: none; }
 /* the chat and the board hold a divider between them: the drag sets
    --chat-share, every side keeps its minimum (18rem the chat, 30rem the
    board) */
-#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, 4fr)) 10px minmax(30rem, 1fr); gap: 0; }
+#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, .667fr)) 10px minmax(30rem, 1fr); gap: 0; }
 #chat-divider { position: relative; cursor: col-resize; }
 #chat-divider::after { content: ""; position: absolute; inset: 0 4px; background: var(--line); }
 #chat-divider:hover::after, #chat-divider:focus-visible::after { background: var(--accent); }
@@ -801,13 +805,17 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-queue .queued-text { flex: 1; height: auto; min-height: 26px; padding: 2px 8px; justify-content: flex-start; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); border: 1px dashed var(--btn-line); font-size: 13px; font-weight: 400; }
 .chat-queue textarea { flex: 1; max-width: none; resize: none; }
 .chat-queue .queued-remove { width: 26px; padding: 0; }
-/* the images riding the next message: chips above the prompt, and the
-   thumbnails under a sent row */
+/* the images and documents riding the next message: chips above the
+   prompt, and thumbnails or link chips under a sent row */
 .chat-images { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
 .chat-images li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
 .chat-images img { width: 22px; height: 22px; object-fit: cover; border-radius: 3px; display: block; }
 .chat-images .queued-remove { width: 20px; height: 20px; padding: 0; }
+.chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-docs li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
 .chat-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
+.chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-thumbs a { display: block; }
 .chat-thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 4px; border: 1px solid var(--btn-line); display: block; }
 /* the drawer docks at the right edge of the main area, over the board
@@ -946,26 +954,32 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 @media (max-width: 899px) {
   body:has(#screen) { height: auto; display: block; }
   body:has(#screen) > main { display: block; }
-  header.top { gap: 0 8px; padding: 0 10px; }
+  /* every target in the bar is 44 px tall, above its hairline; a box
+     that reads smaller is drawn inside its target */
+  header.top { gap: 0 8px; height: 45px; padding: 0 10px; }
   header .home { display: none; }
   header nav { gap: 0 8px; }
   header nav a { padding: 0 5px; font-size: 13px; }
-  header nav .act { padding: 0 8px; }
+  header nav .act { height: 44px; margin: 0; padding: 0 2px; border: 0; }
   header nav .act .w { display: none; }
-  header nav .act .p { display: inline; }
-  .menu summary { padding: 0 8px; font-size: 13px; }
+  header nav .act .p { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--btn-line); border-radius: 3px; }
+  .menu summary { height: 44px; padding: 0 8px; font-size: 13px; }
   .menu .w { display: none; }
   .menu .p { display: inline; }
-  .menu .sheet { position: fixed; left: 0; right: 0; top: 44px; min-width: 0; }
+  .menu .sheet { position: fixed; left: 0; right: 0; top: 45px; min-width: 0; }
   .menu .sheet .g-work { display: block; }
   .menu .s-out { display: flex; }
+  .menu .s-out button { height: 44px; }
   .logout { display: none; }
-  .theme-switch::before { width: 34px; height: 30px; }
-  [data-theme=light] .theme-switch::before { transform: translateX(34px); }
-  .theme-switch button { width: 34px; height: 30px; }
-  .theme-switch svg { width: 18px; height: 18px; }
-  .switch { flex: 0 1 auto; max-width: 40%; min-width: 0; }
-  .switch select { width: 100%; max-width: none; }
+  .theme-switch { padding: 0; border: 0; box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .theme-switch::before { top: 0; left: 0; width: 44px; height: 44px; }
+  [data-theme=light] .theme-switch::before { transform: translateX(44px); }
+  .theme-switch button { width: 44px; height: 44px; }
+  .theme-switch svg { width: 22px; height: 22px; }
+  .switch { position: relative; flex: 0 1 auto; max-width: 40%; min-width: 0; }
+  .switch::before { content: ""; position: absolute; inset: 8px 0; border: 1px solid var(--btn-line); border-radius: 3px; pointer-events: none; }
+  [data-theme=light] .switch::before { z-index: -1; background: var(--bg-card); }
+  .switch select { width: 100%; max-width: none; height: 44px; border-color: transparent; background-color: transparent; background-position-y: center; }
   .status { margin: 10px 12px 0; }
   .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
   .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
@@ -981,6 +995,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat-head { height: auto; min-height: 42px; flex-wrap: wrap; padding: 8px 12px; }
   .chat-form { padding: 10px 12px 12px; }
   .chat-form button, .proposal .doit, button.skip { height: 44px; min-width: 96px; }
+  .chat-form .chat-grow { min-width: 0; }
   .board-head .view-toggle { display: none; }
   .board-head .documents { height: 44px; padding: 0 12px; font-size: 13px; }
   .board-head { flex-wrap: wrap; height: auto; }
@@ -999,6 +1014,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .col-menu.routines-ctl > .menu-pop { right: 0; top: 44px; }
   .menu-pop .within input[type=number], .menu-pop .within select { height: 44px; font-size: 14px; }
   .menu-pop .within select { background-position-y: center; }
+  .menu-pop .apply { height: 44px; }
   .card.ghost > button.open, .card.ghost .acts button, [data-routine-drawer] .acts button { min-height: 44px; }
   .life.runs a { display: inline-flex; align-items: center; min-height: 44px; }
   .ghosts-hidden a { display: inline-flex; align-items: center; min-height: 44px; }

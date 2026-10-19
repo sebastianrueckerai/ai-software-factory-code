@@ -1017,15 +1017,6 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	if t.Status != "waiting-human" {
-		// queued: the screening stage's suspect verdict, before any session;
-		// waiting-deps: a dependency ended failed or closed; waiting-poster:
-		// the author's answer screened suspect, or a cap reached on it
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster"}, "waiting-human"); err != nil {
-			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
-		}
-		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
-	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	if strings.HasPrefix(reason, splitFailed) || strings.HasPrefix(reason, splitCapped) {
@@ -1084,6 +1075,22 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	for i, c := range choices {
 		choices[i] = r.untrusted(t, c)
 	}
+	// the durable anchor Reconcile rebuilds the answers from; a retry
+	// with the same comment records nothing twice. It is written before
+	// the wait: a card in waiting-human without its row has no ask
+	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
+		Choices: choices, Question: shaped}); err != nil {
+		return 0, fmt.Errorf("task %s: record escalation comment %d: %w", taskID, id, err)
+	}
+	if t.Status != "waiting-human" {
+		// queued: the screening stage's suspect verdict, before any session;
+		// waiting-deps: a dependency ended failed or closed; waiting-poster:
+		// the author's answer screened suspect, or a cap reached on it
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster"}, "waiting-human"); err != nil {
+			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
+		}
+		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
+	}
 	// the shaped question's buttons are not these choices: they carry
 	// values, and park and keep waiting record an answer without posting
 	// one, so the console renders them from the question itself
@@ -1096,12 +1103,6 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		step["choices"], asked["choices"] = choices, choices
 	}
 	r.record(ctx, taskID, "escalated", step)
-	// the durable anchor Reconcile rebuilds the answers from; a retry
-	// with the same comment records nothing twice
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices, Question: shaped}); err != nil {
-		log.Printf("task %s: record escalation comment %d: %v", taskID, id, err)
-	}
 	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
 		return id, nil // the question asked again, or the screening's: its alert is open already

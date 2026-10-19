@@ -1275,7 +1275,7 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 		`data-query="?project=ai-software-factory-code&amp;queued=oldest&amp;queued-only=blocked"`,
 		// the find's form keeps the menus' choices, a menu's form the rest of the filter
 		findForm + `<input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><label`,
-		`<form method="get" action="/" class="menu-pop auto-submit"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><fieldset><legend>Order</legend><label><input type="radio" name="done" value="" checked>`,
+		`<form method="get" action="/" class="menu-pop auto-submit" hx-get="/" hx-select="#board" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="queued" value="oldest"><input type="hidden" name="queued-only" value="blocked"><fieldset><legend>Order</legend><label><input type="radio" name="done" value="" checked>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("under the Queued choices the board lacks %s", want)
@@ -1284,10 +1284,11 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 	if n := strings.Count(body, `<p class="col-state">`); n != 1 {
 		t.Errorf("%d state lines, want 1", n)
 	}
-	// a choice applies at once: the menu's form has no button to press
-	for _, menu := range regexp.MustCompile(`(?s)<form method="get" action="/" class="menu-pop auto-submit">.*?</form>`).FindAllString(body, -1) {
-		if strings.Contains(menu, "<button") {
-			t.Errorf("a column menu holds a button: %s", menu)
+	// a choice applies at once, read into the board in place: the menu's
+	// form holds a button only for a browser that runs no script
+	for _, menu := range regexp.MustCompile(`(?s)<form method="get" action="/" class="menu-pop auto-submit" hx-get="/" hx-select="#board" hx-target="#board" hx-swap="outerHTML">.*?</form>`).FindAllString(body, -1) {
+		if strings.Count(menu, "<button") != 1 || !strings.Contains(menu, `<noscript><button type="submit" class="apply">Apply</button></noscript></form>`) {
+			t.Errorf("a column menu holds a button outside its no-script Apply: %s", menu)
 		}
 	}
 	plain := page("")

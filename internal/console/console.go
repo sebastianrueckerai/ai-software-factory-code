@@ -178,6 +178,10 @@ type Config struct {
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
 	RetryPlanCard func(ctx context.Context, taskID, by string) (int64, error)
+	// GoCard files human card taskID's work as an agent card for by and
+	// returns its issue (factoryd's Runner.Go): the go of a card that
+	// waits on a person. A refusal is factoryd.ErrNoGo.
+	GoCard func(ctx context.Context, taskID, by string) (int64, error)
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error
@@ -418,6 +422,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
+		{"POST /tasks/{id}/go", http.HandlerFunc(c.goCard), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
@@ -450,6 +455,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},
 		{"POST /routines/{project}/{name}/skip", http.HandlerFunc(c.routineSkip), routines},
 		{"POST /routines/{project}/{name}/run", http.HandlerFunc(c.routineRun), routines},
+		{"POST /routines/{project}/{name}/needs-me", http.HandlerFunc(c.routineNeedsMe), routines},
 	}
 }
 

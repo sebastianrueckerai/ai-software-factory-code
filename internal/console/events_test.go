@@ -1114,7 +1114,7 @@ function el(props) {
   var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [],
     querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
     getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {},
-    appendChild: function (c) { this.children.push(c); return c; }};
+    classList: {contains: function () { return false; }}, appendChild: function (c) { this.children.push(c); return c; }};
   return Object.assign(e, props);
 }
 var counts = [el(), el(), el()], log = el({dataset: {task: "t-run", session: "s-2"}});
@@ -1167,7 +1167,12 @@ function settle() {
   pending.splice(0).forEach(function (ok) { ok(); });
   return new Promise(function (done) { setImmediate(done); });
 }
-function fire(type, detail) { (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); }); }
+// fire hands the listeners an htmx event, whose request's config names
+// the element that asked: the one given, else the swapped target
+function fire(type, detail) {
+  if (detail && !detail.requestConfig) detail.requestConfig = {elt: el(detail.elt || detail.target)};
+  (listeners[type] || []).forEach(function (fn) { fn({type: type, detail: detail}); });
+}
 // fail is htmx failing in its handling of the board's read in flight: it
 // fires onLoadError while it holds the board, never settles that read's
 // promise, then lets go of the board and sends the read queued behind it

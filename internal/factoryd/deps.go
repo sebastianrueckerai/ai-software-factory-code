@@ -421,3 +421,90 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 	r.record(ctx, old.ID, "retried", map[string]any{"by": by, "as": t.ID, "issue": t.IssueNumber})
 	return t.IssueNumber, nil
 }
+
+// ErrNoGo refuses the go of a card that is no human card waiting on a
+// person; its message is the console's.
+type ErrNoGo string
+
+func (e ErrNoGo) Error() string { return string(e) }
+
+// Go files human card taskID's work as an agent card (the go action) and
+// returns its issue: the card's own words become the agent's objective,
+// a routine's card with the skill it names and who handed it over, and
+// the run's row moves to the new card, so the hold keeps holding and the
+// run ends with the card that ran the work. The hand-over is claimed
+// before the filing, so of two racing goes only the first files; a
+// filing that fails releases the claim for the retry. The card itself is
+// left as it was: the close that follows records the hand-over.
+func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	switch {
+	case t.Kind != "human":
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
+	case t.Status != "backlog" && t.Status != "waiting-human":
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
+	}
+	v := r.cfg.Policy()
+	run, filed, err := r.Routines.RoutineRunOfTask(ctx, taskID)
+	if err != nil {
+		return 0, err
+	}
+	// the run row left the card: the go already filed its hand-over
+	if t.Source == SourceRoutine && !filed {
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
+	}
+	name, labels := "", []string(nil)
+	if filed {
+		name, labels = run.Project, []string{"routine"}
+	} else {
+		var ok bool
+		if name, _, ok = v.ProjectOf(t.Repository); !ok {
+			return 0, fmt.Errorf("task %s: no project of %s in the configuration", taskID, t.Repository)
+		}
+	}
+	p, ok, err := r.Routines.Project(ctx, name)
+	if err != nil || !ok {
+		return 0, cmp.Or(err, fmt.Errorf("the go of %s: no project %s in the store", taskID, name))
+	}
+	title, body, _ := strings.Cut(t.Objective, "\n\n")
+	if filed {
+		parts := make([]string, 0, 3)
+		if rt, ok := v.Routine(run.Project, run.Routine); ok && rt.Skill != "" {
+			parts = append(parts, "Run the skill "+rt.Skill+".")
+		}
+		if body != "" {
+			parts = append(parts, body)
+		}
+		parts = append(parts, "handed over by "+by)
+		body = strings.Join(parts, "\n\n")
+	}
+	objective := title
+	if body != "" {
+		objective += "\n\n" + body
+	}
+	claim, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeHandover, Author: by, Body: "handed to the factory"})
+	if err != nil {
+		return 0, err
+	}
+	// the claim lost: another hand filed this card's hand-over already
+	if claim == 0 {
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
+	}
+	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, title, body, labels,
+		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: t.Source})
+	if err != nil {
+		if rerr := r.store.ReleaseHandover(context.WithoutCancel(ctx), taskID); rerr != nil {
+			log.Printf("factoryd: release the hand-over claim of %s: %v", taskID, rerr)
+		}
+		return 0, err
+	}
+	// past the filing, a request whose client left must not leave the run on the card the close ends
+	ctx = context.WithoutCancel(ctx)
+	if err := r.Routines.RepointRoutineRun(ctx, taskID, n.ID, ref.Number); err != nil {
+		return 0, fmt.Errorf("task %s: hand its routine run to %s: %w", taskID, n.ID, err)
+	}
+	return ref.Number, nil
+}

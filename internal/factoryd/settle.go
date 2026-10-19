@@ -65,11 +65,11 @@ var settleWords = map[string]string{
 
 // SettleOf derives ask row m's state from its card's events and the wait
 // fact of its family: a question's card in Needs you, an approval's
-// pending request. The first settling event at or after the row settles
-// it with the event's word, actor and time; none, and the fact gone,
-// settles it as moved on; the fact still there, the row is open. A row's
-// repeats move its time, so a bumped row asks again after an answer that
-// preceded it.
+// pending request, a poke's card in Needs you. The first settling event
+// at or after the row settles it with the event's word, actor and time;
+// none, and the fact gone, settles it as moved on; the fact still there,
+// the row is open. A row's repeats move its time, so a bumped row asks
+// again after an answer that preceded it.
 func SettleOf(m ChatMessage, events []Event, cardWaits, approvalWaits bool) PokeSettle {
 	family := AskFamily(m)
 	var first, last Event
@@ -90,7 +90,7 @@ func SettleOf(m ChatMessage, events []Event, cardWaits, approvalWaits bool) Poke
 	if first.ID != 0 {
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
-	if cardWaits && family == "question" || approvalWaits && family == "approval" {
+	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {
 		return PokeSettle{Open: true}
 	}
 	at := m.At

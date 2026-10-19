@@ -49,7 +49,7 @@ const mustHave = {
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
-    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
+    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
@@ -58,15 +58,19 @@ const mustHave = {
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
+    "File roadmap 300 as a card", "One card, or one per deliverable", "One card",
+    "Refused: The ready check refuses the filing", "0 acceptance tests; want 1 to 10",
+    "acceptance the chat shows the documents a member sends; the agent reads them by tool",
+    "The failing run is img1", "analyze_image", "In #606's session", "A fresh session",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
-  idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
+  idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
-  quiet: ["One card is working", "1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+  quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
 };
 
 async function seed(s) {
@@ -282,7 +286,7 @@ async function text(page) {
         if (!(await d.isVisible())) fails.push("busy: a click on the card does not open the drawer");
         else {
           const dt = await d.innerText();
-          for (const w of ["Overview", "Chat", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
+          for (const w of ["Overview", "Session", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
           const tabs = await d.getByRole("tab").allInnerTexts();
           if (tabs[tabs.length - 1] !== "Files") fails.push("drawer: Files is not the last tab (" + tabs.join(", ") + ")");
           const box = await d.boundingBox();
@@ -304,6 +308,16 @@ async function text(page) {
         if (s.body) fails.push("busy: column " + i + " has no body or its body scrolls sideways");
         if (s.y !== "auto" || s.x !== "hidden") fails.push("busy: column " + i + "'s body overflow is " + s.y + "/" + s.x + ", want auto/hidden");
       });
+      // the ask's answer row (roadmap 300's round): the open ask offers
+      // its presses between the log and the box, the member's own words
+      // open below; a past ask shows its press as the member's row. It is
+      // read before the Do it below: that press's row would settle the ask
+      const answer = p.page.locator("#chat-answer");
+      if (!(await answer.isVisible())) fails.push("chat: the open ask shows no answer row");
+      else {
+        const at = await answer.innerText();
+        for (const w of ["Answer:", "In #606's session", "A fresh session", "or in your words below"]) if (!at.includes(w)) fails.push('chat: the answer row lacks "' + w + '"');
+      }
       const doit = p.page.locator("#chat").getByRole("button", { name: "Do it", exact: true });
       if (!(await doit.count())) fails.push("chat: no Do it");
       else {
@@ -311,6 +325,123 @@ async function text(page) {
         await p.page.waitForTimeout(800);
         const t2 = await p.page.locator("#chat").innerText();
         if (!/applied/i.test(t2) || !/undo/i.test(t2)) fails.push("chat: Do it does not become an applied line with Undo");
+      }
+      // a pasted image rides the composer as a named chip (roadmap 300):
+      // paste puts img1 above the box with its ×, the × removes it, and
+      // nothing leaves the page until Send
+      const chips = p.page.locator("#chat-images");
+      await p.page.evaluate(() => new Promise((done) => {
+        const c = document.createElement("canvas");
+        c.width = 320; c.height = 200;
+        const g = c.getContext("2d");
+        g.fillStyle = "#8a9aa8"; g.fillRect(0, 0, 320, 200);
+        c.toBlob((b) => {
+          const dt = new DataTransfer();
+          dt.items.add(new File([b], "shot.png", { type: "image/png" }));
+          document.getElementById("chat-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+          done();
+        }, "image/png");
+      }));
+      await p.page.waitForTimeout(200);
+      if (!(await chips.isVisible()) || !(await chips.innerText()).includes("img1")) fails.push("chat: a pasted image shows no img1 chip");
+      else {
+        const remove = chips.locator("[data-unimage]");
+        if (!(await remove.count())) fails.push("chat: the image chip has no ×");
+        else {
+          await remove.first().click();
+          await p.page.waitForTimeout(200);
+          if (await chips.isVisible()) fails.push("chat: the × does not remove the image chip");
+        }
+      }
+      // a document rides the composer as its own chip (roadmap 300): a
+      // dropped text file lands in its own strip as doc1 with its file
+      // name and a working ×; an image and a document dropped together
+      // each land in their own strip; and Send stores the row with the
+      // words intact, the document a link to its served bytes, a PDF
+      // serving as a PDF
+      const docs = p.page.locator("#chat-docs");
+      const drop = (files) => p.page.evaluate((files) => new Promise((done) => {
+        const made = [], next = (i) => {
+          if (i === files.length) {
+            const dt = new DataTransfer();
+            made.forEach((f) => dt.items.add(f));
+            const form = document.getElementById("chat-form");
+            form.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+            form.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+            done();
+            return;
+          }
+          const [name, type, text] = files[i];
+          if (type === "image/png") {
+            const c = document.createElement("canvas");
+            c.width = 320; c.height = 200;
+            const g = c.getContext("2d");
+            g.fillStyle = "#8a9aa8"; g.fillRect(0, 0, 320, 200);
+            c.toBlob((b) => { made.push(new File([b], name, { type })); next(i + 1); }, type);
+          } else {
+            made.push(new File([text], name, { type }));
+            next(i + 1);
+          }
+        };
+        next(0);
+      }), files);
+      await drop([["spec.md", "text/markdown", "# Deploy run\n- ships 1.2.3\n"]]);
+      await p.page.waitForTimeout(200);
+      const docText = () => docs.innerText();
+      if (!(await docs.isVisible()) || !(await docText()).includes("doc1") || !(await docText()).includes("spec.md")) fails.push("chat: a dropped text file shows no doc1 spec.md chip");
+      else {
+        const undoc = docs.locator("[data-undoc]");
+        if (!(await undoc.count())) fails.push("chat: the document chip has no ×");
+        else {
+          await undoc.first().click();
+          await p.page.waitForTimeout(200);
+          if (await docs.isVisible()) fails.push("chat: the × does not remove the document chip");
+        }
+      }
+      // one gesture, an image to its strip and a document to its own
+      await drop([["shot.png", "image/png", ""], ["spec.md", "text/markdown", "# Deploy run\n- ships 1.2.3\n"]]);
+      await p.page.waitForTimeout(200);
+      if (!(await chips.isVisible()) || !(await chips.innerText()).includes("img1")) fails.push("chat: the mixed drop shows no img1");
+      if (!(await docs.isVisible()) || !(await docs.innerText()).includes("doc1")) fails.push("chat: the mixed drop shows no doc1");
+      // the send stores the row: the words intact beside the riding
+      // files. The just-sent row is optimistic (its chips object URLs)
+      // until a read carries the stored ids, and the lab's turn always
+      // fails (the operator door is closed), so the read never comes by
+      // itself: a reload reads the thread back, and there the document
+      // is a link chip to its served bytes and the PDF serves as a PDF
+      await p.page.locator("#chat-input").click();
+      await p.page.keyboard.type("here are the run notes", { delay: 20 });
+      await p.page.locator("#chat-form button[type=submit]").click();
+      await p.page.waitForTimeout(1200);
+      const sentLog = await p.page.locator("#chat-log").innerText();
+      if (!sentLog.includes("here are the run notes")) fails.push("chat: the sent message's words do not store: " + sentLog.slice(-120));
+      // a PDF rides the same way
+      await drop([["report.pdf", "application/pdf", "%PDF-1.7\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]]);
+      await p.page.waitForTimeout(200);
+      await p.page.locator("#chat-input").click();
+      await p.page.keyboard.type("and the report", { delay: 20 });
+      await p.page.locator("#chat-form button[type=submit]").click();
+      await p.page.waitForTimeout(1200);
+      await p.page.reload({ waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const storedHref = (file) => p.page.waitForFunction((file) => {
+        const a = Array.from(document.querySelectorAll("#chat-log .chat-chips .chip"))
+          .find((c) => c.textContent.includes(file) && /\/chat\/attachments\/\d+$/.test(c.getAttribute("href") || ""));
+        return a ? a.getAttribute("href") : false;
+      }, file, { timeout: 15000 }).then((h) => h.jsonValue());
+      let docHref = null;
+      try { docHref = await storedHref("spec.md"); } catch { /* the wait's own timeout is the failure below */ }
+      if (!docHref) fails.push("chat: the stored row never links spec.md to its serving route");
+      else {
+        const got = await p.page.request.get(base + docHref);
+        if (got.status() !== 200 || !(got.headers()["content-type"] || "").startsWith("text/")) fails.push("chat: the served document = " + got.status() + " " + got.headers()["content-type"]);
+      }
+      let pdfHref = null;
+      try { pdfHref = await storedHref("report.pdf"); } catch { /* as above */ }
+      if (!pdfHref) fails.push("chat: the stored row never links report.pdf to its serving route");
+      else {
+        const got = await p.page.request.get(base + pdfHref);
+        if (got.status() !== 200 || (got.headers()["content-type"] || "") !== "application/pdf") fails.push("chat: the served PDF = " + got.status() + " " + got.headers()["content-type"]);
       }
       // the documents (roadmap 277): the Documents button opens the roadmap
       // in the view docked over the board, never over the chat; a link opens
@@ -681,6 +812,56 @@ async function text(page) {
       if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
       if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
       if ((await p.page.locator("#board .column > .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+      // a choice reads the board in place (Sebastian, 2026-10-14): the page does not load
+      // anew, the query it stands on is one history entry, the menu stays open with the
+      // focus on the choice, a second choice applies without reopening it, Escape closes it
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.evaluate(() => { window.labStay = true; });
+      const depth = await p.page.evaluate(() => history.length);
+      const doneMenu = p.page.locator("#board details.col-menu:has(input[type=radio][name=done])");
+      const menuNow = () => p.page.evaluate(() => {
+        const a = document.activeElement;
+        return { stay: window.labStay === true, depth: history.length, open: !!document.querySelector("#board details.col-menu[open] input[type=radio][name=done]"),
+          focus: a && a.name ? a.name + "=" + a.value : "", state: Array.from(document.querySelectorAll("#board .col-state span")).map((x) => x.textContent).join(" | ") };
+      });
+      for (const [what, radio, want, state, entries] of [
+        ["failed only", 'input[name="done-only"][value="failed"]', { "done-only": "failed" }, "failed only", 1],
+        ["oldest first", 'input[name="done"][value="oldest"]', { "done-only": "failed", done: "oldest" }, "oldest first · failed only", 2],
+      ]) {
+        if (!(await doneMenu.evaluate((d) => d.open))) await doneMenu.locator("summary").click();
+        await doneMenu.locator(radio).check();
+        try {
+          await p.page.waitForURL((u) => Object.entries(want).every(([k, v]) => u.searchParams.get(k) === v), { timeout: 5000 });
+        } catch (e) {
+          fails.push("menus: " + what + " does not apply (" + p.page.url() + ")");
+          continue;
+        }
+        await p.page.waitForTimeout(400);
+        const m = await menuNow(), radioFocus = radio.replace(/input\[name="([^"]+)"\]\[value="([^"]+)"\]/, "$1=$2");
+        if (!m.stay) fails.push("menus: " + what + " loads the page anew");
+        if (m.depth !== depth + entries) fails.push("menus: after " + what + " the history holds " + (m.depth - depth) + " entries more, want " + entries);
+        if (!m.open) fails.push("menus: the menu closes after " + what);
+        if (m.focus !== radioFocus) fails.push("menus: after " + what + " the focus is on " + (m.focus || "nothing") + ", want " + radioFocus);
+        if (m.state !== state) fails.push('menus: after ' + what + ' the state line reads "' + m.state + '", want "' + state + '"');
+      }
+      await p.page.keyboard.press("Escape");
+      if ((await menuNow()).open) fails.push("menus: Escape does not close the menu after a choice");
+      // without script a choice waits for Apply, which loads the board under it
+      const ns = await browser.newContext({ viewport: { width: 1440, height: 900 }, javaScriptEnabled: false });
+      await ns.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
+      const nsp = await ns.newPage();
+      await nsp.goto(base + "/", { waitUntil: "load" });
+      const nsDone = nsp.locator("#board details.col-menu:has(input[type=radio][name=done])");
+      await nsDone.locator("summary").click();
+      await nsDone.locator('input[name="done-only"][value="failed"]').check();
+      await nsp.waitForTimeout(300);
+      if (new URL(nsp.url()).searchParams.has("done-only")) fails.push("menus: without script a choice applies before Apply");
+      await nsDone.getByRole("button", { name: "Apply" }).click();
+      await nsp.waitForLoadState("load");
+      if (new URL(nsp.url()).searchParams.get("done-only") !== "failed") fails.push("menus: without script Apply does not apply the choice (" + nsp.url() + ")");
+      if (!(await nsp.locator("#board .col-state").allInnerTexts()).some((t) => t.includes("failed only"))) fails.push("menus: without script Apply leaves no state line");
+      await ns.close();
     }
     if (sc === "busy") {
       // the routines (C16): every ghost at the foot of Queued, Needs you holds only the
@@ -742,8 +923,8 @@ async function text(page) {
       // the period (2026-10-15): choosing within, a number or a unit applies at once; the
       // dependency update runs in 3 d 0 h 20 min, the bump and the template pass in under
       // half an hour, the audit after merges, so 1 day, 2 hours and 3 days hide the
-      // dependency update and 4 days none; all and none send no period, and a number
-      // changed under none chooses within
+      // dependency update and 4 days none; all and none send no period, all, the default,
+      // leaves the URL, and a number changed under none chooses within
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -756,12 +937,12 @@ async function text(page) {
           { routines: "within", within: "4", unit: "days" }, all, ""],
         ["within 2 hours", async () => { await ctl.locator("input[name=within]").fill("2"); await ctl.locator("select[name=unit]").selectOption("hours"); },
           { routines: "within", within: "2", unit: "hours" }, soon, "1 routine hidden"],
-        ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: "all" }, all, ""],
+        ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: null }, all, ""],
         ["choosing none", () => ctl.locator("input[name=routines][value=none]").check(), { routines: "none" }, "", "4 routines hidden"],
         ["a number of 3 under none", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
           { routines: "within", within: "3", unit: "days" }, soon, "1 routine hidden"],
       ]) {
-        await ctl.locator("summary").click();
+        if (!(await ctl.evaluate((d) => d.open))) await ctl.locator("summary").click();
         await act();
         try {
           await p.page.waitForURL((u) => Object.entries(want).every(([k, v]) => u.searchParams.get(k) === v), { timeout: 5000 });
@@ -813,6 +994,15 @@ async function text(page) {
       await fresh.page.waitForTimeout(600);
       if (!(await fresh.page.locator(".chat.sw-collapsed").count())) fails.push("threads: the thread table does not start folded");
       await fresh.ctx.close();
+      // the rows (C14): the inbox pinned first, the others by last turn: the session store
+      // (6 min), the members page (9 min), the costs (41 min), the export (26 h); the members
+      // page's turn in flight its one working dot; no ticker along the foot (C12)
+      const order = await p.page.evaluate(() => Array.from(document.querySelectorAll("#thread-rows .trow[data-thread]"))
+        .map((r) => r.classList.contains("inbox") ? "inbox" : r.dataset.thread).join(","));
+      if (order !== "inbox,4,3,2,1") fails.push("threads: the rows read " + order + ", want inbox,4,3,2,1");
+      const dots = await p.page.locator("#thread-rows .tmark.working").evaluateAll((d) => d.map((x) => x.closest(".trow").dataset.thread).join(","));
+      if (dots !== "3") fails.push("threads: the working dots sit on " + (dots || "no row") + ", want 3");
+      if (await p.page.locator("#ticker").count()) fails.push("threads: the ticker is back (C12)");
       // the commands (C14): "/" at the start of the box opens the palette, the arrows
       // choose, Escape closes it; /compact and /new also sit as chips under the box
       const box = p.page.locator("#chat-input"), pal = p.page.locator("#chat-palette");
@@ -836,8 +1026,11 @@ async function text(page) {
       else {
         await del.click();
         const dlg = p.page.locator("#thread-dialog");
-        if (!(await dlg.isVisible()) || !(await dlg.innerText()).includes("go for good")) fails.push("threads: Delete… opens no warning");
+        if (!(await dlg.isVisible())) fails.push("threads: Delete… opens no warning");
         else {
+          const warn = await dlg.innerText();
+          for (const w of ["Delete “Why is the session store card waiting?”?", "Its 2 messages go for good: a hard delete, no archive.",
+            "One event will name you, the thread and the count.", "the events, the audit and git"]) if (!warn.includes(w)) fails.push('threads: the delete warning lacks "' + w + '"');
           await dlg.getByRole("button", { name: "Keep it" }).click();
           if (await dlg.count()) fails.push("threads: Keep it does not close the warning");
         }
@@ -846,7 +1039,8 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       const restore = p.page.locator("#thread-rows .tarch [data-restore]");
       if (!(await restore.count())) fails.push("threads: Archive puts no row under the archived rule");
-      else {
+      if ((await p.page.locator("#thread-head").innerText()).includes("Why is the session store card waiting?")) fails.push("threads: the archived thread stays open");
+      if (await restore.count()) {
         // an archived thread opened: its composer is one line with restore (C14)
         await p.page.locator("#thread-rows .tarch [data-thread]").first().click();
         await p.page.waitForTimeout(600);
@@ -855,6 +1049,54 @@ async function text(page) {
         await restore.first().click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
+        if (!(await p.page.locator("#chat-input").isVisible())) fails.push("threads: restore does not bring the text box back");
+      }
+      // the fold (C14): ‹ folds the table to a strip of its marks no wider than 40 px that keeps
+      // the open row's rule, the working dot and the count pill; a mark still opens its thread
+      // and the table stays folded; › unfolds it
+      const tg = p.page.locator("#switcher .swtg"), foldedNow = () => p.page.locator(".chat.sw-collapsed").count();
+      await tg.click();
+      if (!(await foldedNow())) fails.push("fold: ‹ does not fold the threads");
+      else {
+        const strip = await p.page.evaluate(() => {
+          const sw = document.getElementById("switcher"), vis = (sel) => Array.from(sw.querySelectorAll(sel)).filter((e) => e.offsetParent && e.getBoundingClientRect().width > 0).length;
+          return { width: sw.getBoundingClientRect().width, titles: vis(".ttitle"), working: vis(".tmark.working"), pills: vis(".badge, .bsplit"), on: vis(".trow.on") };
+        });
+        if (strip.width > 40) fails.push("fold: the folded strip is " + Math.round(strip.width) + " px wide");
+        if (strip.titles) fails.push("fold: the folded strip still shows " + strip.titles + " titles");
+        if (strip.working !== 1) fails.push("fold: the folded strip shows " + strip.working + " working dots, want 1");
+        if (strip.pills !== 1) fails.push("fold: the folded strip shows " + strip.pills + " count pills, want the costs thread's 1");
+        if (strip.on !== 1) fails.push("fold: the folded strip keeps no open row's rule");
+        await p.page.locator('#thread-rows .trow[data-thread="2"]').click();
+        await p.page.waitForTimeout(600);
+        if (!(await p.page.locator("#thread-head").innerText()).includes("Give the costs page a from and a to date.")) fails.push("fold: a mark does not open its thread");
+        if (!(await foldedNow())) fails.push("fold: opening a thread unfolds the table");
+        await tg.click();
+        if (await foldedNow()) fails.push("fold: › does not unfold the threads");
+      }
+      // delete is hard (C14): Delete the thread takes the costs thread's row
+      await p.page.locator('#thread-rows .trow[data-thread="2"]').click();
+      await p.page.waitForTimeout(600);
+      await p.page.locator("#thread-head [data-delete]").click();
+      await p.page.locator('#thread-dialog [data-dlg="delete"]').click();
+      await p.page.waitForTimeout(600);
+      if (await p.page.locator("#thread-dialog").count()) fails.push("threads: Delete the thread leaves the warning open");
+      if (await p.page.locator('#thread-rows .trow[data-thread="2"]').count()) fails.push("threads: Delete the thread leaves its row");
+      // the commands run (C14): "/ne" and Enter in the palette start a new thread, as the
+      // /new chip does, each opening empty with the focus in the box
+      for (const [what, run] of [
+        ["/ne and Enter", async () => { await box.click(); await p.page.keyboard.type("/ne"); await p.page.keyboard.press("Enter"); }],
+        ["the /new chip", () => p.page.locator('#chat-form .cmd[data-cmd="new"]').click()],
+      ]) {
+        await p.page.locator('#thread-rows .trow[data-thread="4"]').click();
+        await p.page.waitForTimeout(600);
+        await run();
+        await p.page.waitForTimeout(800);
+        if (await pal.isVisible()) fails.push("commands: the palette stays open after " + what);
+        const head = (await p.page.locator("#thread-head").innerText()).trim();
+        if (!head.startsWith("New thread")) fails.push('commands: ' + what + ' opens "' + head.split("\n")[0] + '", not a new thread');
+        if (await p.page.locator("#chat-log .msg").count()) fails.push("commands: the thread " + what + " opens is not empty");
+        if (await p.page.evaluate(() => document.activeElement && document.activeElement.id) !== "chat-input") fails.push("commands: after " + what + " the focus is not in the box");
       }
     }
     if (sc === "assisted") {
@@ -874,12 +1116,24 @@ async function text(page) {
       await btn.click();
       await p.page.keyboard.press("Escape");
       if (await pop.isVisible()) fails.push("level: Escape does not close the menu");
+      await btn.click();
+      await pop.locator('[data-lvl="autonomous"]').click();
+      await p.page.keyboard.press("Escape");
+      if (await pop.isVisible()) fails.push("level: Escape does not close the confirm");
+      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: Escape on the confirm changed the level");
+      // the agent's own start carries its decider line in the inbox (C14)
+      await p.page.locator("#thread-rows .trow.inbox").click();
+      await p.page.waitForTimeout(600);
+      const deciders = await p.page.locator("#chat-log .decider").allInnerTexts();
+      if (deciders.length !== 1 || !deciders[0].includes("assisted level · started by the agent")) fails.push("assisted: the inbox's deciders read " + JSON.stringify(deciders));
       if (await p.page.locator("form#autonomy").count()) fails.push("level: the board head still carries the old selector");
     }
     if (sc === "escalation") {
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
       // a choice answers its card with no model turn and the row goes
       const row = p.page.locator("#chat-answer");
+      const once = await p.page.locator("#chat").getByRole("button", { name: "Postgres", exact: true }).count();
+      if (once !== 1) fails.push("escalation: the chat shows the choice Postgres " + once + " times, want once");
       if (!(await row.isVisible())) fails.push("escalation: no answer row under the inbox's escalation");
       else {
         await row.getByRole("button", { name: "Postgres" }).click();
@@ -896,23 +1150,28 @@ async function text(page) {
       if (!(await p.page.evaluate(() => !!document.activeElement && !!document.activeElement.closest("#thread-rows")))) fails.push("threads: Ctrl+k does not reach the switcher");
     }
     if (sc === "poke") {
-      // a poke on another thread: the inbox row first, its split badge, and the split in the tab title (C14, the settle concept)
+      // a poke on another thread: the inbox row first, its split badge, and the tab title's count of what waits (C21, the ruling of 2026-10-19)
       const first = p.page.locator("#thread-rows .trow").first();
       if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
       if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
       const badge = first.locator(".badge, .bsplit").first();
       if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
         fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
+      // the tab title counts the one card that waits for the member now, the
+      // ask on #606; new rows and unseen answers never count (2026-10-19
+      // ruling); the poke leaves the session store thread open (C14)
       const title = await p.page.title();
-      if (!title.startsWith("(1 needs you · 2 new) ")) fails.push('poke: the tab title is "' + title + '", want the split (1 needs you · 2 new) first');
+      if (!title.startsWith("(1) ")) fails.push('poke: the tab title is "' + title + '", want the one card that waits, "(1) " first');
+      if ((await p.page.locator("#thread-head").innerText()).includes("uninvited")) fails.push("poke: the poke opens the inbox by itself");
       await first.click();
       await p.page.waitForTimeout(600);
+      if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: the agent speaks here uninvited")) fails.push("poke: the inbox's head does not say it is the factory's thread");
       const log = await p.page.locator("#chat").innerText();
       for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
-      if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      if (!(await p.page.title()).startsWith("(1) ")) fails.push("poke: opening the inbox drops the waiting ask from the tab title");
       // the merge ask's numbers: the PR stays text, the card's ref is the
       // link; the link and the row's body open the card's drawer and
       // light the card. The ask sits settled here, so its fold opens the
@@ -1027,19 +1286,39 @@ async function text(page) {
     if (psw > 390) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + ")");
     await pp.ctx.close();
   }
-  // the phone: 44 px targets for the C14 controls and the theme selector, no horizontal scroll
-  for (const sc of ["threads", "escalation"]) {
+  // the phone: 44 px targets for the C14 controls and the bar's, no horizontal scroll
+  for (const sc of ["busy", "threads", "escalation"]) {
     await seed(sc);
     const pp = await open(browser, { width: 390, height: 844 });
     await pp.page.goto(base + "/", { waitUntil: "load" });
     await pp.page.waitForTimeout(600);
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
-      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, .theme-switch button"))
+      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, " +
+      "header nav a, .menu > summary, .menu .s-out button, .switch select, .theme-switch button"))
       .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
     const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
     if (psw > 390) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + ")");
     await pp.ctx.close();
+  }
+  // the phone's fold (C14): folded by default to one summary row, the five threads, the costs
+  // thread's new answer as a pill and the one turn in flight, the list out of view; a tap
+  // unfolds it
+  await seed("threads");
+  {
+    const pf = await open(browser, { width: 390, height: 844 }, true);
+    await pf.page.goto(base + "/", { waitUntil: "load" });
+    await pf.page.waitForTimeout(600);
+    const sumRow = pf.page.locator(".sw-sum");
+    if (!(await sumRow.isVisible())) fails.push("phone: the folded threads show no summary row");
+    else {
+      const said = (await sumRow.innerText()).replace(/\s+/g, " "), pill = await sumRow.locator(".badge").first().getAttribute("aria-label").catch(() => "");
+      if (!said.startsWith("Threads 5 ") || !said.includes("1 working") || pill !== "1 new") fails.push('phone: the summary row reads "' + said + '" with the pill "' + pill + '"');
+      if (await pf.page.locator("#thread-rows").isVisible()) fails.push("phone: the folded threads leave the list in view");
+      await sumRow.click();
+      if (!(await pf.page.locator("#thread-rows").isVisible())) fails.push("phone: a tap on the summary row does not unfold the threads");
+    }
+    await pf.ctx.close();
   }
   // the documents on the phone: the view covers the screen, its controls
   // reach 44 px, Escape closes, no horizontal scroll

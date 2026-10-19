@@ -276,6 +276,59 @@ func TestChatInboxBadge(t *testing.T) {
 	equal(t, "the unread turns after the inbox was read", unread(list()), map[int64]int64{1: 0, 2: 0})
 }
 
+// The conversations JSON carries each thread's waits_you, the tab
+// title's count (the ruling of 2026-10-19): the distinct cards with an
+// open ask or poke row on the thread. Settled rows never count, a poke
+// on a card that waits does, and the badge's own split stays asks-only.
+func TestSettleCounts(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	ctx := t.Context()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-open", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-both", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 17, Objective: "Merge the bump"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 18, Objective: "Done card"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-week", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 19, Objective: "Weekly bump"}})
+	r.tasks.mu.Unlock()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	done, _ := chat.NewConversation(ctx, "sf/code", "sebastian")
+	say := func(m factoryd.ChatMessage) {
+		t.Helper()
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
+		Choices: []string{"8080", "80"}, TaskID: "t-open", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#17 needs you: merge PR #21?",
+		Choices: []string{"Approve"}, TaskID: "t-both", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#17 waits for you: the weekly bump.", TaskID: "t-both", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#18 needs you: merge PR #22?",
+		Choices: []string{"Approve"}, TaskID: "t-done", Conversation: done})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#18 is done: the cap line.", TaskID: "t-done", Conversation: done})
+	week, _ := chat.NewConversation(ctx, "sf/code", "sebastian")
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventRoutineRan,
+		Content: "#19 needs you: Weekly bump of the pinned outside inputs.", TaskID: "t-week", Conversation: week})
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
+	var list []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatal(rec.Code, err)
+	}
+	waits := map[int64][2]float64{}
+	num := func(th map[string]any, key string) float64 {
+		if v, ok := th[key]; ok {
+			return v.(float64)
+		}
+		return 0
+	}
+	for _, th := range list {
+		waits[int64(th["number"].(float64))] = [2]float64{num(th, "needs_you"), num(th, "waits_you")}
+	}
+	equal(t, "the threads' needs_you and waits_you", waits, map[int64][2]float64{
+		inbox: {2, 2}, done: {0, 0}, week: {0, 1}})
+}
+
 // Archive hides a thread and keeps its rows, and restore brings it back;
 // delete takes every row of it for good and writes one event naming the
 // member, the thread and the count, while the card's events stay; the

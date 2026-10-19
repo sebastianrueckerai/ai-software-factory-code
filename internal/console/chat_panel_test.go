@@ -52,6 +52,7 @@ func TestChatPanel(t *testing.T) {
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">[{"name":"compact","words":"the older turns of this thread become a summary"},{"name":"new","words":"a new thread"}]</script>
 <ol id="chat-images" class="chat-images" aria-label="Images riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
+<ol id="chat-docs" class="chat-docs" aria-label="Documents riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
 <button type="button" id="chat-grow" class="chat-grow" aria-pressed="false" title="Grow the box for a long message">Grow</button>
@@ -137,9 +138,9 @@ var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
 var now = new Date("2026-10-11T12:00:00Z");
 var cmds = [{name: "compact", words: "the older turns of this thread become a summary"}, {name: "new", words: "a new thread"},
   {name: "standup", words: "what moved", message: "What moved since yesterday?"}];
-var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2, needs_you: 1, new_rows: 1},
+var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at: "2026-10-11T09:31:00Z", unread: 2, needs_you: 1, new_rows: 1, waits_you: 2},
   {number: 2, title: "world", state: "active", current: true, last_at: "2026-10-11T09:30:04Z", unread: 0, working: true},
-  {number: 4, title: "", state: "active", last_at: "2026-10-10T18:00:00Z", unread: 0},
+  {number: 4, title: "", state: "active", last_at: "2026-10-10T18:00:00Z", unread: 0, waits_you: 1},
   {number: 1, title: "a <b>", state: "archived", last_at: "2026-10-08T09:30:02Z", unread: 0}];
 console.log(JSON.stringify({
   pending: chatView.historyHTML(msgs, "sebastian", [{token: "tok1", state: "pending"}]),
@@ -234,7 +235,7 @@ console.log(JSON.stringify({
 			`<button type="button" class="linkbtn restore" data-restore="1">restore</button></span></div>`},
 		{"sum", `Threads <span class="n">3</span> · <span class="bsplit" aria-label="1 needs you · 1 new"><span class="badge">1</span><span class="badge new">1</span></span> · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
 			`<span class="chev" aria-hidden="true">⌃</span>`},
-		{"unread", "2"},
+		{"unread", "3"},
 		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +

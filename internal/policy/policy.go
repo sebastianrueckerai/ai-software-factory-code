@@ -128,7 +128,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "ask", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
-	"watch_card", "unwatch_card", "set_timer", "analyze_image"}
+	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}
 
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}

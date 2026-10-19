@@ -382,6 +382,15 @@ func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.Intake
 	return e.ID, nil
 }
 
+func (s *acceptanceStore) ReleaseHandover(_ context.Context, taskID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.events = slices.DeleteFunc(s.events, func(e factoryd.IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == factoryd.IntakeHandover
+	})
+	return nil
+}
+
 func (s *acceptanceStore) IntakeEvents(_ context.Context, taskID string) ([]factoryd.IntakeEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

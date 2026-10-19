@@ -629,6 +629,44 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	return fmt.Sprintf("Retried #%d as #%d; it starts in lane ready once factoryd picks it up.", t.IssueNumber, issue), nil
 }
 
+// doGo hands the work of card id, a human card that waits on a person,
+// to the factory (factoryd's Go): the card's own words become an agent
+// card and the card closes on the note, so its wait ends at once.
+func (c *Console) doGo(ctx context.Context, a actor, id string) (string, error) {
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case t.Kind != "human":
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
+	case t.Status != "backlog" && t.Status != "waiting-human":
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
+	}
+	bt, _, err := c.cfg.Tasks.BoardTask(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if bt.Escalation != "" {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d waits on your answer, not on the factory.", t.IssueNumber))
+	}
+	issue, err := c.cfg.GoCard(ctx, t.ID, a.s.user)
+	var no factoryd.ErrNoGo
+	switch {
+	case errors.As(err, &no):
+		return "", refuse(http.StatusConflict, no.Error())
+	case err != nil:
+		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The card could not be handed to the factory; see the factoryd log.")
+	}
+	note := fmt.Sprintf("The factory runs it as #%d.", issue)
+	if _, err := c.doClose(ctx, a, id, note); err != nil {
+		return "", err
+	}
+	log.Printf("console: %s hands %s (%s#%d) to the factory as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
+	return fmt.Sprintf("The factory runs it as #%d; card #%d closes.", issue, t.IssueNumber), nil
+}
+
 // planIn is plan task id for a; 409 when it is no plan.
 func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task, error) {
 	t, err := c.cardIn(ctx, a, id)
