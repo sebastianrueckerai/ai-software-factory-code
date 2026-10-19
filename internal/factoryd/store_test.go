@@ -817,6 +817,11 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	if a.Kind == AlertMonthCap && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertMonthCap && b.Fingerprint == a.Fingerprint }) {
 		return 0, nil
 	}
+	if (a.Kind == AlertChainRed || a.Kind == AlertChainStalled) && slices.ContainsFunc(s.alerts, func(b Alert) bool {
+		return b.Kind == a.Kind && b.Fingerprint == a.Fingerprint && b.Verdict == ""
+	}) {
+		return 0, nil
+	}
 	a.ID = int64(len(s.alerts) + 1)
 	s.alerts = append(s.alerts, a)
 	return a.ID, nil

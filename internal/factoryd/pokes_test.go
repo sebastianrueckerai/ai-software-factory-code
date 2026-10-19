@@ -57,7 +57,7 @@ func TestPokeOf(t *testing.T) {
 			"reason": "checks: the checks failed on c1.\noutput tail:\nFAIL TestStore"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}, true},
 		{"a card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "#603 is done: Session store: pick the table's store. €0.21 in all."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "#603 is done and live: Session store: pick the table's store. €0.21 in all."}, true},
 		{"a plan's card done", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}}, child, ChatMessage{}, false},
 		// a merged card informs once at its merge; the done poke comes at
 		// live, so a card already done by then (live at once) is quiet here
@@ -106,6 +106,57 @@ func TestPokeOf(t *testing.T) {
 	}
 }
 
+// The merged inform is one poke at the merge move, its words the chain's
+// facts as the pass reads them (detail's chain, repair and covered —
+// Pass's late read): running tells the chain, a red chain names the
+// repair on it, and a chain that already covers the card — the poller
+// concluded between merge and poke — informs nobody, its done poke its
+// only tell.
+func TestMergedPokeInformsOnce(t *testing.T) {
+	merged := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "merged"}
+	merge := func(chain string, repair float64, covered bool) Event {
+		return Event{Kind: EventPullRequestMerged, TaskID: "t-1",
+			Detail: map[string]any{"pr": float64(9), "by": MergeUser, "chain": chain, "repair": repair, "covered": covered}}
+	}
+	for _, tt := range []struct {
+		name string
+		e    Event
+		want string
+		ok   bool
+	}{
+		{"the chain running", merge("running", 0, false), "#603 merged; the chain is running.", true},
+		{"the chain red with its repair", merge("failure", 1139, false), "#603 merged; the chain failed; repair #1139 is on it.", true},
+		{"the chain red before its repair card files", merge("failure", 0, false), "#603 merged; the chain failed.", true},
+		{"another head's red, its repair on it", merge("running", 1139, false), "#603 merged; the chain failed; repair #1139 is on it.", true},
+		{"a chain that already covers the card", merge("failure", 0, true), "", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			m, ok := pokeOf(tt.e, merged)
+			if ok != tt.ok {
+				t.Fatalf("pokeOf ok = %v, want %v", ok, tt.ok)
+			}
+			if ok && m.Content != tt.want {
+				t.Fatalf("poke = %q, want %q", m.Content, tt.want)
+			}
+		})
+	}
+}
+
+// Done pokes at live and its words state it, the whole card's cost beside
+// them.
+func TestDonePokeSaysLive(t *testing.T) {
+	m, ok := pokeOf(Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
+		Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "done", SpentEUR: 0.214,
+			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store"})
+	if !ok {
+		t.Fatal("pokeOf ok = false, want the done poke")
+	}
+	want := "#603 is done and live: Session store: pick the table's store. €0.21 in all."
+	if m.Content != want {
+		t.Fatalf("poke = %q, want %q", m.Content, want)
+	}
+}
+
 // A chat budget's poke asks at the needs-you level: the messenger's copy
 // goes to every member whose plan carries the level, an inform though it
 // is, for the chat task's row settles an escalation the moment it is
@@ -132,7 +183,7 @@ func TestPGStorePokes(t *testing.T) {
 		t.Skipf("no database: %v", err)
 	}
 	defer s.Close()
-	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor, events, tasks CASCADE`); err != nil {
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor, events, tasks, chain_runs CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
@@ -231,13 +282,37 @@ func TestPGStorePokes(t *testing.T) {
 		t.Fatal(err)
 	}
 	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 is done: Session store. €0.00 in all." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
+	if len(rows) != 4 || !rows[3].Queued || rows[3].Content != "#603 is done and live: Session store. €0.00 in all." || !slices.Equal(line.landed["bob"], []int64{rows[3].ID}) {
 		t.Fatalf("bob's inbox = %+v, landed %v: want the poke queued as its newest row and its id handed to the line", rows, line.landed["bob"])
 	}
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
 	rows, _ = s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10)
-	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 is done: Session store. €0.00 in all." || line.landed["sebastian"] != nil {
+	if last := rows[len(rows)-1]; last.Queued || last.Content != "#603 is done and live: Session store. €0.00 in all." || line.landed["sebastian"] != nil {
 		t.Fatalf("sebastian's newest row = %+v, landed %v: want the poke at once", last, line.landed["sebastian"])
+	}
+
+	// a merged card informs once at its merge, its words the chain's facts
+	// as the pass reads them: a red chain names the repair card on it
+	merged := Task{ID: "t-3", Kind: "agent", Repository: "sf/code", IssueNumber: 604, PRNumber: 9, Status: "merged", Objective: "Feed page"}
+	if err := s.CreateTask(ctx, merged); err != nil {
+		t.Fatal(err)
+	}
+	repair := merged
+	repair.ID, repair.Status, repair.Source, repair.IssueNumber, repair.PRNumber = "t-r", "queued", SourceChainRepair, 1139, 0
+	if err := s.CreateTask(ctx, repair); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChainRun(ctx, "sf/code", 9, "ffeeddccb00112233445566778899aabbccddeeff", 21, "failure"); err != nil {
+		t.Fatal(err)
+	}
+	record(Event{Repository: "sf/code", TaskID: "t-3", Kind: EventPullRequestMerged, Actor: "sebastian", Via: ViaButton,
+		Detail: map[string]any{"pr": float64(9), "by": MergeUser}})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ = s.ChatMessages(ctx, "sf/code", "bob", inbox, 20)
+	if len(rows) != 5 || rows[4].Content != "#604 merged; the chain failed; repair #1139 is on it." {
+		t.Fatalf("bob's inbox = %+v, want the merged inform naming the repair as its newest row", rows)
 	}
 }
 

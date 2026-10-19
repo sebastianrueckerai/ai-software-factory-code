@@ -1315,6 +1315,18 @@ func (k card) Pill() string {
 	return k.Stage
 }
 
+// ChainHue is the merged card's chain word's hue: red where the chain
+// failed, amber while it stalls, the merged teal while it runs.
+func (k card) ChainHue() string {
+	switch k.Stage {
+	case "chain red":
+		return "st-failed"
+	case "stalled":
+		return "st-waiting"
+	}
+	return "st-merged"
+}
+
 // Glyph is the final state's mark beside its word.
 func (k card) Glyph() string {
 	switch k.Status {
@@ -1774,6 +1786,8 @@ func deployStage(state string) string {
 		return "waiting for the chain"
 	case "failure", "cancelled":
 		return "chain red"
+	case "stalled":
+		return "stalled"
 	}
 	return "chain running"
 }

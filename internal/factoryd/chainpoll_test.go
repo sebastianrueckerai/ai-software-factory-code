@@ -94,6 +94,18 @@ func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, sta
 
 // RecordChainStall marks repository's head row of sha stalled, moving no
 // stamp: the row keeps the time its pending was first recorded.
+func (s *fakeStore) ResolveChainAlerts(ctx context.Context, repository string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, b := range s.alerts {
+		if (b.Kind == AlertChainRed || b.Kind == AlertChainStalled) && b.Fingerprint == repository && b.Verdict == "" {
+			s.alerts[i].Verdict = VerdictReal
+			s.alerts[i].ResolvedBy = "factoryd"
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) RecordChainStall(ctx context.Context, repository, sha string) error {
 	for i, c := range s.chain {
 		if c.repo == repository && c.pr == 0 && c.sha == sha && c.status == "pending" {
@@ -671,6 +683,93 @@ func TestChainPollerSignalsCoveredMerges(t *testing.T) {
 	}
 	if len(wf.signals) != 1 {
 		t.Fatalf("signals = %v; the covered signal fires once per head", wf.signals)
+	}
+}
+
+// The chain's silences become alerts (Task 6): a red head raises one open
+// chain_red per project — the factory's own repository's too, whose red
+// mainfix owns and no card files — a head stalled past its bound raises
+// chain_stalled, a later tick adds no row, and a green head resolves the
+// repository's open rows real.
+func TestChainAlertsRule(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(62, commitC2, "failure")},
+			demoRepo: {pushRun(21, demoCommit, "success")},
+			webRepo:  {pushRun(31, webCommit, "success")},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo), seedProject(webRepo))
+	p.Own, _ = SplitRepo(codeRepo)
+	p.Workflows = &fakeWorkflows{}
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: time.Minute}},
+			"web":  {Repository: webRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: time.Minute}},
+		}}}
+	}
+	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	store.chainNow = p.Now
+	open := func(kind, repository string) int {
+		n := 0
+		for _, a := range store.alerts {
+			if a.Kind == kind && a.Fingerprint == repository && a.Source == repository && a.Verdict == "" {
+				n++
+			}
+		}
+		return n
+	}
+	resolved := func(kind, repository string) bool {
+		for _, a := range store.alerts {
+			if a.Kind == kind && a.Fingerprint == repository {
+				return a.Verdict == VerdictReal
+			}
+		}
+		return false
+	}
+	// the red head alerts at once; the two heads held pending by a
+	// missing required context alert nothing yet
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if open(AlertChainRed, codeRepo) != 1 || open(AlertChainRed, demoRepo) != 0 {
+		t.Fatalf("alerts %+v, want one open chain_red of the red head alone", store.alerts)
+	}
+	// past the stall bound both pending heads stall: one chain_stalled
+	// each, and the red head's second tick adds no row
+	clock = clock.Add(2 * time.Minute)
+	for range 2 {
+		if err := p.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if open(AlertChainRed, codeRepo) != 1 || open(AlertChainStalled, demoRepo) != 1 || open(AlertChainStalled, webRepo) != 1 {
+		t.Fatalf("alerts %+v, want one open row per rule and project", store.alerts)
+	}
+	// the demo head concludes green: its stalled row resolves real, the
+	// still-open ones stay
+	f.statuses = map[string]map[string][]map[string]string{
+		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
+	}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !resolved(AlertChainStalled, demoRepo) || open(AlertChainStalled, webRepo) != 1 || open(AlertChainRed, codeRepo) != 1 {
+		t.Fatalf("alerts %+v, want the green head's rule resolved and the others open", store.alerts)
+	}
+	// the red head goes green too: every chain alert of the three stands
+	// resolved
+	f.runs[codeRepo] = []map[string]any{pushRun(62, commitC2, "success")}
+	f.statuses = map[string]map[string][]map[string]string{
+		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
+		webRepo:  {webCommit: {{"status": "success", "context": "factory/roll"}}},
+	}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !resolved(AlertChainRed, codeRepo) || !resolved(AlertChainStalled, webRepo) {
+		t.Fatalf("alerts %+v, want every rule resolved at its green head", store.alerts)
 	}
 }
 

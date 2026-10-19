@@ -196,6 +196,8 @@ type ChainStore interface {
 	CreateTask(ctx context.Context, t Task) error
 	OpenRepairCard(ctx context.Context, repository string) (bool, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
+	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	ResolveChainAlerts(ctx context.Context, repository string) error
 }
 
 // ChainProjects is the project list the poller serves.
@@ -558,6 +560,9 @@ func (p *ChainPoller) watch(ctx context.Context, repository, sha, verdict string
 		p.repair(ctx, repository, run, findings)
 	default: // success: the head concluded green, its episode ended
 		delete(p.episodes, key)
+		if err := p.Store.ResolveChainAlerts(ctx, repository); err != nil {
+			log.Printf("chain poller: %s: resolve the chain alerts: %v", repository, err)
+		}
 		p.cover(ctx, repository, run.ID)
 	}
 }
@@ -602,8 +607,10 @@ func (p *ChainPoller) stalled(ctx context.Context, repository, sha string) {
 		log.Printf("chain poller: %s: record the stall of %s: %v", repository, sha, err)
 	}
 	_, cfg, _ := p.Policy().ProjectOf(repository)
+	bound := cfg.Chain.Resolved().Stall
+	p.raiseChainAlert(ctx, repository, AlertChainStalled, map[string]any{"sha": sha, "bound": bound.String()})
 	p.fileRepair(ctx, repository, ActionRun{CommitSHA: sha},
-		[]string{fmt.Sprintf("the chain stalled past %s at %s", cfg.Chain.Resolved().Stall, sha)})
+		[]string{fmt.Sprintf("the chain stalled past %s at %s", bound, sha)})
 }
 
 // repair is the red head's seam: the head row of repository that run
@@ -611,7 +618,17 @@ func (p *ChainPoller) stalled(ctx context.Context, repository, sha string) {
 // context.
 func (p *ChainPoller) repair(ctx context.Context, repository string, run ActionRun, findings []string) {
 	log.Printf("chain poller: %s head %s red: %s", repository, run.CommitSHA, strings.Join(findings, "; "))
+	p.raiseChainAlert(ctx, repository, AlertChainRed, map[string]any{"sha": run.CommitSHA, "run": run.ID, "findings": findings})
 	p.fileRepair(ctx, repository, run, findings)
+}
+
+// raiseChainAlert files the repository's open alert of kind — one row per
+// project while it stands — before the repair card, so a repository whose
+// own repair machinery files no card alerts all the same.
+func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind string, detail map[string]any) {
+	if _, err := p.Store.InsertAlert(ctx, Alert{Kind: kind, Source: repository, Fingerprint: repository, Detail: detail}); err != nil {
+		log.Printf("chain poller: %s: raise %s: %v", repository, kind, err)
+	}
 }
 
 // fileRepair files the repair card of repository's red or stalled head:
