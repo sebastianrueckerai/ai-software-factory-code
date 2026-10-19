@@ -336,7 +336,8 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	for _, have := range s.intakeEvents {
 		if (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
-			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) {
+			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) ||
+			(e.Kind == IntakeHandover && have.TaskID == e.TaskID && have.Kind == IntakeHandover) {
 			return 0, nil
 		}
 	}
@@ -346,6 +347,13 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return e.ID, nil
+}
+
+func (s *fakeStore) ReleaseHandover(ctx context.Context, taskID string) error {
+	s.intakeEvents = slices.DeleteFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == IntakeHandover
+	})
+	return nil
 }
 
 func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {

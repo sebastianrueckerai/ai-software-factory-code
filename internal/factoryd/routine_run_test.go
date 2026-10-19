@@ -27,6 +27,10 @@ type codeIssues struct {
 	labels map[int64][]string
 	// older are open issues the bot filed before, by number: their titles
 	older map[int64]string
+	// holdOne, when set, parks the next issue POST until the test closes
+	// it; parked says it has parked: the go race test's slow hand.
+	holdOne chan struct{}
+	parked  chan struct{}
 }
 
 func (c *codeIssues) srv(t *testing.T) *Forgejo {
@@ -53,6 +57,14 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 		case r.Method == http.MethodPost && path == "issues":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
+			if c.holdOne != nil {
+				hold, parked := c.holdOne, c.parked
+				c.holdOne = nil
+				c.mu.Unlock()
+				close(parked)
+				<-hold
+				c.mu.Lock()
+			}
 			c.issues = append(c.issues, in["title"]+"\n\n"+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"number": 70 + len(c.issues)}) // #nosec G104 -- test stub
@@ -280,6 +292,83 @@ func TestGoHandsTheCardOver(t *testing.T) {
 	}
 	if len(store.tasks) != 2 || len(issues.issues) != 2 {
 		t.Fatalf("the second go acted: %d tasks, %d issues", len(store.tasks), len(issues.issues))
+	}
+}
+
+// Two hands race the go of one waiting card: the filing is slow, the
+// second hand arrives while the first is still filing, and the hand-over
+// claim refuses it, so the agent card is filed at most once. Hand-derived:
+// the run's card is #71, the hand-over #72.
+func TestGoFilesOnceWhenTwoHandsRace(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, _ := routineRunner(t, routineTree(t))
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := onlyTask(t, store)
+	issues.holdOne, issues.parked = make(chan struct{}), make(chan struct{})
+	hold := issues.holdOne // the parking handler nils the field, so keep the channel here
+	first := make(chan error, 1)
+	go func() {
+		_, err := r.Go(ctx, waiting.ID, "sebastian")
+		first <- err
+	}()
+	<-issues.parked
+	_, racing := r.Go(ctx, waiting.ID, "sebastian")
+	close(hold)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	if racing == nil || racing.Error() != "Card #71 was already handed over." {
+		t.Fatalf("the racing go: %v, want the refusal", racing)
+	}
+	if len(issues.issues) != 2 || len(store.tasks) != 2 {
+		t.Fatalf("%d issues, %d tasks: the racing go filed a second hand-over", len(issues.issues), len(store.tasks))
+	}
+}
+
+// A single-paragraph card hands over without stray blank lines: the
+// hand-over line joins the card's own words directly, and a plain
+// single-paragraph card keeps its objective exactly.
+func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, _ := routineRunner(t, routineTree(t))
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := onlyTask(t, store)
+	waiting.Objective = "Bump the dependencies"
+	store.tasks[waiting.ID] = waiting
+	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	var n Task
+	for id, c := range store.tasks {
+		if id != waiting.ID {
+			n = c
+		}
+	}
+	if want := "Bump the dependencies\n\nhanded over by sebastian"; n.Objective != want {
+		t.Fatalf("objective %q, want %q", n.Objective, want)
+	}
+	if issues.issues[1] != n.Objective {
+		t.Fatalf("the issue %q, want the objective", issues.issues[1])
+	}
+	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "backlog", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 9, Source: "webhook", RiskClass: "standard", BudgetEUR: 1, Objective: "Tidy the docs"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Go(ctx, "t-one", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	var plain Task
+	for id, c := range store.tasks {
+		if id != waiting.ID && id != "t-one" && id != n.ID {
+			plain = c
+		}
+	}
+	if plain.Objective != "Tidy the docs" {
+		t.Fatalf("objective %q, want the card's own words without trailing blank lines", plain.Objective)
 	}
 }
 

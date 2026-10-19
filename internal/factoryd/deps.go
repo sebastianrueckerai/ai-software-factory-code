@@ -432,8 +432,10 @@ func (e ErrNoGo) Error() string { return string(e) }
 // returns its issue: the card's own words become the agent's objective,
 // a routine's card with the skill it names and who handed it over, and
 // the run's row moves to the new card, so the hold keeps holding and the
-// run ends with the card that ran the work. The card itself is left as
-// it was: the close that follows records the hand-over.
+// run ends with the card that ran the work. The hand-over is claimed
+// before the filing, so of two racing goes only the first files; a
+// filing that fails releases the claim for the retry. The card itself is
+// left as it was: the close that follows records the hand-over.
 func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -469,14 +471,34 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	}
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	if filed {
+		parts := make([]string, 0, 3)
 		if rt, ok := v.Routine(run.Project, run.Routine); ok && rt.Skill != "" {
-			body = "Run the skill " + rt.Skill + ".\n\n" + body
+			parts = append(parts, "Run the skill "+rt.Skill+".")
 		}
-		body += "\n\nhanded over by " + by
+		if body != "" {
+			parts = append(parts, body)
+		}
+		parts = append(parts, "handed over by "+by)
+		body = strings.Join(parts, "\n\n")
+	}
+	objective := title
+	if body != "" {
+		objective += "\n\n" + body
+	}
+	claim, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeHandover, Author: by, Body: "handed to the factory"})
+	if err != nil {
+		return 0, err
+	}
+	// the claim lost: another hand filed this card's hand-over already
+	if claim == 0 {
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d was already handed over.", t.IssueNumber))
 	}
 	n, ref, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, p, title, body, labels,
-		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: title + "\n\n" + body, Source: t.Source})
+		Task{ID: NewTaskID(), RiskClass: t.RiskClass, BudgetEUR: v.Document.Budget.ClampBudget(0), Objective: objective, Source: t.Source})
 	if err != nil {
+		if rerr := r.store.ReleaseHandover(context.WithoutCancel(ctx), taskID); rerr != nil {
+			log.Printf("factoryd: release the hand-over claim of %s: %v", taskID, rerr)
+		}
 		return 0, err
 	}
 	// past the filing, a request whose client left must not leave the run on the card the close ends

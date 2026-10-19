@@ -252,7 +252,9 @@ func (c *Console) goCard(w http.ResponseWriter, r *http.Request) {
 
 // closeCard is the face's Close and Close with note (doClose, on the form's note).
 func (c *Console) closeCard(w http.ResponseWriter, r *http.Request) {
-	c.showNote(w, r, func(ctx context.Context, a actor, id string) (string, error) { return c.doClose(ctx, a, id, r.PostFormValue("note")) })
+	c.showNote(w, r, func(ctx context.Context, a actor, id string) (string, error) {
+		return c.doClose(ctx, a, id, r.PostFormValue("note"))
+	})
 }
 
 // acceptanceCloseCard is the face's Close: acceptance green
