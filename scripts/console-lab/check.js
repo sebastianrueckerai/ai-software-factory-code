@@ -191,6 +191,38 @@ async function viewChange(p, query, fails) {
   await page.locator("#status-line > summary").click();
   await page.waitForTimeout(200);
   if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the strip does not close the panel");
+  const r11 = await page.evaluate(() => ({
+    chips: document.querySelectorAll("#status-panel .chiprow .lchip").length,
+    glyph: !!document.querySelector("#chat-full.wctl svg"),
+    edge: !!document.querySelector("#screen > .edge-tab"),
+    bar: !!document.querySelector("#chat-form > .growbar")
+  }));
+  if (r11.chips < 1) fails.push(label + ": the panel holds no lamp chips");
+  if (!r11.glyph) fails.push(label + ": the chat head has no window glyph");
+  if (!r11.edge) fails.push(label + ": the screen holds no edge tab");
+  if (!r11.bar) fails.push(label + ": the composer holds no drag seam");
+  await page.hover("#intake-btn");
+  if ((await page.evaluate(() => getComputedStyle(document.getElementById("intake-btn"), "::after").content)) === "none") fails.push(label + ": the quiet controls paint no tooltip");
+  await page.click("#chat-full");
+  await page.waitForTimeout(150);
+  const full = await page.evaluate(() => ({
+    on: document.getElementById("screen").classList.contains("chat-only"),
+    col: getComputedStyle(document.querySelector("#chat-full .col")).display !== "none",
+    edge: getComputedStyle(document.querySelector(".edge-tab")).display !== "none"
+  }));
+  if (!full.on || !full.col || !full.edge) fails.push(label + ": the glyph does not hand the screen to the chat with the edge tab");
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(150);
+  if (await page.evaluate(() => document.getElementById("screen").classList.contains("chat-only"))) fails.push(label + ": Escape does not return the board");
+  const h0 = await page.evaluate(() => document.getElementById("chat-input").getBoundingClientRect().height);
+  const seam = await page.evaluate(() => { const r = document.querySelector("#chat-form > .growbar").getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; });
+  await page.mouse.move(seam.x, seam.y);
+  await page.mouse.down();
+  await page.mouse.move(seam.x, seam.y - 120, { steps: 6 });
+  await page.mouse.up();
+  const h1 = await page.evaluate(() => Math.round(document.getElementById("chat-input").getBoundingClientRect().height));
+  if (h1 <= h0) fails.push(label + ": the drag seam does not size the input (" + h0 + " to " + h1 + ")");
+  await page.evaluate(() => { const i = document.getElementById("chat-input"); i.style.height = ""; });
   await page.evaluate((card) => document.dispatchEvent(new CustomEvent("view",
     {detail: {query: "?project=ai-software-factory-code", card: card, tab: "chat", panel: "closed", theme: "light"}})), labID(616));
   await page.waitForTimeout(900);
@@ -246,8 +278,8 @@ async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
   await page.evaluate(() => document.querySelectorAll("details.col-menu, #status-line").forEach((d) => { d.open = true; }));
-  return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder]"))
-    .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "")).join(" "));
+  return page.evaluate(() => document.body.innerText + " " + Array.from(document.querySelectorAll("[aria-label],[title],[placeholder],[data-tip]"))
+    .map((e) => (e.getAttribute("aria-label") || "") + " " + (e.getAttribute("title") || "") + " " + (e.getAttribute("placeholder") || "") + " " + (e.getAttribute("data-tip") || "")).join(" "));
 }
 
 (async () => {

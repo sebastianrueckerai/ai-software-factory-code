@@ -728,7 +728,7 @@ body:has(#screen) #flash { flex: none; }
 /* the chat and the board hold a divider between them: the drag sets
    --chat-share, every side keeps its minimum (18rem the chat, 30rem the
    board) */
-#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, .667fr)) 10px minmax(30rem, 1fr); gap: 0; }
+#screen.with-chat { grid-template-columns: minmax(24rem, var(--chat-share, .667fr)) 10px minmax(30rem, 1fr); gap: 0; }
 #chat-divider { position: relative; cursor: col-resize; }
 #chat-divider::after { content: ""; position: absolute; inset: 0 4px; background: var(--line); }
 #chat-divider:hover::after, #chat-divider:focus-visible::after { background: var(--accent); }
@@ -801,7 +801,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .prompt:focus-within { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .prompt .ps { align-self: flex-start; color: var(--accent); font: 600 14px/22px var(--font-mono); }
 .prompt textarea { flex: 1; min-width: 0; max-width: none; padding: 0; border: 0; outline: none; background: none; resize: none; font-size: 14px; line-height: 22px; }
-.prompt textarea.tall { height: min(38vh, 22rem); flex: none; align-self: stretch; }
 .prompt textarea:focus-visible { box-shadow: none; }
 .prompt button { margin: 0; }
 .chat-queue { list-style: none; margin: 0; padding: 0 14px 10px; display: flex; flex-direction: column; gap: 4px; }
@@ -1078,7 +1077,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 /* the threads (C14, roadmap 239): the switcher table at the chat's left,
    its marks, the unread count, the fold; the open thread's head; the
    factory's rows */
-.chat.with-threads { display: grid; grid-template-columns: 212px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+.chat.with-threads { display: grid; grid-template-columns: 176px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+.chat.with-threads > .composer { grid-column: 1 / -1; grid-row: 3; }
 .chat.with-threads.sw-collapsed { grid-template-columns: 36px minmax(0, 1fr); }
 .chat.with-threads > .chat-head { grid-column: 1 / -1; }
 .chat-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
@@ -1281,3 +1281,36 @@ tr.closed td a { color: inherit; }
 .facts dt { padding: 6px 16px 6px 0; border-bottom: 1px solid var(--line); color: var(--text-muted); text-align: right; white-space: nowrap; }
 .facts dt::after { content: ":"; }
 .facts dd { margin: 0; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }
+
+/* round 11 (the compact screen reorganized): the panel's lamp chips, the
+   flipping window glyph, the divider's grip and the input's drag seam,
+   every quiet control painted by its data-tip */
+[data-tip] { position: relative; }
+.chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.lchip { position: relative; display: inline-flex; align-items: center; gap: 7px; height: 24px; padding: 0 9px; border: 1px solid var(--line-strong); border-radius: 3px; color: var(--text-muted); font: 11.5px/1 var(--font-mono); }
+a.lchip { text-decoration: none; }
+.lchip:hover { background: var(--bg-hover); color: var(--text); }
+.lchip .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; color: var(--st-done); flex: none; }
+.lchip.wait { color: var(--text); }
+.lchip.wait .dot { color: var(--st-waiting); }
+.lchip.down { color: var(--st-failed); }
+.lchip.down .dot { color: var(--st-failed); }
+.wctl { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; background: none; color: var(--text-muted); cursor: pointer; }
+.wctl:hover { color: var(--text); background: var(--bg-hover); }
+.wctl[aria-pressed="true"] { color: var(--accent); background: var(--bg-hover); }
+.wctl svg { width: 15px; height: 15px; }
+.wctl .col { display: none; }
+.wctl[aria-pressed="true"] .exp { display: none; }
+.wctl[aria-pressed="true"] .col { display: block; }
+.edge-tab { display: none; position: absolute; left: 0; top: 50%; transform: translateY(-50%); z-index: 30; padding: 10px 4px; border: 1px solid var(--line-strong); border-left: 0; border-radius: 0 3px 3px 0; background: var(--bg-raised); color: var(--text); font: 11px/1 var(--font-mono); writing-mode: vertical-rl; letter-spacing: .08em; cursor: pointer; }
+.edge-tab:hover { color: var(--accent); border-color: var(--accent); }
+#screen.chat-only .edge-tab { display: inline-flex; align-items: center; }
+#chat-divider .grip { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 30px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-faint); font: 11px/1 var(--font-mono); opacity: 0; transition: opacity .12s; pointer-events: none; z-index: 2; }
+#chat-divider:hover .grip, #chat-divider:focus-visible .grip { opacity: 1; }
+form.composer { position: relative; }
+.growbar { position: absolute; top: -5px; left: 0; right: 0; height: 10px; cursor: row-resize; z-index: 5; }
+.growbar::after { content: "\2965"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(-45deg); display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 18px; border: 1px solid var(--line-strong); border-radius: 3px; background: var(--bg-raised); color: var(--text-faint); font: 11px/1 var(--font-mono); opacity: 0; transition: opacity .12s; }
+.growbar:hover::after, .growbar:focus-visible::after { opacity: 1; }
+[data-tip]:hover::after, [data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-muted); font: 11px/1.5 var(--font-mono); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); z-index: 80; pointer-events: none; }
+#chat-divider[data-tip]:hover::after, #chat-divider[data-tip]:focus-visible::after { left: 14px; bottom: 50%; transform: translateY(50%); }
+.drawer-close { position: absolute; top: 12px; right: 14px; }

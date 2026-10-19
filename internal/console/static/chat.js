@@ -442,7 +442,7 @@ var chatView = (function () {
   // clampShare bounds the chat pane's width for the divider drag: the
   // chat keeps 18rem and the board 30rem of availPx.
   function clampShare(chatPx, availPx, remPx) {
-    var min = 18 * remPx, max = availPx - 30 * remPx;
+    var min = 24 * remPx, max = availPx - 30 * remPx;
     return Math.max(min, Math.min(max, chatPx));
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
@@ -509,14 +509,39 @@ var chatView = (function () {
     try { wasFull = localStorage.getItem("chat-only") === "1"; } catch (err) {}
     setFull(wasFull);
     full.addEventListener("click", function () { setFull(!screenEl.classList.contains("chat-only")); });
+    var edge = document.querySelector(".edge-tab");
+    if (edge) edge.addEventListener("click", function () { setFull(false); });
   }
-  var grow = document.getElementById("chat-grow");
-  if (grow && input) {
-    grow.addEventListener("click", function () {
-      var on = !input.classList.contains("tall");
-      input.classList.toggle("tall", on);
-      grow.setAttribute("aria-pressed", String(on));
-      input.focus();
+  var form = document.getElementById("chat-form");
+  if (form && input) {
+    var bar = document.createElement("div");
+    bar.className = "growbar";
+    bar.setAttribute("data-tip", "Drag to size the input; double-click resets it");
+    bar.setAttribute("role", "separator");
+    bar.setAttribute("aria-orientation", "horizontal");
+    bar.setAttribute("tabindex", "0");
+    form.insertBefore(bar, form.firstChild);
+    var y0 = 0, h0 = 0, sizing = false;
+    bar.addEventListener("pointerdown", function (e) {
+      sizing = true; y0 = e.clientY; h0 = input.getBoundingClientRect().height;
+      try { bar.setPointerCapture(e.pointerId); } catch (err) {}
+      e.preventDefault();
+    });
+    bar.addEventListener("pointermove", function (e) {
+      if (!sizing) return;
+      input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, h0 + (y0 - e.clientY)))) + "px";
+    });
+    ["pointerup", "pointercancel"].forEach(function (n) { bar.addEventListener(n, function () { sizing = false; }); });
+    bar.addEventListener("dblclick", function () { input.style.height = ""; });
+    bar.addEventListener("keydown", function (e) {
+      if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, input.getBoundingClientRect().height + (e.key === "ArrowUp" ? 24 : -24)))) + "px";
+      e.preventDefault();
+    });
+    input.addEventListener("input", function () {
+      if (input.scrollHeight > input.clientHeight) {
+        input.style.height = Math.min(Math.round(window.innerHeight * 0.6), input.scrollHeight) + "px";
+      }
     });
   }
 

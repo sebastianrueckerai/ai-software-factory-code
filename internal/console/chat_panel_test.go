@@ -36,8 +36,8 @@ func TestChatPanel(t *testing.T) {
 		`<div id="screen" class="main with-chat">
 <section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title"`,
 		`<section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="chat-full" aria-pressed="false" title="The chat across the whole screen, the board hidden; click it for the board back">Full</button> <button type="button" id="intake-btn" class="intake" data-intake="open" aria-pressed="false" title="The project's intake: open takes the agent's own filings, closed refuses them; your ask always files.">intake <span class="intake-name">open</span></button> <button type="button" id="chat-new" class="chat-new" title="Start a new thread">New</button></div>
-<nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="false" aria-label="Unfold the threads" title="Unfold the threads">›</button></div>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="wctl" aria-pressed="false" aria-label="Chat and board" data-tip="Grow the chat to the whole screen; the glyph flips, click again or press Esc for the board back"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="exp" d="M9.5 2.5h4v4M6.5 13.5h-4v-4M3 13l10-10" fill="none" stroke="currentColor" stroke-width="1.5"/><path class="col" d="M13.5 6.5v-4h-4M2.5 9.5v4h4M13 3L3 13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button> <button type="button" id="intake-btn" class="intake" data-intake="open" aria-pressed="false" data-tip="The project's intake: open takes the agent's own filings, closed refuses them; your ask always files.">intake <span class="intake-name">open</span></button> <button type="button" id="chat-new" class="chat-new" data-tip="Start a new thread">New</button></div>
+<nav id="switcher" class="ttable" aria-label="Your threads"><div class="thr"><span aria-hidden="true">mark · thread · last</span><button type="button" class="swtg" data-swtoggle aria-expanded="false" aria-label="Unfold the threads" data-tip="Unfold the threads">›</button></div>
 <div id="thread-rows" class="trows"></div></nav>
 <button type="button" class="sw-sum" data-swtoggle aria-expanded="false" aria-controls="switcher" hidden></button>
 <div class="chat-main">
@@ -55,14 +55,13 @@ func TestChatPanel(t *testing.T) {
 <ol id="chat-docs" class="chat-docs" aria-label="Documents riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
 <div class="prompt"><span class="ps" aria-hidden="true">›</span><label for="chat-input" class="visually-hidden">Your message to the project agent</label>
 <textarea id="chat-input" name="message" rows="3" maxlength="8192" placeholder="Ask or tell the project… (Enter sends, Shift+Enter breaks the line, / lists the commands)" aria-keyshortcuts="/" aria-controls="chat-palette" aria-expanded="false"></textarea>
-<button type="button" id="chat-grow" class="chat-grow" aria-pressed="false" title="Grow the box for a long message">Grow</button>
 <button type="submit">Send</button></div>
 <div class="own"><div class="own-l"><span class="cmds"><button type="button" class="cmd" data-cmd="compact" title="the older turns of this thread become a summary">/compact</button><button type="button" class="cmd" data-cmd="new" title="a new thread">/new</button></span></div></div>
 </form>
 <ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 </div><script src="/static/chat.js" defer></script>
 </section>
-<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0"></div>
+<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>
 <div id="board" data-project="ai-software-factory-code"`,
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent; <kbd>/</kbd> at the start of the box lists the commands</dd>
 <dt><kbd>Ctrl</kbd>+<kbd>k</kbd></dt><dd>the threads: open one, or the inbox</dd>
@@ -84,14 +83,14 @@ func TestChatPanel(t *testing.T) {
 	ak, _ := r.as(t, "alice")
 	body = page(ak, code)
 	if want := `<section id="chat" class="chat" aria-labelledby="chat-title">
-<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="chat-full" aria-pressed="false" title="The chat across the whole screen, the board hidden; click it for the board back">Full</button></div>
+<div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="wctl" aria-pressed="false" aria-label="Chat and board" data-tip="Grow the chat to the whole screen; the glyph flips, click again or press Esc for the board back"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="exp" d="M9.5 2.5h4v4M6.5 13.5h-4v-4M3 13l10-10" fill="none" stroke="currentColor" stroke-width="1.5"/><path class="col" d="M13.5 6.5v-4h-4M2.5 9.5v4h4M13 3L3 13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button></div>
 <div class="chat-main">
 <p class="chat-start" title="You read this project: its writers chat with its agent.">You read this project: its writers chat with its agent.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
 </div><script src="/static/chat.js" defer></script>
 </section>
-<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0"></div>`; !strings.Contains(body, want) {
+<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>`; !strings.Contains(body, want) {
 		t.Errorf("the reader's page lacks\n%s", want)
 	}
 	for _, unwanted := range []string{"chat-form", "chat-input", "chat-queue", "data-login", "<kbd>/</kbd>", "switcher", "thread-head"} {
@@ -291,7 +290,7 @@ console.log(JSON.stringify({
 			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
 			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: see">see · 2 images</button>` +
 			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
-		{"share", `[300,288,720,500.25]`},
+		{"share", `[384,384,720,500.25]`},
 	} {
 		if got[c.name] != c.want {
 			t.Errorf("%s =\n%s\nwant\n%s", c.name, got[c.name], c.want)
@@ -316,10 +315,12 @@ function el() {
     dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
     classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
     addEventListener: function () {}, setAttribute: function () {}, focus: function () {},
+    insertBefore: function () {}, firstChild: null,
     querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
     getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
 }
 var document = {title: "Factory console", hidden: false,
+  createElement: function () { return el(); },
   getElementById: function (id) { return (id === "screen" || id === "chat-divider") ? null : el(); },
   addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
   querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
