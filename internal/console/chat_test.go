@@ -1151,12 +1151,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment"}},
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2406,6 +2406,72 @@ func TestReadAttachmentRefusalNamesState(t *testing.T) {
 	_, err = trn.readAttachment(toolInput{Name: "doc9"})
 	if !errors.As(err, &no) || no.msg != `no document "doc9": the conversation's documents are doc1` {
 		t.Fatalf("the unknown name = %v", err)
+	}
+}
+
+// summarize_attachment hands the document to one model call on the chat
+// task's account: the gateway sees the ask and the document's text, and
+// the tool's answer carries the chip label's prefix.
+func TestChatSummarizeAttachmentAnswersOverTheDocument(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	const doc = "# Deploy run\n\n- build ok\n- shipped 1.2.3\n"
+	g.replies = [][]string{{say("Filed.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"here is doc1"}}, testFile{name: "spec.md", data: []byte(doc)}); code != 200 {
+		t.Fatalf("the send with the document = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1","ask":"what ships?"}`)}, {say("It ships 1.2.3.")}, {say("Shipped 1.2.3.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what does doc1 ship?"}})
+	equal(t, "the turn", events, []string{`tool {"arguments":{"name":"doc1","ask":"what ships?"},"duration_ms":0,"name":"summarize_attachment","result":"doc1 (spec.md): It ships 1.2.3."}`,
+		`text {"text":"Shipped 1.2.3."}`, `done {}`})
+	if len(g.calls()) != 4 {
+		t.Fatalf("%d model calls, want four: the turn's two, the one-shot between", len(g.calls()))
+	}
+	one := g.calls()[2]["messages"].([]any)[0].(map[string]any)
+	if one["role"] != "user" || len(g.calls()[2]["messages"].([]any)) != 1 {
+		t.Fatalf("the one-shot's message = %v", one)
+	}
+	content := one["content"].(string)
+	if !strings.Contains(content, "what ships?") || !strings.Contains(content, "- shipped 1.2.3") {
+		t.Fatalf("the one-shot's ask and text = %q", content)
+	}
+}
+
+// A document past the cut hands the model its first docSummarize bytes
+// at a line boundary, and the answer's prefix names the cut.
+func TestChatSummarizeNamesTheCut(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	// 9310 lines of 11 bytes: the last newline at or inside the first
+	// 49152 bytes ends line 4468, byte 49148.
+	big := bytes.Repeat([]byte("0123456789\n"), 9310)
+	g.replies = [][]string{{say("Filed.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"here is doc1"}}, testFile{name: "big.log", data: big}); code != 200 {
+		t.Fatalf("the send with the document = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1"}`)}, {say("It deploys.")}, {say("Deploys.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize doc1"}})
+	equal(t, "the turn", events, []string{`tool {"arguments":{"name":"doc1"},"duration_ms":0,"name":"summarize_attachment","result":"doc1 (big.log, the first 48.0 KiB of 100.0 KiB): It deploys."}`,
+		`text {"text":"Deploys."}`, `done {}`})
+	content := g.calls()[2]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if want := len("Summarise this document.") + 2 + 49148; len(content) != want {
+		t.Fatalf("the one-shot's text = %d bytes, want %d: the ask, a break, the cut lines", len(content), want)
+	}
+}
+
+// A PDF refuses with read_attachment's copy.
+func TestChatSummarizeRefusesPDF(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	pdf := append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte("x"), 64)...)
+	g.replies = [][]string{{say("Filed.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"here is doc1"}}, testFile{name: "report.pdf", data: pdf}); code != 200 {
+		t.Fatalf("the send with the PDF = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1"}`)}, {say("It cannot.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize doc1"}})
+	if len(events) != 3 || !strings.Contains(events[0], `"result":"Refused: doc1 (report.pdf) is a PDF, not text: paste the words you need as text, or attach an image of the page."`) {
+		t.Fatalf("the PDF summarise = %v", events)
 	}
 }
 

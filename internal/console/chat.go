@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -1161,14 +1163,13 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 	return fmt.Sprintf("%s (%s): %s", found.Name, found.FileName, look), nil
 }
 
-// readAttachment is the read_attachment tool's run: the conversation's
-// newest document under in.Name, read by read_doc's engine with its chip
-// label. A name no member sent refuses naming the documents there are; a
-// PDF refuses as not text.
-func (t *turn) readAttachment(in toolInput) (string, error) {
+// document resolves the conversation's newest document under in.Name
+// with its bytes. A name no member sent refuses naming the documents
+// there are; a PDF refuses as not text.
+func (t *turn) document(in toolInput) (*factoryd.ChatAttachment, []byte, error) {
 	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 	var found *factoryd.ChatAttachment
 	var names []string
@@ -1185,18 +1186,63 @@ func (t *turn) readAttachment(in toolInput) (string, error) {
 	}
 	if found == nil {
 		if len(names) == 0 {
-			return "", refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: this conversation holds no document", in.Name))
+			return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: this conversation holds no document", in.Name))
 		}
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
 	}
 	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 	if found.ContentType == "application/pdf" {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+	}
+	return found, b, nil
+}
+
+// readAttachment is the read_attachment tool's run: the conversation's
+// newest document under in.Name, read by read_doc's engine with its chip
+// label.
+func (t *turn) readAttachment(in toolInput) (string, error) {
+	found, b, err := t.document(in)
+	if err != nil {
+		return "", err
 	}
 	return readTextDocument(fmt.Sprintf("%s (%s)", found.Name, found.FileName), b, in.From, in.To, in.Find, in.Regex)
+}
+
+// docSummarize bounds the bytes a one-shot summary reads of a document
+// past it.
+const docSummarize = 48 << 10
+
+// summarizeAttachment is the summarize_attachment tool's run: the
+// conversation's newest document under in.Name handed to one model call
+// of the ask on the chat task's account, its first docSummarize bytes at
+// a line boundary when it runs past. The answer carries the chip label's
+// prefix, the cut named.
+func (t *turn) summarizeAttachment(in toolInput) (string, error) {
+	found, b, err := t.document(in)
+	if err != nil {
+		return "", err
+	}
+	label := fmt.Sprintf("%s (%s)", found.Name, found.FileName)
+	if len(b) > docSummarize {
+		cut := b[:docSummarize]
+		for !utf8.Valid(cut) {
+			cut = cut[:len(cut)-1]
+		}
+		if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
+			cut = cut[:i+1]
+		}
+		label = fmt.Sprintf("%s (%s, the first %s of %s)", found.Name, found.FileName, imageSize(int64(len(cut))), imageSize(int64(len(b))))
+		b = cut
+	}
+	answer, err := t.c.cfg.Operator.Stream(t.r.Context(), t.task, t.cfg.Model, t.threadRef(),
+		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {})
+	if err != nil {
+		return "", err
+	}
+	return label + ": " + answer.Content, nil
 }
 
 // since is at as a replayed row shows it: its time and its age at the
