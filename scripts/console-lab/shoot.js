@@ -194,6 +194,34 @@ async function main() {
           }, false);
         }
         if (s === "busy" && theme === "dark") await shot("routines-within-390.png", phone, "/?routines=within&within=2&unit=hours", ctl, false);
+        // the chat's story (roadmap 300's round): full screen and tall, the
+        // refused filing that self-corrected with its acceptance tests, the
+        // pasted image the agent reads by tool, the open ask's presses; and
+        // the composer holding a pasted image as its img1 chip
+        if (s === "busy" && theme === "dark") {
+          await shot("chat-tall-1440.png", tall, "/", async (p) => {
+            await p.page.locator("#chat-full").click();
+            await p.idle();
+            await p.page.evaluate(() => { document.getElementById("chat-log").scrollTop = 0; });
+            await p.page.waitForTimeout(200);
+          });
+          await shot("chat-paste-1440.png", desk, "/", async (p) => {
+            await p.page.locator("#chat-input").click();
+            await p.page.evaluate(() => new Promise((done) => {
+              const c = document.createElement("canvas");
+              c.width = 320; c.height = 200;
+              const g = c.getContext("2d");
+              g.fillStyle = "#8a9aa8"; g.fillRect(0, 0, 320, 200);
+              c.toBlob((b) => {
+                const dt = new DataTransfer();
+                dt.items.add(new File([b], "shot.png", { type: "image/png" }));
+                document.getElementById("chat-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+                done();
+              }, "image/png");
+            }));
+            await p.page.waitForTimeout(300);
+          }, false);
+        }
         if (s === "fire" && theme === "dark") await shot("held-1440.png", desk, "/", feet, false);
         if (s !== "busy") continue;
         // the documents (roadmap 277): the roadmap read, a link into a

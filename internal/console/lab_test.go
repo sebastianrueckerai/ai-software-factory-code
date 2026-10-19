@@ -1,12 +1,17 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/draw"
+	"image/png"
 	"io"
 	"math"
 	"net"
@@ -242,15 +247,20 @@ func (o lockedObjects) Put(ctx context.Context, k string, b []byte) error {
 }
 
 type labScene struct {
-	tasks            []factoryd.BoardTask
-	deps             map[string][]string
-	plans            map[string][]factoryd.PlanRevision
-	questions        map[string][]factoryd.PlanQuestion
-	approvals        []factoryd.ApprovalRequest
-	objects          map[string]string
-	events           []factoryd.Event
-	chat             []factoryd.ChatMessage
-	proposals        []factoryd.ChatProposal
+	tasks     []factoryd.BoardTask
+	deps      map[string][]string
+	plans     map[string][]factoryd.PlanRevision
+	questions map[string][]factoryd.PlanQuestion
+	approvals []factoryd.ApprovalRequest
+	objects   map[string]string
+	events    []factoryd.Event
+	chat      []factoryd.ChatMessage
+	proposals []factoryd.ChatProposal
+	// usedProposals are the scene's proposals the member already pressed,
+	// their do- row among the chat's
+	usedProposals []factoryd.ChatProposal
+	// attachments are the conversation's image rows, their bytes in objects
+	attachments      []factoryd.ChatAttachment
 	spend, chatSpend float64
 	github           string
 	alerts           []factoryd.Alert
@@ -508,6 +518,15 @@ func (r *rig) labSeed(name string) (string, error) {
 	}
 	for _, p := range s.proposals {
 		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p})
+	}
+	for _, p := range s.usedProposals {
+		// the press sits 16 min back, whatever its row says: only the fact
+		// of a press renders, never its time
+		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p, used: now.Add(-16 * time.Minute)})
+	}
+	r.chat.atts = nil
+	for _, a := range s.attachments {
+		r.chat.atts = append(r.chat.atts, storedAttachment{repository: "sf/code", login: "sebastian", a: a})
 	}
 	r.chat.spend = []spendRow{{"sf/code", now, s.spend - s.chatSpend, false}, {"sf/code", now, s.chatSpend, true}}
 	r.chat.mu.Unlock()
@@ -832,7 +851,13 @@ func busyScene(now time.Time) labScene {
 		labEvent(598, factoryd.EventCardFiled, "sebastian", factoryd.ViaChat, ago(50*time.Hour), nil),
 	}
 
-	s.chat, s.proposals = busyChat(now, drawer, queued.Task, factoryd.CardTitle)
+	s.chat, s.proposals, s.usedProposals = busyChat(now, drawer, queued.Task, factoryd.CardTitle)
+	// img1 of the image exchange: row 13's screenshot, its bytes in the
+	// object store under the attachments' own key
+	shot := labShot()
+	s.attachments = []factoryd.ChatAttachment{{ID: 901, Conversation: 1, MessageID: 13, Name: "img1", FileName: "run.png",
+		ContentType: "image/png", Bytes: int64(len(shot)), At: now.Add(-4 * time.Minute)}}
+	s.objects["attachments/1/901"] = shot
 	s.alerts = []factoryd.Alert{
 		{ID: 41, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
 		{ID: 40, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: drawer.ID, RaisedAt: ago(58 * time.Minute),
@@ -858,14 +883,38 @@ func busyScene(now time.Time) labScene {
 	return s
 }
 
-// busyChat is sebastian's conversation in the busy scenario: a question
-// the agent answers after reading #606, then an ask it answers with two
-// proposals, a message to #606's session and #617 waiting on #606.
-func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.Task) string) ([]factoryd.ChatMessage, []factoryd.ChatProposal) {
+// labShot is the failing acceptance run's screenshot, one PNG the whole
+// lab shares: a dark terminal, its error bar in red at the foot.
+var labShot = sync.OnceValue(func() string {
+	const w, h = 320, 200
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	fill := func(r image.Rectangle, c color.RGBA) { draw.Draw(img, r, &image.Uniform{c}, image.Point{}, draw.Src) }
+	fill(image.Rect(0, 0, w, h), color.RGBA{R: 0x17, G: 0x1a, B: 0x21, A: 0xff})
+	for y := 20; y < h-32; y += 22 {
+		fill(image.Rect(12, y, w-24, y+9), color.RGBA{R: 0x24, G: 0x2a, B: 0x35, A: 0xff})
+	}
+	fill(image.Rect(0, h-24, w, h), color.RGBA{R: 0xd6, G: 0x4a, B: 0x5a, A: 0xff})
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err != nil {
+		panic(err)
+	}
+	return b.String()
+})
+
+// busyChat is sebastian's conversation in the busy scenario: roadmap 300
+// filed as a card — an ask pressed, a refused Do it that self-corrects
+// with its acceptance tests — then a question the agent answers after
+// reading #606, two proposals for #606's session and #617, and a pasted
+// screenshot the agent reads by tool, its ask still open.
+func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.Task) string) ([]factoryd.ChatMessage, []factoryd.ChatProposal, []factoryd.ChatProposal) {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
 	ref := func(t factoryd.Task) string { return fmt.Sprintf("#%d %s %q", t.IssueNumber, t.ID, title(t)) }
 	steerArgs := fmt.Sprintf(`{"task_id":%q,"text":"Keep the drawer's objective unclamped; clamp only the board's chips."}`, running.ID)
 	depArgs := fmt.Sprintf(`{"task_id":%q,"depends_on":%q}`, queued.ID, running.ID)
+	const fileTitle = "Plan: Documents in the conversation (roadmap 300)"
+	const fileBody = "Drag the documents into the chat and read them by tool"
+	noTests := `{"title":"` + fileTitle + `","body":"` + fileBody + `","lane":"plan","size":"medium"}`
+	withTests := noTests[:len(noTests)-1] + `,"acceptance":["the chat shows the documents a member sends","the agent reads them by tool"]}`
 	proposals := []factoryd.ChatProposal{
 		{Token: "labSteer606xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "steer",
 			Args: json.RawMessage(steerArgs), ExpiresAt: now.Add(30 * time.Minute),
@@ -874,11 +923,40 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 			Args: json.RawMessage(depArgs), ExpiresAt: now.Add(30 * time.Minute),
 			Description: "Set a dependency, " + ref(queued) + ", depends on " + ref(running)},
 	}
-	call := func(p factoryd.ChatProposal, id string) factoryd.ChatToolCall {
-		return factoryd.ChatToolCall{ID: id, Name: p.Tool, Arguments: string(p.Args), ReadAt: ago(12 * time.Minute), Proposal: p.Token,
+	used := []factoryd.ChatProposal{
+		{Token: "labFile300NoAcceptancexxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "new_card",
+			Args: json.RawMessage(noTests), ExpiresAt: now.Add(30 * time.Minute),
+			Description: "File a card, title " + fileTitle + ", body " + fileBody + ", lane plan, size medium"},
+	}
+	filed := factoryd.ChatProposal{Token: "labFile300WithTestsxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian",
+		Tool: "new_card", Args: json.RawMessage(withTests), ExpiresAt: now.Add(30 * time.Minute),
+		Description: "File a card, title " + fileTitle + ", body " + fileBody + ", lane plan, size medium, " +
+			"acceptance the chat shows the documents a member sends; the agent reads them by tool"}
+	proposals = append(proposals, filed)
+	call := func(p factoryd.ChatProposal, id string, read time.Time) factoryd.ChatToolCall {
+		return factoryd.ChatToolCall{ID: id, Name: p.Tool, Arguments: string(p.Args), ReadAt: read, Proposal: p.Token,
 			Result: "Proposed to sebastian: " + strings.TrimSuffix(p.Description, ".") + ". Nothing runs until they press Do it."}
 	}
+	ask := func(id, question string, choices []string, at time.Time) factoryd.ChatMessage {
+		args, _ := json.Marshal(map[string]any{"question": question, "choices": choices})
+		return factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk, Content: question, Choices: choices, At: at,
+			ToolCalls: []factoryd.ChatToolCall{{ID: id, Name: "ask", Arguments: string(args), ReadAt: at,
+				Result: "Asked the member; this turn ends. A press or their next message answers it."}}}
+	}
 	msgs := []factoryd.ChatMessage{
+		{Role: "user", Content: "File roadmap 300 as a card", At: ago(18 * time.Minute)},
+		ask("call_300a", "One card, or one per deliverable?", []string{"One card", "One per deliverable"}, ago(18*time.Minute-9*time.Second)),
+		{Role: "user", Content: "One card", At: ago(17 * time.Minute)},
+		{Role: "assistant", At: ago(16*time.Minute - 40*time.Second),
+			ToolCalls: []factoryd.ChatToolCall{call(used[0], "call_300b", ago(16*time.Minute-40*time.Second))}},
+		// the pressed Do it that the ready check refused, and the turn it
+		// fed: the filing again, now with its acceptance tests
+		{Role: "assistant", At: ago(16*time.Minute - 20*time.Second), ToolCalls: []factoryd.ChatToolCall{
+			{ID: "do-" + used[0].Token[:12], Name: "new_card", Arguments: noTests, ReadAt: ago(16*time.Minute - 20*time.Second),
+				Result: "Refused: The ready check refuses the filing: card " + fileTitle + ": 0 acceptance tests; want 1 to 10"}}},
+		{Role: "assistant", At: ago(15*time.Minute - 50*time.Second), Content: "The ready check wants acceptance tests on a plan card. " +
+			"This filing carries two; it waits for your click.",
+			ToolCalls: []factoryd.ChatToolCall{call(filed, "call_300c", ago(15*time.Minute-50*time.Second))}},
 		{Role: "user", Content: "What is #606 stuck on, and can it finish under its budget?", At: ago(14 * time.Minute)},
 		{Role: "assistant", At: ago(14*time.Minute - 4*time.Second), ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card",
 			Arguments: fmt.Sprintf(`{"task_id":%q}`, running.ID), ReadAt: ago(14*time.Minute - 4*time.Second),
@@ -888,11 +966,19 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
 			"It has spent €1.72 of its €2.00, so this session is its last under the budget."},
 		{Role: "user", Content: "Tell it to keep the drawer unclamped, and hold #617 until #606 is done.", At: ago(12 * time.Minute)},
-		{Role: "assistant", At: ago(12*time.Minute - 6*time.Second), ToolCalls: []factoryd.ChatToolCall{call(proposals[0], "call_2"), call(proposals[1], "call_3")}},
+		{Role: "assistant", At: ago(12*time.Minute - 6*time.Second), ToolCalls: []factoryd.ChatToolCall{
+			call(proposals[0], "call_2", ago(12*time.Minute-6*time.Second)), call(proposals[1], "call_3", ago(12*time.Minute-6*time.Second))}},
 		{Role: "assistant", At: ago(12*time.Minute - 8*time.Second), Content: "Both wait for your click: the message reaches #606's session at its next step, " +
 			"and #617 stays queued until #606 is done."},
+		{Role: "user", Content: "The failing run is img1: the acceptance job's screenshot. What broke?", At: ago(4 * time.Minute)},
+		{Role: "assistant", At: ago(3*time.Minute - 50*time.Second), Content: "The screenshot shows the failure the session reported: the clamp, " +
+			"one CSS rule on the board's chips. Where it lands is yours to say.",
+			ToolCalls: []factoryd.ChatToolCall{{ID: "call_301a", Name: "analyze_image",
+				Arguments: `{"name":"img1","ask":"What does the failing run show?"}`, ReadAt: ago(3*time.Minute - 50*time.Second),
+				Result: "img1 (run.png): The clamp cuts the card's objective at two lines; TestDrawerObjective reads three."}}},
+		ask("call_301b", "The fix is one rule: where does it land?", []string{"In #606's session", "A fresh session"}, ago(2*time.Minute-9*time.Second)),
 	}
-	return msgs, proposals
+	return msgs, proposals, used
 }
 
 // labMonday is the routines round's Monday (C16, design/rounds/04-routines/

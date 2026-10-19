@@ -58,6 +58,10 @@ const mustHave = {
     "#606", "3/4 checks", "€1.72", "near its budget", "#611", "#614", "#601", "PR #605",
     "#531", "#596", "#600", "#597", "failed", "#590", "closed", "#535", "Retry",
     "project agent", "Start a new thread", "What is #606 stuck on", "Do it", "Skip", "Send",
+    "File roadmap 300 as a card", "One card, or one per deliverable", "One card",
+    "Refused: The ready check refuses the filing", "0 acceptance tests; want 1 to 10",
+    "acceptance the chat shows the documents a member sends; the agent reads them by tool",
+    "The failing run is img1", "analyze_image", "In #606's session", "A fresh session",
     "Wide view", "?", "Find on the board", "Find: a word, #612, plan:558",
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
@@ -304,6 +308,16 @@ async function text(page) {
         if (s.body) fails.push("busy: column " + i + " has no body or its body scrolls sideways");
         if (s.y !== "auto" || s.x !== "hidden") fails.push("busy: column " + i + "'s body overflow is " + s.y + "/" + s.x + ", want auto/hidden");
       });
+      // the ask's answer row (roadmap 300's round): the open ask offers
+      // its presses between the log and the box, the member's own words
+      // open below; a past ask shows its press as the member's row. It is
+      // read before the Do it below: that press's row would settle the ask
+      const answer = p.page.locator("#chat-answer");
+      if (!(await answer.isVisible())) fails.push("chat: the open ask shows no answer row");
+      else {
+        const at = await answer.innerText();
+        for (const w of ["Answer:", "In #606's session", "A fresh session", "or in your words below"]) if (!at.includes(w)) fails.push('chat: the answer row lacks "' + w + '"');
+      }
       const doit = p.page.locator("#chat").getByRole("button", { name: "Do it", exact: true });
       if (!(await doit.count())) fails.push("chat: no Do it");
       else {
@@ -311,6 +325,33 @@ async function text(page) {
         await p.page.waitForTimeout(800);
         const t2 = await p.page.locator("#chat").innerText();
         if (!/applied/i.test(t2) || !/undo/i.test(t2)) fails.push("chat: Do it does not become an applied line with Undo");
+      }
+      // a pasted image rides the composer as a named chip (roadmap 300):
+      // paste puts img1 above the box with its ×, the × removes it, and
+      // nothing leaves the page until Send
+      const chips = p.page.locator("#chat-images");
+      await p.page.evaluate(() => new Promise((done) => {
+        const c = document.createElement("canvas");
+        c.width = 320; c.height = 200;
+        const g = c.getContext("2d");
+        g.fillStyle = "#8a9aa8"; g.fillRect(0, 0, 320, 200);
+        c.toBlob((b) => {
+          const dt = new DataTransfer();
+          dt.items.add(new File([b], "shot.png", { type: "image/png" }));
+          document.getElementById("chat-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+          done();
+        }, "image/png");
+      }));
+      await p.page.waitForTimeout(200);
+      if (!(await chips.isVisible()) || !(await chips.innerText()).includes("img1")) fails.push("chat: a pasted image shows no img1 chip");
+      else {
+        const remove = chips.locator("[data-unimage]");
+        if (!(await remove.count())) fails.push("chat: the image chip has no ×");
+        else {
+          await remove.first().click();
+          await p.page.waitForTimeout(200);
+          if (await chips.isVisible()) fails.push("chat: the × does not remove the image chip");
+        }
       }
       // the documents (roadmap 277): the Documents button opens the roadmap
       // in the view docked over the board, never over the chat; a link opens

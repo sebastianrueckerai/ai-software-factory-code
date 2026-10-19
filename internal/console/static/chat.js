@@ -59,10 +59,10 @@ var chatView = (function () {
     return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
   }
   function userHTML(login, text, at, queued, images) {
-    // the row's images: their own names as thumbnails, the optimistic
-    // object URLs until the read carries the stored ids
+    // the row's images as thumbnails, each src resolved by the caller:
+    // the optimistic object URL on send, the serving route on a read
     var thumbs = (images || []).map(function (im) {
-      var src = im.url ? im.url : base + "/attachments/" + im.id;
+      var src = im.url;
       return "<a class=\"thumb\" href=\"" + esc(src) + "\" target=\"_blank\" rel=\"noopener\"><img loading=\"lazy\" src=\"" + esc(src) + "\" alt=\"" + esc(im.name || "an image") + "\"></a>";
     }).join("");
     return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
@@ -1056,6 +1056,9 @@ var chatView = (function () {
       openThread = data.thread || {number: open};
       openOwner = threadOwner(openThread);
       readOnly = openThread.state === "archived";
+      // a stored image's src is its serving route, resolved here where the
+      // panel's base lives; the optimistic ones carry their object URL
+      data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
       log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
       if (form) {
