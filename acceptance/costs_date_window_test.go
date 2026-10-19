@@ -358,6 +358,7 @@ type acceptObjects map[string][]byte
 
 func (o acceptObjects) Put(_ context.Context, k string, b []byte) error { o[k] = b; return nil }
 func (o acceptObjects) Get(_ context.Context, k string) ([]byte, error) { return o[k], nil }
+func (o acceptObjects) Delete(_ context.Context, k string) error        { delete(o, k); return nil }
 
 // acceptEvents is the event spine in memory.
 type acceptEvents struct {
@@ -731,8 +732,11 @@ func (f *acceptChat) ChatIntakeClosed(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
-	return 0, nil
+func (f *acceptChat) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {
+	return nil, nil
+}
+func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) (int64, []int64, error) {
+	return 0, nil, nil
 }
 
 func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) error {

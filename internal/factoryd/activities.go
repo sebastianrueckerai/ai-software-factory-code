@@ -2038,7 +2038,9 @@ const (
 // satisfy it.
 func logTail(log []byte) string {
 	lines := strings.Split(strings.TrimRight(string(log), "\n"), "\n")
-	if len(lines) > jobLogMaxLines {
+	if section := resultsSection(lines); len(section) > 0 {
+		lines = section
+	} else if len(lines) > jobLogMaxLines {
 		lines = lines[len(lines)-jobLogMaxLines:]
 	}
 	for i, line := range lines {
@@ -2057,6 +2059,26 @@ func logTail(log []byte) string {
 		tail = rest
 	}
 	return tail
+}
+
+// resultsSection is what a failed job's log says of its failure when it
+// has a scanner's shape: the bare "Results:" line through the "Summary:"
+// block its indented counts close. The per-file checking chatter before
+// the section and the runner's post-amble after it never reach a finding.
+// nil for a log without the shape, where the tail still speaks.
+func resultsSection(lines []string) []string {
+	start := slices.IndexFunc(lines, func(l string) bool { return strings.TrimSpace(l) == "Results:" })
+	if start < 0 {
+		return nil
+	}
+	end := len(lines) - 1
+	if off := slices.IndexFunc(lines[start+1:], func(l string) bool { return strings.TrimSpace(l) == "Summary:" }); off >= 0 {
+		end = start + 1 + off
+		for j := end + 1; j < len(lines) && strings.HasPrefix(lines[j], "  "); j++ {
+			end = j
+		}
+	}
+	return lines[start : end+1]
 }
 
 // stripLogTimestamp removes line's leading RFC3339Nano timestamp and

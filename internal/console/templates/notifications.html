@@ -1,4 +1,5 @@
 {{template "head" .}}
+<div class="page">
 <h2>Notifications</h2>
 
 {{$csrf := .CSRF}}{{$code := .Code}}{{$tg := ""}}{{range .Links}}{{if eq .Venue "telegram"}}{{$tg = .Address}}{{end}}{{end}}{{$dc := ""}}{{range .Links}}{{if eq .Venue "discord"}}{{$dc = .Address}}{{end}}{{end}}
@@ -41,4 +42,5 @@
 </tbody>
 </table>
 </section>
+</div>
 {{template "foot"}}

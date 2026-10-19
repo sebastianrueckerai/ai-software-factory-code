@@ -1,4 +1,5 @@
 {{template "head" .}}
+<div class="page">
 <h2>New task</h2>
 {{if .Flags}}<div class="problem" role="alert"><p>The sanitiser or the provider would change this text on the card's way to the agent:</p>
 <ul>{{range .Flags}}<li><code>{{.}}</code></li>{{end}}</ul>
@@ -34,4 +35,5 @@
 <button type="submit">File the issue</button>
 {{if .Flags}}<button type="submit" name="as_written" value="yes">File as written</button>{{end}}
 </form>
+</div>
 {{template "foot"}}

@@ -153,6 +153,7 @@ type chatTool struct {
 	params             map[string]any // the arguments' JSON Schema properties
 	required           []string
 	write              bool
+	priced             bool // one model call over the conversation's own attachment: its result stays in replay, re-running re-spends
 	internal           bool // an undo's inverse only: the agent is not offered it
 	run                func(t *turn, in toolInput) (string, *inverse, error)
 }
@@ -234,6 +235,14 @@ func (c *Console) chatTool(name string) (chatTool, bool) {
 func isRead(name string) bool {
 	i := slices.IndexFunc(tools, func(t chatTool) bool { return t.name == name })
 	return i >= 0 && !tools[i].write
+}
+
+// isPriced is true for the name of a tool whose every call spends a
+// model look over the conversation's own attachment: its answer never
+// goes stale, and running it again re-spends.
+func isPriced(name string) bool {
+	i := slices.IndexFunc(tools, func(t chatTool) bool { return t.name == name })
+	return i >= 0 && tools[i].priced
 }
 
 // card is the tool's card, refused unless it is the chat project's.
@@ -1529,8 +1538,10 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "analyze_image", title: "Look at an image",
-		params:   map[string]any{"name": str("the image's name, img1 as its row shows"), "ask": str("what to look for (default what the image shows)")},
+		params: map[string]any{"name": str("the image's name, img1 as its row shows"),
+			"ask": map[string]any{"type": "string", "maxLength": 2000, "description": "what to look for (default what the image shows)"}},
 		required: []string{"name"},
+		priced:   true,
 		about:    "One look at an image a member sent: the vision model's answer to a question about it.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
 	{name: "read_attachment", title: "Read a sent document",
@@ -1547,6 +1558,7 @@ var tools = []chatTool{
 	{name: "summarize_attachment", title: "Summarise a sent document",
 		params:   map[string]any{"name": str("the document's name, doc1 as its row shows"), "ask": str("what the summary answers (default what the document says)")},
 		required: []string{"name"},
+		priced:   true,
 		about:    "One model call over a document a member sent: its answer to a question about it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.summarizeAttachment(in)

@@ -1026,6 +1026,8 @@ func (a *AcceptanceRig) Get(context.Context, string) ([]byte, error) {
 
 func (a *AcceptanceRig) Put(context.Context, string, []byte) error { return nil }
 
+func (a *AcceptanceRig) Delete(context.Context, string) error { return nil }
+
 func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1117,8 +1119,12 @@ func (a *AcceptanceRig) ChatIntakeClosed(_ context.Context, repository string) (
 	return a.intake[repository], nil
 }
 
-func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, error) {
-	return 0, nil
+func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, []int64, error) {
+	return 0, nil, nil
+}
+
+func (a *AcceptanceRig) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {
+	return nil, nil
 }
 
 func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {

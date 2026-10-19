@@ -613,6 +613,7 @@ type fakeObjects map[string][]byte
 
 func (o fakeObjects) Put(_ context.Context, k string, b []byte) error { o[k] = b; return nil }
 func (o fakeObjects) Get(_ context.Context, k string) ([]byte, error) { return o[k], nil }
+func (o fakeObjects) Delete(_ context.Context, k string) error        { delete(o, k); return nil }
 
 // fakeApprovals is the approval_requests table.
 type fakeApprovals struct {
@@ -1918,7 +1919,7 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	// the drawer carries the merge request's five-part ask: why a
 	// human, the model review's verdict and summary, the recommendation
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
@@ -2118,13 +2119,13 @@ func TestAgentApprovalOnRedChecksOffersReturnAndClose(t *testing.T) {
 	}
 	start = strings.LastIndex(body[:start], "<article")
 	got := body[start : start+strings.Index(body[start:], "</article>")]
-	for _, want := range []string{`aria-controls="deny-4">Return or close</button>`, `name="action" value="request_changes" checked`, "return it to the agent",
+	for _, want := range []string{`action="/approvals/4/deny"`, `name="action" value="request_changes" checked`, "return it to the agent",
 		`name="action" value="reject"`, "close it (closes the pull request)", `aria-label="Return or close PR #9 of t-m">Send</button>`} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the red agent request lacks %q:\n%s", want, got)
 		}
 	}
-	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>"} {
+	for _, not := range []string{`action="/approvals/4/approve"`, `action="/approvals/4/rerun"`, ">Deny</button>", `aria-controls="deny-4"`, `id="deny-4" hidden`} {
 		if strings.Contains(got, not) {
 			t.Errorf("the red agent request shows %q:\n%s", not, got)
 		}
@@ -2268,7 +2269,7 @@ func TestRedChecksHealOnTheMovedBranchHead(t *testing.T) {
 	if strings.Contains(body, `action="/approvals/4/approve"`) || strings.Contains(body, "checks green at def456") {
 		t.Errorf("the still-red moved head offers an approve or a healed chip")
 	}
-	if !strings.Contains(body, `aria-controls="deny-4">Return or close</button>`) {
+	if !strings.Contains(body, `action="/approvals/4/deny"`) || strings.Contains(body, `id="deny-4" hidden`) {
 		t.Errorf("the still-red moved head lost its return and close")
 	}
 }

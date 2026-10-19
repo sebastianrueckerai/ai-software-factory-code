@@ -43,6 +43,18 @@ func (s *fakeObjectStore) Get(ctx context.Context, key string) ([]byte, error) {
 	return nil, nil
 }
 
+// Delete forgets every body put under key.
+func (s *fakeObjectStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.puts {
+		if s.puts[i].key == key {
+			s.puts[i].body = nil
+		}
+	}
+	return nil
+}
+
 var _ ObjectStore = (*fakeObjectStore)(nil)
 
 func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {

@@ -1,25 +1,26 @@
 {{template "head" .}}
+<div class="page">
 <div class="pagehead"><h2>Settings</h2><form method="get" action="/settings" class="auto-submit"><label for="settings-project" class="visually-hidden">Project</label><select id="settings-project" name="project">
 {{range .Projects}}<option value="{{.}}"{{if eq . $.Project}} selected{{end}}>{{.}}</option>
 {{end}}</select></form></div>
 {{with .Row}}
 <p class="meta">How the factory works on {{.Name}}: the project owns its CI/CD; the factory owns the gates, these settings and the hardware limits.{{if .File}} The settings are the project's file in the configuration: change them <a href="{{.File}}" target="_blank" rel="noopener">in Git</a>.{{end}}</p>
 {{if .File}}
-<ul class="rows">
-<li>Repository: {{.Repository}}</li>
-<li>Objects: {{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</li>
-<li>Agents: {{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</li>
-<li>Merge rule: {{.MergeRule}}</li>
-<li>Notify: {{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the project's approvers){{end}}</li>
-<li>Namespaces: {{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</li>
-{{if eq .Objects "factory"}}<li>Quota per namespace: {{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</li>
-<li>Environments: {{range $i, $e := .Envs}}{{if $i}}; {{end}}{{$e.Words}}{{else}}none{{end}}</li>
-<li>Forgejo: {{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: the reconcile registers it with the Forgejo admin's login from OpenBao{{end}}</li>
-{{if $.Export}}<li>GitHub export: {{with .Mirror}}{{.Remote}}, {{if eq .Mode "pull_requests"}}pull requests, {{end}}{{.State}}{{with .SyncResult}}; last sync: {{.}}{{end}}{{if $.Row.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
+<dl class="facts">
+<dt>Repository</dt><dd>{{.Repository}}</dd>
+<dt>Objects</dt><dd>{{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</dd>
+<dt>Agents</dt><dd>{{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</dd>
+<dt>Merge rule</dt><dd>{{.MergeRule}}</dd>
+<dt>Notify</dt><dd>{{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the project's approvers){{end}}</dd>
+<dt>Namespaces</dt><dd>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</dd>
+{{if eq .Objects "factory"}}<dt>Quota per namespace</dt><dd>{{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</dd>
+<dt>Environments</dt><dd>{{range $i, $e := .Envs}}{{if $i}}; {{end}}{{$e.Words}}{{else}}none{{end}}</dd>
+<dt>Forgejo</dt><dd>{{if .Minted}}organisation, repository, CI user and tokens made{{else}}waiting: the reconcile registers it with the Forgejo admin's login from OpenBao{{end}}</dd>
+{{if $.Export}}<dt>GitHub export</dt><dd>{{with .Mirror}}{{.Remote}}, {{if eq .Mode "pull_requests"}}pull requests, {{end}}{{.State}}{{with .SyncResult}}; last sync: {{.}}{{end}}{{if $.Row.Approver}} <form method="post" action="/projects/{{.Project}}/export/remove" class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Remove</button></form>{{if $.Sync}} <form method="post" action="/projects/{{.Project}}/export/sync" class="inline">
-<input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Sync latest</button></form>{{end}}{{end}}{{else}}none{{end}}</li>{{end}}
-{{else}}<li>Tokens: read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</li>{{end}}
-</ul>
+<input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit">Sync latest</button></form>{{end}}{{end}}{{else}}none{{end}}</dd>{{end}}
+{{else}}<dt>Tokens</dt><dd>read {{.Tokens.Read}}{{if .Tokens.Actions}}, Actions {{.Tokens.Actions}}{{end}}{{if .Tokens.Merge}}, merge {{.Tokens.Merge}}{{end}}</dd>{{end}}
+</dl>
 {{if and $.Export .Approver (eq .Objects "factory")}}<form method="post" action="/projects/{{.Name}}/export" class="export" id="export-{{.Name}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">
 <label>GitHub repository <input type="text" name="remote" required placeholder="owner/name" autocomplete="off"></label>
@@ -34,4 +35,5 @@
 <p class="meta">No projects yet.</p>
 {{end}}
 <p class="meta"><a href="/settings/new">New project</a> files a new project's file as a pull request and shows each step up to its board: the merge, the Forgejo organisation, repository, CI user and tokens made with the Forgejo admin's login, and the rest registration sets up.</p>
+</div>
 {{template "foot"}}

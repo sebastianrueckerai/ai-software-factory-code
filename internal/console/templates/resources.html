@@ -1,4 +1,5 @@
 {{template "head" .}}
+<div class="page">
 <h2>Resources</h2>
 <p class="meta">Servers agents commission in the agent cloud project, open now or closed in the last 7 days. Promote makes a commission standing: the project's, with no lease and no agent access, until a human releases it. Promote and release act on the whole commission (server, firewall, volume); the gateway's collector deletes a released one within 2 minutes.</p>
 {{range .Projects}}<section class="project" aria-labelledby="project-{{.Project}}">
@@ -36,5 +37,6 @@
 </table>
 {{end}}</section>
 {{end}}
+</div>
 {{template "foot"}}
 {{define "age"}}{{if .IsZero}}<td>never</td>{{else}}<td title="{{utc .}}">{{ago .}}</td>{{end}}{{end}}

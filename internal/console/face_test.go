@@ -979,6 +979,58 @@ func TestWaitingHumanCardWithoutAnAskOffersTheFactoryOrAClose(t *testing.T) {
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
 }
 
+// A card that asks closes like every ask-less card since roadmap 1131:
+// on a note, without a browser confirm. The plain ask ends on a note
+// posted on the issue; a shaped question's End-the-card choice closes
+// in one click, as the same choice does in the chat. The native confirm
+// stays only where no note carries the close: the split PR and the
+// ask-less non-human cards.
+func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
+	r, _ := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-idle", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 41, Objective: "Pick the next work."},
+			Escalation: "The board is idle and main is green. What should I start or improve next?"},
+		{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 42, Objective: "the feed"},
+			Escalation: "the session cap is reached",
+			Question: &factoryd.HumanQuestion{Ask: "The call cap is reached. Which way on?", Why: "the session cap is reached",
+				Choices: []factoryd.QuestionChoice{{Value: "grant", Label: "Grant one session"}, {Value: "close", Label: "End the card"}}}},
+	}
+	ck, s := r.loggedIn(t)
+	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">`
+		if strings.Contains(page, "view=wide") {
+			filter += `<input type="hidden" name="view" value="wide">`
+		}
+		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#board" hx-swap="outerHTML" class="inline close">` + filter +
+			`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close #41 with a note">Close with note</button></form>`
+		idle := faceOf(t, body, "t-idle")
+		if !strings.Contains(idle, idleClose) {
+			t.Errorf("%s: the asking card's face lacks the close with note:\n%s", page, idle)
+		}
+		if strings.Contains(idle, `>Close</button>`) {
+			t.Errorf("%s: the asking card's face still offers the plain close:\n%s", page, idle)
+		}
+		for _, id := range []string{"t-idle", "t-q"} {
+			if face := faceOf(t, body, id); strings.Contains(face, "hx-confirm") {
+				t.Errorf("%s: the face of %s asks the browser to confirm a close:\n%s", page, id, face)
+			}
+		}
+		q := escalationOf(t, body, "t-q")
+		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#board" hx-swap="outerHTML" class="inline close">` + "\n" + filter + "\n" +
+			`<button type="submit" class="deny" aria-label="End the card">End the card</button></form>`
+		if !strings.Contains(q, oneClick) {
+			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
+		}
+	}
+	for _, id := range []string{"t-idle", "t-q"} {
+		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
+		if strings.Contains(drawer, "hx-confirm") {
+			t.Errorf("the drawer of %s asks the browser to confirm a close:\n%s", id, drawer)
+		}
+	}
+}
+
 // A click anywhere on a needs-you card opens its drawer, as on every
 // other card: the board's click handler reads
 // e.target.closest("#board [data-card]"), so the escalation article
@@ -1216,7 +1268,8 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
 		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
-		`<p class="why">first why; second why</p>`,
+		`<p class="why">first why</p>`,
+		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
 		`<p class="finding">0018_x.sql: add a default</p>`,
 		`<p class="need-line">Criterion no schema migration: yours to judge at this merge. the diff moves the column</p>`,

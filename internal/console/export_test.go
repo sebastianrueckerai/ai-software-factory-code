@@ -239,7 +239,7 @@ func TestProjectsPageGithubExport(t *testing.T) {
 		return r.do(httptest.NewRequest(http.MethodGet, "/settings?project=demo-app", nil), ck).Body.String()
 	}
 	form := `<form method="post" action="/projects/demo-app/export"`
-	if body := page(ck); !strings.Contains(body, form) || !strings.Contains(body, "<li>GitHub export: none</li>") ||
+	if body := page(ck); !strings.Contains(body, form) || !strings.Contains(body, "GitHub export</dt><dd>none</dd>") ||
 		strings.Contains(body, `action="/projects/ai-software-factory-code/export"`) {
 		t.Fatalf("an approver's /projects: want demo-app's export form and none for a seed project:\n%s", body)
 	}
@@ -266,13 +266,13 @@ func TestProjectsPageGithubExport(t *testing.T) {
 	r.mirrors.rows["demo-app export"] = factoryd.Mirror{Project: "demo-app", Direction: factoryd.MirrorExport, Remote: "acme/app", Username: "u",
 		Token: ghToken, State: "failed: Authentication failed"}
 	remove := `<form method="post" action="/projects/demo-app/export/remove"`
-	if body := page(ck); !strings.Contains(body, "<li>GitHub export: acme/app, failed: Authentication failed "+remove) || strings.Contains(body, ghToken) {
+	if body := page(ck); !strings.Contains(body, "GitHub export</dt><dd>acme/app, failed: Authentication failed "+remove) || strings.Contains(body, ghToken) {
 		t.Fatalf("/projects after the export: want its state and Remove, no token:\n%s", body)
 	}
 
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
 	ak, as := r.as(t, "anna")
-	if body := page(ak); strings.Contains(body, form) || strings.Contains(body, remove) || !strings.Contains(body, "<li>GitHub export: acme/app, failed: Authentication failed</li>") {
+	if body := page(ak); strings.Contains(body, form) || strings.Contains(body, remove) || !strings.Contains(body, "GitHub export</dt><dd>acme/app, failed: Authentication failed</dd>") {
 		t.Fatalf("a writer's /projects: want the state without the form or Remove:\n%s", body)
 	}
 	if rec := r.do(post("/projects/demo-app/export/remove", url.Values{"csrf": {as.csrf}}), ak); rec.Code != http.StatusForbidden {

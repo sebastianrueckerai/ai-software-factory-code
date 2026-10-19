@@ -246,6 +246,12 @@ func (o lockedObjects) Put(ctx context.Context, k string, b []byte) error {
 	return o.m.Put(ctx, k, b)
 }
 
+func (o lockedObjects) Delete(ctx context.Context, k string) error {
+	labObjects.Lock()
+	defer labObjects.Unlock()
+	return o.m.Delete(ctx, k)
+}
+
 type labScene struct {
 	tasks     []factoryd.BoardTask
 	deps      map[string][]string
@@ -341,7 +347,9 @@ func pokeScene(now time.Time) labScene {
 // escalationScene is the busy board at autonomy autonomous with the
 // inbox open: the agent's own start with its decider line, then the
 // question on #603 as the inbox's escalation, its choices once in the
-// answer row between the log and the box (roadmap 239, C14).
+// answer row between the log and the box (roadmap 239, C14). A later
+// ask, already settled by the member's reply, sits over the escalation:
+// the row must still offer the escalation, not fall silent on it.
 func escalationScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
@@ -351,7 +359,10 @@ func escalationScene(now time.Time) labScene {
 			Content: `Started #617 "Chat form: center the Send button next to the two-row textarea".`, Decider: "autonomous level · started by the agent"},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageEscalation, TaskID: labID(603), At: ago(28 * time.Minute),
 			Content: "#603 needs you: Which store keeps the nightly board snapshots? Postgres shares the factory's backups; SQLite keeps them beside the export and off the cluster.",
-			Choices: []string{"Postgres", "SQLite", "Ask the author"}})
+			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageAsk, At: ago(20 * time.Minute),
+			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}},
+		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "One a night", At: ago(18 * time.Minute)})
 	s.seen[5] = int64(len(s.chat))
 	return s
 }

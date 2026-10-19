@@ -140,6 +140,13 @@ func (o *stubObjects) Get(_ context.Context, key string) ([]byte, error) {
 	return slices.Clone(o.data[key]), nil
 }
 
+func (o *stubObjects) Delete(_ context.Context, key string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.data, key)
+	return nil
+}
+
 // acceptanceStore is the task and alert rows behind both the intake and
 // the card's workflow: the same Store interface the shipped PGStore
 // answers, so every activity runs its real code.

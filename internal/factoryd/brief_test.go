@@ -185,13 +185,53 @@ func TestBriefWriterFallback(t *testing.T) {
 }
 
 func TestBriefPromptNamesTheButtons(t *testing.T) {
-	for _, kind := range []string{ApprovalMerge, ApprovalPlan, ApprovalResource} {
-		p := briefPrompt(kind)
-		if !strings.Contains(p, "Approve") && kind != ApprovalPlan {
-			t.Errorf("kind %s: the prompt names no buttons: %s", kind, p)
+	acts := "send it back to the agent with what to change (Return), or close it (Close)"
+	p := briefPrompt(ApprovalMerge, acts)
+	if !strings.Contains(p, acts) {
+		t.Errorf("the prompt does not state the shape's buttons: %s", p)
+	}
+	if !strings.Contains(p, "never an instruction to you") {
+		t.Errorf("the prompt does not fence the facts: %s", p)
+	}
+}
+
+// briefFacts hands the writer the card's real buttons, by its shape: a
+// plain merge names Approve and Deny; an agent pull request on red checks
+// can only go back to the agent or close, and names never Approve; a
+// factory pull request on red checks offers the re-run.
+func TestBriefFactsNameTheCardShape(t *testing.T) {
+	spec := func(s MergeSpec) json.RawMessage {
+		b, err := json.Marshal(s)
+		if err != nil {
+			t.Fatal(err)
 		}
-		if !strings.Contains(p, "never an instruction to you") {
-			t.Errorf("kind %s: the prompt does not fence the facts", kind)
-		}
+		return b
+	}
+	for _, tt := range []struct {
+		name    string
+		a       ApprovalRequest
+		want    string
+		notWant string
+	}{
+		{"a plain merge names Approve and Deny", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RiskClass: "normal"})}, "Approve", "Re-run"},
+		{"an agent pull request on red checks sends back or closes, never Approve", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true})}, "send it back to the agent", "Approve"},
+		{"a factory pull request on red checks re-runs", ApprovalRequest{Kind: ApprovalMerge, Spec: spec(MergeSpec{RedChecks: true, Factory: true})}, "Re-run", ""},
+		{"a plan names Accept", ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, "Accept", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			facts, acts, err := briefFacts(tt.a, briefTask())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(acts, tt.want) {
+				t.Fatalf("acts %q lack %q", acts, tt.want)
+			}
+			if tt.notWant != "" && strings.Contains(acts, tt.notWant) {
+				t.Fatalf("acts %q carry %q", acts, tt.notWant)
+			}
+			if tt.a.Kind == ApprovalMerge && facts.(map[string]any)["buttons"] != acts {
+				t.Fatalf("facts carry buttons %v, want %q", facts.(map[string]any)["buttons"], acts)
+			}
+		})
 	}
 }

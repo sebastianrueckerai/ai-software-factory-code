@@ -317,6 +317,7 @@ func (o fakeObjects) Put(ctx context.Context, key string, body []byte) error {
 }
 
 func (o fakeObjects) Get(ctx context.Context, key string) ([]byte, error) { return o[key], nil }
+func (o fakeObjects) Delete(_ context.Context, key string) error          { delete(o, key); return nil }
 
 func TestTimelineHandlerServesTheTaskTimeline(t *testing.T) {
 	tasks := fakeTaskReader{"t-1": {ID: "t-1"}, "t-2": {ID: "t-2"}}

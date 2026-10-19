@@ -132,6 +132,10 @@ pre { background: var(--bg-panel); border: 1px solid var(--line); color: var(--t
 #flash { margin: 8px 16px 0; }
 .reason { white-space: pre-wrap; font-size: 13px; color: var(--text-muted); }
 .reason, .need p { line-height: 1.45; }
+/* the drawer's written detail is markup, its lists their own structure:
+   the raw pre-wrap stays the plain fold's alone */
+div.reason.detail { white-space: normal; }
+div.reason.detail :is(ul, ol) { margin: 2px 0 0; padding-left: 16px; }
 kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border: 1px solid var(--btn-line); border-bottom-width: 2px; border-radius: 3px; color: var(--text); font-size: 11.5px; text-align: center; }
 
 /* the top bar (C23): sparse words in three groups on one 44 px row, the
@@ -807,13 +811,12 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-queue .queued-remove { width: 26px; padding: 0; }
 /* the images and documents riding the next message: chips above the
    prompt, and thumbnails or link chips under a sent row */
-.chat-images { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
-.chat-images li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-images, .chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-images li, .chat-docs li { display: inline-flex; align-items: center; gap: 6px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-images li { padding: 2px 6px 2px 2px; }
+.chat-docs li { padding: 2px 6px; }
 .chat-images img { width: 22px; height: 22px; object-fit: cover; border-radius: 3px; display: block; }
-.chat-images .queued-remove { width: 20px; height: 20px; padding: 0; }
-.chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
-.chat-docs li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
-.chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
+.chat-images .queued-remove, .chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
 .chat-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-thumbs a { display: block; }
@@ -1067,7 +1070,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 }
 
 /* the secondary pages: the form of a new task or project */
-.newtask, .project-new { max-width: 80rem; }
 .newtask label, .project-new label { font-size: 13px; color: var(--text); }
 .newtask button[type=submit], .project-new button[type=submit] { margin-top: 12px; }
 
@@ -1249,6 +1251,9 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .notify td.act form.inline { display: flex; gap: 8px; }
   .notify td.act form.inline button { height: 44px; }
   .notify td.act select { flex: 1; height: 44px; min-width: 0; }
+  .facts { grid-template-columns: 1fr; }
+  .facts dt { padding-bottom: 0; border-bottom: 0; text-align: left; }
+  .facts dd { padding-top: 2px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1270,5 +1275,9 @@ th.num, td.num { text-align: right; white-space: nowrap; }
 tr.standing > td { border-top: 2px solid var(--btn-line); }
 tr.closed td { color: var(--text-faint); background: var(--bg-raised); }
 tr.closed td a { color: inherit; }
-ul.rows { list-style: none; margin: 6px 0; padding: 0; }
-ul.rows li { padding: 5px 0; border-bottom: 1px solid var(--line); }
+/* the reference pages: one content column, 80 rem, centred (C24) */
+.page { max-width: 80rem; margin: 0 auto; padding: 2px 16px 56px; }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); margin: 10px 0; }
+.facts dt { padding: 6px 16px 6px 0; border-bottom: 1px solid var(--line); color: var(--text-muted); text-align: right; white-space: nowrap; }
+.facts dt::after { content: ":"; }
+.facts dd { margin: 0; padding: 6px 0; border-bottom: 1px solid var(--line); min-width: 0; }

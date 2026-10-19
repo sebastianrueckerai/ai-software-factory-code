@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -289,9 +290,11 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatAttachment answers GET /projects/{name}/chat/attachments/{id}: an
-// image's bytes from the object store, its sniffed type on it. Any
-// member of the project reads any thread's image, as they read its rows;
-// another project's or a made-up id is no image at all.
+// attachment's bytes from the object store, its sniffed type on it, a
+// download rather than a page: member bytes never render as the
+// console. Any member of the project reads any thread's attachment, as
+// they read its rows; another project's or a made-up id is no attachment
+// at all.
 func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -304,25 +307,30 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	a, ok, err := c.cfg.Chat.ChatAttachmentByID(r.Context(), t.p.Repository, id)
 	if err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the attachment", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
 	b, err := c.cfg.Timelines.Get(r.Context(), fmt.Sprintf("attachments/%d/%d", a.Conversation, a.ID))
 	if err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the attachment", http.StatusInternalServerError)
 		return
 	}
-	if !ok || len(b) == 0 {
+	if len(b) == 0 {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", a.ContentType)
+	w.Header().Set("Content-Disposition", "attachment")
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	if _, err := w.Write(b); err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
 }
 
@@ -561,6 +569,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			c.abandonMessage(r, t, id)
 			http.Error(w, "cannot store the message", http.StatusInternalServerError)
 			return
 		}
@@ -592,11 +601,39 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	t.run(task.ID, notice)
 }
 
+// abandonMessage withdraws a message whose images could not all be
+// stored: its row, its image rows and the objects already written, so no
+// half-message stays behind. A withdrawal that itself fails logs and
+// leaves the rows: the member resends.
+func (c *Console) abandonMessage(r *http.Request, t *turn, id int64) {
+	ids, err := c.cfg.Chat.AbandonChatMessage(r.Context(), t.p.Repository, t.owner, t.conv, id)
+	if err != nil {
+		log.Printf("console: withdraw the message of %s on %s: %v", t.owner, t.p.Repository, err)
+		return
+	}
+	for _, a := range ids {
+		if err := c.cfg.Timelines.Delete(r.Context(), fmt.Sprintf("attachments/%d/%d", t.conv, a)); err != nil {
+			log.Printf("console: sweep an image of %s on %s: %v", t.owner, t.p.Repository, err)
+		}
+	}
+}
+
 // chatImage is one image riding a message: its canonical name, the file's
 // own name, its sniffed type and its bytes.
 type chatImage struct {
 	name, fileName, contentType string
 	data                        []byte
+}
+
+// readPart reads one form file whole up to limit, one byte past it so
+// the caller sees the bound broken.
+func readPart(fh *multipart.FileHeader, limit int64) ([]byte, error) {
+	f, err := fh.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close() // #nosec G104 -- the read has the whole part; the form file's close carries nothing
+	return io.ReadAll(io.LimitReader(f, limit+1))
 }
 
 // chatImages are the form's images parts in order, named img1.. by
@@ -610,12 +647,7 @@ func chatImages(r *http.Request) ([]chatImage, string) {
 	}
 	out := make([]chatImage, 0, len(files))
 	for i, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			return nil, fmt.Sprintf("%s did not read", fh.Filename)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, chatImageBytes+1))
-		f.Close() // #nosec G104 -- the read has the whole part; the form file's close carries nothing
+		data, err := readPart(fh, chatImageBytes)
 		if err != nil {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
@@ -654,12 +686,7 @@ func chatDocuments(r *http.Request) ([]chatDocument, string) {
 	}
 	out := make([]chatDocument, 0, len(files))
 	for i, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			return nil, fmt.Sprintf("%s did not read", fh.Filename)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, chatDocBytes+1))
-		f.Close() // #nosec G104 -- the read has the whole part; the form file's close carries nothing
+		data, err := readPart(fh, chatDocBytes)
 		if err != nil {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
@@ -1114,9 +1141,13 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
 			result := call.Result
-			if earlier && isRead(call.Name) {
-				result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
-					call.Name + " again for the present]"
+			if earlier && isRead(call.Name) && !isPriced(call.Name) {
+				if call.Name == "read_attachment" {
+					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]"
+				} else {
+					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
+						call.Name + " again for the present]"
+				}
 			}
 			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
@@ -1141,6 +1172,9 @@ func imageSize(n int64) string {
 // task's account. A name no member sent refuses naming the images there
 // are.
 func (t *turn) lookImage(in toolInput) (string, error) {
+	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
+		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
+	}
 	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
 	if err != nil {
 		return "", err
@@ -1202,12 +1236,12 @@ func (t *turn) document(in toolInput) (*factoryd.ChatAttachment, []byte, error) 
 		}
 		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
 	}
+	if found.ContentType == "application/pdf" {
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+	}
 	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
 	if err != nil {
 		return nil, nil, err
-	}
-	if found.ContentType == "application/pdf" {
-		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
 	}
 	return found, b, nil
 }

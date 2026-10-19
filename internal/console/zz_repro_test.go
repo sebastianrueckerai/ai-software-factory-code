@@ -140,7 +140,8 @@ func TestIssueFaultsHeldFixed(t *testing.T) {
 	}
 	mergeDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
-		`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`,
+		`<p class="why">the project&#39;s merge rule is human</p>`,
+		`<p class="why">risk class high is requires_approval</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column safely</p>`,
 		`<p class="recommendation">Recommendation: Adds the column; merge it.</p>`,
 	} {

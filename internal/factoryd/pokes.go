@@ -211,6 +211,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	ref := cardRef(e, t)
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
 	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
+	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
 	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID, BirthKind: e.Kind}
 	switch e.Kind {
 	case EventQuestionAsked:
@@ -236,9 +237,13 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		case ApprovalMerge:
 			m.Content = fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class"))
 			m.Choices = []string{"Approve"}
-			if rerun, _ := e.Detail["rerun"].(bool); rerun {
+			if bl("red_checks") {
 				m.Content = fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr"))
 				m.Choices = []string{ChoiceRerun}
+				if !bl("factory") {
+					m.Content = fmt.Sprintf("%s waits for you: PR #%d cannot merge, its checks are red; send it back to the agent with what to change, or close it.", ref, num("pr"))
+					m.Choices = nil
+				}
 			}
 		case ApprovalPlan:
 			m.Content = fmt.Sprintf("Plan %s %q waits for your acceptance: revision %d, %d cards.", ref, CardTitle(t), num("revision"), num("cards"))

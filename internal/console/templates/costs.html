@@ -1,4 +1,5 @@
 {{template "head" .}}
+<div class="page">
 <h2>Costs</h2>
 <p class="daycap">Today (UTC): <strong>€{{eur4 .Today}}</strong> of the €{{eur4 .DayCap}} day cap (policy version {{.PolicyID}}).</p>
 <table>
@@ -18,4 +19,5 @@
 {{end}}{{else}}<tr><td colspan="2">No spend recorded.</td></tr>{{end}}
 </tbody>
 </table>
+</div>
 {{template "foot"}}

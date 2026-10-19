@@ -306,7 +306,7 @@ func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login stri
 	return true, nil
 }
 
-func (f *fakeChat) DeleteConversation(_ context.Context, repository, login string, n int64) (int64, error) {
+func (f *fakeChat) DeleteConversation(_ context.Context, repository, login string, n int64) (int64, []int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
@@ -316,8 +316,17 @@ func (f *fakeChat) DeleteConversation(_ context.Context, repository, login strin
 	}
 	gone := int64(before - len(f.msgs[k]))
 	if gone == 0 {
-		return 0, factoryd.ErrNotFound
+		return 0, nil, factoryd.ErrNotFound
 	}
+	var ids []int64
+	for _, s := range f.atts {
+		if s.repository == repository && s.login == login && s.a.Conversation == n {
+			ids = append(ids, s.a.ID)
+		}
+	}
+	f.atts = slices.DeleteFunc(f.atts, func(s storedAttachment) bool {
+		return s.repository == repository && s.login == login && s.a.Conversation == n
+	})
 	tk := fmt.Sprint(k, " ", n)
 	delete(f.titles, tk)
 	delete(f.seen, tk)
@@ -329,7 +338,24 @@ func (f *fakeChat) DeleteConversation(_ context.Context, repository, login strin
 	if f.current(repository, login) == n {
 		f.startNew(repository, login)
 	}
-	return gone, nil
+	return gone, ids, nil
+}
+
+func (f *fakeChat) AbandonChatMessage(_ context.Context, repository, login string, conversation, id int64) ([]int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var ids []int64
+	for _, s := range f.atts {
+		if s.repository == repository && s.login == login && s.a.Conversation == conversation && s.a.MessageID == id {
+			ids = append(ids, s.a.ID)
+		}
+	}
+	f.atts = slices.DeleteFunc(f.atts, func(s storedAttachment) bool {
+		return s.repository == repository && s.login == login && s.a.Conversation == conversation && s.a.MessageID == id
+	})
+	k := repository + " " + login
+	f.msgs[k] = slices.DeleteFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == conversation && m.ID == id })
+	return ids, nil
 }
 
 func (f *fakeChat) Conversations(_ context.Context, repository, login string) ([]factoryd.ChatConversation, error) {
@@ -2127,6 +2153,9 @@ func TestChatImagesRideTheMessage(t *testing.T) {
 	if resp.Code != 200 || resp.Header().Get("Content-Type") != "image/png" || !bytes.Equal(resp.Body.Bytes(), png1x1) {
 		t.Fatalf("serving img1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
 	}
+	if resp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving img1 disposes as %q, want attachment", resp.Header().Get("Content-Disposition"))
+	}
 	if resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck); resp.Code != 404 {
 		t.Fatalf("an unknown image = %d, want 404", resp.Code)
 	}
@@ -2144,6 +2173,85 @@ func TestChatImagesRideTheMessage(t *testing.T) {
 	if !strings.Contains(saw, "[attached images: img1 (shot.png, ") || !strings.Contains(saw, "img2 (chart.png, ") || len(saw) > 400 {
 		t.Fatalf("the replayed row = %q, want the images named, no bytes", saw)
 	}
+}
+
+// The hard delete sweeps the thread's images with its rows: the
+// attachment rows go in the store's own transaction and the objects they
+// named go with them, so a deleted thread's image leaves the object
+// store, not only the console's routes.
+func TestChatDeleteThreadSweepsImages(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got them.")}}
+	code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"look at img1 and img2"}},
+		testFile{name: "shot.png", data: png1x1}, testFile{name: "chart.png", data: png1x1})
+	if code != 200 {
+		t.Fatalf("the send with images = %d, want 200", code)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	atts := answer.Messages[0].Attachments
+	if len(atts) != 2 {
+		t.Fatalf("the attachments = %+v", atts)
+	}
+	keys := make([]string, len(atts))
+	for i, a := range atts {
+		keys[i] = fmt.Sprintf("attachments/%d/%d", answer.Conversation, a.ID)
+	}
+	rec := r.do(post(chatPath+"/delete", url.Values{"csrf": {s.csrf}, "conversation": {strconv.FormatInt(answer.Conversation, 10)}}), ck)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("the delete = %d %s, want 204", rec.Code, rec.Body.String())
+	}
+	for _, k := range keys {
+		if _, still := r.objects[k]; still {
+			t.Fatalf("the object %s survived the delete", k)
+		}
+	}
+	if left, _ := r.chat.ChatAttachments(t.Context(), "sf/code", "sebastian", answer.Conversation); len(left) != 0 {
+		t.Fatalf("the attachment rows survived the delete: %+v", left)
+	}
+}
+
+// A send whose images cannot all be stored leaves no half-message
+// behind: the rows written on the way are withdrawn, message and
+// attachments alike, and the objects with them.
+func TestChatImageFailureCleansUp(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got them.")}}
+	flaky := &flakyObjects{fakeObjects: fakeObjects{}, failPut: 2}
+	r.c.cfg.Timelines = flaky
+	code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"look at img1 and img2"}},
+		testFile{name: "shot.png", data: png1x1}, testFile{name: "chart.png", data: png1x1})
+	if code != http.StatusInternalServerError {
+		t.Fatalf("the send = %d, want 500", code)
+	}
+	if rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10); len(rows) != 0 {
+		t.Fatalf("the failed send left rows: %+v", rows)
+	}
+	if atts, _ := r.chat.ChatAttachments(t.Context(), "sf/code", "sebastian", 1); len(atts) != 0 {
+		t.Fatalf("the failed send left attachments: %+v", atts)
+	}
+	if _, still := flaky.fakeObjects["attachments/1/1"]; still {
+		t.Fatal("the failed send left the first image's object")
+	}
+}
+
+// flakyObjects stores like the rig's fake until its failPut-th Put,
+// which refuses: the object store failing mid-send.
+type flakyObjects struct {
+	fakeObjects
+	puts, failPut int
+}
+
+func (f *flakyObjects) Put(ctx context.Context, k string, b []byte) error {
+	f.puts++
+	if f.puts == f.failPut {
+		return errors.New("s3: 503")
+	}
+	return f.fakeObjects.Put(ctx, k, b)
 }
 
 // The composer's bounds are the server's: five images refuse, so does a
@@ -2218,6 +2326,14 @@ func TestChatPostDocuments(t *testing.T) {
 	resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[0].ID, 10), nil), ck)
 	if resp.Code != 200 || !strings.HasPrefix(resp.Header().Get("Content-Type"), "text/plain") || !bytes.Equal(resp.Body.Bytes(), logText) {
 		t.Fatalf("serving doc1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
+	}
+	if resp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving doc1 disposes as %q, want attachment", resp.Header().Get("Content-Disposition"))
+	}
+	pdfResp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[1].ID, 10), nil), ck)
+	if pdfResp.Code != 200 || pdfResp.Header().Get("Content-Type") != "application/pdf" || !bytes.Equal(pdfResp.Body.Bytes(), pdf) ||
+		pdfResp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving doc2 = %d %s %q", pdfResp.Code, pdfResp.Header().Get("Content-Type"), pdfResp.Header().Get("Content-Disposition"))
 	}
 	five := make([]testFile, 5)
 	for i := range five {
@@ -2375,6 +2491,37 @@ func TestReadAttachmentHeadRangesAndFind(t *testing.T) {
 	}
 	empty, eerr := trn.readAttachment(toolInput{Name: "doc1"})
 	equal(t, "the empty document", []any{empty, eerr}, []any{"doc1 (empty.md): 0 bytes, 0 lines, base_sha256 " + factoryd.ContentHash("") + ".\n\n", error(nil)})
+	// a one-line document names its one line in a range refusal
+	g.replies = [][]string{{say("Got it.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"doc1 once more, one line"}, "conversation": {conv}}, testFile{name: "one.md", data: []byte("only line\n")}); code != 200 {
+		t.Fatalf("the send with the one-line document = %d, want 200", code)
+	}
+	one, oerr := trn.readAttachment(toolInput{Name: "doc1", From: 2, To: 2})
+	equal(t, "the one-line document", []any{one, oerr}, []any{"doc1 (one.md): 10 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("only line\n") +
+		". from 2 and to 2 name no line range of its 1 lines: name from at or before to, inside lines 1 to 1.", error(nil)})
+}
+
+// A made-up id answers 404 even when the object store errors on a key
+// that is not there, as production's does: the row's absence is checked
+// before any byte is read.
+func TestChatAttachmentUnknownIdIsNotFound(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	r.c.cfg.Timelines = erringObjects{r.objects}
+	if resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck); resp.Code != 404 {
+		t.Fatalf("an unknown attachment = %d, want 404", resp.Code)
+	}
+}
+
+// erringObjects is fakeObjects with production's miss: a key that is
+// not there errors instead of reading empty.
+type erringObjects struct{ fakeObjects }
+
+func (o erringObjects) Get(_ context.Context, k string) ([]byte, error) {
+	if b, ok := o.fakeObjects[k]; ok {
+		return b, nil
+	}
+	return nil, errors.New("the object is not there")
 }
 
 // A name no member sent refuses naming the documents there are, a PDF
@@ -2944,6 +3091,41 @@ func TestChatReplayDropsClaims(t *testing.T) {
 	}
 }
 
+// A paid answer over the conversation's own attachment stays whole in an
+// earlier turn: the input never changes and re-running re-spends. A
+// document read is left out as any read, but names the document as
+// unchanged instead of a changed project.
+func TestChatReplayKeepsPricedAnswersOverAttachments(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	read := time.Now().Add(-10 * time.Minute)
+	for _, m := range []factoryd.ChatMessage{
+		{Role: "assistant", Content: "Over the run's files.", ToolCalls: []factoryd.ChatToolCall{
+			{ID: "call_1", Name: "read_attachment", Arguments: `{"name":"doc1"}`, Result: "doc1: 100 lines", ReadAt: read},
+			{ID: "call_2", Name: "summarize_attachment", Arguments: `{"name":"doc1"}`, Result: "The run shipped 1.2.3 after one fix.", ReadAt: read},
+			{ID: "call_3", Name: "analyze_image", Arguments: `{"name":"img1"}`, Result: "A screenshot of the board.", ReadAt: read},
+		}},
+	} {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.replies = [][]string{{say("fine")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what did the run say?"}})
+	equal(t, "the replay", messages(t, g.calls()[0])[1:], []map[string]any{
+		{"role": "assistant", "content": earlier("Over the run's files."), "tool_calls": []any{
+			map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "read_attachment", "arguments": `{"name":"doc1"}`}},
+			map[string]any{"id": "call_2", "type": "function", "function": map[string]any{"name": "summarize_attachment", "arguments": `{"name":"doc1"}`}},
+			map[string]any{"id": "call_3", "type": "function", "function": map[string]any{"name": "analyze_image", "arguments": `{"name":"img1"}`}},
+		}},
+		{"role": "tool", "content": "[read at " + read.UTC().Format("2006-01-02 15:04 UTC") +
+			", 10 min ago, in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]", "tool_call_id": "call_1"},
+		{"role": "tool", "content": "The run shipped 1.2.3 after one fix.", "tool_call_id": "call_2"},
+		{"role": "tool", "content": "A screenshot of the board.", "tool_call_id": "call_3"},
+		{"role": "user", "content": "what did the run say?"},
+	})
+}
+
 // An answer that begins with a stamp copied from a replayed row is shown
 // and stored without it, however the stream cuts it; one that only begins
 // with a bracket is held back no further than its second character.
@@ -3384,5 +3566,25 @@ func TestChatReadFailureQuotesTheOwner(t *testing.T) {
 	}
 	if strings.Contains(logs.String(), owner) {
 		t.Fatalf("the owner reached the log unescaped:\n%s", logs.String())
+	}
+}
+
+// The ask of a look is bounded like the ask tool's question: an over-long
+// one refuses before the vision call, so the spend a member's image
+// approved cannot be stretched by a long prompt.
+func TestChatAnalyzeImageAskIsBounded(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got it.")}}
+	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"see img1"}}, testFile{name: "shot.png", data: png1x1}); code != 200 {
+		t.Fatalf("the send with the image = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"`+strings.Repeat("a", 2001)+`"}`)}, {say("Too long.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img1?"}})
+	if len(events) != 3 || !strings.Contains(events[0], "Refused: ask: ") {
+		t.Fatalf("the over-long ask = %v", events)
+	}
+	if len(g.visions) != 0 {
+		t.Fatalf("%d vision calls, want none", len(g.visions))
 	}
 }

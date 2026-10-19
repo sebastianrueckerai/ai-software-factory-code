@@ -553,6 +553,13 @@ func (o *memObjects) Get(_ context.Context, key string) ([]byte, error) {
 	return o.puts[key], nil
 }
 
+func (o *memObjects) Delete(_ context.Context, key string) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.puts, key)
+	return nil
+}
+
 var _ factoryd.ObjectStore = (*memObjects)(nil)
 
 // noopWorkflows satisfies the workflow seam without a Temporal server.
