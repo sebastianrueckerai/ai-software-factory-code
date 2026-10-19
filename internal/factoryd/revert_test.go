@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -126,6 +127,15 @@ type fakeRevertBook struct {
 	refiled  []Task
 	projects []Project
 	marked   []string
+	sizes    map[string][3]int
+}
+
+func (b *fakeRevertBook) SetDiffSize(_ context.Context, id string, files, insertions, deletions int) error {
+	if b.sizes == nil {
+		b.sizes = map[string][3]int{}
+	}
+	b.sizes[id] = [3]int{files, insertions, deletions}
+	return nil
 }
 
 func (b *fakeRevertBook) RevertCandidates(_ context.Context, since time.Time) ([]Task, error) {
@@ -214,6 +224,71 @@ func change(file, from, to string) string {
 // within 14 days of it, at the revert's merge, and each task whose alert
 // refiled after its fix; each mark counts factory.task.reverted{project}
 // once, however often the pass runs.
+// The pass writes each candidate's diff size to its task: the files the
+// "diff --git" headers name, the hunks' inserted and deleted lines. An
+// empty diff (a pull request Forgejo cut off) writes nothing.
+func TestRevertPassWritesDiffSizes(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }
+	book := &fakeRevertBook{
+		projects: []Project{{Name: "demo", Repository: "sf/repo"}},
+		tasks: []Task{
+			{ID: "t-one", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: at(-time.Hour)},
+			{ID: "t-two", Repository: "sf/repo", PRNumber: 8, Status: "done", FinishedAt: at(-2 * time.Hour)},
+		},
+	}
+	diffs := map[int64]string{
+		7: change("a.go", "one", "two"),
+		8: change("b.go", "x", "y") + change("c.go", "p", "q") + change("b.go", "y", "z"),
+	}
+	m, _ := testMetrics(t)
+	pass := &RevertPass{Book: book, Forgejo: revertForgejo(t, []map[string]any{
+		mergedPR(7, now.Add(-30*time.Minute)), mergedPR(8, now.Add(-time.Hour)),
+	}, diffs), Metrics: m, Now: func() time.Time { return now }}
+	if err := pass.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string][3]int{
+		"t-one": {1, 1, 1},
+		// b.go appears twice: its lines count, the file once
+		"t-two": {2, 3, 3},
+	}
+	if !maps.Equal(book.sizes, want) {
+		t.Fatalf("sizes = %v, want %v", book.sizes, want)
+	}
+}
+
+// SetDiffSize lands on the task row: the counts the pass counted, NULL
+// before the pass first saw the pull request.
+func TestPGStoreDiffSizes(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateTask(ctx, Task{ID: "t-diff", RiskClass: "standard", BudgetEUR: 1, Status: "done", Objective: "o", Repository: "sf/r"}); err != nil {
+		t.Fatal(err)
+	}
+	var files, insertions, deletions any
+	if err := s.db.QueryRowContext(ctx, `SELECT files, insertions, deletions FROM tasks WHERE id = 't-diff'`).Scan(&files, &insertions, &deletions); err != nil {
+		t.Fatal(err)
+	}
+	if files != nil || insertions != nil || deletions != nil {
+		t.Fatalf("a fresh task's diff size = %v/%v/%v, want NULL", files, insertions, deletions)
+	}
+	if err := s.SetDiffSize(ctx, "t-diff", 3, 20, 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT files, insertions, deletions FROM tasks WHERE id = 't-diff'`).Scan(&files, &insertions, &deletions); err != nil {
+		t.Fatal(err)
+	}
+	if files.(int64) != 3 || insertions.(int64) != 20 || deletions.(int64) != 11 {
+		t.Fatalf("diff size = %v/%v/%v, want 3/20/11", files, insertions, deletions)
+	}
+}
+
 func TestRevertPass(t *testing.T) {
 	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
 	at := func(d time.Duration) *time.Time { v := now.Add(d); return &v }

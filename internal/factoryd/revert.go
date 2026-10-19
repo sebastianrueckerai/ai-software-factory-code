@@ -40,6 +40,9 @@ type RevertBook interface {
 	// within within of it, at the first refiling, and returns the tasks it
 	// marked.
 	MarkRefiledFixes(ctx context.Context, since time.Time, within time.Duration) ([]Task, error)
+	// SetDiffSize writes the task's diff size: the changed files and the
+	// hunks' inserted and deleted lines.
+	SetDiffSize(ctx context.Context, id string, files, insertions, deletions int) error
 	projectLookup
 }
 
@@ -142,6 +145,12 @@ func (p *RevertPass) task(ctx context.Context, t Task, prs []MergedPullRequest, 
 	if err != nil {
 		return err
 	}
+	if agent != "" {
+		files, insertions, deletions := diffStat(agent)
+		if err := p.Book.SetDiffSize(ctx, t.ID, files, insertions, deletions); err != nil {
+			return err
+		}
+	}
 	for _, pr := range prs {
 		if pr.Number == t.PRNumber || pr.Base != prBase || !pr.MergedAt.After(*t.FinishedAt) || pr.MergedAt.After(t.FinishedAt.Add(RevertWindow)) {
 			continue
@@ -206,6 +215,35 @@ func diffFiles(diff string) map[string]map[string]int {
 	return files
 }
 
+// diffStat counts a git diff's changed files, inserted lines and deleted
+// lines: the files of the "diff --git" headers (diffFiles' path rule, so
+// the same path counts once), the hunks' + and - lines.
+func diffStat(diff string) (files, insertions, deletions int) {
+	hunk := false
+	seen := map[string]bool{}
+	for line := range strings.SplitSeq(diff, "\n") {
+		switch {
+		case strings.HasPrefix(line, "diff --git "):
+			hunk = false
+			path := line
+			if i := strings.LastIndex(line, " b/"); i >= 0 && !strings.HasSuffix(line, `"`) {
+				path = line[i+3:]
+			}
+			if !seen[path] {
+				seen[path] = true
+				files++
+			}
+		case strings.HasPrefix(line, "@@"):
+			hunk = true
+		case hunk && strings.HasPrefix(line, "+"):
+			insertions++
+		case hunk && strings.HasPrefix(line, "-"):
+			deletions++
+		}
+	}
+	return files, insertions, deletions
+}
+
 // reverts is the revert rule: later reverts agent when agent's net change
 // is not empty and, for every file agent changed, later's net change of
 // the same file is its exact opposite (it adds back what agent removed and
@@ -244,6 +282,14 @@ func (s *PGStore) MarkReverted(ctx context.Context, id string, at time.Time) (bo
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
+}
+
+// SetDiffSize writes the task's diff size (roadmap 198): the pass holds
+// the diff and counts it. A task the pass has not seen keeps NULL.
+func (s *PGStore) SetDiffSize(ctx context.Context, id string, files, insertions, deletions int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET files = $2, insertions = $3, deletions = $4 WHERE id = $1`,
+		id, files, insertions, deletions)
+	return err
 }
 
 func (s *PGStore) MarkRefiledFixes(ctx context.Context, since time.Time, within time.Duration) ([]Task, error) {
