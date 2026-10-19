@@ -277,15 +277,13 @@ func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollReq
 	return out, rows.Err()
 }
 
-// StandingQuestion reports whether repository has a human card still
-// waiting whose ask carries marker: the question the marker names stands,
-// and no ladder escalates twice while it does.
-func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (bool, error) {
-	var open bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks
-		WHERE repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%')`,
-		repository, marker).Scan(&open)
-	return open, err
+// StandingQuestion is repository's human card still waiting whose ask
+// carries marker: the question the marker names stands, no ladder
+// escalates twice while it does, and its answer, when one comes, is the
+// card's to consume.
+func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
+	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%'`,
+		repository, marker)
 }
 
 // bumpDigest points the one pinned reference to image in a manifest at
@@ -329,7 +327,8 @@ type RollerStore interface {
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
 	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
-	StandingQuestion(ctx context.Context, repository, marker string) (bool, error)
+	StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -409,6 +408,9 @@ func (r *Roller) poll(ctx context.Context) error {
 	}
 	if stuck {
 		r.escalateRolls(ctx)
+	}
+	if err := r.consumeRetry(ctx); err != nil {
+		return err
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
@@ -506,8 +508,13 @@ func (r *Roller) rollStatus(ctx context.Context, sha, state, description string)
 const rollAttemptBound = 3
 
 // rollAskMarker names the roll ladder's question in the card it files,
-// so StandingQuestion recognises it while it waits.
-const rollAskMarker = "rolls failed since the last one merged"
+// so StandingQuestion recognises it while it waits. rollRetryLabel is
+// the retry choice's label: the comment a click posts (question.go), and
+// what consumeRetry answers.
+const (
+	rollAskMarker  = "rolls failed since the last one merged"
+	rollRetryLabel = "Retry the roll"
+)
 
 // escalateRolls is the roll ladder's end. A roll request settled failed
 // this poll (each settles once) and the failures since the last merged
@@ -524,7 +531,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	if len(reqs) < rollAttemptBound {
 		return
 	}
-	if standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker); err != nil || standing {
+	if _, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker); err != nil || standing {
 		if err != nil {
 			log.Printf("roller: read the standing question: %v", err)
 		}
@@ -546,7 +553,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 		Recommendation: "Retry the roll, after reading the newest failed card's reason",
 		Source:         "the roller's",
 		Choices: []QuestionChoice{
-			{Value: "retry", Label: "Retry the roll"},
+			{Value: "retry", Label: rollRetryLabel},
 			{Value: AnswerPark, Label: "Park"},
 			{Value: AnswerClose, Label: "Close"},
 		},
@@ -554,6 +561,55 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller"); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
+}
+
+// consumeRetry acts on the roll ladder's answered question: a member's
+// Retry the roll — the click posts the label as their comment
+// (question.go) — resets the ladder. The failed attempts' requests go,
+// their commits unjudged again, and the card closes as factoryd's own,
+// so the judge of this very poll files one fresh roll of main's newest
+// green images; a failure after it climbs from zero. Park and close need
+// no consumer: park leaves the card waiting, close ends it.
+func (r *Roller) consumeRetry(ctx context.Context) error {
+	t, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker)
+	if err != nil {
+		log.Printf("roller: read the standing question: %v", err)
+		return nil
+	}
+	if !standing {
+		return nil
+	}
+	events, err := r.Store.IntakeEvents(ctx, t.ID)
+	if err != nil {
+		log.Printf("roller: read the standing question's answers: %v", err)
+		return nil
+	}
+	if botCloseRecorded(events, t) {
+		return nil // the answer consumed already; the issue's close is on its way
+	}
+	if !slices.ContainsFunc(events, func(e IntakeEvent) bool {
+		return e.Kind == "issue_comment" && e.Trusted && e.Body == rollRetryLabel
+	}) {
+		return nil
+	}
+	reqs, err := r.Store.FailedRolls(ctx, r.Repo.String())
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		if err := r.Store.DeleteRollRequest(ctx, req.SHA); err != nil {
+			return err
+		}
+	}
+	msg := "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
+	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
+		return err
+	}
+	if err := recordFactoryClose(ctx, r.Store, t); err != nil {
+		return err
+	}
+	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again", len(reqs))
+	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)
 }
 
 // judge decides one run of main whose image jobs are green: a skip, a roll

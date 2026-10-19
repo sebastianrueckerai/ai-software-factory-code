@@ -145,13 +145,13 @@ func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollR
 	return out, nil
 }
 
-func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (bool, error) {
+func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.Kind == "human" && t.Status == "waiting-human" && strings.Contains(t.Objective, marker) {
-			return true, nil
+			return t, true, nil
 		}
 	}
-	return false, nil
+	return Task{}, false, nil
 }
 
 // TaskRolls are task's roll requests, oldest first: an update writes them
@@ -1891,5 +1891,66 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	}
 	if n := len(f.issues); n != 1 {
 		t.Fatalf("%d issues filed, want the one question", n)
+	}
+}
+
+// The question's Retry the roll answer acts: the failed attempts'
+// requests go — their commits unjudged again — the question's card closes
+// as factoryd's own, and the same poll's judge files one fresh roll of
+// the newest green images. A third poll consumes the answer once.
+func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(52, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, wf := newTestRoller(t, f)
+	ctx := context.Background()
+	seed := func(id, sha string, run int64, request string) {
+		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}
+		store.rolls = append(store.rolls, RollRequest{SHA: sha, Repository: codeRepo, RunID: run, State: request, TaskID: id})
+	}
+	seed("t-r1", "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f", 50, RollFailed)
+	seed("t-r2", "2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f", 51, RollFailed)
+	seed("t-r3", commitC1, 52, RollOpened) // ends this poll
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var ask Task
+	for _, t := range store.tasks {
+		if t.Kind == "human" && strings.Contains(t.Objective, rollAskMarker) {
+			ask = t
+		}
+	}
+	if ask.ID == "" || ask.Status != "waiting-human" || ask.IssueNumber != 31 {
+		t.Fatalf("the question's card %+v, want the waiting ask on issue #31", ask)
+	}
+	// the member's click: the label posted as their trusted comment
+	store.intakeEvents = append(store.intakeEvents,
+		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Retry the roll", Trusted: true})
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closed, []string{"31"}) {
+		t.Fatalf("closed %v, want the question's issue", f.closed)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened {
+		t.Fatalf("roll requests %+v, want one fresh open roll of %s", store.rolls, commitC1)
+	}
+	task := store.tasks[store.rolls[0].TaskID]
+	if task.Source != SourceRoll || task.Status != "queued" || !slices.Equal(wf.started, []string{task.ID}) {
+		t.Fatalf("the fresh roll task %+v, started %v", task, wf.started)
+	}
+	// the answer consumes once: a third poll closes, comments and files nothing again
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closed, []string{"31"}) || len(f.comments) != 1 || len(f.issues) != 2 || len(wf.started) != 1 {
+		t.Fatalf("third poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
 	}
 }
