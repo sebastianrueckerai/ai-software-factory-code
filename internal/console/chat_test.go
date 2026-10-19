@@ -1860,6 +1860,50 @@ func TestChatProposalIsStored(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", card)
 }
 
+// A refused Do it is not the end: the refusal feeds the agent another
+// model call, which reads the refused row and files again, its acceptance
+// argument carrying the tests the ready check wants. A successful Do it
+// stays turn-free.
+func TestChatApplyRefusalFeedsTurn(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	noTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","lane":"ready","size":"small"}`
+	withTests := `{"title":"Documents in the chat","body":"The agent reads what the member sends.","lane":"ready","size":"small","acceptance":["The agent reads a document the member sends","The chat shows what was read"]}`
+	refusal := "Refused: The ready check refuses the filing: card Documents in the chat: 0 acceptance tests; want 1 to 10"
+	g.replies = [][]string{{call(1, "new_card", noTests)}, {call(1, "new_card", withTests)}}
+	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap 300 as a card"}})
+	if len(tokens) != 1 {
+		t.Fatalf("%d proposals, want 1", len(tokens))
+	}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "the refused Do it", events, []string{
+		`tool {"arguments":` + noTests + `,"duration_ms":0,"name":"new_card","result":"` + refusal + `"}`,
+		`proposal {"arguments":` + withTests + `,"description":"File a card, title Documents in the chat, body The agent reads what the member sends., lane ready, size small, acceptance The agent reads a document the member sends; The chat shows what was read","id":"TOKEN","tool":"new_card"}`,
+		`done {}`})
+	if n := len(g.calls()); n != 2 {
+		t.Fatalf("%d model calls, want the refusal to feed a second", n)
+	}
+	seen, _ := json.Marshal(g.calls()[1]["messages"])
+	if !strings.Contains(string(seen), refusal) {
+		t.Fatalf("the corrective call's messages lack the refusal: %s", seen)
+	}
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	filed := "Filed sf/code#41 in lane ready."
+	equal(t, "the corrected Do it", events, []string{
+		`tool {"arguments":` + withTests + `,"duration_ms":0,"name":"new_card","result":"` + filed + `"}`,
+		`applied {"result":"` + filed + `","tool":"new_card"}`, `done {}`})
+	if n := len(g.calls()); n != 2 {
+		t.Fatalf("%d model calls after the corrected Do it, want still 2", n)
+	}
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 3)
+	if got := stored[0].ToolCalls[0].Result; got != refusal {
+		t.Fatalf("the refused Do it's row = %q, want %q", got, refusal)
+	}
+	if got := stored[2].ToolCalls[0].Result; got != filed+" It cannot be undone." {
+		t.Fatalf("the corrected Do it's row = %q, want %q", got, filed+" It cannot be undone.")
+	}
+}
+
 // An undo is a row of the store too: the inverse tool with its
 // arguments, and the undone tool's name for its lines. An accent and a
 // comment run at once, a move on its Do it; each undo runs its inverse as
@@ -2371,7 +2415,7 @@ func TestIsClaim(t *testing.T) {
 func TestChatProposalStatesInGet(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","lane":"ready"}`, "new_card", `{"title":"Cache alerts","lane":"ready"}`)}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Cache metrics","lane":"ready"}`, "new_card", `{"title":"Cache alerts","lane":"ready"}`)}, {say("It needs acceptance tests.")}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file two cards"}})
 	states := func() []factoryd.ProposalState {
 		t.Helper()

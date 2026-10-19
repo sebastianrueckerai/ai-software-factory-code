@@ -123,11 +123,12 @@ func TestAcceptPlanOpenQuestions(t *testing.T) {
 		rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {
 		t.Fatalf("the button: %d %q, comments %v", rec.Code, rec.Body, r.fg.comments)
 	}
-	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":1,"sha256":"sha-1"}`)}}
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":1,"sha256":"sha-1"}`)}, {say("I will answer them first.")}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{
-		`tool {"arguments":{"task_id":"t-plan","revision":1,"sha256":"sha-1"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`, `done {}`})
+		`tool {"arguments":{"task_id":"t-plan","revision":1,"sha256":"sha-1"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`,
+		`text {"text":"I will answer them first."}`, `done {}`})
 }
 
 // The project agent reads plan t-p #20's open questions on its card,

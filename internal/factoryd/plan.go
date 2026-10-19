@@ -80,8 +80,8 @@ const (
 	maxCardBrief      = 1500
 	maxCardTitle      = 120
 	maxCardDirs       = 10
-	maxCardAcceptance = 10
-	maxAcceptanceItem = 300
+	MaxCardAcceptance = 10
+	MaxAcceptanceItem = 300
 	maxQuestions      = 5
 	maxQuestionText   = 300
 )
@@ -412,15 +412,15 @@ func sizeFindings(size string, bound int) []string {
 // writes them and the body carries them back.
 func acceptanceFindings(acceptance []string) []string {
 	var out []string
-	if n := len(acceptance); n < 1 || n > maxCardAcceptance {
-		out = append(out, fmt.Sprintf("%d acceptance tests; want 1 to %d", n, maxCardAcceptance))
+	if n := len(acceptance); n < 1 || n > MaxCardAcceptance {
+		out = append(out, fmt.Sprintf("%d acceptance tests; want 1 to %d", n, MaxCardAcceptance))
 	}
 	for i, a := range acceptance {
 		switch n := utf8.RuneCountInString(a); {
 		case n == 0:
 			out = append(out, fmt.Sprintf("acceptance test %d is empty", i+1))
-		case n > maxAcceptanceItem:
-			out = append(out, fmt.Sprintf("acceptance test %d is over %d characters", i+1, maxAcceptanceItem))
+		case n > MaxAcceptanceItem:
+			out = append(out, fmt.Sprintf("acceptance test %d is over %d characters", i+1, MaxAcceptanceItem))
 		}
 	}
 	return out
@@ -454,7 +454,7 @@ func citations(p Plan) map[string][]string {
 
 // criteriaFindings are a plan's criteria's findings (the spec-intake
 // concept, pieces 1 and 3, roadmap 285): a spec plan wants the spec's
-// criteria, 1 to maxCardAcceptance (the integration card carries one item
+// criteria, 1 to MaxCardAcceptance (the integration card carries one item
 // per criterion inside its own cap); each criterion is well formed for
 // its kind, every field the kind uses present and within the item cap,
 // every other field empty; and, when the plan carries criteria, every
@@ -477,10 +477,10 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // an integration card does not ask for criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
-	if n := len(p.Criteria); n > maxCardAcceptance || (shape.Integration && n < 1) {
-		want := "at most " + strconv.Itoa(maxCardAcceptance)
+	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
+		want := "at most " + strconv.Itoa(MaxCardAcceptance)
 		if shape.Integration {
-			want = "1 to " + strconv.Itoa(maxCardAcceptance)
+			want = "1 to " + strconv.Itoa(MaxCardAcceptance)
 		}
 		out = append(out, fmt.Sprintf("plan: %d criteria; want %s", n, want))
 	}
@@ -532,8 +532,8 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			{"test", c.Test}, {"inputs", c.Inputs}, {"expected", c.Expected},
 			{"claim", c.Claim}, {"prompt", c.Prompt}, {"evidence", c.Evidence},
 		} {
-			if n := utf8.RuneCountInString(f.value); n > maxAcceptanceItem {
-				add("%s over %d characters", f.name, maxAcceptanceItem)
+			if n := utf8.RuneCountInString(f.value); n > MaxAcceptanceItem {
+				add("%s over %d characters", f.name, MaxAcceptanceItem)
 			}
 		}
 	}

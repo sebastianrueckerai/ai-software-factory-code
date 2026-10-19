@@ -360,7 +360,7 @@ func TestRoutineWriteKeepsTheKeysItLeavesOut(t *testing.T) {
 	write := func(cron string) []string {
 		t.Helper()
 		args := `{"name":"dependency-update","title":"Dependency update","schedule":[{"cron":"` + cron + `"}],"files":"agent"}`
-		g.replies = [][]string{{call(1, "routine_write", args)}}
+		g.replies = [][]string{{call(1, "routine_write", args)}, {say("It already holds this.")}}
 		_, _, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"move it"}})
 		_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 		return done
@@ -369,7 +369,7 @@ func TestRoutineWriteKeepsTheKeysItLeavesOut(t *testing.T) {
 	// spaces is the same
 	equal(t, "the same routine", write(" 0  6 * * 4"), []string{`tool {"arguments":{"name":"dependency-update","title":"Dependency update",` +
 		`"schedule":[{"cron":" 0  6 * * 4"}],"files":"agent"},"duration_ms":0,"name":"routine_write","result":"Refused: Nothing changes: projects/demo-app.yaml already holds this."}`,
-		`done {}`})
+		`text {"text":"It already holds this."}`, `done {}`})
 	if len(infra.contents) != 0 || len(infra.pulls) != 0 || r.events.count() != before {
 		t.Fatalf("nothing to change committed %+v, opened %+v or recorded %d rows", infra.contents, infra.pulls, r.events.count()-before)
 	}

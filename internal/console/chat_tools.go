@@ -25,45 +25,46 @@ import (
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID     string `json:"task_id,omitempty"`
-	Title      string `json:"title,omitempty"`
-	Body       string `json:"body,omitempty"`
-	Lane       string `json:"lane,omitempty"`
-	Text       string `json:"text,omitempty"`
-	Question   int    `json:"question,omitempty"`
-	Note       string `json:"note,omitempty"`
-	Minutes    int    `json:"minutes,omitempty"`
-	Action     string `json:"action,omitempty"`
-	Revision   int    `json:"revision,omitempty"`
-	SHA256     string `json:"sha256,omitempty"`
-	Summary    string `json:"summary,omitempty"`
-	Accent     string `json:"accent,omitempty"`
-	Login      string `json:"login,omitempty"`
-	N          int    `json:"n,omitempty"`
-	Thread     int64  `json:"thread,omitempty"`
-	Ref        string `json:"ref,omitempty"`
-	Path       string `json:"path,omitempty"`
-	SHA        string `json:"sha,omitempty"`
-	WithDiff   bool   `json:"with_diff,omitempty"`
-	Remote     string `json:"remote,omitempty"`
-	From       int    `json:"from,omitempty"`
-	To         int    `json:"to,omitempty"`
-	Query      string `json:"query,omitempty"`
-	Size       string `json:"size,omitempty"`
-	Rung       string `json:"rung,omitempty"`
-	RungReason string `json:"rung_reason,omitempty"`
-	By         string `json:"by,omitempty"`
-	FromDate   string `json:"from_date,omitempty"`
-	ToDate     string `json:"to_date,omitempty"`
-	State      string `json:"state,omitempty"`
-	ID         int64  `json:"id,omitempty"`
-	Verdict    string `json:"verdict,omitempty"`
-	DependsOn  string `json:"depends_on,omitempty"`
-	Remove     bool   `json:"remove,omitempty"`
-	Mode       string `json:"mode,omitempty"`
-	Autonomy   string `json:"autonomy,omitempty"`
-	Content    string `json:"content,omitempty"`
-	BacklogCap int    `json:"backlog_cap,omitempty"`
+	TaskID     string   `json:"task_id,omitempty"`
+	Title      string   `json:"title,omitempty"`
+	Body       string   `json:"body,omitempty"`
+	Lane       string   `json:"lane,omitempty"`
+	Text       string   `json:"text,omitempty"`
+	Question   int      `json:"question,omitempty"`
+	Note       string   `json:"note,omitempty"`
+	Minutes    int      `json:"minutes,omitempty"`
+	Action     string   `json:"action,omitempty"`
+	Revision   int      `json:"revision,omitempty"`
+	SHA256     string   `json:"sha256,omitempty"`
+	Summary    string   `json:"summary,omitempty"`
+	Accent     string   `json:"accent,omitempty"`
+	Login      string   `json:"login,omitempty"`
+	N          int      `json:"n,omitempty"`
+	Thread     int64    `json:"thread,omitempty"`
+	Ref        string   `json:"ref,omitempty"`
+	Path       string   `json:"path,omitempty"`
+	SHA        string   `json:"sha,omitempty"`
+	WithDiff   bool     `json:"with_diff,omitempty"`
+	Remote     string   `json:"remote,omitempty"`
+	From       int      `json:"from,omitempty"`
+	To         int      `json:"to,omitempty"`
+	Query      string   `json:"query,omitempty"`
+	Size       string   `json:"size,omitempty"`
+	Rung       string   `json:"rung,omitempty"`
+	RungReason string   `json:"rung_reason,omitempty"`
+	Acceptance []string `json:"acceptance,omitempty"`
+	By         string   `json:"by,omitempty"`
+	FromDate   string   `json:"from_date,omitempty"`
+	ToDate     string   `json:"to_date,omitempty"`
+	State      string   `json:"state,omitempty"`
+	ID         int64    `json:"id,omitempty"`
+	Verdict    string   `json:"verdict,omitempty"`
+	DependsOn  string   `json:"depends_on,omitempty"`
+	Remove     bool     `json:"remove,omitempty"`
+	Mode       string   `json:"mode,omitempty"`
+	Autonomy   string   `json:"autonomy,omitempty"`
+	Content    string   `json:"content,omitempty"`
+	BacklogCap int      `json:"backlog_cap,omitempty"`
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it, Regex makes Find a pattern,
@@ -334,6 +335,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if len(in.Acceptance) > 0 {
+		items := make([]string, len(in.Acceptance))
+		for i, a := range in.Acceptance {
+			items[i] = textutil.Truncate(a, 120)
+		}
+		parts = append(parts, "acceptance "+strings.Join(items, "; "))
 	}
 	if tool.name == "routine_skip" && in.SkipUndo {
 		parts = append(parts, "undo the pending skip")
@@ -1127,6 +1135,9 @@ var tools = []chatTool{
 		}},
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
+			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
+				"items":       map[string]any{"type": "string", "maxLength": factoryd.MaxAcceptanceItem},
+				"description": "the acceptance tests, one line each"},
 			"lane":        fallback(policy.LaneBacklog, enum("where the card starts", "backlog", "plan", "ready", "human")),
 			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),
 			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
@@ -1134,10 +1145,17 @@ var tools = []chatTool{
 		required: []string{"title"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if flags := filingFlags(in.Title, in.Body); len(flags) > 0 {
+			body := in.Body
+			if len(in.Acceptance) > 0 {
+				body += "\n\nAcceptance:"
+				for _, a := range in.Acceptance {
+					body += "\n- " + a
+				}
+			}
+			if flags := filingFlags(in.Title, body); len(flags) > 0 {
 				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, in.Body, in.Lane, "", in.Size, in.Rung, in.RungReason)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason)
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
@@ -1533,7 +1551,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
-  new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
+  new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. A plan or ready card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.

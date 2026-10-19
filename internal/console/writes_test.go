@@ -42,10 +42,13 @@ func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 // proposeAndDo has the agent call tool with args, which proposes, and the
 // member press Do it: it answers the proposal's stream, the Do it's and
 // the Do it's undo tokens.
-func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string) (proposed, done, undo []string) {
+func proposeAndDo(t *testing.T, r *rig, g *chatGateway, tool, args string, corrective ...string) (proposed, done, undo []string) {
 	t.Helper()
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, tool, args)}}
+	for _, c := range corrective {
+		g.replies = append(g.replies, []string{say(c)})
+	}
 	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"do it"}})
 	if len(tokens) != 1 {
 		t.Fatalf("%s proposed %v", tool, proposed)

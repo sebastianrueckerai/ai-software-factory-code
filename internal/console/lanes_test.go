@@ -879,20 +879,22 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	}
 
 	const stale = `{"task_id":"t-plan","revision":3,"sha256":"3c0ffee11"}`
-	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", stale)
+	proposed, done, _ = proposeAndDo(t, r, g, "accept_plan", stale, "The plan moved on.")
 	equal(t, "a stale revision", [][]string{proposed, done}, [][]string{
 		{`proposal {"arguments":` + stale + `,"description":"Accept a plan, #22 t-plan \"Uptime checker.\", revision 3 sha 3c0ffee…","id":"TOKEN","tool":"accept_plan"}`, `done {}`},
-		{`tool {"arguments":` + stale + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 4; reload"}`, `done {}`}})
+		{`tool {"arguments":` + stale + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 4; reload"}`,
+			`text {"text":"The plan moved on."}`, `done {}`}})
 
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan"}`)}}
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan"}`)}, {say("The plan moved on.")}}
 	_, proposed, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
 	r.tasks.mu.Lock()
 	r.tasks.plans["t-plan"] = append(r.tasks.plans["t-plan"], planRevision("t-plan", 5, "5d00d00"))
 	r.tasks.mu.Unlock()
 	_, done, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "a revision after the proposal", [][]string{proposed, done}, [][]string{{proposal, `done {}`},
-		{`tool {"arguments":` + pinned + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 5; reload"}`, `done {}`}})
+		{`tool {"arguments":` + pinned + `,"duration_ms":0,"name":"accept_plan","result":"Refused: the plan changed to revision 5; reload"}`,
+			`text {"text":"The plan moved on."}`, `done {}`}})
 
 	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	r.fg.calls = nil
@@ -919,12 +921,12 @@ func TestAcceptPlanNoDeployOwner(t *testing.T) {
 	if rec.Code != http.StatusConflict || rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {
 		t.Fatalf("the button: %d %q, comments %v", rec.Code, rec.Body, r.fg.comments)
 	}
-	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":2,"sha256":"sha-2"}`)}}
+	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":2,"sha256":"sha-2"}`)}, {say("The planner revises the plan.")}}
 	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
 	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{
 		`tool {"arguments":{"task_id":"t-plan","revision":2,"sha256":"sha-2"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`,
-		`done {}`})
-	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
+		`text {"text":"The planner revises the plan."}`, `done {}`})
+	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 2)
 	equal(t, "the Do it's result", stored[0].ToolCalls[0].Result, "Refused: "+refused)
 }

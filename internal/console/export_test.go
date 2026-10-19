@@ -198,11 +198,11 @@ func TestChatGithubExport(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "auto", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
 
-	g.replies = [][]string{{call(1, "github_export", args)}}
+	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it again.")}}
 	_, _, tokens = chatPost(t, r, ck, s, demo, url.Values{"message": {"export it again"}})
 	delete(r.mirrors.rows, "demo-app export")
 	_, gone, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
-	equal(t, "Do it once the token is gone", gone, []string{tool(none), `done {}`})
+	equal(t, "Do it once the token is gone", gone, []string{tool(none), `text {"text":"Set it again."}`, `done {}`})
 
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
 	ak, as := r.as(t, "anna")
