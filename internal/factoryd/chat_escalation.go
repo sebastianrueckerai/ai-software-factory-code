@@ -18,6 +18,7 @@ const SourceChat = "chat"
 // carries to the project's members. by is the member whose chat asked.
 func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string) (Task, error) {
 	ask := strings.Join(strings.Fields(q.Ask), " ")
 	title := "needs you: " + textutil.Truncate(ask, 80)
@@ -39,6 +40,12 @@ func EscalateToHuman(ctx context.Context, store interface {
 	t, _, err := FileTask(ctx, store, forgejo, repo, title, b.String(), []string{"human"}, t)
 	if err != nil {
 		return Task{}, err
+	}
+	// the ask's durable anchor, the same row the runner's escalations
+	// write: without it the card waits with its question on the chat alone
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd",
+		Body: q.Ask, Question: &q}); err != nil {
+		return Task{}, fmt.Errorf("task %s: record the chat escalation: %w", t.ID, err)
 	}
 	asked := map[string]any{
 		"question": textutil.Truncate(ask, 300),

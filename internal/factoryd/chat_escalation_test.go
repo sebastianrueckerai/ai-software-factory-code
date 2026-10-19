@@ -63,4 +63,25 @@ func TestEscalateToHuman(t *testing.T) {
 		m.Content != "#40 needs you: Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?" || !slices.Equal(m.Choices, []string{"Write the criteria", "Park"}) {
 		t.Fatalf("its poke = %+v", m)
 	}
+	// the ask's durable anchor, the same row the runner's escalations
+	// write, so the board and drawer read one truth
+	events, err := store.IntakeEvents(ctx, got.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	question := HumanQuestion{
+		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
+		Why:            "the plan needs its acceptance criteria before the build can start",
+		Info:           "item 12's section stops at the goal sentence; the options below both satisfy it",
+		Recommendation: "Write the criteria, read off the roadmap's section",
+		Choices: []QuestionChoice{
+			{Value: "Write the criteria", Label: "Write the criteria"},
+			{Value: "Park", Label: "Park"},
+		},
+	}
+	if len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Author != "factoryd" ||
+		events[0].Body != question.Ask || events[0].CommentID != 0 || events[0].Question == nil ||
+		!reflect.DeepEqual(*events[0].Question, question) {
+		t.Fatalf("intake events = %+v, want one escalation row carrying the question", events)
+	}
 }
