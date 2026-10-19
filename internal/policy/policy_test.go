@@ -400,6 +400,7 @@ func TestFit(t *testing.T) {
 		want, maxOutput int
 		wantOut         int
 		wantEUR         float64
+		img             int // ImageTokens beside Bytes
 		refused         string
 	}{
 		{name: "headroom 0.01 buys 2250 output tokens", task: 0.01, day: 5, wantOut: 2250, wantEUR: 0.01},
@@ -413,11 +414,13 @@ func TestFit(t *testing.T) {
 		{name: "a small call that fits whole", task: 0.004, day: 5, want: 16, wantOut: 16, wantEUR: 0.001064},
 		{name: "a small call that does not fit", task: 0.00105, day: 5, want: 16, refused: "refused_budget"},
 		{name: "the input alone exceeds the headroom", task: 0.0005, day: 5, refused: "refused_budget"},
+		{name: "an image's tokens price with the body", task: 0.01, day: 5, img: 2000, wantOut: 1750, wantEUR: 0.01},
+		{name: "an image alone past the headroom", task: 0.002, day: 5, img: 3000, refused: "refused_budget"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pr := p
 			pr.MaxOutput = cmp.Or(tc.maxOutput, p.MaxOutput)
-			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{Bytes: 1000, Price: pr, WantOut: tc.want})
+			h, err := Fit(Free{Task: tc.task, Day: tc.day, Month: cmp.Or(tc.month, 5), Project: inf}, HoldRequest{Bytes: 1000, ImageTokens: tc.img, Price: pr, WantOut: tc.want})
 			if tc.refused != "" {
 				var r *Refusal
 				if !errors.As(err, &r) || r.Decision != tc.refused {

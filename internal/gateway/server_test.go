@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -52,7 +54,7 @@ var testPrice = policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}
 
 // testLimits are testPolicy's prices.max_output_tokens.
 func testLimits() map[string]int {
-	return map[string]int{"coding-cheap": 32768, "coding-frontier": 32768, "review-frontier": 32768, "supervisor": 32768, "operator": 32768, "pulse": 32768}
+	return map[string]int{"coding-cheap": 32768, "coding-frontier": 32768, "review-frontier": 32768, "supervisor": 32768, "operator": 32768, "pulse": 32768, "vision": 32768}
 }
 
 type fakePrices map[string]policy.Price
@@ -1949,8 +1951,8 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 			if !reflect.DeepEqual(store.ledger, tc.ledger) {
 				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.ledger)
 			}
-			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "operator,pulse") {
-				t.Fatalf("mints = %+v, want one key on the chat task's two aliases", calls)
+			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "operator,pulse,vision") {
+				t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
 			}
 		})
 	}
@@ -2538,5 +2540,150 @@ func TestChatPurposefulCallCarriesTools(t *testing.T) {
 	audits := store.auditRows()
 	if len(audits) != 1 || audits[0].Kind != policy.PurposeCheckin {
 		t.Fatalf("audits = %+v, want one row of kind checkin", audits)
+	}
+}
+
+// The image builders the vision tests sniff dimensions from: a PNG's
+// IHDR, a JPEG's SOF, a WebP's VP8, VP8L and VP8X, a GIF's logical
+// screen — the header each format carries before its pixel data.
+func pngHeader(w, h int) []byte {
+	b := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR")
+	b = binary.BigEndian.AppendUint32(b, uint32(w))
+	b = binary.BigEndian.AppendUint32(b, uint32(h))
+	return append(b, 0x08, 0x06, 0, 0, 0)
+}
+
+func jpegHeader(w, h int) []byte {
+	b := []byte{0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08}
+	b = binary.BigEndian.AppendUint16(b, uint16(h))
+	b = binary.BigEndian.AppendUint16(b, uint16(w))
+	return append(b, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1, 0xff, 0xd9)
+}
+
+func webpVP8(w, h int) []byte {
+	b := []byte("RIFF\x24\x00\x00\x00WEBPVP8 \x18\x00\x00\x00\x30\x01\x00\x9d\x01\x2a")
+	b = binary.LittleEndian.AppendUint16(b, uint16(w)&0x3fff)
+	return binary.LittleEndian.AppendUint16(b, uint16(h)&0x3fff)
+}
+
+func webpVP8L(w, h int) []byte {
+	b := []byte("RIFF\x15\x00\x00\x00WEBPVP8L\x0f\x00\x00\x00\x2f")
+	return binary.LittleEndian.AppendUint32(b, uint32(w-1)|uint32(h-1)<<14)
+}
+
+func webpVP8X(w, h int) []byte {
+	b := []byte("RIFF\x1e\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00")
+	b = append(b, 0, 0, 0, 0)
+	b = append(b, byte(w-1), byte(w-1>>8), byte(w-1>>16), byte(h-1), byte(h-1>>8), byte(h-1>>16))
+	return b
+}
+
+func gifHeader(w, h int) []byte {
+	b := []byte("GIF89a")
+	b = binary.LittleEndian.AppendUint16(b, uint16(w))
+	return binary.LittleEndian.AppendUint16(b, uint16(h))
+}
+
+func imageDataURL(t *testing.T, data []byte) string {
+	t.Helper()
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(data)
+}
+
+// checkMessages admits one image_url part for the vision purpose only,
+// and only as a data URL of PNG, JPEG, WebP or GIF whose header it can
+// size: the hold bounds the tokens the image bills, so anything it
+// cannot size is refused, never guessed at.
+func TestCheckMessagesAdmitsOneImageForVision(t *testing.T) {
+	png := imageDataURL(t, pngHeader(1, 1))
+	part := func(url string) string {
+		return `[{"role":"user","content":[{"type":"text","text":"see"},{"type":"image_url","image_url":{"url":"` + url + `"}}]}]`
+	}
+	for name, tc := range map[string]struct {
+		purpose  string
+		body     string
+		tokens   int
+		stripped int
+		refused  string
+	}{
+		"vision carries one image":          {purpose: policy.PurposeVision, body: part(png), tokens: 256, stripped: len(png) - len("data:image/png;base64,")},
+		"another purpose refuses the image": {purpose: policy.PurposeOperator, body: part(png), refused: "only text parts are accepted"},
+		"a second image refuses":            {purpose: policy.PurposeVision, body: `[{"role":"user","content":[{"type":"image_url","image_url":{"url":"` + png + `"}},{"type":"image_url","image_url":{"url":"` + png + `"}}]}]`, refused: "one image rides a call"},
+		"a fetched URL refuses":             {purpose: policy.PurposeVision, body: part("https://pics.example/i.png"), refused: "data URL of PNG, JPEG, WebP or GIF"},
+		"an unaccepted type refuses":        {purpose: policy.PurposeVision, body: part("data:image/svg+xml;base64,PHN2Zy8="), refused: "data URL of PNG, JPEG, WebP or GIF"},
+		"undecodable base64 refuses":        {purpose: policy.PurposeVision, body: part("data:image/png;base64,!!!"), refused: "data URL of PNG, JPEG, WebP or GIF"},
+		"an unsizable header refuses":       {purpose: policy.PurposeVision, body: part(imageDataURL(t, []byte("not a png at all"))), refused: "cannot size the image"},
+		"text only stays as it was":         {purpose: policy.PurposeVision, body: `[{"role":"user","content":"hi"}]`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			img, err := checkMessages(json.RawMessage(tc.body), tc.purpose)
+			if tc.refused != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.refused) {
+					t.Fatalf("checkMessages error = %v, want it to contain %q", err, tc.refused)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("checkMessages = %v", err)
+			}
+			if img.tokens != tc.tokens || img.stripped != tc.stripped {
+				t.Fatalf("image = %+v, want %d tokens and %d stripped", img, tc.tokens, tc.stripped)
+			}
+		})
+	}
+}
+
+// The worst-case tokens of an image come from its sniffed dimensions:
+// 627 pixels per token (a 28x28 patch with a quarter margin), floored at
+// a small image's bill, capped at a 16k-patch image's.
+func TestImageTokensBySniffedDimensions(t *testing.T) {
+	for name, tc := range map[string]struct {
+		data   []byte
+		tokens int
+	}{
+		"a 1x1 PNG floors at the small bill": {pngHeader(1, 1), 256},
+		"a 1024x768 PNG":                     {pngHeader(1024, 768), 1255},
+		"a 1280x768 JPEG":                    {jpegHeader(1280, 768), 1568},
+		"a 100x100 lossy WebP floors":        {webpVP8(100, 100), 256},
+		"a 2000x1500 lossless WebP":          {webpVP8L(2000, 1500), 4785},
+		"a huge canvas WebP caps":            {webpVP8X(16385, 16385), 20480},
+		"a 1x1 GIF floors":                   {gifHeader(1, 1), 256},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, err := imageTokens(tc.data)
+			if err != nil || got != tc.tokens {
+				t.Fatalf("imageTokens = (%d, %v), want %d", got, err, tc.tokens)
+			}
+		})
+	}
+}
+
+// A factoryd vision call on the chat task: the gateway forwards the data
+// URL whole to LiteLLM, and the hold prices the sniffed image tokens with
+// the payload's characters left out of Bytes — an image-sized body would
+// otherwise price as millions of text tokens and refuse.
+func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
+	data := pngHeader(12000, 12000)
+	data = append(data, make([]byte, 3<<20)...) // pixel bytes the hold never counts
+	body := fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"text","text":"what is in the image"},{"type":"image_url","image_url":{"url":%q}}]}],"model":"vision"}`, imageDataURL(t, data))
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}})
+	store := newMemStore(Task{Classes: []string{"chat"}, ModelAlias: "operator", ID: "42", BudgetEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"operator": testPrice, "pulse": testPrice, "vision": testPrice}})
+	h := s.Routes("test")
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusOK {
+		t.Fatalf("the vision call = %d: %s", rr.Code, rr.Body)
+	}
+	if got := stub.bodies[0]; !strings.Contains(got, "data:image/png;base64,") {
+		t.Fatalf("LiteLLM received %q, want the data URL forwarded whole", got)
+	}
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "operator,pulse,vision" {
+		t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeOperator, body); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "only text parts") {
+		t.Fatalf("the operator purpose with an image = %d: %s, want 400 refused_body", rr.Code, rr.Body)
 	}
 }

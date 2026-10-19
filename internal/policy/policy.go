@@ -85,6 +85,9 @@ type ChatConfig struct {
 	// Model is the LiteLLM alias the project agent calls (purpose
 	// operator).
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+	// VisionModel is the alias a chat turn's image look runs on (purpose
+	// vision); the member who pasted the image approved its spend.
+	VisionModel string `yaml:"vision_model,omitempty" json:"vision_model,omitempty"`
 	// MonthlyEUR is the budget of the project's chat task each UTC month;
 	// absent or 0: the policy's.
 	MonthlyEUR float64 `yaml:"monthly_eur,omitempty" json:"monthly_eur,omitempty"`
@@ -130,8 +133,11 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{"operator"}
 
+// ChatVisionModels are the vision aliases a chat block may name.
+var ChatVisionModels = []string{"vision"}
+
 // DefaultChat is the chat block of a policy without one.
-var DefaultChat = ChatConfig{Model: "operator", MonthlyEUR: 5,
+var DefaultChat = ChatConfig{Model: "operator", VisionModel: "vision", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
@@ -217,6 +223,7 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 			continue
 		}
 		c.Model = cmp.Or(b.Model, c.Model)
+		c.VisionModel = cmp.Or(b.VisionModel, c.VisionModel)
 		c.MonthlyEUR = cmp.Or(b.MonthlyEUR, c.MonthlyEUR)
 		c.DocRepo = cmp.Or(b.DocRepo, c.DocRepo)
 		c.ParallelTurns = cmp.Or(b.ParallelTurns, c.ParallelTurns)
@@ -235,6 +242,9 @@ func (c *ChatConfig) validate() error {
 	}
 	if c.Model != "" && !slices.Contains(ChatModels, c.Model) {
 		return fmt.Errorf("chat.model %q: want one of %v", c.Model, ChatModels)
+	}
+	if c.VisionModel != "" && !slices.Contains(ChatVisionModels, c.VisionModel) {
+		return fmt.Errorf("chat.vision_model %q: want one of %v", c.VisionModel, ChatVisionModels)
 	}
 	if c.MonthlyEUR < 0 {
 		return errors.New("chat.monthly_eur must not be negative")
@@ -833,10 +843,13 @@ const (
 	// PurposeCheckin is the check-in agent's conversation at a gate
 	// return (the escalation ladder's plan D).
 	PurposeCheckin = "checkin"
+	// PurposeVision is a chat turn's look at an image the member pasted:
+	// the only purpose an image part may ride.
+	PurposeVision = "vision"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision}
 
 // PulseModel is the LiteLLM alias of a chat thread's compaction (purpose
 // compact), its name a leftover of the pulse band it once served.
@@ -1177,12 +1190,14 @@ const ClassChat = "chat"
 // project agent's (operator) is the chat block's and the compaction's is
 // PulseModel, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator || purpose == PurposeCompact {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeVision {
 		switch {
 		case !slices.Contains(classes, ClassChat):
 			return ""
 		case purpose == PurposeCompact:
 			return PulseModel
+		case purpose == PurposeVision:
+			return d.ChatOf(ProjectConfig{}).VisionModel
 		}
 		return d.ChatOf(ProjectConfig{}).Model
 	}

@@ -5,6 +5,8 @@ import (
 	"cmp"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -246,7 +248,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_body", "request body too large or unreadable", "", http.StatusRequestEntityTooLarge, "invalid_request_error")
 		return
 	}
-	chatReq, err := parseChat(body)
+	chatReq, err := parseChat(body, purpose)
 	if err != nil {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_body", err.Error(), chatReq.Model, http.StatusBadRequest, "invalid_request_error")
 		return
@@ -315,7 +317,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
 		TaskID: task.ID, Kind: policy.KindModel, Ref: ref, Session: id.Session,
-		Bytes: len(body) + bodySlack, Price: price, WantOut: chatReq.WantOut,
+		Bytes: len(body) + bodySlack - chatReq.image.stripped, ImageTokens: chatReq.image.tokens, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
 		Project:  project, ProjectEUR: projectEUR,
@@ -330,7 +332,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
-		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now()}
+		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
@@ -404,14 +406,25 @@ type chatRequest struct {
 	// WantOut is the caller's output limit, the smaller of max_tokens and
 	// max_completion_tokens; 0 = none.
 	WantOut int
-	fields  map[string]json.RawMessage
+	// image is the one image a vision call carries, priced by its sniffed
+	// tokens with its payload out of Bytes.
+	image  imagePart
+	fields map[string]json.RawMessage
+}
+
+// imagePart is the one image a vision-purpose call may carry: the
+// characters its data URL's payload adds to the body, which Bytes drops,
+// and the worst-case tokens its sniffed dimensions bill.
+type imagePart struct {
+	stripped int
+	tokens   int
 }
 
 // parseChat reads model and stream by exact key, as LiteLLM does (Go's
 // struct decoding would also match "MODEL" or "Stream"). A repeated key keeps
 // its last value here, and the gateway forwards the re-encoded fields, so
 // the body LiteLLM parses holds each key once, with the value checked here.
-func parseChat(body []byte) (chatRequest, error) {
+func parseChat(body []byte, purpose string) (chatRequest, error) {
 	req := chatRequest{}
 	if err := json.Unmarshal(body, &req.fields); err != nil || req.fields == nil {
 		return req, errors.New("request body is not a JSON object")
@@ -439,9 +452,11 @@ func parseChat(body []byte) (chatRequest, error) {
 	if err := checkTools(req.fields); err != nil {
 		return req, err
 	}
-	if err := checkMessages(req.fields["messages"]); err != nil {
+	image, err := checkMessages(req.fields["messages"], purpose)
+	if err != nil {
 		return req, err
 	}
+	req.image = image
 	if raw, ok := req.fields["n"]; ok && string(raw) != "null" {
 		var n int
 		if err := json.Unmarshal(raw, &n); err != nil || n != 1 {
@@ -498,14 +513,17 @@ func checkTools(fields map[string]json.RawMessage) error {
 	return nil
 }
 
-// checkMessages admits text content only: a string, null, or text parts.
-// An image, audio or file part is billed far above its bytes, so the hold
-// could not bound it, and LiteLLM would fetch an image URL to size it.
-func checkMessages(raw json.RawMessage) error {
+// checkMessages admits text content, and for the vision purpose one
+// image_url part besides: a data URL of PNG, JPEG, WebP or GIF, so no URL
+// is fetched and no other part type is billed unbounded. Any other part
+// is refused — an image is billed far above its bytes, and only a sized
+// image's worst case fits the hold.
+func checkMessages(raw json.RawMessage, purpose string) (imagePart, error) {
 	var msgs []map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &msgs); err != nil {
-		return errors.New("messages is not an array of objects")
+		return imagePart{}, errors.New("messages is not an array of objects")
 	}
+	var image imagePart
 	for i, m := range msgs {
 		c, ok := m["content"]
 		if !ok || string(c) == "null" {
@@ -517,15 +535,124 @@ func checkMessages(raw json.RawMessage) error {
 		}
 		var parts []map[string]json.RawMessage
 		if err := json.Unmarshal(c, &parts); err != nil {
-			return fmt.Errorf("messages[%d].content is neither text nor an array of parts", i)
+			return imagePart{}, fmt.Errorf("messages[%d].content is neither text nor an array of parts", i)
 		}
 		for j, p := range parts {
-			if string(p["type"]) != `"text"` {
-				return fmt.Errorf("messages[%d].content[%d] has type %s; only text parts are accepted", i, j, p["type"])
+			if string(p["type"]) == `"text"` {
+				continue
+			}
+			if string(p["type"]) != `"image_url"` || purpose != policy.PurposeVision {
+				return imagePart{}, fmt.Errorf("messages[%d].content[%d] has type %s; only text parts are accepted", i, j, p["type"])
+			}
+			if image.tokens != 0 {
+				return imagePart{}, fmt.Errorf("messages[%d].content[%d]: one image rides a call", i, j)
+			}
+			var iu struct {
+				URL string `json:"url"`
+			}
+			if err := json.Unmarshal(p["image_url"], &iu); err != nil || iu.URL == "" {
+				return imagePart{}, fmt.Errorf("messages[%d].content[%d]: an image part needs an image_url.url string", i, j)
+			}
+			payload, prefix, ok := dataImage(iu.URL)
+			if !ok {
+				return imagePart{}, fmt.Errorf("messages[%d].content[%d]: an image must be a data URL of PNG, JPEG, WebP or GIF", i, j)
+			}
+			tokens, err := imageTokens(payload)
+			if err != nil {
+				return imagePart{}, fmt.Errorf("messages[%d].content[%d]: %v", i, j, err)
+			}
+			image = imagePart{stripped: len(iu.URL) - prefix, tokens: tokens}
+		}
+	}
+	return image, nil
+}
+
+// The worst-case tokens of an image: 627 pixels per token, a 28x28-pixel
+// patch with a quarter margin, floored at a small image's bill and capped
+// at a 16k-patch image's — no provider promise is trusted, so the cap is
+// the largest patch count a vision alias bills.
+const (
+	visionPatchPx   = 627
+	visionMinTokens = 256
+	visionMaxTokens = 20480
+)
+
+// imageTokens answers the worst-case tokens the decoded image bills from
+// its sniffed dimensions, or refuses when the header names none.
+func imageTokens(data []byte) (int, error) {
+	w, h, ok := imageDims(data)
+	if !ok || w <= 0 || h <= 0 {
+		return 0, errors.New("cannot size the image from its header")
+	}
+	t := (w*h + visionPatchPx - 1) / visionPatchPx
+	return min(max(t, visionMinTokens), visionMaxTokens), nil
+}
+
+// dataImage decodes u as a base64 data URL of an image type the chat
+// admits, answering the payload and the length of the URL's prefix.
+func dataImage(u string) ([]byte, int, bool) {
+	const scheme = "data:"
+	if !strings.HasPrefix(u, scheme) {
+		return nil, 0, false
+	}
+	comma := strings.Index(u, ",")
+	if comma < 0 {
+		return nil, 0, false
+	}
+	meta := u[len(scheme):comma]
+	semi := strings.Index(meta, ";")
+	if semi < 0 || meta[semi+1:] != "base64" {
+		return nil, 0, false
+	}
+	switch strings.ToLower(meta[:semi]) {
+	case "image/png", "image/jpeg", "image/webp", "image/gif":
+	default:
+		return nil, 0, false
+	}
+	payload, err := base64.StdEncoding.DecodeString(u[comma+1:])
+	if err != nil {
+		return nil, 0, false
+	}
+	return payload, comma + 1, true
+}
+
+// imageDims answers the pixel dimensions a raster header carries, before
+// any pixel data: PNG's IHDR, JPEG's first SOF, WebP's VP8, VP8L or VP8X,
+// GIF's logical screen.
+func imageDims(b []byte) (int, int, bool) {
+	switch {
+	case len(b) >= 24 && string(b[:8]) == "\x89PNG\r\n\x1a\n":
+		return int(binary.BigEndian.Uint32(b[16:20])), int(binary.BigEndian.Uint32(b[20:24])), true
+	case len(b) >= 10 && string(b[:6]) == "GIF89a" || string(b[:6]) == "GIF87a":
+		return int(binary.LittleEndian.Uint16(b[6:8])), int(binary.LittleEndian.Uint16(b[8:10])), true
+	case len(b) >= 2 && b[0] == 0xff && b[1] == 0xd8:
+		for p := 2; p+9 < len(b); {
+			if b[p] != 0xff {
+				return 0, 0, false
+			}
+			m := b[p+1]
+			switch m {
+			case 0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf:
+				return int(binary.BigEndian.Uint16(b[p+7 : p+9])), int(binary.BigEndian.Uint16(b[p+5 : p+7])), true
+			}
+			p += 2 + int(binary.BigEndian.Uint16(b[p+2:p+4]))
+		}
+	case len(b) >= 25 && string(b[:4]) == "RIFF" && string(b[8:12]) == "WEBP":
+		switch string(b[12:16]) {
+		case "VP8 ":
+			if len(b) >= 30 {
+				return int(binary.LittleEndian.Uint16(b[26:28]) & 0x3fff), int(binary.LittleEndian.Uint16(b[28:30]) & 0x3fff), true
+			}
+		case "VP8L":
+			bits := binary.LittleEndian.Uint32(b[21:25])
+			return int(bits&0x3fff) + 1, int((bits>>14)&0x3fff) + 1, true
+		case "VP8X":
+			if len(b) >= 30 {
+				return int(b[24]) | int(b[25])<<8 | int(b[26])<<16, int(b[27]) | int(b[28])<<8 | int(b[29])<<16, true
 			}
 		}
 	}
-	return nil
+	return 0, 0, false
 }
 
 // withOutputLimit writes the clamped output limit into the field(s) the
@@ -677,6 +804,10 @@ type modelCall struct {
 	callCost *float64
 	duration time.Duration
 	note     string // why finish booked what it did, on the audit row
+
+	// imgStripped is the image payload the hold left out of Bytes; the
+	// settled usage leaves it out too, so later calls calibrate on text.
+	imgStripped int
 }
 
 var zero = 0.0
@@ -767,7 +898,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 	ctx, up := s.tel.startCall(r.Context(), c.task, "model", c.alias, c.hold.EUR)
 	c.up = up
 	defer up.end()
-	c.usage.BodyBytes = len(body)
+	c.usage.BodyBytes = len(body) - c.imgStripped
 
 	// a cached key can have been blocked under this call (factoryd's
 	// reconcile blocks the task's keys): drop it, mint a fresh one and
