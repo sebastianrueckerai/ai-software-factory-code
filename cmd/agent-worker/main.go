@@ -865,8 +865,17 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 		return "", err
 	}
 	parents, guard := sessionParents(e, send, base, mainHead, agent)
-	if guardTree, err := e.git(send, "rev-parse", guard+"^{tree}"); err != nil || tree == guardTree {
+	guardTree, err := e.git(send, "rev-parse", guard+"^{tree}")
+	if err != nil {
 		return "", err
+	}
+	// a session that only pulled main has nothing of its own to push. One
+	// that merged main onto this branch's own commits pushes the merge even
+	// when its resolution leaves the tree identical to main's: the merge
+	// commit is what lets the pull request merge — the branch's history
+	// stays the task's while its content is main's.
+	if tree == guardTree && !slices.Contains(parents, base) {
+		return "", nil
 	}
 	// one commit of the worker's own: the agent's commits, and the mentions
 	// or closing keywords their messages may carry, stay out

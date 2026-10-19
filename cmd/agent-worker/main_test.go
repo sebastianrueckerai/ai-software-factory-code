@@ -701,6 +701,7 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 	run(append([]string{"-C", seed}, append(human, "commit", "-q", "-m", "factory task t1: work in progress")...)...)
 	wip := run("-C", seed, "rev-parse", "HEAD")
 	run("-C", seed, "push", "-q", fork, "wip:factory/resumed-merged-main")
+	run("-C", seed, "push", "-q", fork, "wip:factory/resumed-merged-main-resolved-to-main's-tree")
 	run("-C", seed, "checkout", "-q", "main")
 	os.WriteFile(filepath.Join(seed, ".forgejo", "workflows", "pr.yml"), []byte("v2\n"), 0o644)
 	os.WriteFile(filepath.Join(seed, "main.txt"), []byte("main\n"), 0o644)
@@ -732,6 +733,10 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 			run(append([]string{"-C", dir}, append(agentID, "rebase", "-q", "FETCH_HEAD")...)...)
 		}},
 		{name: "resumed merged main", start: wip, parents: wip + " " + m1, diff: "a.txt\nwip.txt", agent: func(dir string) { pull(dir); change(dir) }},
+		{name: "resumed merged main resolved to main's tree", start: wip, parents: wip + " " + m1, diff: "", agent: func(dir string) {
+			pull(dir)
+			os.Remove(filepath.Join(dir, "wip.txt"))
+		}},
 		{name: "only pulled main", start: m0, agent: pull},
 		{name: "pulled main and undid its workflow", start: m0, refused: true, agent: func(dir string) {
 			pull(dir)
@@ -770,6 +775,9 @@ func TestCommitAndPushKeepsPulledMainOutOfTheChange(t *testing.T) {
 					t.Fatalf("commit = %q, want nothing pushed: main's commits are not the agent's change", commit)
 				}
 				return
+			}
+			if commit == "" {
+				t.Fatalf("commit = %q, want the pushed merge onto %s", commit, tc.parents)
 			}
 			if got := run("-C", fork, "rev-list", "--parents", "-n", "1", commit); got != commit+" "+tc.parents {
 				t.Fatalf("commit and parents = %q, want %q", got, commit+" "+tc.parents)
