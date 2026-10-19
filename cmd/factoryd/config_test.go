@@ -197,7 +197,8 @@ func TestExplainSpecChild(t *testing.T) {
 14. stage approval: human card, or merge rule auto without one
       request changes -> back to the coder (step 6); reject -> end: failed
 15. stage merge: a refusal -> human card; a conflict -> back to the coder (step 6)
-16. end: done; the cards that depend on this one may start
+16. merged: waits until the chain runs the change live (done names the run that covers it)
+17. end: done; the cards that depend on this one may start
  caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
 `
 	if got, stderr, code := runExplain(t, "spec", "child"); code != 0 || got != want {
@@ -220,7 +221,8 @@ func TestExplainMaintenanceBug(t *testing.T) {
 11. stage approval: human card, or merge rule auto without one
       request changes -> back to the coder (step 4); reject -> end: failed
 12. stage merge: a refusal -> human card; a conflict -> back to the coder (step 4)
-13. end: done
+13. merged: waits until the chain runs the change live (done names the run that covers it)
+14. end: done
  caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
 `
 	if got, stderr, code := runExplain(t, "maintenance", "bug"); code != 0 || got != want {

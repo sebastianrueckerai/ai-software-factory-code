@@ -22,12 +22,12 @@ import (
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
 // liveness warning. ChainState is the status of the newest main run that
-// carries the card's pull request ("" for none): a done card reads it to
-// track its own deploy (roadmap 297), the chain's own fact, no roll in it.
+// carries the card's pull request ("" for none): a merged card reads it
+// as its chain word (roadmap 297), the chain's own fact, no roll in it.
 // ChainLive is deployLive read as a column: whether the card's change runs
 // on the cluster — a green run covers it, it never opened a pull request,
-// or it finished before the chain began recording — the fact a done card
-// waits on.
+// or it finished before the chain began recording — the fact a finished
+// card's own page waits on.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -108,13 +108,12 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most
-// urgent first; a chat task is no card. A done task whose change is not
-// live yet stays listed: its card tracks its own deploy (roadmap 296). The
-// escalation reason comes from the escalation's intake event, so a poll
-// reads no timeline object.
+// urgent first; a chat task is no card. A merged task is open: its card
+// waits until the chain runs its change live. The escalation reason comes
+// from the escalation's intake event, so a poll reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE repository = $4 AND kind <> $3 AND (status NOT IN ('done', 'failed', 'closed') OR status = 'done' AND NOT (`+deployLive+`))
+		 WHERE repository = $4 AND kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, IntakeEscalation, AlertEscalation, KindChat, repository)
 	if err != nil {
 		return nil, err

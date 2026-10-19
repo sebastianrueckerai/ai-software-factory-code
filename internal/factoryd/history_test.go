@@ -289,6 +289,13 @@ func taskHistoryHits(t *testing.T, summary string) []string {
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(SignalApproved, TaskSignal{Author: "sebastian", PR: 12})
 	}, time.Minute)
+	// the chain's green run covers the merged change (the poller's row):
+	// the wait ends done at its stall wake's re-read
+	env.RegisterDelayedCallback(func() {
+		if err := store.RecordChainRun(context.Background(), "sf/repo", 12, histCommit, 50, "success"); err != nil {
+			t.Errorf("record chain run: %v", err)
+		}
+	}, 2*time.Minute)
 	env.ExecuteWorkflow("TaskWorkflow", "t1")
 	var final string
 	if !env.IsWorkflowCompleted() || env.GetWorkflowError() != nil || env.GetWorkflowResult(&final) != nil || final != "done" {

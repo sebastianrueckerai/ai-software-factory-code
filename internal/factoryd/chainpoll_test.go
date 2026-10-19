@@ -78,6 +78,37 @@ func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, sta
 	return nil
 }
 
+// ChainCovered mirrors PGStore's read: every merged card with a pull
+// request the repository's newest green run covers, named by that run.
+func (s *fakeStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
+	green := int64(0)
+	for _, c := range s.chain {
+		if c.repo == repository && c.status == "success" && c.run > green {
+			green = c.run
+		}
+	}
+	covered := map[string]int64{}
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Status != "merged" || t.PRNumber <= 0 {
+			continue
+		}
+		mine, carried := int64(0), false
+		for _, c := range s.chain {
+			if c.repo != repository || c.pr != t.PRNumber {
+				continue
+			}
+			carried = true
+			if mine == 0 || c.run < mine {
+				mine = c.run
+			}
+		}
+		if carried && green >= mine && mine > 0 {
+			covered[t.ID] = green
+		}
+	}
+	return covered, nil
+}
+
 func (s *fakeStore) Projects(ctx context.Context) ([]Project, error) {
 	return s.projects, nil
 }
@@ -527,5 +558,43 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	}
 	if head, _ := store.ChainHead(ctx, codeRepo); head != 64 {
 		t.Fatalf("chain head %d, want 64", head)
+	}
+}
+
+// A green head tells every merged card it covers: one covered signal
+// each, once per head — a workflow already done drops it, one that died
+// is started by the signal and reads the facts on entry. A merged card
+// no run carries yet is told nothing.
+func TestChainPollerSignalsCoveredMerges(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(61, commitC2, "success")},
+		},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+	}
+	wf := &fakeWorkflows{}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Workflows = wf
+	store.tasks = map[string]Task{
+		"t-cov":   {ID: "t-cov", Status: "merged", Repository: codeRepo, PRNumber: 12},
+		"t-waits": {ID: "t-waits", Status: "merged", Repository: codeRepo, PRNumber: 13},
+	}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "t-cov "+SignalChainCovered+" "+FactoryDecider) {
+		t.Fatalf("signals = %v; want one covered signal for t-cov alone", wf.signals)
+	}
+	// the same green head again signals nobody a second time
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 {
+		t.Fatalf("signals = %v; the covered signal fires once per head", wf.signals)
 	}
 }

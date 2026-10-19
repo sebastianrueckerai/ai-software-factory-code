@@ -20,7 +20,7 @@
   --need-tint: color-mix(in srgb, var(--need) 6%, var(--bg-panel));
   --need-line: color-mix(in srgb, var(--need) 72%, transparent);
   --need-glow: 0 0 0 1px color-mix(in srgb, var(--need) 16%, transparent), 0 0 30px -10px color-mix(in srgb, var(--need) 55%, transparent);
-  --st-running: #4fcbe2; --st-waiting: #f4b13e; --st-review: #9fb0ff; --st-done: #5cc98f; --st-failed: #f26d6d; --st-closed: #93a1b5;
+  --st-running: #4fcbe2; --st-waiting: #f4b13e; --st-review: #9fb0ff; --st-merged: #55c9b6; --st-done: #5cc98f; --st-failed: #f26d6d; --st-closed: #93a1b5;
   --failed-quiet: #c98a8a;
   --note-bg: color-mix(in srgb, var(--st-done) 12%, var(--bg-panel)); --note-line: color-mix(in srgb, var(--st-done) 60%, transparent);
   --problem-bg: color-mix(in srgb, var(--st-failed) 12%, var(--bg-panel)); --problem-line: color-mix(in srgb, var(--st-failed) 60%, transparent);
@@ -37,7 +37,7 @@
   --accent: #0a6a80; --accent-ink: #ffffff; --focus: #0a6a80;
   --need: #f0a62a; --need-ink: #0f1d33; --need-text: #8a4f00;
   --need-tint: #fff3d6; --need-line: #d39417; --need-glow: 0 1px 0 rgba(29, 53, 87, .06);
-  --st-running: #0a6a80; --st-waiting: #8a4f00; --st-review: #4152c4; --st-done: #1c7448; --st-failed: #b8322a; --st-closed: #5b6678;
+  --st-running: #0a6a80; --st-waiting: #8a4f00; --st-review: #4152c4; --st-merged: #0f7268; --st-done: #1c7448; --st-failed: #b8322a; --st-closed: #5b6678;
   --failed-quiet: #a14b43;
   --drawer-shadow: -18px 0 40px -18px rgba(29, 53, 87, .35);
 }
@@ -214,6 +214,7 @@ footer#live:empty { display: none; }
 .card .card:hover { background: none; }
 .card:has(> .line2 > .st-running) { box-shadow: inset 2px 0 0 var(--st-running); }
 .card:has(> .line2 > .st-review) { box-shadow: inset 2px 0 0 var(--st-review); }
+.card:has(> .line2 > .st-merged) { box-shadow: inset 2px 0 0 var(--st-merged); }
 .card:has(> .line2 > .st-waiting) { box-shadow: inset 2px 0 0 var(--st-waiting); }
 .card:has(> .line2 > .st-failed) { box-shadow: inset 2px 0 0 var(--st-failed); }
 .card.stale { border: 1px dashed var(--need); }
@@ -239,6 +240,7 @@ footer#live:empty { display: none; }
 .st-running { color: var(--st-running); }
 .st-waiting { color: var(--st-waiting); }
 .st-review { color: var(--st-review); }
+.st-merged { color: var(--st-merged); }
 .st-done { color: var(--st-done); }
 .st-failed { color: var(--st-failed); }
 .st-closed, .st-queued, .st-backlog, .st-plan, .st-other { color: var(--st-closed); }
@@ -248,6 +250,7 @@ footer#live:empty { display: none; }
 /* live dots (C6): a running card's dot breathes, an in-review card's slower */
 .pill.st-running::before { animation: live 2.2s ease-in-out infinite; }
 .pill.st-review::before { animation: live 3.6s ease-in-out infinite; }
+.pill.st-merged::before { animation: live 3.6s ease-in-out infinite; }
 @keyframes live { 0% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 color-mix(in srgb, currentColor 70%, transparent); } 70% { opacity: .5; transform: scale(1.25); box-shadow: 0 0 0 6px transparent; } 100% { opacity: 1; transform: scale(1); box-shadow: 0 0 0 0 transparent; } }
 .spend { color: var(--text-muted); }
 .spend.near { color: var(--need-text); }

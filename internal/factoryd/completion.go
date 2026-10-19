@@ -33,7 +33,7 @@ func TokenName(taskID string) string     { return "task-" + taskID }
 func BaseTokenName(taskID string) string { return TokenName(taskID) + "-base" }
 
 func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
-	if err := c.Store.TransitionTask(ctx, taskID, []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, "closing"); err != nil {
+	if err := c.Store.TransitionTask(ctx, taskID, []string{"backlog", "queued", "waiting-deps", "running", "in-review", "merged", "waiting-human", "waiting-poster", "closing"}, "closing"); err != nil {
 		return err
 	}
 	if err := c.reconcile(ctx, taskID); err != nil {

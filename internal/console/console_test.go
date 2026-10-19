@@ -454,14 +454,12 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
-// order: a chat task is none, and a done card whose change is not live
-// yet stays, tracking its own deploy (roadmap 296).
+// order: a chat task is none, and every final card is gone.
 func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) &&
-			(t.Status != "done" || factoryd.DeployLive(s.tasks, t))
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
 	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
@@ -1417,20 +1415,20 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	at := func(mins int) *time.Time { t := time.Now().Add(-time.Duration(mins) * time.Minute); return &t }
-	card := func(id string, pr int64, state string, finished int) factoryd.BoardTask {
-		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "done", Repository: "sf/code",
+	card := func(id string, pr int64, state string, finished int, status string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Repository: "sf/code",
 			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, ChainState: state}
 	}
-	// t-era finished before the first chain the set records; t-wait after
-	// t-chain's run was recorded, so the era no longer holds it live
+	// t-era finished before the first chain the set records; t-wait merged
+	// after t-chain's run was recorded, so the era no longer holds it live
 	r.tasks.tasks = []factoryd.BoardTask{
-		card("t-era", 8, "", 90),
-		card("t-chain", 9, "running", 40),
-		card("t-wait", 10, "", 30),
-		card("t-red", 11, "failure", 25),
-		card("t-gone", 12, "cancelled", 20),
-		card("t-live", 13, "success", 15),
-		card("t-skip", 14, "skipped", 10),
+		card("t-era", 8, "", 90, "done"),
+		card("t-chain", 9, "running", 40, "merged"),
+		card("t-wait", 10, "", 30, "merged"),
+		card("t-red", 11, "failure", 25, "merged"),
+		card("t-gone", 12, "cancelled", 20, "merged"),
+		card("t-live", 13, "success", 15, "done"),
+		card("t-skip", 14, "skipped", 10, "done"),
 		{Task: factoryd.Task{ID: "t-rollcard", Kind: "agent", Status: "done", Source: factoryd.SourceRoll,
 			Repository: "sf/code", PRNumber: 15, Objective: "the roll itself", FinishedAt: at(35)}},
 	}

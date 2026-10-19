@@ -38,7 +38,8 @@ const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
-	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent}
+	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
+	EventPullRequestMerged}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
@@ -231,6 +232,13 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		// a row after the card's escalation: the inbox offers its answer
 		// row no more
 		m.Content = ref + " needs you no more: its question is withdrawn because " + str("reason") + "."
+	case EventPullRequestMerged:
+		// a card still merged informs once at its merge; one already done
+		// was live at once and pokes only at its end
+		if t.Status != "merged" {
+			return m, false
+		}
+		m.Content = ref + " merged; the chain is running."
 	case EventApprovalRequested:
 		m.Kind = MessageEscalation
 		switch str("kind") {

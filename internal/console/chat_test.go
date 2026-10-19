@@ -1012,6 +1012,7 @@ Waiting on a human (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
 Waiting on the author (0):
 In review (0):
+Merged (0):
 Human lane (0):
 Escalated, waiting on an answer (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)

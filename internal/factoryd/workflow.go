@@ -57,6 +57,10 @@ const (
 	// quiet for the stale window: SignalWithStart starts a workflow that
 	// died; a live one has no handler and drops it.
 	SignalStaleNudge = "stale_nudge"
+	// SignalChainCovered is the chain poller's notice that a green run
+	// covers a merged card's change: the card's wait ends done, naming
+	// the run. A workflow already done drops it.
+	SignalChainCovered = "chain_covered"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -85,6 +89,8 @@ const (
 	ActivityWaitChecks                  = "WaitChecks"
 	ActivityHeadChecks                  = "HeadChecks"
 	ActivityPullRequestMerged           = "PullRequestMerged"
+	ActivityChainFacts                  = "ChainFacts"
+	ActivityChainStalled                = "ChainStalled"
 	ActivityRecordStep                  = "RecordStep"
 	ActivityFinish                      = "Finish"
 	ActivityReconcile                   = "Reconcile"
@@ -524,6 +530,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	run.chainDone = workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -570,7 +577,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalChainCovered} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1054,6 +1061,12 @@ const (
 	// buys the attempt alone and its next check-in moment stops the card
 	// again.
 	versionCheckinGrant workflow.Version = 1
+	// versionChainDone (change id "chain-done"): a merge no longer
+	// finishes the task done. Every finish whose pull request merged
+	// moves the card to merged and waits for the chain to run its change
+	// live; done names the covering run. A run from before the change
+	// finishes done at its merge as it always did.
+	versionChainDone workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1161,6 +1174,7 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	chainDone         workflow.Version // a merge waits for the chain (versionChainDone)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -3694,12 +3708,27 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 	return "", "", []string{changeRequested(sig.Author, sig.Body, sig.At)}
 }
 
-// finish is the one exit of every path. It retries for a day (backoff
-// capped at five minutes). A Finish still failing then fails the
-// workflow; the heal pass starts a new run, which reconciles the task and
-// decides it again (one found closing is finished at once), so no task is
-// left running or closing with its credentials live.
+// finish is the one exit of every path, and the merge choke point: every
+// finish whose pull request merged — the approval verdicts, the auto
+// merge, the healed head, the issue's close — moves the card to merged
+// and waits for the chain instead of finishing (versionChainDone). A
+// roll keeps its own live confirmation, the rollout; a finish that merged
+// nothing keeps today's behavior: no pull request, no chain, live at its
+// end state. It retries for a day (backoff capped at five minutes). A
+// Finish still failing then fails the workflow; the heal pass starts a
+// new run, which reconciles the task and decides it again (one found
+// closing is finished at once), so no task is left running or closing
+// with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
+	if t.chainDone >= versionChainDone && final == "done" && !t.rolling && strings.HasPrefix(reason, "pull request merged") {
+		return t.chainWait(reason)
+	}
+	return t.finishFinal(final, reason)
+}
+
+// finishFinal ends the task: a roll's done waits its rollout, then the
+// one Finish activity every path shares.
+func (t *taskRun) finishFinal(final, reason string) (string, error) {
 	if final == "done" && t.rolling && t.rollout >= versionRollout {
 		final, reason = t.awaitRollout(reason)
 	}
@@ -3708,6 +3737,50 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 		return "", err
 	}
 	return final, nil
+}
+
+// chainWait is a merged card's wait for its change to run live. It reads
+// the recorded facts on entry — a chain that concluded while factoryd
+// was down decides at once — moves the card to merged, then waits at no
+// cost for the chain poller's covered signal, its own stall timer the
+// backstop a down or crash-looping poller cannot silence: the timer
+// fires ActivityChainStalled (the repair's seam) and re-arms. Whichever
+// wake comes first, the facts are read again, so a stall bound the
+// project changed mid-wait is picked up. A green chain ends the wait
+// done, naming the run that covers the change; a chain of none is live
+// at the merge itself, finished with the merge's own reason. A red or
+// stalled chain is work, not a verdict: the card stays merged.
+func (t *taskRun) chainWait(reason string) (string, error) {
+	var f ChainFacts
+	if err := workflow.ExecuteActivity(t.short, ActivityChainFacts, t.taskID).Get(t.ctx, &f); err != nil {
+		return "", err
+	}
+	if f.Mode != policy.ChainModeRun {
+		return t.finishFinal("done", reason)
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "merged").Get(t.ctx, nil); err != nil {
+		return "", err
+	}
+	for !f.Live {
+		timerCtx, cancel := workflow.WithCancel(t.ctx)
+		stalled := false
+		sel := workflow.NewSelector(t.ctx)
+		sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalChainCovered), func(workflow.ReceiveChannel, bool) {})
+		sel.AddFuture(workflow.NewTimer(timerCtx, f.Stall), func(workflow.Future) { stalled = true })
+		sel.Select(t.ctx)
+		cancel()
+		if stalled {
+			if err := workflow.ExecuteActivity(t.short, ActivityChainStalled, t.taskID).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("chain stalled", "task", t.taskID, "error", err)
+			}
+		}
+		var again ChainFacts
+		if err := workflow.ExecuteActivity(t.short, ActivityChainFacts, t.taskID).Get(t.ctx, &again); err != nil {
+			return "", err
+		}
+		f = again
+	}
+	return t.finishFinal("done", fmt.Sprintf("live: covered by run %d", f.RunID))
 }
 
 // awaitRollout is a roll's last wait (ruling 178): after its merge the

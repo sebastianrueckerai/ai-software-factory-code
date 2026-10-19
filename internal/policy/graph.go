@@ -227,7 +227,10 @@ func (b *builder) code(kind string, ready Lane, atOnce, end string) string {
 		}
 		chain = append(chain, b.stage(id, s, session.ID))
 	}
-	chain = append(chain, b.node(Node{ID: id("done"), Name: "done", Head: end, Kind: NodeDone}))
+	chain = append(chain,
+		b.node(Node{ID: id("merged"), Name: "merged",
+			Head: "merged: waits until the chain runs the change live (done names the run that covers it)"}),
+		b.node(Node{ID: id("done"), Name: "done", Head: end, Kind: NodeDone}))
 	b.next(chain...)
 	return start
 }

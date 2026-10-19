@@ -156,7 +156,7 @@ func fiveColumn(t factoryd.Task, viewer string) int {
 		return colQueued
 	case "backlog", "queued", "waiting-deps":
 		return colQueued
-	case "running", "closing", "in-review":
+	case "running", "closing", "in-review", "merged":
 		return colProgress
 	case "done", "failed", "closed":
 		return colDone
@@ -461,7 +461,7 @@ func isState(k card, v string) bool {
 // order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
 	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting on the author", "waiting-poster"},
-	{"In review", "in-review"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
+	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
 }
 
 type card struct {
@@ -598,12 +598,13 @@ func fineStates(k card, wide bool) []fine {
 }
 
 // statusClasses are the pill's classes, one hue per state: running the
-// accent blue, a wait amber, review violet, done green, failed red, closed
-// grey; waiting-poster wears the hollow pill. closing counts as running.
+// accent blue, a wait amber, review violet, merged teal, done green,
+// failed red, closed grey; waiting-poster wears the hollow pill. closing
+// counts as running.
 var statusClasses = map[string]string{
 	"running": "st-running", "closing": "st-running", "queued": "st-queued",
 	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
-	"in-review": "st-review", "done": "st-done", "failed": "st-failed",
+	"in-review": "st-review", "merged": "st-merged", "done": "st-done", "failed": "st-failed",
 	"closed": "st-closed", "backlog": "st-backlog", "plan": "st-plan",
 	"waiting-deps": "st-waiting",
 }
@@ -1302,10 +1303,17 @@ func (d boardData) cols() []column {
 	return d.Columns
 }
 
-// Final is a done, failed or closed card: a two-line row on the board. A
-// done card that tracks its own deploy wears a stage, so it stays a full
-// card until its change runs live (roadmap 296).
-func (k card) Final() bool { return k.Stage == "" && factoryd.Final(k.Status) }
+// Final is a done, failed or closed card: a two-line row on the board.
+func (k card) Final() bool { return factoryd.Final(k.Status) }
+
+// Pill is the pill's word: the stage word, except a merged card, which
+// says merged and wears its chain word beside the pill.
+func (k card) Pill() string {
+	if k.Status == "merged" || k.Stage == "" {
+		return k.Status
+	}
+	return k.Stage
+}
 
 // Glyph is the final state's mark beside its word.
 func (k card) Glyph() string {
@@ -1707,8 +1715,7 @@ type boardView struct {
 	// columns the card yields In progress to that approval (Needs you
 	// holds it), as a plan does to its acceptance.
 	mergePended map[string]bool
-	deploys     map[string]bool // a done card whose change is not live yet: it tracks its own deploy (roadmap 296)
-	unchecked   bool            // a may-move check failed, logged once per render
+	unchecked   bool // a may-move check failed, logged once per render
 	problems    []string
 }
 
@@ -1738,7 +1745,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
-		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, deploys: map[string]bool{},
+		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
 		mergePended: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
@@ -1758,20 +1765,9 @@ func (v *boardView) humanLane(t factoryd.Task) bool {
 	return t.Kind == "human"
 }
 
-// column is bt's column: the status mapping, except a done card whose
-// change is not live yet, which stays in progress until its deploy lands
-// (roadmap 296): no card is done before it is usable.
-func (v *boardView) column(bt factoryd.BoardTask, viewer string) int {
-	col := fiveColumn(bt.Task, viewer)
-	if col == colDone && bt.Status == "done" && v.deploys[bt.ID] {
-		return colProgress
-	}
-	return col
-}
-
-// deployStage is the chain position a done card shows while its change is
-// not live yet: where its deploy chain sits (roadmap 297), the words of
-// the chain itself, no roll in them.
+// deployStage is the chain position a merged card shows while its change
+// is not live yet: where its deploy chain sits (roadmap 297), the words
+// of the chain itself, no roll in them.
 func deployStage(state string) string {
 	switch state {
 	case "":
@@ -1817,12 +1813,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	t := bt.Task
 	k := c.card(t)
 	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
-		v.column(bt, v.user))
-	if v.deploys[t.ID] {
+		fiveColumn(t, v.user))
+	if bt.Status == "merged" {
 		k.Stage = deployStage(bt.ChainState)
-		if t.FinishedAt != nil {
-			k.StageAge = minutes(time.Since(*t.FinishedAt))
-		}
 	}
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
@@ -2199,14 +2192,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	if err != nil {
 		return d, fmt.Errorf("tasks: %w", err)
 	}
-	// a done card the store still lists is merged, its change not
-	// confirmed live yet: it tracks its own deploy (roadmap 296). The
-	// finished page holds done cards that are live.
 	for _, bt := range tasks {
 		v.byID[bt.ID] = bt.Task
-		if bt.Status == "done" && bt.Source != factoryd.SourceRoll {
-			v.deploys[bt.ID] = true
-		}
 	}
 	if shown.Name != "" {
 		finished, err := c.readFinished(ctx, &d, f, shown.Repository)
@@ -2233,7 +2220,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		if t.Source == factoryd.SourceRoll {
 			continue // a roll is no card (Sebastian, 2026-10-18)
 		}
-		human, col := v.humanLane(t), v.column(bt, v.user)
+		human, col := v.humanLane(t), fiveColumn(t, v.user)
 		// the status line counts the project's cards, whatever the accent;
 		// a plan that waits on its acceptance counts as its approval
 		switch {
@@ -2264,9 +2251,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 		case wide:
 			i, ok := byStatus[t.Status]
-			if v.deploys[t.ID] {
-				i, ok = byStatus["running"], true // done, its deploy not live yet
-			}
 			switch t.Status {
 			case "backlog":
 				i, ok = byLane[policy.LaneBacklog]
@@ -3118,13 +3102,8 @@ func (d drawerData) Age() string {
 	return strings.Join(parts, ", ")
 }
 
-// Word is the card's stage word, or its status.
-func (d drawerData) Word() string {
-	if d.Card.Stage != "" {
-		return d.Card.Stage
-	}
-	return d.Card.Status
-}
+// Word is the pill's word in the drawer's facts.
+func (d drawerData) Word() string { return d.Card.Pill() }
 
 // said is a message of a session in the drawer's Chat: the agent's text
 // between its tool calls, or a member's steer. Key is what the stream's

@@ -9,13 +9,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
-// A done card holds until a green run covers its change (roadmap 297): the
+// A card's change is live when a green run covers it (roadmap 297): the
 // run that carried its pull request exists and the newest green main run —
 // any row, the head row's status the run's own AND every required context —
 // sits at or after it, so a green run after its own red carry run deploys
-// it. A card the chain names at no run is live only while it finished
-// before the chain began recording; a card without a pull request has
-// nothing to deploy. Requires a disposable Postgres
+// it. The finished page holds a done card until then, and done cards are
+// final on the board. A card the chain names at no run is live only while
+// it finished before the chain began recording; a card without a pull
+// request has nothing to deploy. Requires a disposable Postgres
 // (FACTORYD_TEST_DATABASE_URL).
 func TestChainCoverageHoldsTheCard(t *testing.T) {
 	ctx := context.Background()
@@ -94,10 +95,10 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 			t.Fatalf("FinishedTasks = %v, want %v", ids, want)
 		}
 	}
-	// no green run at or after pr 7's carry run: the card holds in
-	// progress; t-era finished before the chain began recording, t-nopr
+	// no green run at or after pr 7's carry run: the finished page holds
+	// the card; t-era finished before the chain began recording, t-nopr
 	// never opened a pull request
-	board("t-hold")
+	board()
 	finished("t-nopr", "t-era")
 	if live("t-hold") {
 		t.Fatal("the carried card reads live before a green run covers it")

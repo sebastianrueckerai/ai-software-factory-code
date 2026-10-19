@@ -24,6 +24,38 @@ func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, erro
 	return head, err
 }
 
+// ChainCovered lists repository's merged cards a green chain covers, each
+// with the newest green run that covers it: a card whose carry row is
+// recorded and that the newest green run on main sits at or after — so a
+// green run later than the card's own red carry deploys it (the deployed
+// digest holds the change), and a card nothing recorded yet does not
+// cover. The map is the merged wait's fact and the poller's signal list
+// alike.
+func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,
+		       COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
+		   FROM tasks
+		   WHERE repository = $1 AND status = 'merged' AND pr_number > 0
+		     AND EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = $1 AND carry.pr_number = tasks.pr_number)
+		     AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
+			  >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = $1 AND mine.pr_number = tasks.pr_number)`,
+		repository)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	covered := map[string]int64{}
+	for rows.Next() {
+		var id string
+		var run int64
+		if err := rows.Scan(&id, &run); err != nil {
+			return nil, err
+		}
+		covered[id] = run
+	}
+	return covered, rows.Err()
+}
+
 // RecordChainRun upserts one pull request's row to the run that carries
 // it; a newer run wins, a fold's carry moving the change to the fold.
 func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
@@ -88,6 +120,7 @@ func (f *Forgejo) WorkflowList(ctx context.Context, repo Repo) ([]string, error)
 // chain_runs.
 type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
+	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
@@ -149,6 +182,9 @@ type ChainPoller struct {
 	// carries its chain block; a repository no file names runs the
 	// default.
 	Policy func() policy.Version
+	// Workflows receives the covered signal a green head sends each
+	// merged card it covers; nil: none to tell.
+	Workflows Workflows
 	// Timeline is the seam of the stalled and repair work (Task 5).
 	Timeline *Timeline
 	// Now reads the clock the stall watchdog arms itself on.
@@ -159,6 +195,7 @@ type ChainPoller struct {
 	noted    map[string]bool          // the chain-block complaints logged, once each
 	failed   map[string]string        // repository -> the failure it last logged
 	episodes map[headKey]chainEpisode // the head rows watched between polls
+	covered  map[string]int64         // repository -> the head run its covered signal last named
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -182,6 +219,7 @@ func (p *ChainPoller) Run(ctx context.Context) {
 func (p *ChainPoller) poll(ctx context.Context) error {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
+		p.covered = map[string]int64{}
 	}
 	projects, err := p.Projects.Projects(ctx)
 	if err != nil {
@@ -431,7 +469,30 @@ func (p *ChainPoller) watch(ctx context.Context, repository, sha, verdict string
 		p.episodes[key] = e
 	default: // success: the head concluded green, its episode ended
 		delete(p.episodes, key)
+		p.cover(ctx, repository, run.ID)
 	}
+}
+
+// cover tells every merged card the repository's green head covers that
+// its change runs live, once per head: the signal ends the card's wait
+// done, naming the run. A workflow already done drops it; one that died
+// is started by the signal and reads the facts on entry, so a green
+// chain while factoryd was down still decides every card it covers.
+func (p *ChainPoller) cover(ctx context.Context, repository string, run int64) {
+	if p.Workflows == nil || p.covered[repository] >= run {
+		return
+	}
+	covered, err := p.Store.ChainCovered(ctx, repository)
+	if err != nil {
+		log.Printf("chain poller: %s: covered cards: %v", repository, err)
+		return
+	}
+	for id := range covered {
+		if err := p.Workflows.Signal(ctx, id, SignalChainCovered, TaskSignal{Author: FactoryDecider}); err != nil {
+			log.Printf("chain poller: %s: signal %s: %v", repository, id, err)
+		}
+	}
+	p.covered[repository] = run
 }
 
 func (p *ChainPoller) now() time.Time {
