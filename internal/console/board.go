@@ -471,6 +471,10 @@ type card struct {
 	Reason   string   // an escalation's reason
 	Choices  []string // the answers its agent offered, a button each
 	Capped   bool     // an escalated card at its session cap, which an answer grants a session
+	// Ask says the card waits on an answer: an intake row holds its ask.
+	// Without one a human card that waits offers the factory or a close
+	// (roadmap 1131).
+	Ask bool
 	// Question is the escalation's five-part question (the question
 	// format): the ask as the headline, the why under it, its buttons by
 	// value, and the info and recommendation behind the fold. nil on a
@@ -507,6 +511,7 @@ type card struct {
 	Moves              []move // a backlog card: the starting lanes the viewer may move it into
 	Plan               *planCards
 	Retry              *retry // a failed plan card's Retry, for an approver who may move it into ready
+	Go                 *goForm
 	Activity           string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
@@ -820,6 +825,11 @@ type acceptanceCloseForm struct{ CSRF, Evidence string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
+
+// goForm is the pair on a human card that waits without an ask: Have the
+// factory do it, which files the work as the factory's own card, and
+// Close with note.
+type goForm struct{ CSRF string }
 
 // planCards are an accepted plan's cards and, for an approver while any
 // is in the backlog, Start plan (CSRF set).
@@ -1818,6 +1828,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if t.Gate == factoryd.GateMergeQueue {
 		k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
 	}
+	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
 		return k
 	}
@@ -2012,6 +2023,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			k.CSRF = v.csrf
 		}
 		k.Filter = v.filter
+		// the pair a human card that waits without an ask offers its writer
+		// (roadmap 1131): the factory, or a close on a note
+		if ok && k.Kind == "human" && !k.Ask && (k.Status == "backlog" || k.Status == "waiting-human") {
+			k.Go = &goForm{CSRF: v.csrf}
+		}
 	}
 	each(setForms)
 }
@@ -3264,7 +3280,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 				d.Merge = &m
 			}
 		}
-		if v.escalated(bt.Task) {
+		if v.escalated(bt.Task) && bt.Escalation != "" {
 			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Approver: c.approver(r), Back: "/" + k.Filter.query(), Suffix: "-d"}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
