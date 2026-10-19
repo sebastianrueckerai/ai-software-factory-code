@@ -24,6 +24,10 @@ import (
 // liveness warning. ChainState is the status of the newest main run that
 // carries the card's pull request ("" for none): a done card reads it to
 // track its own deploy (roadmap 297), the chain's own fact, no roll in it.
+// ChainLive is deployLive read as a column: whether the card's change runs
+// on the cluster — a green run covers it, it never opened a pull request,
+// or it finished before the chain began recording — the fact a done card
+// waits on.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -36,17 +40,23 @@ type BoardTask struct {
 	Question        *HumanQuestion
 	AnswersPending  int
 	ChainState      string
+	ChainLive       bool
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
-// cluster (roadmap 297): a card that never opened a pull request, or
-// whose chain run went green — the chain's tail job confirmed the change
-// runs, whatever that tail is for the project — or that no chain names at
-// all and that finished before the chain began recording runs (none
-// recorded yet: every card, while none is). A chain that names it as not
-// green keeps it waiting.
+// cluster (roadmap 297): a card that never opened a pull request, or that
+// a green run covers — the run that carried its change is recorded and
+// the newest green run on main, the head row or any card's carry row,
+// sits at or after it, so a green run later than its own red carry
+// deploys it — or that no chain names at all and that finished before the
+// chain began recording runs (none recorded yet: every card, while none
+// is). A carry run with no green run at or after it keeps the card
+// waiting; the head row's status is the run's own AND every required
+// context, so coverage demands them too.
 const deployLive = `(tasks.pr_number = 0
-	OR EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number AND cr.status IN ('success', 'skipped'))
+	OR EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
+	   AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)
+	      >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number)
 	OR NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
@@ -69,7 +79,8 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
-		        ORDER BY cr.run_id DESC LIMIT 1), '')`
+		        ORDER BY cr.run_id DESC LIMIT 1), ''),
+		        (` + deployLive + `)`
 
 const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
@@ -80,7 +91,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive)...)
 	})
 	if err != nil {
 		return b, err

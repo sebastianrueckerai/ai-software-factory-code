@@ -490,7 +490,7 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	defer s.mu.Unlock()
 	s.tasks = nil
 	for _, t := range tasks {
-		b := factoryd.BoardTask{Task: t}
+		b := factoryd.BoardTask{Task: t, ChainLive: t.Status == "done"}
 		if t.Status == "waiting-human" {
 			b.Escalation = reason
 		}
