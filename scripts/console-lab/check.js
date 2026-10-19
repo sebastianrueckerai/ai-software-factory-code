@@ -353,6 +353,96 @@ async function text(page) {
           if (await chips.isVisible()) fails.push("chat: the × does not remove the image chip");
         }
       }
+      // a document rides the composer as its own chip (roadmap 300): a
+      // dropped text file lands in its own strip as doc1 with its file
+      // name and a working ×; an image and a document dropped together
+      // each land in their own strip; and Send stores the row with the
+      // words intact, the document a link to its served bytes, a PDF
+      // serving as a PDF
+      const docs = p.page.locator("#chat-docs");
+      const drop = (files) => p.page.evaluate((files) => new Promise((done) => {
+        const made = [], next = (i) => {
+          if (i === files.length) {
+            const dt = new DataTransfer();
+            made.forEach((f) => dt.items.add(f));
+            const form = document.getElementById("chat-form");
+            form.dispatchEvent(new DragEvent("dragover", { dataTransfer: dt, bubbles: true, cancelable: true }));
+            form.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true }));
+            done();
+            return;
+          }
+          const [name, type, text] = files[i];
+          if (type === "image/png") {
+            const c = document.createElement("canvas");
+            c.width = 320; c.height = 200;
+            const g = c.getContext("2d");
+            g.fillStyle = "#8a9aa8"; g.fillRect(0, 0, 320, 200);
+            c.toBlob((b) => { made.push(new File([b], name, { type })); next(i + 1); }, type);
+          } else {
+            made.push(new File([text], name, { type }));
+            next(i + 1);
+          }
+        };
+        next(0);
+      }), files);
+      await drop([["spec.md", "text/markdown", "# Deploy run\n- ships 1.2.3\n"]]);
+      await p.page.waitForTimeout(200);
+      const docText = () => docs.innerText();
+      if (!(await docs.isVisible()) || !(await docText()).includes("doc1") || !(await docText()).includes("spec.md")) fails.push("chat: a dropped text file shows no doc1 spec.md chip");
+      else {
+        const undoc = docs.locator("[data-undoc]");
+        if (!(await undoc.count())) fails.push("chat: the document chip has no ×");
+        else {
+          await undoc.first().click();
+          await p.page.waitForTimeout(200);
+          if (await docs.isVisible()) fails.push("chat: the × does not remove the document chip");
+        }
+      }
+      // one gesture, an image to its strip and a document to its own
+      await drop([["shot.png", "image/png", ""], ["spec.md", "text/markdown", "# Deploy run\n- ships 1.2.3\n"]]);
+      await p.page.waitForTimeout(200);
+      if (!(await chips.isVisible()) || !(await chips.innerText()).includes("img1")) fails.push("chat: the mixed drop shows no img1");
+      if (!(await docs.isVisible()) || !(await docs.innerText()).includes("doc1")) fails.push("chat: the mixed drop shows no doc1");
+      // the send stores the row: the words intact beside the riding
+      // files. The just-sent row is optimistic (its chips object URLs)
+      // until a read carries the stored ids, and the lab's turn always
+      // fails (the operator door is closed), so the read never comes by
+      // itself: a reload reads the thread back, and there the document
+      // is a link chip to its served bytes and the PDF serves as a PDF
+      await p.page.locator("#chat-input").click();
+      await p.page.keyboard.type("here are the run notes", { delay: 20 });
+      await p.page.locator("#chat-form button[type=submit]").click();
+      await p.page.waitForTimeout(1200);
+      const sentLog = await p.page.locator("#chat-log").innerText();
+      if (!sentLog.includes("here are the run notes")) fails.push("chat: the sent message's words do not store: " + sentLog.slice(-120));
+      // a PDF rides the same way
+      await drop([["report.pdf", "application/pdf", "%PDF-1.7\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]]);
+      await p.page.waitForTimeout(200);
+      await p.page.locator("#chat-input").click();
+      await p.page.keyboard.type("and the report", { delay: 20 });
+      await p.page.locator("#chat-form button[type=submit]").click();
+      await p.page.waitForTimeout(1200);
+      await p.page.reload({ waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const storedHref = (file) => p.page.waitForFunction((file) => {
+        const a = Array.from(document.querySelectorAll("#chat-log .chat-chips .chip"))
+          .find((c) => c.textContent.includes(file) && /\/chat\/attachments\/\d+$/.test(c.getAttribute("href") || ""));
+        return a ? a.getAttribute("href") : false;
+      }, file, { timeout: 15000 }).then((h) => h.jsonValue());
+      let docHref = null;
+      try { docHref = await storedHref("spec.md"); } catch { /* the wait's own timeout is the failure below */ }
+      if (!docHref) fails.push("chat: the stored row never links spec.md to its serving route");
+      else {
+        const got = await p.page.request.get(base + docHref);
+        if (got.status() !== 200 || !(got.headers()["content-type"] || "").startsWith("text/")) fails.push("chat: the served document = " + got.status() + " " + got.headers()["content-type"]);
+      }
+      let pdfHref = null;
+      try { pdfHref = await storedHref("report.pdf"); } catch { /* as above */ }
+      if (!pdfHref) fails.push("chat: the stored row never links report.pdf to its serving route");
+      else {
+        const got = await p.page.request.get(base + pdfHref);
+        if (got.status() !== 200 || (got.headers()["content-type"] || "") !== "application/pdf") fails.push("chat: the served PDF = " + got.status() + " " + got.headers()["content-type"]);
+      }
       // the documents (roadmap 277): the Documents button opens the roadmap
       // in the view docked over the board, never over the chat; a link opens
       // the plan it names, Back returns, ?doc= restores, Escape closes
