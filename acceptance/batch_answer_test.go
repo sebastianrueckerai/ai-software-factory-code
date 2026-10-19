@@ -631,6 +631,9 @@ func (s *accBatchStore) SetTaskRisk(ctx context.Context, id, class string) error
 func (s *accBatchStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
+	panic("unused")
+}
 func (s *accBatchStore) OpenApproval(ctx context.Context, a factoryd.ApprovalRequest) (int64, error) {
 	panic("unused")
 }

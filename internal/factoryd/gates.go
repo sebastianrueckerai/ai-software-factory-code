@@ -1429,6 +1429,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if err != nil {
 		return MergeResult{}, err
 	}
+	r.recordMergeCommit(ctx, t, repo, pr)
 	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 		log.Printf("task %s: resolve the approval request: %v", t.ID, err)
 	}
@@ -1441,6 +1442,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 // factory-merge (an earlier attempt whose answer was lost) on approver's
 // approval, or a human, at whatever head they merged.
 func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, approver string, st PullRequestRef) MergeResult {
+	r.writeMergeCommit(ctx, t.ID, st.MergeCommit)
 	if st.MergedBy == MergeUser {
 		if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "approved", approver, "merged by "+MergeUser+" at "+commit); err != nil {
 			log.Printf("task %s: resolve the approval request: %v", t.ID, err)
@@ -1461,8 +1463,28 @@ func (r *Runner) mergedAlready(ctx context.Context, t Task, pr int64, commit, ap
 	return MergeResult{Merged: true, By: by}
 }
 
-func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
-	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
+// recordMergeCommit reads the merged pull request once more for the
+// commit its merge made on the base, then writes it to the card. The
+// write is a metric fact (roadmap 147): it never fails the merge.
+func (r *Runner) recordMergeCommit(ctx context.Context, t Task, repo Repo, pr int64) {
+	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		log.Printf("task %s: read the merged pull request: %v", t.ID, err)
+		return
+	}
+	r.writeMergeCommit(ctx, t.ID, st.MergeCommit)
+}
+
+func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
+	if commit == "" {
+		return
+	}
+	if err := r.store.SetTaskMergeCommit(ctx, taskID, commit); err != nil {
+		log.Printf("task %s: record the merge commit: %v", taskID, err)
+	}
+}
+
+func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
 		commit, approver, res.Refusal))

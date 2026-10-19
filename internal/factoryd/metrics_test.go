@@ -124,3 +124,32 @@ func TestPGStoreRecordCIRun(t *testing.T) {
 		t.Fatalf("rows = %d, %v; want 2", n, err)
 	}
 }
+
+// The merge queue writes the card's merge commit once: the first write
+// stands, so a re-merged pull request never rewrites the delivery fact.
+func TestPGStoreSetTaskMergeCommit(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES ('t1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskMergeCommit(ctx, "t1", "m-abc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskMergeCommit(ctx, "t1", "m-later"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Task(ctx, "t1")
+	if err != nil || !ok {
+		t.Fatalf("task read: %v %v", ok, err)
+	}
+	if got.MergeCommit != "m-abc" {
+		t.Fatalf("merge commit %q, want the first write m-abc", got.MergeCommit)
+	}
+}

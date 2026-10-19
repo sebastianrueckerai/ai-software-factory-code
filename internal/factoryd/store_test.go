@@ -735,6 +735,18 @@ func (s *fakeStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint
 	return nil
 }
 
+func (s *fakeStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	if t.MergeCommit == "" {
+		t.MergeCommit = commit
+		s.tasks[id] = t
+	}
+	return nil
+}
+
 func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	for i := range s.approvals {
 		if (a.Kind == ApprovalMerge || a.Kind == ApprovalPlan) && s.approvals[i].TaskID == a.TaskID && s.approvals[i].Kind == a.Kind && s.approvals[i].Status == "pending" {

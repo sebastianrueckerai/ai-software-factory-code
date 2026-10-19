@@ -124,6 +124,9 @@ type Task struct {
 	// task (alert-precheck, roadmap 181 item 3.12); "" for every other
 	// task. The pre-check reads its firing state by it.
 	AlertFingerprint string
+	// MergeCommit is the commit the merge queue's merge made on the base
+	// (roadmap 147), "" until the card merged; the first write stands.
+	MergeCommit string
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -430,6 +433,9 @@ type Store interface {
 	// SetTaskAlertFingerprint records the SigNoz alert fingerprint that
 	// filed an alert card's task (alert-precheck).
 	SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error
+	// SetTaskMergeCommit records the commit the merge made on the base;
+	// the first write stands.
+	SetTaskMergeCommit(ctx context.Context, id, commit string) error
 	// OpenApproval records a pending approval request and returns its id;
 	// a merge or plan request denies the task's earlier pending one of its
 	// kind (a retry, a new head, a new plan revision) as superseded.
@@ -801,7 +807,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, '')`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
@@ -811,7 +817,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -1493,6 +1499,14 @@ func (s *PGStore) SetTaskRisk(ctx context.Context, id, class string) error {
 func (s *PGStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET alert_fingerprint = $2 WHERE id = $1`, id, fingerprint)
 	return oneRow(res, err, "task "+id)
+}
+
+// SetTaskMergeCommit records the commit the merge made on the base; the
+// first write stands, so a later write on a set column changes nothing
+// and reports no error (the merge queue may pass a merged card twice).
+func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = $2 WHERE id = $1 AND merge_commit = ''`, id, commit)
+	return err
 }
 
 func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {

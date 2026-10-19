@@ -38,6 +38,7 @@ type gateForgejo struct {
 	merges      []map[string]any
 	mergeAuth   []string // each merge's Authorization header
 	merged      bool     // GET /pulls/9 reports merged
+	mergeCommit string   // and the commit the merge made on the base
 	mergedBy    string   // and by whom; "" = factory-merge
 	head        string   // GET /pulls/9's head sha; "" = c1
 	base        string   // and its base; "" = main
@@ -85,6 +86,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				"head":      map[string]any{"sha": cmp.Or(f.head, "c1")}, "base": map[string]any{"ref": cmp.Or(f.base, "main")}}
 			if f.merged {
 				pr["merged_by"] = map[string]any{"login": cmp.Or(f.mergedBy, "factory-merge")}
+				pr["merge_commit_sha"] = f.mergeCommit
 			}
 			json.NewEncoder(w).Encode(pr)
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
@@ -897,7 +899,7 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
 func TestMergeAsFactoryMerge(t *testing.T) {
-	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}, mergeCommit: "m-f1"}
 	task := gateTask
 	task.Author = "alice"
 	r, store, objects := newGateRunner(t, task, fj)
@@ -906,6 +908,9 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged {
 		t.Fatalf("result = %+v", res)
+	}
+	if got := store.tasks["t1"].MergeCommit; got != "m-f1" {
+		t.Fatalf("merge commit %q, want the merge's m-f1 on the card", got)
 	}
 	if fj.merges[0]["head_commit_id"] != "c1" || fj.merges[0]["MergeMessageField"] != "factoryd task t1 (issue #4): approved by sebastian, merged by factory-merge\n\n"+
 		"Factory-Role: merge\nFactory-Task: t1\nRequested-by: alice\nApproved-by: sebastian\n" {
@@ -1445,13 +1450,16 @@ func TestMergeOnlyIntoMain(t *testing.T) {
 // A human's merge in Forgejo, of another head, is credited to the human:
 // the approval row and the result name them and the head they merged.
 func TestMergeCreditsAHumanMerge(t *testing.T) {
-	fj := &gateForgejo{merged: true, mergedBy: "sebastian", head: "c2"}
+	fj := &gateForgejo{merged: true, mergedBy: "sebastian", head: "c2", mergeCommit: "m-h9"}
 	r, store, objects := newGateRunner(t, gateTask, fj)
 	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 	from := time.Now()
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "alice", "")
 	if res := getInto[MergeResult](t, val, err); !res.Merged || res.By != "sebastian" || len(fj.merges) != 0 {
 		t.Fatalf("result = %+v", res)
+	}
+	if got := store.tasks["t1"].MergeCommit; got != "m-h9" {
+		t.Fatalf("merge commit %q, want the human merge's m-h9 on the card", got)
 	}
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "merged in Forgejo by sebastian at c2, not the gated c1" {
 		t.Fatalf("approval = %+v", a)

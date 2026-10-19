@@ -583,6 +583,15 @@ func (s *acceptanceStore) SetTaskAlertFingerprint(_ context.Context, id, fingerp
 	return nil
 }
 
+func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.MergeCommit = commit
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) OpenApproval(_ context.Context, a factoryd.ApprovalRequest) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
