@@ -161,6 +161,17 @@ func (s *PGStore) MarkRollsCommitted(ctx context.Context, taskID string, shas []
 	return err
 }
 
+// MarkRollsFailed fails the opened roll requests of the roll task whose
+// pull request is pr: the watcher waited past its timeout and the roll's
+// deployments never ran the digest, so the requests join the ladder's
+// failures.
+func (s *PGStore) MarkRollsFailed(ctx context.Context, repository string, pr int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'failed' WHERE state = 'opened'
+		AND task_id IN (SELECT id FROM tasks WHERE source = $1 AND repository = $2 AND pr_number = $3)`,
+		SourceRoll, repository, pr)
+	return err
+}
+
 // RollHead is the branch commit RollCommit last wrote for task, "" before
 // its first.
 func (s *PGStore) RollHead(ctx context.Context, taskID string) (string, error) {
