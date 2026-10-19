@@ -91,28 +91,19 @@ func TestSizeLinesDerivesFromTheBound(t *testing.T) {
 	}
 }
 
-// A size whose derived lines reach the bound does not fit under it: the
-// filing check refuses it, naming the card, the size's lines and the
-// bound. Under a 400 bound large is refused and small and medium file;
-// without a bound every known size files as before.
-func TestValidatePlanRefusesASizeAtTheBound(t *testing.T) {
+// Every size of the ladder files at any bound: the ladder's lines are
+// derived from the risk bound, so measuring them back against it judges
+// nothing about the card. A size the ladder does not name is refused.
+func TestValidatePlanTakesEveryCardSize(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Size = "large"
-	fenced := fencePlan(p)
-	for name, tc := range map[string]struct {
-		bound int
-		want  []string
-	}{
-		"large at a 1000 bound":   {1000, []string{"plan: card links-api: size large plans up to 1000 changed lines and the bound is 1000: split the card"}},
-		"large under a 400 bound": {400, []string{"plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"}},
-		"no bound":                {0, nil},
-	} {
-		if got := ValidatePlan(fenced, testShape, testLimits, tc.bound); !slices.Equal(got, tc.want) {
-			t.Fatalf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
-		}
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits); len(got) != 0 {
+		t.Fatalf("a large card: ValidatePlan = %q, want no finding", got)
 	}
-	if got := ValidatePlan(fencePlan(testPlan()), testShape, testLimits, 400); len(got) != 0 {
-		t.Fatalf("small and medium under a 400 bound = %q, want no finding", got)
+	p.Cards[1].Size = "huge"
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits); len(got) != 1 ||
+		got[0] != "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints" {
+		t.Fatalf("a size the ladder does not name = %q, want the taxonomy line", got)
 	}
 }
 
@@ -215,7 +206,7 @@ func TestValidatePlan(t *testing.T) {
 		"empty item text": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Text = "" }), []string{"plan: card links-api: acceptance test 1 is empty"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := ValidatePlan(tc.text, testShape, testLimits, 0); !slices.Equal(got, tc.want) {
+			if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
 				t.Fatalf("ValidatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
@@ -235,13 +226,13 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 		}
 		return p
 	}
-	if got := ValidatePlan(fencePlan(at(11)), testShape, testLimits, 0); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
+	if got := ValidatePlan(fencePlan(at(11)), testShape, testLimits); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
 		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
 	}
 	p := at(11)
 	p.Cards = p.Cards[:2] // the foundation and links-api, no integration card
 	p.Spec = nil          // a plan this process gives no integration card carries no spec to confirm
-	if got := ValidatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, 0); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
+	if got := ValidatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
 		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
 	}
 }
@@ -259,13 +250,13 @@ func TestValidatePlanOneCard(t *testing.T) {
 		return p
 	}
 	min1 := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits, 400); len(got) != 0 {
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits); len(got) != 0 {
 		t.Fatalf("ValidatePlan = %q, want no findings", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits, 400); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
 		t.Fatalf("ValidatePlan = %q, want the two-card floor", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, 400); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
+	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
 		t.Fatalf("ValidatePlan = %q, want the integration role finding", got)
 	}
 }
@@ -1762,12 +1753,11 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	bounded := fixtureVersion(t)
-	bounded.Document.Risk.LargeLines = 400
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	ctx := context.Background()
 
 	over := testPlan()
-	over.Cards[1].Size = "large" // links-api: large plans 400 lines, the bound itself
+	over.Cards[1].Size = "huge" // links-api: a size the ladder does not name
 	b, err := json.Marshal(over)
 	if err != nil {
 		t.Fatal(err)
@@ -1776,7 +1766,7 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"}
+	want := []string{"plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 {
 		t.Fatalf("refused = %+v, want findings %q", res, want)
 	}
@@ -1828,7 +1818,6 @@ func TestPlanFileHandler(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	bounded := fixtureVersion(t)
-	bounded.Document.Risk.LargeLines = 400
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	h := PlanFileHandler(runner)
 	post := func(body string) *httptest.ResponseRecorder {
@@ -1845,9 +1834,9 @@ func TestPlanFileHandler(t *testing.T) {
 		return string(b)
 	}
 	over := testPlan()
-	over.Cards[1].Size = "large"
+	over.Cards[1].Size = "huge"
 	if rec := post(marshal("t-plan", over)); rec.Code != http.StatusOK ||
-		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"]}` {
+		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"]}` {
 		t.Fatalf("refused plan: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := post(marshal("t-plan", testPlan()))
@@ -1876,7 +1865,6 @@ func TestRunPlanTakesAToolFiling(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	pinned := fixtureVersion(t)
-	pinned.Document.Risk.LargeLines = 400
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	runner.cfg.Policy = func() policy.Version { return pinned }
 
@@ -1892,14 +1880,14 @@ func TestRunPlanTakesAToolFiling(t *testing.T) {
 	awaitPod(t, kube, done)
 	ctx := context.Background()
 	over := testPlan()
-	over.Cards[1].Size = "large"
+	over.Cards[1].Size = "huge"
 	b, err := json.Marshal(over)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if f, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || len(f.Findings) != 1 ||
-		f.Findings[0] != "plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card" {
-		t.Fatalf("over-bound filing = %+v, %v", f, err)
+		f.Findings[0] != "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints" {
+		t.Fatalf("a filing the plan rules refuse = %+v, %v", f, err)
 	}
 	b, err = json.Marshal(testPlan())
 	if err != nil {
@@ -2328,7 +2316,7 @@ func TestCardFactsRungLine(t *testing.T) {
 	if facts := cardFacts(PlanCard{Size: "small"}); strings.Contains(facts, "Rung") {
 		t.Fatalf("facts = %q, want no rung line", facts)
 	}
-	if got := cardFindings(PlanCard{Key: "a", Title: "t", Brief: "b", Size: "small", Rung: "huge"}, testLimits, 0); !slices.ContainsFunc(got, func(f string) bool { return strings.Contains(f, "rung huge") }) {
+	if got := cardFindings(PlanCard{Key: "a", Title: "t", Brief: "b", Size: "small", Rung: "huge"}, testLimits); !slices.ContainsFunc(got, func(f string) bool { return strings.Contains(f, "rung huge") }) {
 		t.Fatalf("findings = %q, want the rung refused", got)
 	}
 }

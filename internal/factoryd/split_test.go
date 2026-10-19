@@ -28,11 +28,10 @@ func splitPlan() Plan {
 	}}
 }
 
-// The check over the planner's answer: 2 or 3 cards, each size under the
-// bound, dependencies only among the cards and acyclic, every file
-// covered by a card's directories, a directory that is the root covering
-// none, and the lines of the files only one card covers under that card's
-// size.
+// The check over the planner's answer: 2 or 3 cards, dependencies only
+// among the cards and acyclic, every file covered by a card's
+// directories, a directory that is the root covering none, and the lines
+// of the files only one card covers under that card's size.
 func TestCheckSplit(t *testing.T) {
 	change := func(edit func(p *Plan)) string {
 		p := splitPlan()
@@ -47,9 +46,7 @@ func TestCheckSplit(t *testing.T) {
 		"passing": {fencePlan(splitPlan()), nil},
 		"four cards": {change(func(p *Plan) { p.Cards = append(p.Cards, extra, extra); p.Cards[3].Key = "more" }),
 			[]string{"plan: 4 cards; this process allows 2 to 3"}},
-		"over the bound": {change(func(p *Plan) { p.Cards[0].Size = "large" }),
-			[]string{"plan: card web: size large plans up to 1000 changed lines and the bound is 1000: split the card",
-				"split: card web is large, up to 1000 changed lines; each card stays under 1000"}},
+		"a large card": {change(func(p *Plan) { p.Cards[0].Size = "large" }), nil},
 		"cycle": {change(func(p *Plan) { p.Cards[1].DependsOn = []string{"web"} }),
 			[]string{"plan: the dependencies form a cycle: web -> api -> web"}},
 		"outside the split": {change(func(p *Plan) { p.Cards[0].DependsOn = []string{"auth"} }),
@@ -181,7 +178,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	guide := env["REPORT_GUIDE"]
 	for _, want := range []string{"Pull request #9 of this card changes 1100 lines in 3 files, more than the 1000 lines one pull request may change",
 		"each one pull request of under 1000 changed lines", "branch pull/9", "- web/app.ts +500 -0\n- web/app.css +80 -0\n- api/links.go +500 -20\n",
-		"size: small, medium or large; every card's size stays under 1000 lines."} {
+		"size: small, medium or large; a card's size covers the lines of the files only it carries."} {
 		if !strings.Contains(guide, want) {
 			t.Fatalf("guide lacks %q:\n%s", want, guide)
 		}

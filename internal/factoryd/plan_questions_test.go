@@ -31,7 +31,7 @@ func questionPlan() Plan {
 // a card's. The guide gives the field's format and one sentence on it,
 // nothing about when to ask (ruling 263).
 func TestPlanQuestionsFormat(t *testing.T) {
-	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, 0)
+	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits)
 	rawWith, with, _ := planSHA(p)
 	rawWithout, without, _ := planSHA(testPlan())
 	if len(findings) != 0 || len(p.Questions) != 2 || len(p.Questions[0].Choices) != 3 || len(p.Questions[1].Choices) != 2 || with == without ||
@@ -62,7 +62,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
-		if got := ValidatePlan(tc.text, testShape, testLimits, 0); !slices.Equal(got, tc.want) {
+		if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
 		}
 	}

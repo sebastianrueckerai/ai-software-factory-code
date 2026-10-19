@@ -27,21 +27,26 @@ func TestCardAcceptance(t *testing.T) {
 	}
 }
 
+// A ready card names one of the card sizes and carries acceptance
+// criteria, its own or its body's section.
 func TestReadyFindings(t *testing.T) {
 	key := "t-key"
-	if got := ReadyFindings(key, "a body", "small", []string{"TestA passes"}, 0); len(got) != 0 {
+	if got := ReadyFindings(key, "a body", "small", []string{"TestA passes"}); len(got) != 0 {
 		t.Errorf("a ready card: findings %v, want none", got)
 	}
-	got := ReadyFindings(key, "a body", "", nil, 0)
+	if got := ReadyFindings(key, "b", "large", []string{"x"}); len(got) != 0 {
+		t.Errorf("a large card: findings %v, want none", got)
+	}
+	got := ReadyFindings(key, "a body", "", nil)
 	want := `card t-key: size "": want small, medium or large` + "; card t-key: 0 acceptance tests; want 1 to 10"
 	if len(got) != 2 || strings.Join(got, "; ") != want {
 		t.Errorf("findings = %v, want %q", got, want)
 	}
-	got = ReadyFindings(key, "b", "large", []string{"x"}, 100)
-	if len(got) != 1 || got[0] != "card t-key: size large plans up to 100 changed lines and the bound is 100: split the card" {
-		t.Errorf("an over-bound large card: findings %v, want the split line", got)
+	got = ReadyFindings(key, "b", "huge", []string{"x"})
+	if len(got) != 1 || got[0] != "card t-key: size huge: split it; a card is one package, one page or one set of endpoints" {
+		t.Errorf("a size the ladder does not name: findings %v, want the taxonomy line", got)
 	}
-	got = ReadyFindings(key, "b\n\nAcceptance:\n- TestA\n", "small", nil, 0)
+	got = ReadyFindings(key, "b\n\nAcceptance:\n- TestA\n", "small", nil)
 	if len(got) != 0 {
 		t.Errorf("a card whose body carries the section: findings %v, want none", got)
 	}

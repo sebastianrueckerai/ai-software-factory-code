@@ -35,15 +35,15 @@ type ReadyStore interface {
 }
 
 // ReadyFindings are the ready check's per-card findings for a card that
-// would start or be filed (roadmap 239): its size inside the bounds and
-// acceptance criteria present, one line each naming the card and the
+// would start or be filed (roadmap 239): its size one of the card sizes
+// and acceptance criteria present, one line each naming the card and the
 // failed line; none for a ready card. The checks are the plan card's
 // own; the acceptance comes from the body when the card names none.
-func ReadyFindings(key, body, size string, acceptance []string, bound int) []string {
+func ReadyFindings(key, body, size string, acceptance []string) []string {
 	if acceptance == nil {
 		acceptance = CardAcceptance(body)
 	}
-	out := sizeFindings(size, bound)
+	out := sizeFindings(size)
 	out = append(out, acceptanceFindings(acceptance)...)
 	for i := range out {
 		out[i] = "card " + key + ": " + out[i]
@@ -56,7 +56,7 @@ func ReadyFindings(key, body, size string, acceptance []string, bound int) []str
 // project's work slots; "" when it may start. A failed count leaves the
 // refusal to the workflow's own bound.
 func StartRefusal(ctx context.Context, store ReadyStore, tree policy.Tree, t Task) string {
-	if f := ReadyFindings(t.PlanKey, t.Objective, t.Size, nil, tree.Document.Risk.LargeLines); len(f) > 0 {
+	if f := ReadyFindings(t.PlanKey, t.Objective, t.Size, nil); len(f) > 0 {
 		return strings.Join(f, "; ")
 	}
 	n, err := store.CountAdmitted(ctx, t.Repository)
@@ -73,7 +73,7 @@ func StartRefusal(ctx context.Context, store ReadyStore, tree policy.Tree, t Tas
 // lane of repository: the ready check's findings, then the project's
 // backlog cap; "" when it may file.
 func FileRefusal(ctx context.Context, store ReadyStore, tree policy.Tree, repository, key, title, body, size string) string {
-	if f := ReadyFindings(key, title+"\n\n"+body, size, nil, tree.Document.Risk.LargeLines); len(f) > 0 {
+	if f := ReadyFindings(key, title+"\n\n"+body, size, nil); len(f) > 0 {
 		return strings.Join(f, "; ")
 	}
 	return BacklogRefusal(ctx, store, tree, repository, key)

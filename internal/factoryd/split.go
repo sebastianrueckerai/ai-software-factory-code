@@ -40,18 +40,12 @@ const versionSplit workflow.Version = 1
 const splitFailed = "The split failed its check twice"
 
 // CheckSplit judges the planner's answer to a split of a pull request
-// changing files, each card under bound changed lines: the plan's own
-// findings for 2 or 3 cards, a card's size over the bound, the files no
+// changing files: the plan's own findings for 2 or 3 cards, the files no
 // card's directories cover (the repository's root covers none), and a
 // card whose size is under the lines of the files only it covers.
 func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (Plan, []string) {
-	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits, bound)
+	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits)
 	lines := sizeLines(bound)
-	for _, c := range p.Cards {
-		if n, ok := lines[c.Size]; ok && n >= bound {
-			out = append(out, fmt.Sprintf("split: card %s is %s, up to %d changed lines; each card stays under %d", c.Key, c.Size, n, bound))
-		}
-	}
 	covers := func(c PlanCard, f string) bool {
 		return slices.ContainsFunc(c.Directories, func(d string) bool {
 			d = path.Clean(d)
@@ -126,7 +120,7 @@ func splitGuide(pr int64, files []PRFile, bound int, limits policy.Limits) strin
 		"depends_on lists the keys of the cards a card needs merged first. "+
 		"title and brief: markdown. directories: paths relative to the repository's root. "+
 		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects. "+
-		"size: small, medium or large; every card's size stays under %[4]d lines.",
+		"size: small, medium or large; a card's size covers the lines of the files only it carries.",
 		pr, lines, len(files), bound, textutil.Truncate(list.String(), maxSplitFiles))
 }
 

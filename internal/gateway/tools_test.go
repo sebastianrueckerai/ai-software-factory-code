@@ -843,7 +843,7 @@ func TestFactorydFilePlanClient(t *testing.T) {
 func TestFilePlanTool(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	plan := `{"summary":"s","cards":[{"key":"links-api","role":"code","title":"t","brief":"b","size":"large"}]}`
-	finding := "plan: card links-api: size large plans up to 400 changed lines and the bound is 400: split the card"
+	finding := "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"
 	e.filer.res = PlanFiled{Findings: []string{finding}}
 	text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
 	if !isErr || text != "the plan was refused:\n- "+finding+"\ncorrect the plan and file it again in this session" {

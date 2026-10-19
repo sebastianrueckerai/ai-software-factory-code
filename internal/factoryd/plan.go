@@ -267,14 +267,13 @@ func deployOwner(spec string, p Plan) (needed bool, owner string) {
 
 // ValidatePlan judges the planner's last message against the process's plan
 // shape and the pinned limits: one line per finding, none for a valid plan.
-func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits, bound int) []string {
-	_, findings := readPlan(text, shape, limits, bound)
+func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits) []string {
+	_, findings := readPlan(text, shape, limits)
 	return findings
 }
 
-// readPlan is ValidatePlan with the plan it decoded. Bound is the risk
-// bound the sizes derive from (0: none).
-func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound int) (Plan, []string) {
+// readPlan is ValidatePlan with the plan it decoded.
+func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, []string) {
 	blocks := planBlock.FindAllStringSubmatch(text, -1)
 	if len(blocks) == 0 {
 		return Plan{}, []string{"plan: no fenced json block in the last message"}
@@ -342,7 +341,7 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, bound i
 		add("the dependencies form a cycle: %s", strings.Join(cycle, " -> "))
 	}
 	for _, c := range p.Cards {
-		out = append(out, cardFindings(c, limits, bound)...)
+		out = append(out, cardFindings(c, limits)...)
 	}
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
@@ -390,13 +389,9 @@ func questionFindings(qs []PlanQuestion) []string {
 }
 
 // sizeFindings are a card size's findings, the plan card's and the ready
-// check's alike: one of the card sizes, whose lines stay under the risk
-// bound.
-func sizeFindings(size string, bound int) []string {
+// check's alike: one of the card sizes.
+func sizeFindings(size string) []string {
 	var out []string
-	if n, ok := sizeLines(bound)[size]; ok && bound > 0 && n >= bound {
-		out = append(out, fmt.Sprintf("size %s plans up to %d changed lines and the bound is %d: split the card", size, n, bound))
-	}
 	switch {
 	case slices.Contains(policy.CardSizes, size):
 	case size == "":
@@ -586,14 +581,13 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	return out
 }
 
-// cardFindings are one card's findings on its own fields: a size whose
-// derived lines reach the risk bound does not fit under it.
-func cardFindings(c PlanCard, limits policy.Limits, bound int) []string {
+// cardFindings are one card's findings on its own fields.
+func cardFindings(c PlanCard, limits policy.Limits) []string {
 	var out []string
 	add := func(format string, args ...any) {
 		out = append(out, fmt.Sprintf("plan: card %s: "+format, append([]any{c.Key}, args...)...))
 	}
-	for _, f := range sizeFindings(c.Size, bound) {
+	for _, f := range sizeFindings(c.Size) {
 		add("%s", f)
 	}
 	if c.Rung != "" && c.Rung != RungCheap && c.Rung != RungFrontier {
@@ -2014,7 +2008,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits, v.Document.Risk.LargeLines)
+	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits)
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
@@ -2411,7 +2405,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	if !ok {
 		return ChildrenResult{}, terminalError("task %s has no plan revision %d", taskID, revision)
 	}
-	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits, v.Document.Risk.LargeLines)
+	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits)
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
