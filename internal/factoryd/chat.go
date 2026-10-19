@@ -388,16 +388,16 @@ func (s *PGStore) DeleteConversation(ctx context.Context, repository, login stri
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 			return 0, nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 		return 0, nil, err
 	}
-	rows.Close()
+	_ = rows.Close() // #nosec G104 -- the read is exhausted and rows.Err checked; Close repeats it at most
 	res, err = tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
 	if err != nil {
 		return 0, nil, err
@@ -434,16 +434,16 @@ func (s *PGStore) AbandonChatMessage(ctx context.Context, repository, login stri
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 			return nil, err
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 		return nil, err
 	}
-	rows.Close()
+	_ = rows.Close() // #nosec G104 -- the read is exhausted and rows.Err checked; Close repeats it at most
 	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3 AND id = $4`,
 		repository, login, conversation, id); err != nil {
 		return nil, err
