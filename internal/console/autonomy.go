@@ -452,6 +452,9 @@ func readTextDocument(label string, data []byte, from, to int, find string, rege
 	if strings.HasSuffix(content, "\n") {
 		lines = lines[:len(lines)-1]
 	}
+	if content == "" {
+		lines = nil
+	}
 	head := fmt.Sprintf("%s: %d bytes, %d lines, base_sha256 %s.", label, len(content), len(lines), factoryd.ContentHash(content))
 	if find != "" && (from > 0 || to > 0) {
 		return head + " find and a line range do not combine: find searches every line, from and to read one.", nil

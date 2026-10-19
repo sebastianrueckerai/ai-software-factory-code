@@ -2367,6 +2367,14 @@ func TestReadAttachmentHeadRangesAndFind(t *testing.T) {
 		got, err := trn.readAttachment(toolInput{Name: "doc1", Find: w.find, From: w.from, To: w.to, Regex: w.regex})
 		equal(t, w.name, []any{got, err}, []any{w.want, error(nil)})
 	}
+	// an empty document heads as it is: no bytes, no lines
+	g.replies = [][]string{{say("Got it.")}}
+	conv := strconv.FormatInt(answer.Conversation, 10)
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"doc1 again, empty"}, "conversation": {conv}}, testFile{name: "empty.md", data: nil}); code != 200 {
+		t.Fatalf("the send with the empty document = %d, want 200", code)
+	}
+	empty, eerr := trn.readAttachment(toolInput{Name: "doc1"})
+	equal(t, "the empty document", []any{empty, eerr}, []any{"doc1 (empty.md): 0 bytes, 0 lines, base_sha256 " + factoryd.ContentHash("") + ".\n\n", error(nil)})
 }
 
 // A name no member sent refuses naming the documents there are, a PDF
