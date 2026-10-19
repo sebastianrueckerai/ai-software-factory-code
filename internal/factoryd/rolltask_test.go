@@ -26,48 +26,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The fakeStore's roll requests, as PGStore keeps them. The chain rows,
-// as PGStore keeps them: one per pull request, the newest run it carries.
-
-type fakeChainRun struct {
-	pr     int64
-	sha    string
-	run    int64
-	status string
-}
-
-func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, error) {
-	var head int64
-	for _, c := range s.chain {
-		if c.run > head {
-			head = c.run
-		}
-	}
-	return head, nil
-}
-
-func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
-	for i, c := range s.chain {
-		if c.pr == pr && c.run > run {
-			return nil
-		}
-		if c.pr == pr {
-			s.chain[i] = fakeChainRun{pr: pr, sha: sha, run: run, status: status}
-			return nil
-		}
-	}
-	s.chain = append(s.chain, fakeChainRun{pr: pr, sha: sha, run: run, status: status})
-	return nil
-}
-
-func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
-	for i, c := range s.chain {
-		if c.sha == sha && c.status != status {
-			s.chain[i].status = status
-		}
-	}
-	return nil
-}
+// The fakeStore's roll requests, as PGStore keeps them.
 
 func (s *fakeStore) RollRequestSeen(ctx context.Context, sha string) (bool, error) {
 	return slices.ContainsFunc(s.rolls, func(r RollRequest) bool { return r.SHA == sha }), nil
@@ -960,9 +919,9 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// the runs read, the chain's three bootstrap reads (the run's parent,
-	// the merged pull requests, the compare) and the trigger's status read
-	if len(store.rolls) != 1 || len(f.calls) != 5 {
+	// the runs read and the trigger's status read; the chain's bootstrap
+	// reads belong to the chain poller now, not the roller
+	if len(store.rolls) != 1 || len(f.calls) != 2 {
 		t.Fatalf("folded before the pull request was open: rolls %+v, calls %v", store.rolls, f.calls)
 	}
 
@@ -991,65 +950,6 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	}
 	if !slices.Equal(wf.signals, []string{"t-open roll_folded factory-agent #21: roll c2c2c2c: worker folded in"}) {
 		t.Fatalf("signals %q", wf.signals)
-	}
-}
-
-// The chain recorder (roadmap 297): the first recording maps the newest
-// run only, its carry read from its first parent; a later run's carry is
-// read from the compare against the run before it, a finished run moves
-// its rows to its final status, a run no pull request rides is recorded
-// under none, and a pull request already mapped keeps its own run: a fold
-// settles the verdict of the run that carried it.
-func TestRollerRecordsTheChainOfEveryMainRun(t *testing.T) {
-	d3 := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
-	e4 := "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
-	f := &rollForgejo{
-		runs: []map[string]any{pushRun(61, commitC2, "running")},
-		carries: map[string][]map[string]any{
-			"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}},
-			commitC2 + "..." + d3:                      {{"sha": mergePR14}},
-			d3 + "..." + e4:                            {},
-		},
-	}
-	roller, store, _ := newTestRoller(t, f)
-	ctx := context.Background()
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.chain; len(got) != 1 || got[0] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "running"}) {
-		t.Fatalf("chain after the first recording %+v, want pr 12 running under run 61", got)
-	}
-	// the run finished, and a newer one arrived carrying another pull
-	// request: the old row moves to the final status, the new run's pull
-	// request is mapped beside it
-	f.runs = []map[string]any{pushRun(62, d3, "success"), pushRun(61, commitC2, "success")}
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	got := map[int64]fakeChainRun{}
-	for _, c := range store.chain {
-		got[c.pr] = c
-	}
-	if len(got) != 2 || got[12] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "success"}) ||
-		got[14] != (fakeChainRun{pr: 14, sha: d3, run: 62, status: "success"}) {
-		t.Fatalf("chain after the second run %+v, want pr 12 success under 61 and pr 14 success under 62", store.chain)
-	}
-	// a run no pull request rides is recorded under none; the pull
-	// requests already mapped keep their runs, their own verdicts
-	f.runs = []map[string]any{pushRun(64, e4, "running"), pushRun(62, d3, "success")}
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	got = map[int64]fakeChainRun{}
-	for _, c := range store.chain {
-		got[c.pr] = c
-	}
-	if len(got) != 3 || got[0] != (fakeChainRun{pr: 0, sha: e4, run: 64, status: "running"}) ||
-		got[12] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "success"}) {
-		t.Fatalf("chain after the third run %+v, want pr 0 under run 64 and pr 12 kept under 61", store.chain)
-	}
-	if head, _ := store.ChainHead(ctx, codeRepo); head != 64 {
-		t.Fatalf("chain head %d, want 64", head)
 	}
 }
 
@@ -1595,8 +1495,9 @@ func TestRollerNeverJudgesARunOlderThanARolledOne(t *testing.T) {
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// the runs read and the chain's three bootstrap reads; nothing judged
-	if len(store.rolls) != 2 || len(wf.started) != 0 || len(f.calls) != 4 {
+	// the runs read alone; nothing judged, and the chain's bootstrap
+	// reads belong to the chain poller now
+	if len(store.rolls) != 2 || len(wf.started) != 0 || len(f.calls) != 1 {
 		t.Fatalf("rolls %+v, starts %v, calls %v", store.rolls, wf.started, f.calls)
 	}
 }

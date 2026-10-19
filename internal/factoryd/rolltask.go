@@ -253,31 +253,6 @@ func (s *PGStore) LastMergedRoll(ctx context.Context, repository string) (string
 	return sha, err == nil, err
 }
 
-// ChainHead is the newest main run whose pull requests chain_runs records.
-func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, error) {
-	var head int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(run_id), 0) FROM chain_runs WHERE repository = $1`, repository).Scan(&head)
-	return head, err
-}
-
-// RecordChainRun upserts one pull request's row to the run that carries
-// it; a newer run wins, a fold's carry moving the change to the fold.
-func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $3, run_id = $4, status = $5, updated_at = now()
-		WHERE chain_runs.run_id < $4`, repository, pr, sha, run, status)
-	return err
-}
-
-// RefreshChainStatus moves every row of sha's run to a status the run
-// reached.
-func (s *PGStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET status = $3, updated_at = now()
-		WHERE repository = $1 AND sha = $2 AND status <> $3`, repository, sha, status)
-	return err
-}
-
 // bumpDigest points the one pinned reference to image in a manifest at
 // digest, and changes nothing else.
 func bumpDigest(content []byte, image, digest string) ([]byte, error) {
@@ -318,9 +293,6 @@ type RollerStore interface {
 	DeleteRollRequest(ctx context.Context, sha string) error
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
-	ChainHead(ctx context.Context, repository string) (int64, error)
-	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
-	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -403,9 +375,6 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err := r.mainState(ctx, runs); err != nil {
 		return err
 	}
-	if err := r.recordChain(ctx, runs); err != nil {
-		return err
-	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
 		return err
@@ -448,99 +417,6 @@ func (r *Roller) poll(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// recordChain records the main runs a poll sees into chain_runs (roadmap
-// 297): one row per pull request whose change a run carries, the run's
-// status the row's. The card's deploy fact, read from the chain itself,
-// for any project: the roll stays this one project's engine and writes
-// none of it. A run newer than the recorded head is mapped once, its
-// carry read from the compare against the run before it; the first
-// recording takes the newest run only, the runs before it belong to the
-// era before the chain was recorded. A run already recorded only moves
-// to a status it finished at.
-func (r *Roller) recordChain(ctx context.Context, runs []ActionRun) error {
-	repo := r.Repo.String()
-	head, err := r.Store.ChainHead(ctx, repo)
-	if err != nil {
-		return err
-	}
-	var main []ActionRun
-	for i := len(runs) - 1; i >= 0; i-- { // oldest first: each carry reads the run before it
-		if runs[i].PrettyRef == prBase && len(runs[i].CommitSHA) >= 7 {
-			main = append(main, runs[i])
-		}
-	}
-	if head == 0 && len(main) > 0 {
-		main = main[len(main)-1:]
-	}
-	prev := ""
-	for _, run := range main {
-		if run.ID <= head {
-			if run.Finished() {
-				if err := r.Store.RefreshChainStatus(ctx, repo, run.CommitSHA, run.Status); err != nil {
-					return err
-				}
-			}
-			prev = run.CommitSHA
-			continue
-		}
-		prs, err := r.chainCarried(ctx, run, prev)
-		if err != nil {
-			return err
-		}
-		if len(prs) == 0 {
-			// a run no pull request rides (a direct push): recorded under
-			// none, so the head still advances and the run is not mapped
-			// again
-			prs = []MergedPullRequest{{Number: 0}}
-		}
-		for _, p := range prs {
-			if err := r.Store.RecordChainRun(ctx, repo, p.Number, run.CommitSHA, run.ID, run.Status); err != nil {
-				return err
-			}
-		}
-		head = run.ID
-		prev = run.CommitSHA
-	}
-	return nil
-}
-
-// chainCarried lists the pull requests run's new commits merged. The
-// first run recorded has no run before it to compare: it reads its own
-// first parent, so its merge's pull requests still map.
-func (r *Roller) chainCarried(ctx context.Context, run ActionRun, prev string) ([]MergedPullRequest, error) {
-	base := prev
-	if base == "" {
-		parent, err := r.Forgejo.CommitParent(ctx, r.Repo.Owner, r.Repo.Name, run.CommitSHA)
-		if err != nil {
-			return nil, err
-		}
-		base = parent
-	}
-	merged, err := r.Forgejo.RecentMergedPullRequests(ctx, r.Repo.Owner, r.Repo.Name)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" { // a root commit: no pull request rides it
-		return nil, nil
-	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, run.CommitSHA)
-	if err != nil {
-		return nil, err
-	}
-	in := make(map[string]bool, len(c.Commits))
-	for _, cm := range c.Commits {
-		in[cm.SHA] = true
-	}
-	var prs []MergedPullRequest
-	for _, p := range merged {
-		if in[p.MergeCommit] {
-			prs = append(prs, p)
-		}
-	}
-	slices.SortFunc(prs, func(a, b MergedPullRequest) int { return cmp.Compare(a.Number, b.Number) })
-	return prs, nil
 }
 
 // imageContexts are main CI's three image jobs' commit-status contexts:
