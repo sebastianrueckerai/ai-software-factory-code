@@ -1328,16 +1328,19 @@ var chatView = (function () {
   // the list follows the factory: a turn ending elsewhere, a poke arriving,
   // and a settling event at once — the answer row and the badges follow
   // over the page's one stream (the settle concept)
-  var settleEvents = {question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
+  var settleEvents = {question_asked: 1, question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
     plan_accepted: 1, plan_changes_requested: 1, plan_rejected: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
   document.addEventListener("factoryevent", function (e) {
     if (!settleEvents[e.detail.kind]) return;
     listThreads();
     if (open && !busy(openRef()) && !document.hidden && !readOnly) load(open, openOwner, true);
   });
-  setInterval(function () {
+  // a hidden tab still reads the list — the stream reaches it, the title's
+  // count must too — and the tab coming back to the front reads it at once
+  document.addEventListener("visibilitychange", function () {
     if (!document.hidden) listThreads();
-  }, 10000);
+  });
+  setInterval(listThreads, 10000);
 
   load("");
 })();

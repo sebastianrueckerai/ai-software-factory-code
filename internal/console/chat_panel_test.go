@@ -298,3 +298,81 @@ console.log(JSON.stringify({
 		}
 	}
 }
+
+// The panel refreshes itself wherever the person reads it: an ask
+// arriving over the page's stream settles the list (the tab title's
+// count with it), the tab coming back to the front reads the list at
+// once, and the ten-second tick keeps reading it in a hidden tab, so
+// the count cannot sit stale until a reload.
+func TestChatPanelRefreshesItself(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var fetched = [], listeners = {}, intervals = [];
+function el() {
+  return {textContent: "", innerHTML: "", hidden: false, className: "", value: "",
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    addEventListener: function () {}, setAttribute: function () {}, focus: function () {},
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+}
+var document = {title: "Factory console", hidden: false,
+  getElementById: function (id) { return (id === "screen" || id === "chat-divider") ? null : el(); },
+  addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el()};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url) { fetched.push(String(url)); return Promise.resolve({ok: true, json: function () {
+    return Promise.resolve(String(url).endsWith("/conversations") ? [] : {messages: [], thread: {number: 0, title: "", state: "active"}}); }}); },
+  setInterval: function (fn) { intervals.push(fn); return intervals.length; },
+  setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var drain = function () { return new Promise(function (res) { setImmediate(res); }).then(function () {
+  return new Promise(function (res) { setImmediate(res); }); }); };
+var sawList = function () { return fetched.some(function (u) { return u.indexOf("/conversations", u.length - 14) !== -1; }); };
+var out = {};
+Promise.resolve().then(drain).then(function () {
+  fetched.length = 0;
+  (listeners["factoryevent"] || []).forEach(function (fn) { fn({detail: {kind: "question_asked"}}); });
+}).then(drain).then(function () {
+  out.asked = sawList();
+  fetched.length = 0;
+  document.hidden = false;
+  (listeners["visibilitychange"] || []).forEach(function (fn) { fn({}); });
+}).then(drain).then(function () {
+  out.visible = sawList();
+  fetched.length = 0;
+  document.hidden = true;
+  intervals.forEach(function (fn) { fn(); });
+}).then(drain).then(function () {
+  out.hiddenTick = sawList();
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct{ Asked, Visible, HiddenTick bool }
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !got.Asked {
+		t.Error("an ask arriving over the stream does not settle the thread list")
+	}
+	if !got.Visible {
+		t.Error("the tab coming back to the front does not read the thread list")
+	}
+	if !got.HiddenTick {
+		t.Error("the ten-second tick skips a hidden tab")
+	}
+}
