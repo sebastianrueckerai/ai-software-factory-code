@@ -620,12 +620,15 @@ var chatView = (function () {
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
   }
-  // add puts html at the end of into, before the streaming cursor
+  // add puts html at the end of into, before the streaming cursor, and
+  // returns the row it put there
   function add(into, html) {
     var t = document.createElement("template");
     t.innerHTML = html;
+    var el = t.content.firstElementChild;
     into.insertBefore(t.content, into.querySelector(":scope > .cursor"));
     scrollEnd();
+    return el;
   }
   // ref is a thread's key: its number and its owner, "" the member's own
   function ref(n, owner) { return n + "@" + (owner || ""); }
@@ -770,13 +773,14 @@ var chatView = (function () {
   function turn(k, text, images, docs) {
     var at = k.indexOf("@"), n = Number(k.slice(0, at)), owner = k.slice(at + 1);
     var shown = k === openRef(), command = text === "/compact";
+    var sent = null;
     if (shown) {
       pending = null;
       drawAnswer();
     }
     var into = document.createElement("div");
     if (shown) {
-      if (!command) add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images, docs));
+      if (!command) sent = add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images, docs));
       add(log, chatView.agentHTML(new Date(), ""));
       scrollEnd(true);
       into = log.lastElementChild;
@@ -790,9 +794,34 @@ var chatView = (function () {
     (docs || []).forEach(function (d) { body.append("documents", d.file, d.file.name); });
     run(n, owner, base, body, into).then(function () {
       if (command && k === openRef()) return load(n, owner);
+      if (sent && ((images || []).length || (docs || []).length)) return refreshRow(k, sent, text);
     }).then(function () {
       if (document.activeElement === document.body) input.focus();
     });
+  }
+  // refreshRow swaps the attachments a sent row still shows as optimistic
+  // object URLs for the stored ones: an object URL a failed turn leaves
+  // behind never loads again, the serving route does. The turn's own error
+  // line is a later row and stays; a stored row whose text differs from
+  // what was sent — a queued duplicate raced ahead, a refused send stored
+  // nothing — leaves the row as it is.
+  function refreshRow(k, row, text) {
+    var at = k.indexOf("@"), n = k.slice(0, at), owner = k.slice(at + 1);
+    return fetch(base + "?conversation=" + encodeURIComponent(n) + (owner ? "&owner=" + encodeURIComponent(owner) : ""), {headers: {Accept: "application/json"}})
+      .then(function (resp) { return resp.ok ? resp.json() : null; })
+      .then(function (data) {
+        if (!data || !row.isConnected) return;
+        var m = null;
+        (data.messages || []).forEach(function (x) { if (x.role === "user") m = x; });
+        if (!m || m.content !== text) return;
+        var ims = [], docs = [];
+        (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; (/^image\//.test(a.content_type) ? ims : docs).push(a); });
+        if (!ims.length && !docs.length) return;
+        var t = document.createElement("template");
+        t.innerHTML = chatView.userHTML(login, m.content, m.at, m.queued, ims, docs);
+        row.replaceWith(t.content.firstElementChild);
+        scrollEnd();
+      }).catch(function () {});
   }
   function expired(el) {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };

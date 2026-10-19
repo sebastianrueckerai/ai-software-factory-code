@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"mime"
+	"mime/multipart"
 	"net/http"
 	"reflect"
 	"regexp"
@@ -624,6 +625,17 @@ type chatImage struct {
 	data                        []byte
 }
 
+// readPart reads one form file whole up to limit, one byte past it so
+// the caller sees the bound broken.
+func readPart(fh *multipart.FileHeader, limit int64) ([]byte, error) {
+	f, err := fh.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, limit+1))
+}
+
 // chatImages are the form's images parts in order, named img1.. by
 // arrival — the names the member's text refers to — each within the
 // bounds and typed by its leading bytes, never by a name or header a
@@ -635,12 +647,7 @@ func chatImages(r *http.Request) ([]chatImage, string) {
 	}
 	out := make([]chatImage, 0, len(files))
 	for i, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			return nil, fmt.Sprintf("%s did not read", fh.Filename)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, chatImageBytes+1))
-		f.Close()
+		data, err := readPart(fh, chatImageBytes)
 		if err != nil {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
@@ -679,12 +686,7 @@ func chatDocuments(r *http.Request) ([]chatDocument, string) {
 	}
 	out := make([]chatDocument, 0, len(files))
 	for i, fh := range files {
-		f, err := fh.Open()
-		if err != nil {
-			return nil, fmt.Sprintf("%s did not read", fh.Filename)
-		}
-		data, err := io.ReadAll(io.LimitReader(f, chatDocBytes+1))
-		f.Close()
+		data, err := readPart(fh, chatDocBytes)
 		if err != nil {
 			return nil, fmt.Sprintf("%s did not read", fh.Filename)
 		}
@@ -1139,9 +1141,13 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
 			result := call.Result
-			if earlier && isRead(call.Name) {
-				result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
-					call.Name + " again for the present]"
+			if earlier && isRead(call.Name) && !isPriced(call.Name) {
+				if call.Name == "read_attachment" {
+					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]"
+				} else {
+					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out, as the project may have changed since; call " +
+						call.Name + " again for the present]"
+				}
 			}
 			msgs = append(msgs, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}

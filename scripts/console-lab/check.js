@@ -405,16 +405,25 @@ async function text(page) {
       if (!(await docs.isVisible()) || !(await docs.innerText()).includes("doc1")) fails.push("chat: the mixed drop shows no doc1");
       // the send stores the row: the words intact beside the riding
       // files. The just-sent row is optimistic (its chips object URLs)
-      // until a read carries the stored ids, and the lab's turn always
-      // fails (the operator door is closed), so the read never comes by
-      // itself: a reload reads the thread back, and there the document
-      // is a link chip to its served bytes and the PDF serves as a PDF
+      // until a read carries the stored ids; the lab's turn always fails
+      // (the operator door is closed), and the read that patches the row
+      // in place must come even then, or the chips die with their object
+      // URLs. A reload reads the thread back, and there the document is
+      // a link chip to its served bytes and the PDF serves as a PDF
+      const storedHref = (file) => p.page.waitForFunction((file) => {
+        const a = Array.from(document.querySelectorAll("#chat-log .chat-chips .chip"))
+          .find((c) => c.textContent.includes(file) && /\/chat\/attachments\/\d+$/.test(c.getAttribute("href") || ""));
+        return a ? a.getAttribute("href") : false;
+      }, file, { timeout: 15000 }).then((h) => h.jsonValue());
       await p.page.locator("#chat-input").click();
       await p.page.keyboard.type("here are the run notes", { delay: 20 });
       await p.page.locator("#chat-form button[type=submit]").click();
       await p.page.waitForTimeout(1200);
       const sentLog = await p.page.locator("#chat-log").innerText();
       if (!sentLog.includes("here are the run notes")) fails.push("chat: the sent message's words do not store: " + sentLog.slice(-120));
+      let liveHref = null;
+      try { liveHref = await storedHref("spec.md"); } catch { /* the wait's own timeout is the failure below */ }
+      if (!liveHref) fails.push("chat: the failed turn leaves spec.md on its object URL, no read patches the row");
       // a PDF rides the same way
       await drop([["report.pdf", "application/pdf", "%PDF-1.7\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"]]);
       await p.page.waitForTimeout(200);
@@ -424,11 +433,6 @@ async function text(page) {
       await p.page.waitForTimeout(1200);
       await p.page.reload({ waitUntil: "load" });
       await p.page.waitForTimeout(600);
-      const storedHref = (file) => p.page.waitForFunction((file) => {
-        const a = Array.from(document.querySelectorAll("#chat-log .chat-chips .chip"))
-          .find((c) => c.textContent.includes(file) && /\/chat\/attachments\/\d+$/.test(c.getAttribute("href") || ""));
-        return a ? a.getAttribute("href") : false;
-      }, file, { timeout: 15000 }).then((h) => h.jsonValue());
       let docHref = null;
       try { docHref = await storedHref("spec.md"); } catch { /* the wait's own timeout is the failure below */ }
       if (!docHref) fails.push("chat: the stored row never links spec.md to its serving route");

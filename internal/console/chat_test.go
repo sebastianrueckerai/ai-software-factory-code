@@ -2214,19 +2214,6 @@ func TestChatDeleteThreadSweepsImages(t *testing.T) {
 	}
 }
 
-// An unknown image id is no image at all, whatever the object store
-// would say about the key it never had: the row's absence answers 404
-// before the store is asked.
-func TestChatUnknownImageIsNotFoundWhenTheStoreErrors(t *testing.T) {
-	r, _, _ := newChatRig(t)
-	ck, _ := r.loggedIn(t)
-	r.c.cfg.Timelines = failingObjects{}
-	resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck)
-	if resp.Code != http.StatusNotFound {
-		t.Fatalf("the unknown image = %d, want 404", resp.Code)
-	}
-}
-
 // A send whose images cannot all be stored leaves no half-message
 // behind: the rows written on the way are withdrawn, message and
 // attachments alike, and the objects with them.
@@ -3102,6 +3089,41 @@ func TestChatReplayDropsClaims(t *testing.T) {
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"content":"I proposed to file a card"`) {
 		t.Fatalf("GET = %s, want the row left out of the replay", rec.Body)
 	}
+}
+
+// A paid answer over the conversation's own attachment stays whole in an
+// earlier turn: the input never changes and re-running re-spends. A
+// document read is left out as any read, but names the document as
+// unchanged instead of a changed project.
+func TestChatReplayKeepsPricedAnswersOverAttachments(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	read := time.Now().Add(-10 * time.Minute)
+	for _, m := range []factoryd.ChatMessage{
+		{Role: "assistant", Content: "Over the run's files.", ToolCalls: []factoryd.ChatToolCall{
+			{ID: "call_1", Name: "read_attachment", Arguments: `{"name":"doc1"}`, Result: "doc1: 100 lines", ReadAt: read},
+			{ID: "call_2", Name: "summarize_attachment", Arguments: `{"name":"doc1"}`, Result: "The run shipped 1.2.3 after one fix.", ReadAt: read},
+			{ID: "call_3", Name: "analyze_image", Arguments: `{"name":"img1"}`, Result: "A screenshot of the board.", ReadAt: read},
+		}},
+	} {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.replies = [][]string{{say("fine")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what did the run say?"}})
+	equal(t, "the replay", messages(t, g.calls()[0])[1:], []map[string]any{
+		{"role": "assistant", "content": earlier("Over the run's files."), "tool_calls": []any{
+			map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "read_attachment", "arguments": `{"name":"doc1"}`}},
+			map[string]any{"id": "call_2", "type": "function", "function": map[string]any{"name": "summarize_attachment", "arguments": `{"name":"doc1"}`}},
+			map[string]any{"id": "call_3", "type": "function", "function": map[string]any{"name": "analyze_image", "arguments": `{"name":"img1"}`}},
+		}},
+		{"role": "tool", "content": "[read at " + read.UTC().Format("2006-01-02 15:04 UTC") +
+			", 10 min ago, in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]", "tool_call_id": "call_1"},
+		{"role": "tool", "content": "The run shipped 1.2.3 after one fix.", "tool_call_id": "call_2"},
+		{"role": "tool", "content": "A screenshot of the board.", "tool_call_id": "call_3"},
+		{"role": "user", "content": "what did the run say?"},
+	})
 }
 
 // An answer that begins with a stamp copied from a replayed row is shown

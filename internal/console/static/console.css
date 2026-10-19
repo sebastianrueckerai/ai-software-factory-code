@@ -807,13 +807,12 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-queue .queued-remove { width: 26px; padding: 0; }
 /* the images and documents riding the next message: chips above the
    prompt, and thumbnails or link chips under a sent row */
-.chat-images { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
-.chat-images li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 2px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-images, .chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
+.chat-images li, .chat-docs li { display: inline-flex; align-items: center; gap: 6px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
+.chat-images li { padding: 2px 6px 2px 2px; }
+.chat-docs li { padding: 2px 6px; }
 .chat-images img { width: 22px; height: 22px; object-fit: cover; border-radius: 3px; display: block; }
-.chat-images .queued-remove { width: 20px; height: 20px; padding: 0; }
-.chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
-.chat-docs li { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; border: 1px dashed var(--btn-line); font: 12px var(--font-mono); color: var(--text-muted); }
-.chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
+.chat-images .queued-remove, .chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
 .chat-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-thumbs a { display: block; }
