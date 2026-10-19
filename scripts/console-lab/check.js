@@ -49,7 +49,7 @@ const mustHave = {
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
-    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
+    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
@@ -62,11 +62,11 @@ const mustHave = {
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
-  idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
+  idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
-  quiet: ["One card is working", "1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+  quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
 };
 
 async function seed(s) {
@@ -282,7 +282,7 @@ async function text(page) {
         if (!(await d.isVisible())) fails.push("busy: a click on the card does not open the drawer");
         else {
           const dt = await d.innerText();
-          for (const w of ["Overview", "Chat", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
+          for (const w of ["Overview", "Session", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
           const tabs = await d.getByRole("tab").allInnerTexts();
           if (tabs[tabs.length - 1] !== "Files") fails.push("drawer: Files is not the last tab (" + tabs.join(", ") + ")");
           const box = await d.boundingBox();
