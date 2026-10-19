@@ -1,10 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -286,6 +288,34 @@ func TestPGStoreDiffSizes(t *testing.T) {
 	}
 	if files.(int64) != 3 || insertions.(int64) != 20 || deletions.(int64) != 11 {
 		t.Fatalf("diff size = %v/%v/%v, want 3/20/11", files, insertions, deletions)
+	}
+}
+
+// A pull request diff Forgejo cut off at 1 MiB records no size, and says
+// so: the task keeps NULL and the log names the pull request.
+func TestRevertPassTruncatedDiff(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	at := now.Add(-time.Hour)
+	book := &fakeRevertBook{
+		projects: []Project{{Name: "demo", Repository: "sf/repo"}},
+		tasks:    []Task{{ID: "t-big", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: &at}},
+	}
+	big := "diff --git a/big.go b/big.go\n@@ -1 +1,2 @@\n+x\n" + strings.Repeat("y", revertDiffMax)
+	m, _ := testMetrics(t)
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	pass := &RevertPass{Book: book, Forgejo: revertForgejo(t, []map[string]any{mergedPR(7, now.Add(-30*time.Minute))},
+		map[int64]string{7: big}), Metrics: m, Now: func() time.Time { return now }}
+	err := pass.Run(context.Background())
+	log.SetOutput(os.Stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := book.sizes["t-big"]; ok {
+		t.Fatalf("a truncated diff recorded %v", book.sizes["t-big"])
+	}
+	if !strings.Contains(buf.String(), "pull request #7") || !strings.Contains(buf.String(), "no diff size") {
+		t.Fatalf("the truncation went unlogged: %q", buf.String())
 	}
 }
 

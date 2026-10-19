@@ -126,6 +126,7 @@ func (p *RevertPass) repository(ctx context.Context, repository string, tasks []
 			return "", err
 		}
 		if len(d) > revertDiffMax {
+			log.Printf("revert pass: pull request #%d of %s/%s is past 1 MiB; the pass records no diff size for it", n, repo.Owner, repo.Name)
 			d = ""
 		}
 		diffs[n] = d
