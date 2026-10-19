@@ -721,7 +721,7 @@ body:has(#screen) #flash { flex: none; }
 /* the chat and the board hold a divider between them: the drag sets
    --chat-share, every side keeps its minimum (18rem the chat, 30rem the
    board) */
-#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, 4fr)) 10px minmax(30rem, 1fr); gap: 0; }
+#screen.with-chat { grid-template-columns: minmax(18rem, var(--chat-share, .667fr)) 10px minmax(30rem, 1fr); gap: 0; }
 #chat-divider { position: relative; cursor: col-resize; }
 #chat-divider::after { content: ""; position: absolute; inset: 0 4px; background: var(--line); }
 #chat-divider:hover::after, #chat-divider:focus-visible::after { background: var(--accent); }
@@ -947,26 +947,32 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 @media (max-width: 899px) {
   body:has(#screen) { height: auto; display: block; }
   body:has(#screen) > main { display: block; }
-  header.top { gap: 0 8px; padding: 0 10px; }
+  /* every target in the bar is 44 px tall, above its hairline; a box
+     that reads smaller is drawn inside its target */
+  header.top { gap: 0 8px; height: 45px; padding: 0 10px; }
   header .home { display: none; }
   header nav { gap: 0 8px; }
   header nav a { padding: 0 5px; font-size: 13px; }
-  header nav .act { padding: 0 8px; }
+  header nav .act { height: 44px; margin: 0; padding: 0 2px; border: 0; }
   header nav .act .w { display: none; }
-  header nav .act .p { display: inline; }
-  .menu summary { padding: 0 8px; font-size: 13px; }
+  header nav .act .p { display: inline-flex; align-items: center; height: 24px; padding: 0 8px; border: 1px solid var(--btn-line); border-radius: 3px; }
+  .menu summary { height: 44px; padding: 0 8px; font-size: 13px; }
   .menu .w { display: none; }
   .menu .p { display: inline; }
-  .menu .sheet { position: fixed; left: 0; right: 0; top: 44px; min-width: 0; }
+  .menu .sheet { position: fixed; left: 0; right: 0; top: 45px; min-width: 0; }
   .menu .sheet .g-work { display: block; }
   .menu .s-out { display: flex; }
+  .menu .s-out button { height: 44px; }
   .logout { display: none; }
-  .theme-switch::before { width: 34px; height: 30px; }
-  [data-theme=light] .theme-switch::before { transform: translateX(34px); }
-  .theme-switch button { width: 34px; height: 30px; }
-  .theme-switch svg { width: 18px; height: 18px; }
-  .switch { flex: 0 1 auto; max-width: 40%; min-width: 0; }
-  .switch select { width: 100%; max-width: none; }
+  .theme-switch { padding: 0; border: 0; box-shadow: inset 0 0 0 1px var(--line-strong); }
+  .theme-switch::before { top: 0; left: 0; width: 44px; height: 44px; }
+  [data-theme=light] .theme-switch::before { transform: translateX(44px); }
+  .theme-switch button { width: 44px; height: 44px; }
+  .theme-switch svg { width: 22px; height: 22px; }
+  .switch { position: relative; flex: 0 1 auto; max-width: 40%; min-width: 0; }
+  .switch::before { content: ""; position: absolute; inset: 8px 0; border: 1px solid var(--btn-line); border-radius: 3px; pointer-events: none; }
+  [data-theme=light] .switch::before { z-index: -1; background: var(--bg-card); }
+  .switch select { width: 100%; max-width: none; height: 44px; border-color: transparent; background-color: transparent; background-position-y: center; }
   .status { margin: 10px 12px 0; }
   .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
   .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
@@ -982,6 +988,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat-head { height: auto; min-height: 42px; flex-wrap: wrap; padding: 8px 12px; }
   .chat-form { padding: 10px 12px 12px; }
   .chat-form button, .proposal .doit, button.skip { height: 44px; min-width: 96px; }
+  .chat-form .chat-grow { min-width: 0; }
   .board-head .view-toggle { display: none; }
   .board-head .documents { height: 44px; padding: 0 12px; font-size: 13px; }
   .board-head { flex-wrap: wrap; height: auto; }
