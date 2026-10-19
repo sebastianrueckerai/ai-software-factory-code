@@ -1,0 +1,4 @@
+{"workflow_runs":[
+{"id":53,"title":"Roll factoryd","workflow_id":"ci.yml","index_in_repo":53,"prettyref":"main","commit_sha":"","event":"push","trigger_event":"push","status":"success","started":"2026-09-28T10:15:00Z","stopped":"2026-09-28T10:20:00Z","created":"2026-09-28T10:14:59Z","updated":"2026-09-28T10:20:00Z"},
+{"id":52,"title":"Roll factoryd","workflow_id":"ci.yml","index_in_repo":52,"prettyref":"main","commit_sha":"9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f","event":"push","trigger_event":"push","status":"failure","started":"2026-09-28T10:05:40Z","stopped":"2026-09-28T10:09:40Z","created":"2026-09-28T10:05:39Z","updated":"2026-09-28T10:09:40Z"}
+],"total_count":4}

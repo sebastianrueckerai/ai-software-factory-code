@@ -133,6 +133,52 @@ func TestFreshEmitsOutOfOrderFinishesOnce(t *testing.T) {
 	}
 }
 
+type fakeCIRuns struct{ rows []fakeCIRunRow }
+
+type fakeCIRunRow struct {
+	repo, commit string
+	pushed       time.Time
+	ms           int64
+}
+
+func (f *fakeCIRuns) RecordCIRun(ctx context.Context, repository, commit string, pushedAt time.Time, durationMS int64) error {
+	f.rows = append(f.rows, fakeCIRunRow{repository, commit, pushedAt, durationMS})
+	return nil
+}
+
+// Each finished run appends one ci_runs row: pushed at its creation,
+// lasting to its last job's finish. A run without a commit sha
+// records nothing; a re-run writes nothing either (the store's
+// ON CONFLICT guard, tested above).
+func TestCIRunsRecordsFinishedRuns(t *testing.T) {
+	m, _ := testMetrics(t)
+	hub := &ciAPIHub{tasksFile: "actions-tasks-boot.json", runsFile: "actions-runs-boot.json"}
+	srv := hub.serve(t)
+	rec := &fakeCIRuns{}
+	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL}, Owner: "sf", Repo: "ai-software-factory-code", Token: "registrar-tok", Metrics: m, Runs: rec}
+	ctx := context.Background()
+
+	c.poll(ctx) // run 50 already finished at boot: history, no row
+	if len(rec.rows) != 0 {
+		t.Fatalf("boot recorded %v", rec.rows)
+	}
+	hub.set("actions-tasks-2.json", "actions-runs-2.json")
+	c.poll(ctx) // run 51 finishes
+	hub.set("actions-tasks-3.json", "actions-runs-3.json")
+	c.poll(ctx) // run 52 finishes
+	hub.set("actions-tasks-3.json", "actions-runs-empty.json")
+	c.poll(ctx) // run 53 finishes with no commit sha
+	c.poll(ctx)
+
+	want := []fakeCIRunRow{
+		{"sf/ai-software-factory-code", "c62cd2d1ad2dd06b8e73354a0ff07fde47321184", time.Date(2026, 9, 28, 9, 59, 58, 0, time.UTC), 315000},
+		{"sf/ai-software-factory-code", "9f1e0c3a5b7d2e4f6a8c0b1d3e5f7a9c1b3d5e7f", time.Date(2026, 9, 28, 10, 5, 39, 0, time.UTC), 241000},
+	}
+	if !reflect.DeepEqual(rec.rows, want) {
+		t.Fatalf("recorded %v, want %v", rec.rows, want)
+	}
+}
+
 func readRunJobs(t *testing.T, file string) []CIJob {
 	t.Helper()
 	body, err := os.ReadFile("testdata/" + file)

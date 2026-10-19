@@ -3,11 +3,13 @@ package factoryd
 import (
 	"context"
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -82,4 +84,43 @@ func sums(t *testing.T, reader *sdkmetric.ManualReader, name string) map[string]
 		t.Fatalf("%s: unexpected %T", name, data)
 	}
 	return out
+}
+
+// ci_runs is append-only: the first finished run of a commit carries the
+// push time every later figure reads, so a re-run never rewrites it.
+func TestPGStoreRecordCIRun(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE ci_runs`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 19, 9, 59, 58, 0, time.UTC)
+	if err := s.RecordCIRun(ctx, "sf/ai-software-factory-code", "c62cd2d1", at, 315000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordCIRun(ctx, "sf/ai-software-factory-code", "c62cd2d1", at.Add(time.Hour), 999000); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordCIRun(ctx, "sf/ai-software-factory-code", "9f1e0c3a", at.Add(6*time.Minute), 1000); err != nil {
+		t.Fatal(err)
+	}
+	var pushedAt time.Time
+	var duration int64
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT pushed_at, duration_ms FROM ci_runs WHERE repository = 'sf/ai-software-factory-code' AND commit = 'c62cd2d1'`).
+		Scan(&pushedAt, &duration); err != nil {
+		t.Fatal(err)
+	}
+	if !pushedAt.Equal(at) || duration != 315000 {
+		t.Fatalf("the first run of the commit won: %v %d", pushedAt, duration)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM ci_runs`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("rows = %d, %v; want 2", n, err)
+	}
 }

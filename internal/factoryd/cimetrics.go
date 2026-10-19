@@ -16,6 +16,11 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
+// CIRunRecorder appends a finished run to the durable ci_runs table.
+type CIRunRecorder interface {
+	RecordCIRun(ctx context.Context, repository, commit string, pushedAt time.Time, durationMS int64) error
+}
+
 // CIRuns turns the factory's own repository's actions/tasks into
 // factory.ci.job.duration once per finished job, and its actions/runs into
 // factory.ci.run.duration once per finished run. It keeps what it emitted
@@ -26,7 +31,8 @@ type CIRuns struct {
 	Owner, Repo string
 	Token       string // reads the repository's Actions
 	Metrics     *telemetry.Metrics
-	lastErr     string // logged once until the next success
+	Runs        CIRunRecorder // nil: no durable rows
+	lastErr     string        // logged once until the next success
 
 	jobs, runs idFloor
 }
@@ -158,6 +164,11 @@ func (c *CIRuns) pollRuns(ctx context.Context) error {
 	for _, r := range fresh(&c.runs, runs, runID, ActionRun.Finished) {
 		c.Metrics.CIRunDuration.Record(ctx, r.Stopped.Sub(r.Created).Seconds(), metric.WithAttributes(
 			attribute.String("event", r.Event), attribute.String("status", r.Status)))
+		if c.Runs != nil && r.CommitSHA != "" {
+			if err := c.Runs.RecordCIRun(context.WithoutCancel(ctx), c.Owner+"/"+c.Repo, r.CommitSHA, r.Created, r.Stopped.Sub(r.Created).Milliseconds()); err != nil {
+				log.Printf("ci metrics: record run %d: %v", r.ID, err)
+			}
+		}
 	}
 	return nil
 }
@@ -312,4 +323,14 @@ func CIJobsOf(ctx context.Context, f *Forgejo, token, owner, repo, sha string, q
 		jobs = append(jobs, j)
 	}
 	return jobs, nil
+}
+
+// RecordCIRun appends a finished run to ci_runs: the first run of a
+// (repository, commit) stands, a re-run writes nothing.
+func (s *PGStore) RecordCIRun(ctx context.Context, repository, commit string, pushedAt time.Time, durationMS int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO ci_runs (repository, commit, pushed_at, duration_ms) VALUES ($1, $2, $3, $4)
+		 ON CONFLICT (repository, commit) DO NOTHING`,
+		repository, commit, pushedAt, durationMS)
+	return err
 }
