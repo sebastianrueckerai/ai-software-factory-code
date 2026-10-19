@@ -69,6 +69,12 @@ type ProjectReader interface {
 // alertsCacheFor is how long one namespace's answer serves.
 const alertsCacheFor = 30 * time.Second
 
+// ProjectRollRecorder records a project roll the CI rollout wait
+// confirmed: one row per repository and digest (roadmap 198).
+type ProjectRollRecorder interface {
+	RecordProjectRoll(ctx context.Context, repository, namespace, digest, commit string, readyAt time.Time) error
+}
+
 // ProjectAlertsHandler serves GET /projects/{name}/alerts?namespace=&digest=:
 // the bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
 // project too), the namespace one of the project's (403 otherwise). The
@@ -83,7 +89,7 @@ const alertsCacheFor = 30 * time.Second
 // not mean the new pod is up. The answer is a JSON array, [] when nothing
 // fires, cached 30 s per project, namespace and digest; a source that
 // cannot be read answers 502, never [].
-func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys DeploymentLister) http.Handler {
+func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys DeploymentLister, rolls ProjectRollRecorder) http.Handler {
 	type entry struct {
 		at   time.Time
 		body []byte
@@ -114,11 +120,19 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys
 		e, hit := cache[key]
 		mu.Unlock()
 		if !hit || time.Since(e.at) >= alertsCacheFor {
-			list, err := namespaceAlerts(r.Context(), alerts, deploys, ns, digest)
+			list, confirmed, err := namespaceAlerts(r.Context(), alerts, deploys, ns, digest)
 			if err != nil {
 				log.Printf("project %q alerts for %q: %v", name, ns, err) // #nosec G706 -- %q escapes every control character
 				http.Error(w, "cannot read the alerts: "+err.Error(), http.StatusBadGateway)
 				return
+			}
+			if confirmed {
+				// the rollout the wait asked for is live: recorded once, the
+				// row is the project's deploy fact; a failed write never
+				// fails the answer the promotion reads
+				if err := rolls.RecordProjectRoll(r.Context(), p.Repository, ns, digest, r.URL.Query().Get("commit"), time.Now()); err != nil {
+					log.Printf("project %q roll %s in %s: %v", name, digest, ns, err) // #nosec G706 -- %q escapes every control character
+				}
 			}
 			e = entry{at: time.Now(), body: mustJSON(list)}
 			mu.Lock()
@@ -131,10 +145,10 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys
 	})
 }
 
-func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys DeploymentLister, ns, digest string) ([]ProjectAlert, error) {
+func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys DeploymentLister, ns, digest string) (list []ProjectAlert, confirmed bool, err error) {
 	rows, err := alerts.NewestAlertRows(ctx, AlertSigNoz, ns)
 	if err != nil {
-		return nil, fmt.Errorf("alerts: %w", err)
+		return nil, false, fmt.Errorf("alerts: %w", err)
 	}
 	out := []ProjectAlert{}
 	for _, a := range rows {
@@ -151,7 +165,7 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 	}
 	ds, err := deploys.Deployments(ctx, ns)
 	if err != nil {
-		return nil, fmt.Errorf("deployments: %w", err)
+		return nil, false, fmt.Errorf("deployments: %w", err)
 	}
 	if digest == "" {
 		for _, d := range ds {
@@ -160,22 +174,34 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 					Summary: "deployment " + d.Name + ": " + why})
 			}
 		}
-		return out, nil
+		return out, false, nil
 	}
+	confirmed = len(ds) > 0
 	if len(ds) == 0 {
 		out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
 			Summary: "no deployment in " + ns})
 	}
 	for _, d := range ds {
 		if running, ok := digestRunning(d.Images, digest); !ok {
+			confirmed = false
 			out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
 				Summary: "deployment " + d.Name + " runs " + running + ", not " + digest})
 		} else if ok, why := d.RolledOut(); !ok {
+			confirmed = false
 			out = append(out, ProjectAlert{Name: "rollout_not_ready", Namespace: ns, Source: "factoryd",
 				Summary: "deployment " + d.Name + " runs " + digest + " but is not rolled out: " + why})
 		}
 	}
-	return out, nil
+	return out, confirmed, nil
+}
+
+// RecordProjectRoll writes the project roll a CI rollout wait confirmed:
+// one row per repository and digest, a second confirmation a no-op.
+func (s *PGStore) RecordProjectRoll(ctx context.Context, repository, namespace, digest, commit string, readyAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO project_rolls (repository, namespace, digest, commit, ready_at)
+		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (repository, digest) DO NOTHING`,
+		repository, namespace, digest, commit, readyAt)
+	return err
 }
 
 // digestRunning reports whether every one of a Deployment's images ends in

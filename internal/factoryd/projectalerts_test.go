@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 type fakeAlerts struct {
@@ -32,11 +34,29 @@ func firing(state string, labels map[string]string, summary string) FiringAlert 
 }
 
 // rowAlerts is the alerts rows the endpoint reads, counting the reads;
-// err fails them.
+// err fails them. recordedRolls is the roll recorder the endpoint writes
+// confirmed polls to.
 type rowAlerts struct {
 	*fakeStore
-	err   error
-	calls atomic.Int32
+	recordedRolls *fakeRollRecords
+	err           error
+	calls         atomic.Int32
+}
+
+// RollRow is one roll the fake recorder captured, the columns the real
+// row keeps.
+type RollRow struct {
+	Repository, Namespace, Digest, Commit string
+	ReadyAt                               time.Time
+}
+
+type fakeRollRecords struct {
+	rows []RollRow
+}
+
+func (r *fakeRollRecords) RecordProjectRoll(_ context.Context, repository, namespace, digest, commit string, readyAt time.Time) error {
+	r.rows = append(r.rows, RollRow{Repository: repository, Namespace: namespace, Digest: digest, Commit: commit, ReadyAt: readyAt})
+	return nil
 }
 
 func (r *rowAlerts) NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error) {
@@ -66,11 +86,11 @@ func alertsRig(t *testing.T) (*memProjects, *rowAlerts, *fakeProjectKube, http.H
 	p.ReadTokenHash = hash
 	store.m[p.Name] = p
 	store.m["other"] = Project{Name: "other", Namespaces: []string{"other-ns"}, ReadTokenHash: HashToken("other-token")}
-	alerts := &rowAlerts{fakeStore: newFakeStore()}
+	alerts := &rowAlerts{fakeStore: newFakeStore(), recordedRolls: &fakeRollRecords{}}
 	kube := newFakeProjectKube()
 	kube.deploys = map[string][]DeploymentState{}
 	mux := http.NewServeMux()
-	mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(store, alerts, kube))
+	mux.Handle("GET /projects/{name}/alerts", ProjectAlertsHandler(store, alerts, kube, alerts.recordedRolls))
 	return store, alerts, kube, mux, token
 }
 
@@ -300,6 +320,102 @@ func TestAlertsCacheKeyHasDigest(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Name != "rollout_not_ready" {
 		t.Fatalf("a different digest reused the first digest's cached answer: %+v", got)
+	}
+}
+
+// A confirmed staging wait (every Deployment runs the asked digest and is
+// rolled out) writes one project_rolls row: the repository, the namespace,
+// the digest and the deploy commit the wait passed. A poll that still
+// waits records nothing, and the cached answer records no second row.
+func TestProjectAlertsRecordsARoll(t *testing.T) {
+	_, alerts, kube, h, token := alertsRig(t)
+	digest := "sha256:" + strings.Repeat("c", 64)
+	kube.deploys["demo-staging"] = []DeploymentState{
+		{Name: "linkshort", Generation: 1, ObservedGeneration: 1, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + digest}},
+	}
+	path := "/projects/demo-app/alerts?namespace=demo-staging&digest=" + digest + "&commit=abc1234"
+	rec := getAlerts(h, path, token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("the confirmed poll = %d %s", rec.Code, rec.Body)
+	}
+	row := RollRow{Repository: "demo-app/demo-app", Namespace: "demo-staging", Digest: digest, Commit: "abc1234", ReadyAt: time.Now()}
+	if len(alerts.recordedRolls.rows) != 1 {
+		t.Fatalf("rolls = %+v, want one row", alerts.recordedRolls.rows)
+	}
+	got := alerts.recordedRolls.rows[0]
+	if got.Repository != row.Repository || got.Namespace != row.Namespace || got.Digest != row.Digest || got.Commit != row.Commit {
+		t.Fatalf("roll = %+v, want %+v", got, row)
+	}
+	if got.ReadyAt.IsZero() || time.Since(got.ReadyAt) > time.Minute {
+		t.Fatalf("the roll's ready_at = %v, want now", got.ReadyAt)
+	}
+	// not rolled out: the wait keeps waiting and records nothing
+	waiting := "sha256:" + strings.Repeat("d", 64)
+	kube.deploys["demo-staging"] = append(kube.deploys["demo-staging"],
+		DeploymentState{Name: "worker", Generation: 2, ObservedGeneration: 2, Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 0,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + waiting}})
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest="+waiting+"&commit=abc5678", token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) == "[]" {
+		t.Fatalf("the waiting poll = %d %s", rec.Code, rec.Body)
+	}
+	// the wrong image runs: the wait keeps waiting
+	other := "sha256:" + strings.Repeat("e", 64)
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest="+other, token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) == "[]" {
+		t.Fatalf("the wrong-digest poll = %d %s", rec.Code, rec.Body)
+	}
+	// no digest: the promote gate's poll is no rollout confirmation
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging", token)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("the digest-less poll = %d %s", rec.Code, rec.Body)
+	}
+	// an empty namespace has no rollout to confirm: nothing runs, the
+	// rollout_not_ready alert fires (a promotion never passes on an app
+	// that never deployed)
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-prod&digest="+waiting+"&commit=abc5678", token)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "rollout_not_ready") {
+		t.Fatalf("the empty-namespace poll = %d %s", rec.Code, rec.Body)
+	}
+	if len(alerts.recordedRolls.rows) != 1 || alerts.recordedRolls.rows[0].Digest != digest {
+		t.Fatalf("rolls = %+v, want the one confirmed poll only", alerts.recordedRolls.rows)
+	}
+}
+
+// The rolls table keeps one row per repository and digest: a second
+// confirmation of the same digest writes nothing, the next digest does.
+func TestPGStoreProjectRolls(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE project_rolls`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-staging", "sha256:aa", "abc1234", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-staging", "sha256:aa", "abc1234", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-prod", "sha256:bb", "abc5678", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	var repository, namespace, digest, commit string
+	var readyAt time.Time
+	if err := s.db.QueryRowContext(ctx, `SELECT repository, namespace, digest, commit, ready_at FROM project_rolls WHERE digest = 'sha256:aa'`).Scan(&repository, &namespace, &digest, &commit, &readyAt); err != nil {
+		t.Fatal(err)
+	}
+	if repository != "demo-app/demo-app" || namespace != "demo-staging" || commit != "abc1234" || !readyAt.Equal(at) {
+		t.Fatalf("the first confirmation won: %s %s %s %s %v", repository, namespace, digest, commit, readyAt)
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM project_rolls`).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("rows = %d, %v; want 2", n, err)
 	}
 }
 
