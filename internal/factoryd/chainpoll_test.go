@@ -255,6 +255,67 @@ func TestChainPollerAndsTheRuns(t *testing.T) {
 	}
 }
 
+// A run the chain skipped never ran the change: it holds the head row
+// pending — the stall watchdog's case, not repair's.
+func TestChainPollerHoldsASkippedRunPending(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "skipped")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "skipped"},
+	}) {
+		t.Fatalf("chain of a skipped run %+v, want the head row pending", got)
+	}
+	if strings.Contains(logs.String(), "red:") {
+		t.Fatalf("repair of a skipped run: %s", logs.String())
+	}
+}
+
+// A cancelled run is the common transient: Forgejo cancels an in-flight
+// main run the moment the next push's run is created, and the superseding
+// run advances the head. The cancelled head holds pending — no repair.
+func TestChainPollerHoldsACancelledRunPending(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "cancelled")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "cancelled"},
+	}) {
+		t.Fatalf("chain of a cancelled run %+v, want the head row pending", got)
+	}
+	if strings.Contains(logs.String(), "red:") {
+		t.Fatalf("repair of a cancelled run: %s", logs.String())
+	}
+}
+
 // A repository whose workflow list is empty degrades to none for itself:
 // nothing recorded, and the degradation noted once however often it
 // polls.

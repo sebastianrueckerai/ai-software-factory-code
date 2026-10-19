@@ -352,12 +352,15 @@ func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun
 }
 
 // headVerdict is sha's head verdict: the AND of every main run the poll
-// sees on the commit and every required context of the repository. Any
-// run or context concluded red fails the head; anything not concluded
-// green — a run still running, a run the chain skipped (the change never
-// ran on the commit), a required context missing from the commit or
-// still pending — holds it pending; only all green is success. findings
-// name each red run and context.
+// sees on the commit and every required context of the repository. A run
+// concluded failure, or a context concluded failure or error, fails the
+// head; anything else not green — a run still running, a run the chain
+// skipped (the change never ran on the commit), a run cancelled by the
+// next push's superseding run (the common transient: it advances the
+// head), a required context missing from the commit or still pending —
+// holds it pending; only all green is success. The cancelled and skipped
+// cases are the stall watchdog's, not repair's. findings name each red
+// run and context.
 func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun, sha string) (verdict string, findings []string, err error) {
 	verdict = "success"
 	for _, run := range seen {
@@ -366,10 +369,10 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		}
 		switch {
 		case run.Status == "success":
-		case run.Finished(): // failure, cancelled
+		case run.Status == "failure":
 			verdict = "failure"
 			findings = append(findings, fmt.Sprintf("run %d %s", run.ID, run.Status))
-		case verdict != "failure":
+		case verdict != "failure": // running, skipped, cancelled
 			verdict = "pending"
 		}
 	}
