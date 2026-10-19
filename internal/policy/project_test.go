@@ -6,6 +6,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A project's month cap may only tighten the policy's (fixture month_eur
@@ -297,5 +298,38 @@ func TestApproversOf(t *testing.T) {
 		if got := tree.ApproversOf(repo); !reflect.DeepEqual(got, want) {
 			t.Errorf("ApproversOf(%s) = %v, want %v", repo, got, want)
 		}
+	}
+}
+
+// A project's chain block parses its mode, requires and stall; a file
+// without one leaves all three at their zero values, and Resolved fills
+// the defaults in, leaving what the file set as given.
+func TestChainConfigDefaults(t *testing.T) {
+	with := func(chain string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], chain...)
+		return files
+	}
+	tree, err := ParseTree(with("chain: {mode: run, requires: [factory/roll], stall: 45m}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := ChainConfig{Mode: "run", Requires: []string{"factory/roll"}, Stall: 45 * time.Minute}
+	if got := tree.Projects["demo-app"].Chain; !reflect.DeepEqual(got, want) {
+		t.Fatalf("chain = %+v, want %+v", got, want)
+	}
+	empty, err := ParseTree(with(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := empty.Projects["demo-app"].Chain; got.Mode != "" || got.Requires != nil || got.Stall != 0 {
+		t.Fatalf("a file without a chain block = %+v, want the zero values", got)
+	}
+	full := ChainConfig{Mode: "run", Requires: []string{"factory/roll"}, Stall: 45 * time.Minute}
+	if got := full.Resolved(); !reflect.DeepEqual(got, full) {
+		t.Fatalf("Resolved of a full chain = %+v, want it kept as %+v", got, full)
+	}
+	if got := (ChainConfig{}).Resolved(); !reflect.DeepEqual(got, ChainConfig{Mode: "run", Stall: 30 * time.Minute}) {
+		t.Fatalf("Resolved of an empty chain = %+v, want mode run, no requires, stall 30m", got)
 	}
 }

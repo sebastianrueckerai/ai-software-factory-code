@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ProjectDefault is what a project file leaves out takes (ruling 146):
@@ -291,6 +292,10 @@ type ProjectConfig struct {
 	// Routines are the project's recurring work, each run filing a card on
 	// its schedule.
 	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
+	// Chain is the project's merge chain: its mode, the commit statuses
+	// every head must carry and the stall bound; a file without one gets
+	// mode run and a 30m stall.
+	Chain ChainConfig `yaml:"chain,omitempty" json:"chain,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -310,6 +315,40 @@ func (t Tree) BacklogCapOf(repository string) int {
 		return p.BacklogCap
 	}
 	return DefaultBacklogCap
+}
+
+// ChainConfig is a project file's chain block: how the CI chain of its
+// repository's main is watched, so a merged card ends done only when its
+// change runs live.
+type ChainConfig struct {
+	// Mode runs the watch (run) or turns it off (none). Absent: run; a
+	// repository whose workflows list comes back empty watches nothing,
+	// which the poller holds.
+	Mode string `yaml:"mode,omitempty" json:"mode,omitempty"`
+	// Requires are the commit-status contexts every head must carry green
+	// beside its push runs; absent: none.
+	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// Stall is how long a run or a required context may stay pending
+	// before the chain is stalled; absent: 30m.
+	Stall time.Duration `yaml:"stall,omitempty" json:"stall,omitempty"`
+}
+
+// ChainModeRun is the chain mode that watches a project's merges.
+const ChainModeRun = "run"
+
+// DefaultChainStall is the stall bound of a chain block without one.
+const DefaultChainStall = 30 * time.Minute
+
+// Resolved is the chain with what the file left out filled: mode run,
+// the stall 30m; absent requires keep none, a set stall stays.
+func (c ChainConfig) Resolved() ChainConfig {
+	if c.Mode == "" {
+		c.Mode = ChainModeRun
+	}
+	if c.Stall == 0 {
+		c.Stall = DefaultChainStall
+	}
+	return c
 }
 
 // ProjectBudget caps a project's spend in EUR.
