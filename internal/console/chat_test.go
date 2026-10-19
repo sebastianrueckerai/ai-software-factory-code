@@ -3579,7 +3579,7 @@ func TestChatAnalyzeImageAskIsBounded(t *testing.T) {
 	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"see img1"}}, testFile{name: "shot.png", data: png1x1}); code != 200 {
 		t.Fatalf("the send with the image = %d, want 200", code)
 	}
-	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"` + strings.Repeat("a", 2001) + `"}`)}, {say("Too long.")}}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"`+strings.Repeat("a", 2001)+`"}`)}, {say("Too long.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img1?"}})
 	if len(events) != 3 || !strings.Contains(events[0], "Refused: ask: ") {
 		t.Fatalf("the over-long ask = %v", events)

@@ -358,7 +358,7 @@ type acceptObjects map[string][]byte
 
 func (o acceptObjects) Put(_ context.Context, k string, b []byte) error { o[k] = b; return nil }
 func (o acceptObjects) Get(_ context.Context, k string) ([]byte, error) { return o[k], nil }
-func (o acceptObjects) Delete(_ context.Context, k string) error { delete(o, k); return nil }
+func (o acceptObjects) Delete(_ context.Context, k string) error        { delete(o, k); return nil }
 
 // acceptEvents is the event spine in memory.
 type acceptEvents struct {
