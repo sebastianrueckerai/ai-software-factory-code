@@ -253,6 +253,41 @@ func (s *PGStore) LastMergedRoll(ctx context.Context, repository string) (string
 	return sha, err == nil, err
 }
 
+// FailedRolls are repository's roll requests that failed since the last
+// one merged, oldest first: the roll ladder's attempts. None before a
+// merged roll counts — the ladder climbs from the last success.
+func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, run_id, task_id, summary FROM roll_requests
+		WHERE repository = $1 AND state = 'failed'
+		AND run_id > COALESCE((SELECT max(run_id) FROM roll_requests WHERE repository = $1 AND state = 'merged'), 0)
+		ORDER BY run_id`, repository)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RollRequest
+	for rows.Next() {
+		var r RollRequest
+		if err := rows.Scan(&r.SHA, &r.RunID, &r.TaskID, &r.Summary); err != nil {
+			return nil, err
+		}
+		r.Repository = repository
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// StandingQuestion reports whether repository has a human card still
+// waiting whose ask carries marker: the question the marker names stands,
+// and no ladder escalates twice while it does.
+func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (bool, error) {
+	var open bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks
+		WHERE repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%')`,
+		repository, marker).Scan(&open)
+	return open, err
+}
+
 // bumpDigest points the one pinned reference to image in a manifest at
 // digest, and changes nothing else.
 func bumpDigest(content []byte, image, digest string) ([]byte, error) {
@@ -293,6 +328,8 @@ type RollerStore interface {
 	DeleteRollRequest(ctx context.Context, sha string) error
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
+	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
+	StandingQuestion(ctx context.Context, repository, marker string) (bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -361,12 +398,17 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	stuck := false
 	for _, req := range settled {
 		if req.State == RollMerged {
 			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
 		} else {
 			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
+			stuck = true
 		}
+	}
+	if stuck {
+		r.escalateRolls(ctx)
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
@@ -454,6 +496,63 @@ func (r *Roller) rollStatus(ctx context.Context, sha, state, description string)
 	if err := r.Forgejo.CreateCommitStatus(ctx, r.Repo.Owner, r.Repo.Name, sha,
 		CommitStatus{State: state, Context: rollStatusContext, Description: description}); err != nil {
 		log.Printf("roller: %s: report %s: %v", sha, state, err)
+	}
+}
+
+// rollAttemptBound is how many roll requests fail since the last merged
+// roll before the ladder asks a human: three attempts, each its own card
+// with its own failure, is a stuck pipeline no fourth automatic attempt
+// solves. A merged roll resets the ladder to zero.
+const rollAttemptBound = 3
+
+// rollAskMarker names the roll ladder's question in the card it files,
+// so StandingQuestion recognises it while it waits.
+const rollAskMarker = "rolls failed since the last one merged"
+
+// escalateRolls is the roll ladder's end. A roll request settled failed
+// this poll (each settles once) and the failures since the last merged
+// roll at the bound: the five-part question reaches a person — retry the
+// roll, park it or close it — once per climb, never twice while the
+// question stands. A failure that settles after the card closed climbs
+// again.
+func (r *Roller) escalateRolls(ctx context.Context) {
+	reqs, err := r.Store.FailedRolls(ctx, r.Repo.String())
+	if err != nil {
+		log.Printf("roller: read the failed rolls: %v", err)
+		return
+	}
+	if len(reqs) < rollAttemptBound {
+		return
+	}
+	if standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker); err != nil || standing {
+		if err != nil {
+			log.Printf("roller: read the standing question: %v", err)
+		}
+		return
+	}
+	var facts []string
+	for _, req := range reqs {
+		title, _, _ := strings.Cut(req.Summary, "\n\n")
+		fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
+		if t, ok, err := r.Store.Task(ctx, req.TaskID); err == nil && ok && t.IssueNumber > 0 {
+			fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+		}
+		facts = append(facts, fact)
+	}
+	q := HumanQuestion{
+		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", len(reqs), rollAskMarker),
+		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
+		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
+		Recommendation: "Retry the roll, after reading the newest failed card's reason",
+		Source:         "the roller's",
+		Choices: []QuestionChoice{
+			{Value: "retry", Label: "Retry the roll"},
+			{Value: AnswerPark, Label: "Park"},
+			{Value: AnswerClose, Label: "Close"},
+		},
+	}
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller"); err != nil {
+		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
 }
 

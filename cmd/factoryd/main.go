@@ -376,7 +376,7 @@ func main() {
 	// every run-mode repository's chain, recorded (roadmap 297): the roll
 	// stays the factory's own repository's engine and writes none of it
 	chainPoller := &factoryd.ChainPoller{Forgejo: forgejo, Store: store, Projects: store, Policy: policyLoader.Current,
-		Workflows: workflows, Timeline: runner.Timeline(), Now: time.Now, Poll: time.Minute}
+		Workflows: workflows, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now, Poll: time.Minute}
 	go chainPoller.Run(ctx)
 	// the factory's own dependency health (roadmap 299): the provider seam
 	// is the control-plane probe alone, so a cloud switch stays one value

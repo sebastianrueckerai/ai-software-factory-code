@@ -27,6 +27,18 @@ type fakeChainRun struct {
 	sha    string
 	run    int64
 	status string
+	// updated is the row's last change, as the store's now() stamps it;
+	// a test wires s.chainNow to the poller's clock where it matters
+	updated time.Time
+}
+
+// stamp is the time the fake's chain writes carry: zero, the clock a
+// test that cares about the head row's stamps wires.
+func (s *fakeStore) stamp() time.Time {
+	if s.chainNow != nil {
+		return s.chainNow()
+	}
+	return time.Time{}
 }
 
 func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, error) {
@@ -47,10 +59,10 @@ func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr in
 		if c.run >= run {
 			return nil
 		}
-		s.chain[i] = fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status}
+		s.chain[i] = fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status, updated: s.stamp()}
 		return nil
 	}
-	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status})
+	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status, updated: s.stamp()})
 	return nil
 }
 
@@ -59,23 +71,75 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 		if c.repo != repository || c.pr != 0 {
 			continue
 		}
-		if c.run > run || (c.run == run && c.sha == sha && c.status == status) {
+		if c.run > run || (c.run == run && c.sha == sha && c.status == status) ||
+			(c.status == "stalled" && status == "pending" && c.run == run && c.sha == sha) {
 			return nil
 		}
-		s.chain[i] = fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status}
+		s.chain[i] = fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()}
 		return nil
 	}
-	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status})
+	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()})
 	return nil
 }
 
 func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
 	for i, c := range s.chain {
-		if c.repo == repository && c.sha == sha && c.status != status {
+		if c.repo == repository && c.pr > 0 && c.sha == sha && c.status != status {
 			s.chain[i].status = status
+			s.chain[i].updated = s.stamp()
 		}
 	}
 	return nil
+}
+
+// RecordChainStall marks repository's head row of sha stalled, moving no
+// stamp: the row keeps the time its pending was first recorded.
+func (s *fakeStore) RecordChainStall(ctx context.Context, repository, sha string) error {
+	for i, c := range s.chain {
+		if c.repo == repository && c.pr == 0 && c.sha == sha && c.status == "pending" {
+			s.chain[i].status = "stalled"
+		}
+	}
+	return nil
+}
+
+// ChainHeadSince is the head row's last change: zero where no test wired
+// the fake's clock.
+func (s *fakeStore) ChainHeadSince(ctx context.Context, repository, sha string) (time.Time, bool, error) {
+	for _, c := range s.chain {
+		if c.repo == repository && c.pr == 0 && c.sha == sha {
+			return c.updated, true, nil
+		}
+	}
+	return time.Time{}, false, nil
+}
+
+// OpenRepairCard reports whether repository has a repair card open.
+func (s *fakeStore) OpenRepairCard(ctx context.Context, repository string) (bool, error) {
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Source == SourceChainRepair && !slices.Contains(FinalStatuses, t.Status) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// ChainCarriedIssues are the issue numbers of the cards whose change
+// repository's head at sha carried, ascending.
+func (s *fakeStore) ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error) {
+	var out []int64
+	for _, c := range s.chain {
+		if c.repo != repository || c.sha != sha || c.pr <= 0 {
+			continue
+		}
+		for _, t := range s.tasks {
+			if t.Repository == repository && t.PRNumber == c.pr && t.IssueNumber > 0 && !slices.Contains(out, t.IssueNumber) {
+				out = append(out, t.IssueNumber)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 // ChainCovered mirrors PGStore's read: every merged card with a pull
@@ -135,6 +199,7 @@ type chainForgejo struct {
 	merged    map[string][]map[string]any               // repository -> its closed pull requests
 	statuses  map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
+	issues    []string                                  // "title\n\nbody" of every issue filed
 	reads     []string                                  // "repository dir" of every workflow-list read
 }
 
@@ -179,6 +244,14 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				}
 			}
 			reply(map[string]any{"state": state, "statuses": f.statuses[repo][sha]})
+		case r.Method == "POST" && p == "/issues":
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			f.issues = append(f.issues, in["title"]+"\n\n"+in["body"])
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{"number": 30 + len(f.issues)})
+		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
+			reply([]any{})
 		case p == "/contents/.forgejo/workflows" || p == "/contents/.gitea/workflows":
 			f.reads = append(f.reads, repo+" "+p)
 			files, named := f.workflows[repo]
@@ -264,6 +337,7 @@ func TestChainPollerAndsTheRuns(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Own, _ = SplitRepo(codeRepo) // the factory's own repository: repair is mainfix's and the roll task's
 	if err := p.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +486,7 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: time.Minute}},
 		}}}
 	}
+	p.Own, _ = SplitRepo(codeRepo) // the factory's own repository: the stall records, no repair card files
 	clock := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
 	var logs bytes.Buffer
@@ -596,5 +671,167 @@ func TestChainPollerSignalsCoveredMerges(t *testing.T) {
 	}
 	if len(wf.signals) != 1 {
 		t.Fatalf("signals = %v; the covered signal fires once per head", wf.signals)
+	}
+}
+
+// chainRun is a push run with its run number, which a repair card links.
+func chainRun(id int64, sha, status string) map[string]any {
+	m := pushRun(id, sha, status)
+	m["index_in_repo"] = id
+	return m
+}
+
+var (
+	demoNext  = "e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5"
+	webRepo   = "sf/demo-web"
+	webCommit = "7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b7b"
+)
+
+// repairCards are the store's open-and-closed repair cards, by repository.
+func repairCards(s *fakeStore) map[string][]Task {
+	out := map[string][]Task{}
+	for _, t := range s.tasks {
+		if t.Source == SourceChainRepair {
+			out[t.Repository] = append(out[t.Repository], t)
+		}
+	}
+	return out
+}
+
+// A red head files one repair card per repository and no second while it
+// stands: the factory's own repository files none — mainfix owns a red
+// push run there, the roll task a red roll — every other project's red
+// head files its own card, and the open card holds the next red tick
+// back.
+func TestRepairFilesOneCardPerRedHead(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(62, commitC2, "failure")},
+			demoRepo: {chainRun(21, demoCommit, "failure")},
+			webRepo:  {chainRun(31, webCommit, "failure")},
+		},
+	}
+	wf := &fakeWorkflows{}
+	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo), seedProject(webRepo))
+	p.Workflows = wf
+	p.Own, _ = SplitRepo(codeRepo)
+	for range 2 {
+		if err := p.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards := repairCards(store)
+	if _, ok := cards[codeRepo]; ok {
+		t.Fatalf("repair cards of the factory's own repository: %+v", cards[codeRepo])
+	}
+	for _, repo := range []string{demoRepo, webRepo} {
+		if len(cards[repo]) != 1 {
+			t.Fatalf("%d repair cards of %s, want one: %+v", len(cards[repo]), repo, cards[repo])
+		}
+	}
+	if len(wf.started) != 2 {
+		t.Fatalf("started %v, want each repair card's workflow started", wf.started)
+	}
+}
+
+// The repair card carries the findings: the failing step, the failing
+// run's link, and the issue numbers of the cards whose change the head
+// carried — a queued agent card of the project's lane ready on the head.
+func TestRepairCardCarriesTheFindings(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{demoRepo: {chainRun(21, demoCommit, "failure")}},
+		carries: map[string]map[string][]map[string]any{
+			demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
+		},
+		merged: map[string][]map[string]any{
+			demoRepo: {{"number": 3, "merged": true, "merge_commit_sha": demoMerge}},
+		},
+		statuses: map[string]map[string][]map[string]string{
+			demoRepo: {demoCommit: {{"status": "failure", "context": "factory/roll"}}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}},
+		}}}
+	}
+	p.Workflows = &fakeWorkflows{}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged"}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cards := repairCards(store)
+	if len(cards[demoRepo]) != 1 {
+		t.Fatalf("repair cards %+v, want one", cards)
+	}
+	card := cards[demoRepo][0]
+	for _, want := range []string{
+		"run 21 failure",
+		"required context factory/roll: failure",
+		"/" + demoRepo + "/actions/runs/21",
+		"#77",
+	} {
+		if !strings.Contains(card.Objective, want) {
+			t.Fatalf("objective misses %q:\n%s", want, card.Objective)
+		}
+	}
+	if card.Lane != policy.LaneReady || card.Status != "queued" || card.Kind != "agent" || card.SHA != demoCommit {
+		t.Fatalf("card %+v, want a queued agent card of lane ready on the head", card)
+	}
+}
+
+// A stalled head records the stall on its row and files the repair card.
+// The stall clock is the head row's own stamp — frozen while its verdict
+// stands still — so a head pending since before this factoryd started
+// stalls on the first poll back, not after a fresh bound; a head
+// superseded while pending leaves its episode behind.
+func TestStalledHeadRecordsAndRepairs(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{demoRepo: {pushRun(21, demoCommit, "success")}},
+	}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: time.Minute}},
+		}}}
+	}
+	p.Workflows = &fakeWorkflows{}
+	clock := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	store.chainNow = p.Now
+	// the head row pending since two minutes before this factoryd started
+	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: demoCommit, run: 21, status: "pending", updated: clock.Add(-2 * time.Minute)}}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, demoRepo); got[0].status != "stalled" {
+		t.Fatalf("head row %+v, want the stall recorded", got[0])
+	}
+	cards := repairCards(store)
+	if len(cards[demoRepo]) != 1 || !strings.Contains(cards[demoRepo][0].Objective, "stalled past 1m0s at "+demoCommit) {
+		t.Fatalf("repair cards %+v, want one naming the stall and its bound", cards[demoRepo])
+	}
+	// a newer head arrives still pending: the superseded episode ends, the
+	// new one's clock is its own row's
+	f.runs[demoRepo] = []map[string]any{pushRun(22, demoNext, "success")}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.episodes) != 1 || p.episodes[headKey{demoRepo, demoNext}].since.IsZero() {
+		t.Fatalf("episodes %+v, want only the new head's, armed", p.episodes)
+	}
+	// the context reports success on the new head: the episode ends
+	f.statuses = map[string]map[string][]map[string]string{
+		demoRepo: {demoNext: {{"status": "success", "context": "factory/roll"}}},
+	}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, demoRepo); got[0].status != "success" {
+		t.Fatalf("head row %+v, want the concluded head green", got[0])
+	}
+	if len(p.episodes) != 0 {
+		t.Fatalf("episodes %+v, want the concluded head's ended", p.episodes)
 	}
 }

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -123,6 +124,34 @@ func (s *fakeStore) LastMergedRoll(ctx context.Context, repository string) (stri
 		}
 	}
 	return last.SHA, last.SHA != "", nil
+}
+
+// FailedRolls mirrors the store's read: the failures since repository's
+// newest merged roll, oldest first.
+func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
+	merged := int64(0)
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollMerged && r.RunID > merged {
+			merged = r.RunID
+		}
+	}
+	var out []RollRequest
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollFailed && r.RunID > merged {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
+	return out, nil
+}
+
+func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (bool, error) {
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind == "human" && t.Status == "waiting-human" && strings.Contains(t.Objective, marker) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // TaskRolls are task's roll requests, oldest first: an update writes them
@@ -1810,5 +1839,57 @@ func TestRollerReportsItsVerdictAsACommitStatus(t *testing.T) {
 	want = append(want, commitC1+" success factory/roll")
 	if !slices.Equal(f.reported, want) {
 		t.Fatalf("reported %v, want %v", f.reported, want)
+	}
+}
+
+// The roll ladder's end: when a roll request settles failed and three
+// have failed since the last merged roll, the roller asks a person — the
+// five-part question, Retry the roll / Park / Close as its buttons —
+// once: while the question stands no second card files.
+func TestRollEscalatesAfterAttempts(t *testing.T) {
+	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	seed := func(id, sha string, run int64, request string) {
+		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}
+		store.rolls = append(store.rolls, RollRequest{SHA: sha, Repository: codeRepo, RunID: run,
+			State: request, TaskID: id, Summary: fmt.Sprintf("roll %s: worker\n\nMain CI's push run %d published the images.", sha[:7], run)})
+	}
+	seed("t-r1", "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f", 51, RollFailed)
+	seed("t-r2", "2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f", 52, RollFailed)
+	seed("t-r3", "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", 53, RollOpened) // ends this poll
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var asks []Task
+	for _, t := range store.tasks {
+		if t.Kind == "human" && strings.Contains(t.Objective, "rolls failed since the last one merged") {
+			asks = append(asks, t)
+		}
+	}
+	if len(asks) != 1 || asks[0].Status != "waiting-human" {
+		t.Fatalf("needs-you cards %+v, want one waiting", asks)
+	}
+	for _, want := range []string{"Choices:", "- Retry the roll", "- Park", "- Close", "card #31"} {
+		if !strings.Contains(asks[0].Objective, want) {
+			t.Fatalf("the question misses %q:\n%s", want, asks[0].Objective)
+		}
+	}
+	var q *HumanQuestion
+	for _, e := range store.intakeEvents {
+		if e.Kind == IntakeEscalation {
+			q = e.Question
+		}
+	}
+	if q == nil || q.ChoiceValue("Retry the roll") != "retry" {
+		t.Fatalf("question %+v, want its buttons' values", q)
+	}
+	// a fourth failure settles while the question stands: no second card
+	seed("t-r4", "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", 54, RollOpened)
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.issues); n != 1 {
+		t.Fatalf("%d issues filed, want the one question", n)
 	}
 }
