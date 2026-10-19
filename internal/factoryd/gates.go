@@ -1484,7 +1484,8 @@ func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
 	}
 }
 
-func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
+func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
+	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(
 		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
 		commit, approver, res.Refusal))
