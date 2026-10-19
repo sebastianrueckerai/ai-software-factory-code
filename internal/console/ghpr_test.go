@@ -39,7 +39,7 @@ func TestGithubPullRequestMode(t *testing.T) {
 	m.SyncResult = "nothing to sync."
 	r.mirrors.rows["demo-app export"] = m
 	body := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=demo-app", nil), ck).Body.String()
-	if want := `<li>GitHub export: acme/app, pull requests, created; last sync: nothing to sync. <form method="post" action="/projects/demo-app/export/remove" class="inline">`; !strings.Contains(body, want) ||
+	if want := `GitHub export</dt><dd>acme/app, pull requests, created; last sync: nothing to sync. <form method="post" action="/projects/demo-app/export/remove" class="inline">`; !strings.Contains(body, want) ||
 		!strings.Contains(body, `<form method="post" action="/projects/demo-app/export/sync" class="inline">`) ||
 		!strings.Contains(body, `<option value="pull_requests">pull requests: each merged card</option>`) {
 		t.Fatalf("/settings: want the mode, the last sync, Sync latest and the form's mode:\n%s", body)

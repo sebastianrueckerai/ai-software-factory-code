@@ -1,8 +1,10 @@
 {{template "head" .}}
+<div class="page">
 <h2>Timeline of {{.Card.ID}}</h2>
 {{template "card" .Card}}
 {{template "gates" .}}
 {{template "steps" .}}
+</div>
 {{template "foot"}}
 
 {{define "gates"}}<table class="gates">

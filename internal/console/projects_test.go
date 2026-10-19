@@ -71,25 +71,25 @@ func TestSettingsPage(t *testing.T) {
 		"<h2>Settings</h2>", `<a href="/settings" aria-current="page">Settings</a>`, `<a href="/settings/new">New project</a>`,
 		`<option value="ai-software-factory-code" selected>`, `<option value="ai-software-factory-infra">`,
 		`<option value="demo-app">`, `<option value="gone">`,
-		"Objects: seed: the infra repository and the seed make them, factoryd reads and reports",
-		"Tokens: read forgejo-ci-registrar, Actions forgejo-ci-registrar, merge forgejo-merge",
+		"Objects</dt><dd>seed: the infra repository and the seed make them, factoryd reads and reports</dd>",
+		"Tokens</dt><dd>read forgejo-ci-registrar, Actions forgejo-ci-registrar, merge forgejo-merge</dd>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("/settings lacks %q", want)
 		}
 	}
-	if strings.Contains(body, "Repository: demo-app/demo-app") {
+	if strings.Contains(body, "<dd>demo-app/demo-app</dd>") {
 		t.Errorf("/settings shows a second project under the first")
 	}
 	const at = "https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/"
 	demo := page("/settings?project=demo-app")
 	for _, want := range []string{
 		`change them <a href="` + at + `demo-app.yaml" target="_blank" rel="noopener">in Git</a>`,
-		"Repository: demo-app/demo-app", "Objects: factory", "Agents: coder", "Merge rule: auto",
-		"Notify: sebastian (the project's approvers)", "Namespaces: demo-staging, demo-prod",
-		"Quota per namespace: 2 CPU, 4Gi memory, 10Gi storage",
+		"<dt>Repository</dt><dd>demo-app/demo-app</dd>", "Objects</dt><dd>factory</dd>", "Agents</dt><dd>coder</dd>", "Merge rule</dt><dd>auto</dd>",
+		"Notify</dt><dd>sebastian (the project's approvers)</dd>", "Namespaces</dt><dd>demo-staging, demo-prod</dd>",
+		"Quota per namespace</dt><dd>2 CPU, 4Gi memory, 10Gi storage</dd>",
 		"demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world",
-		"Forgejo: organisation, repository, CI user and tokens made",
+		"Forgejo</dt><dd>organisation, repository, CI user and tokens made</dd>",
 		"hostname: demo-staging.aisoftwarefactory.world", // the gateway YAML
 		`<form method="post" action="/projects/demo-app/export"`,
 	} {
@@ -109,7 +109,7 @@ func TestSettingsPage(t *testing.T) {
 		}
 	}
 	infra := page("/settings?project=ai-software-factory-infra")
-	for _, want := range []string{"Agents: none: every issue goes to the human lane", "Tokens: read forgejo-config"} {
+	for _, want := range []string{"Agents</dt><dd>none: every issue goes to the human lane</dd>", "Tokens</dt><dd>read forgejo-config"} {
 		if !strings.Contains(infra, want) {
 			t.Errorf("/settings?project=ai-software-factory-infra lacks %q", want)
 		}
@@ -183,13 +183,13 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 	readOnce := []string{"broken-first/broken", "broken-gone/broken", "broken-locked/broken", "broken-new/broken", "broken-prod/broken", "broken-staging/broken",
 		"demo-prod/demo-app", "demo-staging/demo-app"}
 
-	demoLine := "Environments: demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
-		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</li>"
-	brokenLine := "Environments: broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
+	demoLine := "Environments</dt><dd>demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready); " +
+		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod)</dd>"
+	brokenLine := "Environments</dt><dd>broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing); " +
 		"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet); broken-new: deploy/new (no Flux Kustomization yet); " +
 		"broken-locked: deploy/locked (deploy state unreadable); " +
 		"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory); " +
-		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)</li>"
+		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing)</dd>"
 	for _, page := range []struct {
 		project string
 		line    string
