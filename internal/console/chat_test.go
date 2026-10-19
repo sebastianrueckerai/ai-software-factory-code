@@ -841,15 +841,31 @@ func postStream(r *rig, ck *http.Cookie, s *session, path string, form url.Value
 	return postFiles(r, ck, s, path, form)
 }
 
-// testFile is one file part of a multipart send.
+// testFile is one file part of a multipart send; field names the form
+// field it rides, images when empty.
 type testFile struct {
-	name string
-	data []byte
+	name  string
+	data  []byte
+	field string
 }
 
 // chatPostFiles is chatPost with files riding the form as image parts.
 func chatPostFiles(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, form url.Values, files ...testFile) (int, []string, []string) {
 	t.Helper()
+	code, events, tokens, err := postFiles(r, ck, s, path, form, files...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, events, tokens
+}
+
+// chatPostDocs is chatPostFiles with the files riding the form as
+// document parts.
+func chatPostDocs(t *testing.T, r *rig, ck *http.Cookie, s *session, path string, form url.Values, files ...testFile) (int, []string, []string) {
+	t.Helper()
+	for i := range files {
+		files[i].field = cmp.Or(files[i].field, "documents")
+	}
 	code, events, tokens, err := postFiles(r, ck, s, path, form, files...)
 	if err != nil {
 		t.Fatal(err)
@@ -875,7 +891,8 @@ func postFiles(r *rig, ck *http.Cookie, s *session, path string, form url.Values
 		return 0, nil, nil, err
 	}
 	for _, f := range files {
-		fw, err := w.CreateFormFile("images", f.name)
+		field := cmp.Or(f.field, "images")
+		fw, err := w.CreateFormFile(field, f.name)
 		if err != nil {
 			return 0, nil, nil, err
 		}
@@ -2163,6 +2180,103 @@ func TestChatImageBounds(t *testing.T) {
 	}
 	if n := len(g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
+	}
+}
+
+// A document rides the composer's send as an image does: text and PDF
+// parts land as one user row with named attachments, the bytes in the
+// object store under the conversation, the read serving them back for
+// download. A zip, a fifth document, one past 32 MiB and a send with no
+// words refuse before any model call.
+func TestChatPostDocuments(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Read them.")}}
+	logText := []byte("# Deploy run\n\n- build ok\n- shipped 1.2.3\n")
+	pdf := append([]byte("%PDF-1.7\n"), bytes.Repeat([]byte("x"), 64)...)
+	code, events, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"read doc1 and doc2"}},
+		testFile{name: "spec.md", data: logText}, testFile{name: "report.pdf", data: pdf})
+	if code != 200 {
+		t.Fatalf("the send with documents = %d, want 200", code)
+	}
+	equal(t, "the turn", events, []string{`text {"text":"Read them."}`, `done {}`})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	atts := answer.Messages[0].Attachments
+	if len(atts) != 2 || atts[0].Name != "doc1" || atts[0].FileName != "spec.md" || atts[1].Name != "doc2" || atts[1].FileName != "report.pdf" ||
+		atts[0].ContentType != "text/plain; charset=utf-8" || atts[0].Bytes != int64(len(logText)) ||
+		atts[1].ContentType != "application/pdf" || atts[1].Bytes != int64(len(pdf)) {
+		t.Fatalf("the attachments = %+v", atts)
+	}
+	for i, d := range [][]byte{logText, pdf} {
+		if got := r.objects[fmt.Sprintf("attachments/%d/%d", answer.Conversation, atts[i].ID)]; !bytes.Equal(got, d) {
+			t.Fatalf("the object of %s = %d bytes, want the document", atts[i].Name, len(got))
+		}
+	}
+	resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[0].ID, 10), nil), ck)
+	if resp.Code != 200 || !strings.HasPrefix(resp.Header().Get("Content-Type"), "text/plain") || !bytes.Equal(resp.Body.Bytes(), logText) {
+		t.Fatalf("serving doc1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
+	}
+	five := make([]testFile, 5)
+	for i := range five {
+		five[i] = testFile{name: "one.log", data: logText}
+	}
+	for _, w := range []struct {
+		files  []testFile
+		answer string
+	}{
+		{files: five, answer: "at most 4 documents ride one message"},
+		{files: []testFile{{name: "run.log.zip", data: append([]byte("PK\x03\x04"), bytes.Repeat([]byte("z"), 64)...)}}, answer: "run.log.zip: a document is text or a PDF"},
+	} {
+		code, events, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"go"}}, w.files...)
+		if code != 400 || len(events) != 1 || !strings.Contains(events[0], w.answer) {
+			t.Fatalf("the send with %s = %d %v", w.answer, code, events)
+		}
+	}
+	big := make([]byte, 33<<20)
+	copy(big, "hello")
+	code, events, _ = chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"go"}}, testFile{name: "big.log", data: big})
+	if code != 400 || len(events) != 1 || !strings.Contains(events[0], "doc1 (big.log): a document is at most 32 MiB") {
+		t.Fatalf("the oversize document = %d %v", code, events)
+	}
+	if code, events, _ = chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {" "}}, testFile{name: "x.log", data: logText}); code != 400 || len(events) != 1 || !strings.Contains(events[0], "a message of up to 8 KiB is required") {
+		t.Fatalf("a document with no words = %d %v, want the message required", code, events)
+	}
+	if n := len(g.calls()); n != 1 {
+		t.Fatalf("%d model calls, want the one answered turn", n)
+	}
+}
+
+// The turn after it: the model's context carries the member's words with
+// the documents named on their own line beside the images line, meta
+// only — never the bytes.
+func TestChatReplayNamesDocuments(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got them.")}, {say("Seen.")}}
+	spec := append([]byte("# spec\n"), bytes.Repeat([]byte("x"), 1258291-7)...)
+	code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"read doc1 and img1"}},
+		testFile{name: "spec.md", data: spec}, testFile{field: "images", name: "shot.png", data: png1x1})
+	if code != 200 {
+		t.Fatalf("the send = %d, want 200", code)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what do you see"}, "conversation": {strconv.FormatInt(answer.Conversation, 10)}})
+	saw := ""
+	for _, m := range g.calls()[1]["messages"].([]any) {
+		um := m.(map[string]any)
+		if um["role"] == "user" && strings.Contains(um["content"].(string), "read doc1") {
+			saw = um["content"].(string)
+		}
+	}
+	want := fmt.Sprintf("[attached images: img1 (shot.png, %s)]\n[attached documents: doc1 (spec.md, 1.2 MiB)]", imageSize(int64(len(png1x1))))
+	if !strings.Contains(saw, want) || len(saw) > 400 {
+		t.Fatalf("the replayed row = %q, want %q beside the words, no bytes", saw, want)
 	}
 }
 
