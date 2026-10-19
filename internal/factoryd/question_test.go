@@ -1,8 +1,11 @@
 package factoryd
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The templates fill from the stops' real reason strings, the ones the
@@ -161,5 +164,24 @@ func TestBudgetNeed(t *testing.T) {
 		if got := BudgetNeed(reason); got != 0 {
 			t.Errorf("BudgetNeed(%q) = %v, want 0", reason, got)
 		}
+	}
+}
+
+// The question's numbers are the card's own: the cap and the share as the
+// human's answers widened them, not the policy's base — an ask that reads
+// "24 of its 12" sends a person hunting for a bug that is not there.
+func TestQuestionFactsReportTheRaisedCapAndShare(t *testing.T) {
+	store := newFakeStore()
+	store.checkinCalls = map[string]int{"t1": 24}
+	store.checkinSpent = map[string]float64{"t1": 1.2}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinCalls: 12, CheckinShare: 20}}}}
+	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckin: 1, ExtraCheckinShare: 2}}
+	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached")
+	if f.CheckinCap != 24 { // 12 calls, raised once
+		t.Errorf("CheckinCap = %d, want the raised 24", f.CheckinCap)
+	}
+	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
+		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
 	}
 }

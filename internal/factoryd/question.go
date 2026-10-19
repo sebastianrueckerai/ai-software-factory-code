@@ -336,8 +336,8 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 	}
 	if r.cfg.Policy != nil {
 		limits := r.cfg.Policy().Document.Limits
-		f.CheckinCap = limits.CheckinCallCap()
-		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR)
+		f.CheckinCap = checkinCap(t, limits)
+		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
 	}
 	return f
 }
