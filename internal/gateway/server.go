@@ -918,7 +918,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 		upReq.Header.Set("Authorization", "Bearer "+c.key.key)
 		upReq.Header.Set("X-LiteLLM-Spend-Logs-Metadata", fmt.Sprintf(`{"hold_id":%d}`, c.hold.ID))
 
-		res, err := s.http.Do(upReq)
+		res, err := s.http.Do(upReq) // #nosec G704 -- the URL is the server's configured LiteLLM address and the tainted body is the payload the proxy forwards; the probe's dispute, stood 2026-10-19
 		if err != nil {
 			if r.Context().Err() != nil {
 				s.settleCanceled(c)
