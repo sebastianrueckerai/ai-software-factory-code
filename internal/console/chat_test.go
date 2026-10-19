@@ -2127,6 +2127,9 @@ func TestChatImagesRideTheMessage(t *testing.T) {
 	if resp.Code != 200 || resp.Header().Get("Content-Type") != "image/png" || !bytes.Equal(resp.Body.Bytes(), png1x1) {
 		t.Fatalf("serving img1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
 	}
+	if resp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving img1 disposes as %q, want attachment", resp.Header().Get("Content-Disposition"))
+	}
 	if resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck); resp.Code != 404 {
 		t.Fatalf("an unknown image = %d, want 404", resp.Code)
 	}
@@ -2218,6 +2221,14 @@ func TestChatPostDocuments(t *testing.T) {
 	resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[0].ID, 10), nil), ck)
 	if resp.Code != 200 || !strings.HasPrefix(resp.Header().Get("Content-Type"), "text/plain") || !bytes.Equal(resp.Body.Bytes(), logText) {
 		t.Fatalf("serving doc1 = %d %s %d bytes", resp.Code, resp.Header().Get("Content-Type"), resp.Body.Len())
+	}
+	if resp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving doc1 disposes as %q, want attachment", resp.Header().Get("Content-Disposition"))
+	}
+	pdfResp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/"+strconv.FormatInt(atts[1].ID, 10), nil), ck)
+	if pdfResp.Code != 200 || pdfResp.Header().Get("Content-Type") != "application/pdf" || !bytes.Equal(pdfResp.Body.Bytes(), pdf) ||
+		pdfResp.Header().Get("Content-Disposition") != "attachment" {
+		t.Fatalf("serving doc2 = %d %s %q", pdfResp.Code, pdfResp.Header().Get("Content-Type"), pdfResp.Header().Get("Content-Disposition"))
 	}
 	five := make([]testFile, 5)
 	for i := range five {
@@ -2375,6 +2386,37 @@ func TestReadAttachmentHeadRangesAndFind(t *testing.T) {
 	}
 	empty, eerr := trn.readAttachment(toolInput{Name: "doc1"})
 	equal(t, "the empty document", []any{empty, eerr}, []any{"doc1 (empty.md): 0 bytes, 0 lines, base_sha256 " + factoryd.ContentHash("") + ".\n\n", error(nil)})
+	// a one-line document names its one line in a range refusal
+	g.replies = [][]string{{say("Got it.")}}
+	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"doc1 once more, one line"}, "conversation": {conv}}, testFile{name: "one.md", data: []byte("only line\n")}); code != 200 {
+		t.Fatalf("the send with the one-line document = %d, want 200", code)
+	}
+	one, oerr := trn.readAttachment(toolInput{Name: "doc1", From: 2, To: 2})
+	equal(t, "the one-line document", []any{one, oerr}, []any{"doc1 (one.md): 10 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("only line\n") +
+		". from 2 and to 2 name no line range of its 1 lines: name from at or before to, inside lines 1 to 1.", error(nil)})
+}
+
+// A made-up id answers 404 even when the object store errors on a key
+// that is not there, as production's does: the row's absence is checked
+// before any byte is read.
+func TestChatAttachmentUnknownIdIsNotFound(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	r.c.cfg.Timelines = erringObjects{r.objects}
+	if resp := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/attachments/9999", nil), ck); resp.Code != 404 {
+		t.Fatalf("an unknown attachment = %d, want 404", resp.Code)
+	}
+}
+
+// erringObjects is fakeObjects with production's miss: a key that is
+// not there errors instead of reading empty.
+type erringObjects struct{ fakeObjects }
+
+func (o erringObjects) Get(_ context.Context, k string) ([]byte, error) {
+	if b, ok := o.fakeObjects[k]; ok {
+		return b, nil
+	}
+	return nil, errors.New("the object is not there")
 }
 
 // A name no member sent refuses naming the documents there are, a PDF

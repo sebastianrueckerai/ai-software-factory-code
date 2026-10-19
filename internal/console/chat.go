@@ -289,9 +289,11 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatAttachment answers GET /projects/{name}/chat/attachments/{id}: an
-// image's bytes from the object store, its sniffed type on it. Any
-// member of the project reads any thread's image, as they read its rows;
-// another project's or a made-up id is no image at all.
+// attachment's bytes from the object store, its sniffed type on it, a
+// download rather than a page: member bytes never render as the
+// console. Any member of the project reads any thread's attachment, as
+// they read its rows; another project's or a made-up id is no attachment
+// at all.
 func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -304,25 +306,30 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	a, ok, err := c.cfg.Chat.ChatAttachmentByID(r.Context(), t.p.Repository, id)
 	if err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the attachment", http.StatusInternalServerError)
+		return
+	}
+	if !ok {
+		http.NotFound(w, r)
 		return
 	}
 	b, err := c.cfg.Timelines.Get(r.Context(), fmt.Sprintf("attachments/%d/%d", a.Conversation, a.ID))
 	if err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		http.Error(w, "cannot read the image", http.StatusInternalServerError)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		http.Error(w, "cannot read the attachment", http.StatusInternalServerError)
 		return
 	}
-	if !ok || len(b) == 0 {
+	if len(b) == 0 {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", a.ContentType)
+	w.Header().Set("Content-Disposition", "attachment")
 	w.Header().Set("Content-Length", strconv.Itoa(len(b)))
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	if _, err := w.Write(b); err != nil {
-		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		log.Printf("console: the attachment of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 	}
 }
 
@@ -1202,12 +1209,12 @@ func (t *turn) document(in toolInput) (*factoryd.ChatAttachment, []byte, error) 
 		}
 		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("no document %q: the conversation's documents are %s", in.Name, strings.Join(names, ", ")))
 	}
+	if found.ContentType == "application/pdf" {
+		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
+	}
 	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
 	if err != nil {
 		return nil, nil, err
-	}
-	if found.ContentType == "application/pdf" {
-		return nil, nil, refuse(http.StatusBadRequest, fmt.Sprintf("%s (%s) is a PDF, not text: paste the words you need as text, or attach an image of the page.", found.Name, found.FileName))
 	}
 	return found, b, nil
 }
