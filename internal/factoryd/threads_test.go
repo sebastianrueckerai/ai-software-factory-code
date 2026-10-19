@@ -203,11 +203,11 @@ func TestPGStoreChatThreads(t *testing.T) {
 	// the hard delete removes the member's rows, the thread and the seen
 	// marker (the sweep's marker rides it), and answers the count (the
 	// event is the console's to write)
-	gone, err := s.DeleteConversation(ctx, repo, login, 1)
+	gone, _, err := s.DeleteConversation(ctx, repo, login, 1)
 	if err != nil || gone != 4 {
 		t.Fatalf("DeleteConversation = %d, %v, want 4 rows gone", gone, err)
 	}
-	if _, err := s.DeleteConversation(ctx, repo, login, n); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.DeleteConversation(ctx, repo, login, n); !errors.Is(err, ErrNotFound) {
 		t.Errorf("deleting the inbox = %v, want ErrNotFound: the inbox stays", err)
 	}
 	if ok, err := s.ArchiveConversation(ctx, repo, login, n, true); err != nil || ok {
@@ -222,6 +222,54 @@ func TestPGStoreChatThreads(t *testing.T) {
 		if th.Number == 1 {
 			t.Errorf("thread 1 survived its delete: %+v", th)
 		}
+	}
+
+	// the images ride the delete: their rows go in the thread's own
+	// transaction, their ids answered for the objects' sweep
+	img, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "look at img1", Conversation: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var want []int64
+	for _, name := range []string{"img1", "img2"} {
+		a, err := s.AddChatAttachment(ctx, repo, login, ChatAttachment{Conversation: 2, MessageID: img,
+			Name: name, FileName: name + ".png", ContentType: "image/png", Bytes: 70})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, a.ID)
+	}
+	if _, ids, err := s.DeleteConversation(ctx, repo, login, 2); err != nil || !slices.Equal(ids, want) {
+		t.Fatalf("the delete's images = %v, %v, want %v", ids, err, want)
+	}
+	if left, err := s.ChatAttachments(ctx, repo, login, 2); err != nil || len(left) != 0 {
+		t.Fatalf("thread 2's images after the delete = %v, %v, want none", left, err)
+	}
+
+	// a message whose image could not be stored is withdrawn whole: its
+	// row, its image rows, the ids answered for the sweep
+	keep, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "this one stays", Conversation: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	half, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "look at img1", Conversation: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ha, err := s.AddChatAttachment(ctx, repo, login, ChatAttachment{Conversation: 3, MessageID: half,
+		Name: "img1", FileName: "shot.png", ContentType: "image/png", Bytes: 70})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.AbandonChatMessage(ctx, repo, login, 3, half); err != nil || !slices.Equal(ids, []int64{ha.ID}) {
+		t.Fatalf("the withdrawn message's images = %v, %v, want [%d]", ids, err, ha.ID)
+	}
+	rows, err := s.ChatMessages(ctx, repo, login, 3, 10)
+	if err != nil || len(rows) != 1 || rows[0].ID != keep {
+		t.Fatalf("thread 3's rows after the withdrawal = %v, %v, want only the message that stays", rows, err)
+	}
+	if left, err := s.ChatAttachments(ctx, repo, login, 3); err != nil || len(left) != 0 {
+		t.Fatalf("thread 3's images after the withdrawal = %v, %v, want none", left, err)
 	}
 }
 

@@ -2574,7 +2574,7 @@ func webpVP8L(w, h int) []byte {
 func webpVP8X(w, h int) []byte {
 	b := []byte("RIFF\x1e\x00\x00\x00WEBPVP8X\x0a\x00\x00\x00")
 	b = append(b, 0, 0, 0, 0)
-	b = append(b, byte(w-1), byte(w-1>>8), byte(w-1>>16), byte(h-1), byte(h-1>>8), byte(h-1>>16))
+	b = append(b, byte(w-1), byte((w-1)>>8), byte((w-1)>>16), byte(h-1), byte((h-1)>>8), byte((h-1)>>16))
 	return b
 }
 
@@ -2685,5 +2685,17 @@ func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
 	}
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeOperator, body); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "only text parts") {
 		t.Fatalf("the operator purpose with an image = %d: %s, want 400 refused_body", rr.Code, rr.Body)
+	}
+}
+
+// The sniffer reads legal headers a strict walk would refuse: JPEG's
+// fill bytes between markers, and the VP8X canvas's size-minus-one.
+func TestImageDimsReadsFillBytesAndTheTrueCanvas(t *testing.T) {
+	fill := append([]byte{0xff, 0xd8, 0xff, 0xff}, jpegHeader(200, 100)[2:]...)
+	if w, h, ok := imageDims(fill); !ok || w != 200 || h != 100 {
+		t.Fatalf("a JPEG with fill bytes = %d×%d %v, want 200×100", w, h, ok)
+	}
+	if w, h, ok := imageDims(webpVP8X(100, 50)); !ok || w != 100 || h != 50 {
+		t.Fatalf("a VP8X canvas = %d×%d %v, want 100×50", w, h, ok)
 	}
 }

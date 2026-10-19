@@ -158,7 +158,12 @@ type Chat interface {
 	RemoveChatWatch(ctx context.Context, repository, login, taskID string) (bool, error)
 	AddChatTimer(ctx context.Context, repository, login string, conversation int64, due time.Time, note, taskID string) error
 	ArchiveConversation(ctx context.Context, repository, login string, n int64, archived bool) (bool, error)
-	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error)
+	// DeleteConversation also answers the ids of the thread's images, the
+	// objects the caller sweeps; AbandonChatMessage withdraws one stored
+	// message with its image rows — the rollback when an image of it
+	// could not be stored — the ids answered the same way.
+	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error)
+	AbandonChatMessage(ctx context.Context, repository, login string, conversation, id int64) ([]int64, error)
 	// the intake switch (the chat header's): a closed intake refuses the
 	// wake's own filings, the member's ask still files
 	SetChatIntake(ctx context.Context, repository string, closed bool, by string, at time.Time) error

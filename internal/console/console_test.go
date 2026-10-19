@@ -613,6 +613,7 @@ type fakeObjects map[string][]byte
 
 func (o fakeObjects) Put(_ context.Context, k string, b []byte) error { o[k] = b; return nil }
 func (o fakeObjects) Get(_ context.Context, k string) ([]byte, error) { return o[k], nil }
+func (o fakeObjects) Delete(_ context.Context, k string) error        { delete(o, k); return nil }
 
 // fakeApprovals is the approval_requests table.
 type fakeApprovals struct {

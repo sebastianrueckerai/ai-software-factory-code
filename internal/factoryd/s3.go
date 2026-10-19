@@ -18,6 +18,8 @@ type ObjectStore interface {
 	Put(ctx context.Context, key string, body []byte) error
 	// Get returns the object's body, nil when the object does not exist.
 	Get(ctx context.Context, key string) ([]byte, error)
+	// Delete removes the object, a missing one included.
+	Delete(ctx context.Context, key string) error
 }
 
 // S3 talks to an S3-compatible object store with path-style addressing and
@@ -34,6 +36,11 @@ type S3 struct {
 
 func (s *S3) Put(ctx context.Context, key string, body []byte) error {
 	_, err := s.do(ctx, http.MethodPut, key, body)
+	return err
+}
+
+func (s *S3) Delete(ctx context.Context, key string) error {
+	_, err := s.do(ctx, http.MethodDelete, key, nil)
 	return err
 }
 
