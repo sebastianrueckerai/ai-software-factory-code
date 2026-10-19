@@ -196,10 +196,14 @@ func namespaceAlerts(ctx context.Context, alerts AlertRowReader, deploys Deploym
 }
 
 // RecordProjectRoll writes the project roll a CI rollout wait confirmed:
-// one row per repository and digest, a second confirmation a no-op.
+// one row per repository and digest; the first confirmation wins, and a
+// later one repairs an empty commit (a poll whose workflow predates the
+// template's commit parameter).
 func (s *PGStore) RecordProjectRoll(ctx context.Context, repository, namespace, digest, commit string, readyAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO project_rolls (repository, namespace, digest, commit, ready_at)
-		VALUES ($1, $2, $3, $4, $5) ON CONFLICT (repository, digest) DO NOTHING`,
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (repository, digest) DO UPDATE
+		SET commit = EXCLUDED.commit WHERE project_rolls.commit = ''`,
 		repository, namespace, digest, commit, readyAt)
 	return err
 }

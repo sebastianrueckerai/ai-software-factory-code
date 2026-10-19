@@ -419,6 +419,43 @@ func TestPGStoreProjectRolls(t *testing.T) {
 	}
 }
 
+// A confirmation whose poll named no commit does not pin the row: a later
+// confirmed poll with the commit repairs it, so a project whose rendered
+// workflow predates the template's commit parameter loses no lead time. A
+// row that has its commit keeps it.
+func TestPGStoreProjectRollCommitRepairs(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE project_rolls`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 19, 9, 0, 0, 0, time.UTC)
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-staging", "sha256:aa", "", at); err != nil {
+		t.Fatal(err)
+	}
+	var commit string
+	if err := s.db.QueryRowContext(ctx, `SELECT commit FROM project_rolls WHERE digest = 'sha256:aa'`).Scan(&commit); err != nil || commit != "" {
+		t.Fatalf("the first confirmation's commit = %q, %v; want empty", commit, err)
+	}
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-staging", "sha256:aa", "abc5678", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT commit FROM project_rolls WHERE digest = 'sha256:aa'`).Scan(&commit); err != nil || commit != "abc5678" {
+		t.Fatalf("the repaired commit = %q, %v; want abc5678", commit, err)
+	}
+	if err := s.RecordProjectRoll(ctx, "demo-app/demo-app", "demo-staging", "sha256:aa", "abc9999", at.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRowContext(ctx, `SELECT commit FROM project_rolls WHERE digest = 'sha256:aa'`).Scan(&commit); err != nil || commit != "abc5678" {
+		t.Fatalf("the kept commit = %q, %v; want abc5678", commit, err)
+	}
+}
+
 // A source that cannot be read never answers [] (a promotion would pass).
 func TestProjectAlertsFailClosed(t *testing.T) {
 	_, alerts, _, h, token := alertsRig(t)

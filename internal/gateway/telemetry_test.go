@@ -328,7 +328,7 @@ func TestGatewaySpansAndMetricsOfAToolCall(t *testing.T) {
 	}
 	m := rig.collect(t)
 	if got := m["gateway.calls"]; !reflect.DeepEqual(got, map[string]float64{
-		"kind=tool,name=web_scrape,project=sf/demo,status=ok": 1,
+		"kind=tool,name=web_scrape,project=sf/demo,status=ok":  1,
 		"kind=tool,name=web_scrape,project=sf/demo,status=402": 1}) {
 		t.Fatalf("gateway.calls = %v", got)
 	}
