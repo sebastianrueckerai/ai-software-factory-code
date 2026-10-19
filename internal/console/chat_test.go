@@ -2016,6 +2016,42 @@ func TestChatProposalIsStored(t *testing.T) {
 // model call, which reads the refused row and files again, its acceptance
 // argument carrying the tests the ready check wants. A successful Do it
 // stays turn-free.
+// Each tool call of one answer keeps its own at: a refactor that hoists
+// the start time out of the call loop would give them all the same
+// instant, and this test would catch it.
+func TestChatTwoCallsEachKeepTheirOwnTime(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{
+		{call(1, "board", "{}", "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{say("Done.")},
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"look and set"}})
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var callRow factoryd.ChatMessage
+	for _, row := range rows {
+		if len(row.ToolCalls) == 2 {
+			callRow = row
+			break
+		}
+	}
+	if callRow.ID == 0 {
+		t.Fatalf("no row holds both calls: %+v", rows)
+	}
+	first, second := callRow.ToolCalls[0], callRow.ToolCalls[1]
+	if !second.At.After(first.At) {
+		t.Fatalf("both calls claim the start %v; the loop stopped timing each call", first.At)
+	}
+	for i, c := range callRow.ToolCalls {
+		if c.At.Before(time.Now().Add(-time.Minute)) || c.At.After(time.Now()) {
+			t.Errorf("call %d's at = %v, want its turn's time", i, c.At)
+		}
+	}
+}
+
 func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
