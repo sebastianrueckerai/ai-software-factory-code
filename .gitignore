@@ -4,3 +4,4 @@
 /cmd/*/factoryd
 /cmd/*/factory-gateway
 /cmd/*/agent-worker
+/.worktrees/
