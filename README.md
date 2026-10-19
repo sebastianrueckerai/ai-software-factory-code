@@ -738,9 +738,9 @@ stronger rung with the plan guide: the issue is the spec, the answer one
 fenced json block (a summary and `min_cards` to `max_cards` cards, each with key,
 role, title, brief, directories, depends_on, acceptance and size), a card
 one session of the pinned `agent_time` and `steps`. `ValidatePlan` judges
-it (one line per finding, the block at most 12 KiB, a brief at most 1500
-characters); factoryd adds every card's edge to the foundation card and
-the integration card's to every other, and refuses a cycle. An invalid
+it (one line per finding); factoryd adds every card's edge to the
+foundation card and the integration card's to every other, and refuses
+a cycle. An invalid
 plan goes back to the planner as its findings. A valid one is the task's
 next revision (`plan_revisions`, timeline `plan_revision`), posted once
 on the issue under `<!-- factoryd plan <task> revision <n> -->`

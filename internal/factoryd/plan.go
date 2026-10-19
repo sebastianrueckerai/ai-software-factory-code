@@ -73,17 +73,12 @@ const (
 	FinderPlanner   = "planner"
 )
 
-// The plan's own caps: the report's transport cap (maxReport) never cuts a
-// valid plan.
+// The plan's caps are counts, never lengths: the transports that carry a
+// plan (the file-plan body cap, maxReport) are its only ceiling.
 const (
-	maxPlanBytes      = 12 << 10
-	maxCardBrief      = 1500
-	maxCardTitle      = 120
 	maxCardDirs       = 10
 	MaxCardAcceptance = 10
-	MaxAcceptanceItem = 300
 	maxQuestions      = 5
-	maxQuestionText   = 300
 )
 
 // Plan is the planner's answer: one fenced json block of its last message.
@@ -279,13 +274,6 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 		return Plan{}, []string{"plan: no fenced json block in the last message"}
 	}
 	block := blocks[len(blocks)-1][1]
-	if len(block) > maxPlanBytes {
-		size := fmt.Sprintf("%.1f KiB", float64(len(block))/1024)
-		if size == "12.0 KiB" {
-			size = fmt.Sprintf("%d bytes", len(block))
-		}
-		return Plan{}, []string{"plan: the plan is " + size + "; at most 12 KiB: shorten the briefs"}
-	}
 	var p Plan
 	dec := json.NewDecoder(strings.NewReader(block))
 	dec.DisallowUnknownFields()
@@ -349,8 +337,8 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 }
 
 // questionFindings are the findings on a plan's questions: 0 to 5, each
-// with a text of 1 to 300 characters, 2 to 5 distinct choices of 1 to 60
-// and an origin of self_attack or none.
+// with a text, 2 to 5 distinct choices of 1 to 60 and an origin of
+// self_attack or none.
 func questionFindings(qs []PlanQuestion) []string {
 	var out []string
 	if len(qs) > maxQuestions {
@@ -363,11 +351,8 @@ func questionFindings(qs []PlanQuestion) []string {
 		if q.Origin != "" && q.Origin != CatchSelfAttack {
 			add("origin %q, want self_attack or none", q.Origin)
 		}
-		switch n := utf8.RuneCountInString(q.Text); {
-		case n == 0:
+		if utf8.RuneCountInString(q.Text) == 0 {
 			add("text empty")
-		case n > maxQuestionText:
-			add("text over %d characters", maxQuestionText)
 		}
 		if n := len(q.Choices); n < 2 || n > MaxChoices {
 			add("%d choices; want 2 to %d", n, MaxChoices)
@@ -411,11 +396,8 @@ func acceptanceFindings(acceptance []string) []string {
 		out = append(out, fmt.Sprintf("%d acceptance tests; want 1 to %d", n, MaxCardAcceptance))
 	}
 	for i, a := range acceptance {
-		switch n := utf8.RuneCountInString(a); {
-		case n == 0:
+		if utf8.RuneCountInString(a) == 0 {
 			out = append(out, fmt.Sprintf("acceptance test %d is empty", i+1))
-		case n > MaxAcceptanceItem:
-			out = append(out, fmt.Sprintf("acceptance test %d is over %d characters", i+1, MaxAcceptanceItem))
 		}
 	}
 	return out
@@ -423,9 +405,7 @@ func acceptanceFindings(acceptance []string) []string {
 
 // itemText is acceptance item it as cardFacts writes its line and the
 // ready check reads it back: the text alone, the criterion's id behind it
-// in brackets when the item cites one. The line is what the caps judge,
-// so a plan that passes validation never writes a line the ready check
-// refuses.
+// in brackets when the item cites one.
 func itemText(it PlanItem) string {
 	if it.Criterion == "" || it.Text == "" {
 		return it.Text
@@ -523,14 +503,6 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 				add("kind human carries no test, inputs, expected numbers or prompt")
 			}
 		}
-		for _, f := range []struct{ name, value string }{
-			{"test", c.Test}, {"inputs", c.Inputs}, {"expected", c.Expected},
-			{"claim", c.Claim}, {"prompt", c.Prompt}, {"evidence", c.Evidence},
-		} {
-			if n := utf8.RuneCountInString(f.value); n > MaxAcceptanceItem {
-				add("%s over %d characters", f.name, MaxAcceptanceItem)
-			}
-		}
 	}
 	if len(p.Criteria) == 0 {
 		return out
@@ -593,17 +565,11 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	if c.Rung != "" && c.Rung != RungCheap && c.Rung != RungFrontier {
 		add("rung %s: want cheap, frontier or none", c.Rung)
 	}
-	switch n := utf8.RuneCountInString(c.Title); {
-	case n == 0:
+	if utf8.RuneCountInString(c.Title) == 0 {
 		add("title empty")
-	case n > maxCardTitle:
-		add("title over %d characters", maxCardTitle)
 	}
-	switch n := utf8.RuneCountInString(c.Brief); {
-	case n == 0:
+	if utf8.RuneCountInString(c.Brief) == 0 {
 		add("brief empty")
-	case n > maxCardBrief:
-		add("brief over %d characters", maxCardBrief)
 	}
 	if len(c.Directories) > maxCardDirs {
 		add("%d directories; want 0 to %d", len(c.Directories), maxCardDirs)
@@ -2173,7 +2139,7 @@ func PlanFileHandler(runner *Runner) http.HandlerFunc {
 			TaskID string `json:"task_id"`
 			Plan   string `json:"plan"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 16<<10)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
 			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
 			return
 		}

@@ -866,8 +866,8 @@ func TestFilePlanTool(t *testing.T) {
 }
 
 // file_plan reaches factoryd only for a running task of a class that lists
-// it, with a plan within the bound; every refusal names the reason and
-// files nothing, and a hand-over that fails says so in the session.
+// it; every refusal names the reason and files nothing, and a hand-over
+// that fails says so in the session.
 func TestFilePlanRefused(t *testing.T) {
 	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
 	done := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "waiting-human", Classes: []string{"coder"}}, pv)
@@ -881,11 +881,9 @@ func TestFilePlanRefused(t *testing.T) {
 		t.Fatalf("class without the tool = %q, want refused_capability", text)
 	}
 	e = newToolEnv(t, running("coder"), pv)
-	for name, plan := range map[string]string{"empty": "", "over the bound": strings.Repeat("x", 12<<10+1)} {
-		if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan}); !isErr ||
-			!strings.Contains(text, "refused_arguments") {
-			t.Fatalf("%s = %q, want refused_arguments", name, text)
-		}
+	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": ""}); !isErr ||
+		!strings.Contains(text, "refused_arguments") {
+		t.Fatalf("empty plan = %q, want refused_arguments", text)
 	}
 	e.filer.err = errors.New("no route")
 	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": "{}"}); !isErr ||
@@ -897,6 +895,14 @@ func TestFilePlanRefused(t *testing.T) {
 	}
 	if calls := e.filer.calls; len(calls) != 1 {
 		t.Fatalf("filer calls = %v, want only the last one through", calls)
+	}
+	e.filer.err = nil
+	big := strings.Repeat("x", 12<<10+1)
+	if text, isErr := e.call(t, policy.ToolFilePlan, map[string]any{"plan": big}); isErr {
+		t.Fatalf("plan over the old 12 KiB bound = %q, want it through", text)
+	}
+	if calls := e.filer.calls; len(calls) != 2 || !strings.HasSuffix(calls[1], big) {
+		t.Fatalf("filer calls = %v, want the large plan through", calls)
 	}
 }
 

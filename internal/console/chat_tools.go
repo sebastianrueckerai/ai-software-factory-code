@@ -1146,7 +1146,7 @@ var tools = []chatTool{
 	{name: "new_card", title: "File a card", write: true,
 		params: map[string]any{"title": str("one line"), "body": str("the description, Markdown"),
 			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
-				"items":       map[string]any{"type": "string", "maxLength": factoryd.MaxAcceptanceItem},
+				"items":       map[string]any{"type": "string"},
 				"description": "the acceptance tests, one line each"},
 			"lane":        fallback(policy.LaneBacklog, enum("where the card starts", "backlog", "plan", "ready", "human")),
 			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),

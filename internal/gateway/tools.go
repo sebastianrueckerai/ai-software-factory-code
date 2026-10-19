@@ -761,11 +761,6 @@ func (s *Server) manualRead(c *toolCaller) *mcp.CallToolResult {
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: manual.Text()}}}
 }
 
-// maxPlanJSON bounds the plan the gateway passes on: factoryd's check
-// refuses a larger plan, so the session learns it here, without the
-// hand-over.
-const maxPlanJSON = 12 << 10
-
 // filePlan hands the planner's plan to factoryd, which checks the whole
 // json at once: a refusal carries every finding back into the session, a
 // filed plan is the session's answer. Free, for the classes that list it.
@@ -777,8 +772,8 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 	if r := s.admitTool(c, tool); r != nil {
 		return r
 	}
-	if plan := strings.TrimSpace(in.Plan); plan == "" || len(in.Plan) > maxPlanJSON {
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("plan is required, at most %d bytes", maxPlanJSON))
+	if plan := strings.TrimSpace(in.Plan); plan == "" {
+		return s.refuseTool(c, tool, "refused_arguments", "plan is required")
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()

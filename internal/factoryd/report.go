@@ -32,7 +32,7 @@ const (
 const SourcePlan = "plan"
 
 // maxReport bounds a report kept on its task and posted on the issue.
-const maxReport = 16 << 10
+const maxReport = 64 << 10
 
 // openReport opens parent's report task of source and class at sha, once
 // per parent and source, and starts its workflow unless it has finished.

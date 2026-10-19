@@ -56,8 +56,6 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"empty choice":      {change(func(p *Plan) { p.Questions[0].Choices[0] = "" }), []string{"plan: question 1: choice 1 is empty"}},
 		"duplicate choices": {change(func(p *Plan) { p.Questions[0].Choices[2] = "30 seconds" }), []string{`plan: question 1: choice "30 seconds" is offered twice`}},
 		"no text":           {change(func(p *Plan) { p.Questions[0].Text = "" }), []string{"plan: question 1: text empty"}},
-		"text at the cap":   {change(func(p *Plan) { p.Questions[0].Text = strings.Repeat("q", 300) }), nil},
-		"long text":         {change(func(p *Plan) { p.Questions[0].Text = strings.Repeat("q", 301) }), []string{"plan: question 1: text over 300 characters"}},
 		"an attack":         {change(func(p *Plan) { p.Questions[0].Origin = CatchSelfAttack }), nil},
 		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
