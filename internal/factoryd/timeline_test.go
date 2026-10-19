@@ -103,6 +103,10 @@ func (s *gatedObjectStore) Put(ctx context.Context, key string, body []byte) err
 	return s.fakeObjectStore.Put(ctx, key, body)
 }
 
+func (s *gatedObjectStore) Delete(ctx context.Context, key string) error {
+	return s.fakeObjectStore.Delete(ctx, key)
+}
+
 // The final line must not hand a waiter and a newcomer two different
 // locks: the waiter queued on the finished append's lock and a caller
 // arriving after it would both read-append-write at once, losing a line.

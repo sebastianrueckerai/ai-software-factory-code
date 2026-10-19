@@ -631,6 +631,10 @@ func imageDims(b []byte) (int, int, bool) {
 				return 0, 0, false
 			}
 			m := b[p+1]
+			if m == 0xff { // fill bytes may pad any marker
+				p++
+				continue
+			}
 			switch m {
 			case 0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf:
 				return int(binary.BigEndian.Uint16(b[p+7 : p+9])), int(binary.BigEndian.Uint16(b[p+5 : p+7])), true
@@ -647,8 +651,8 @@ func imageDims(b []byte) (int, int, bool) {
 			bits := binary.LittleEndian.Uint32(b[21:25])
 			return int(bits&0x3fff) + 1, int((bits>>14)&0x3fff) + 1, true
 		case "VP8X":
-			if len(b) >= 30 {
-				return int(b[24]) | int(b[25])<<8 | int(b[26])<<16, int(b[27]) | int(b[28])<<8 | int(b[29])<<16, true
+			if len(b) >= 30 { // the canvas fields hold the size minus one
+				return (int(b[24]) | int(b[25])<<8 | int(b[26])<<16) + 1, (int(b[27]) | int(b[28])<<8 | int(b[29])<<16) + 1, true
 			}
 		}
 	}

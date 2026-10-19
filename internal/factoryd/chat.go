@@ -362,38 +362,93 @@ func (s *PGStore) changeThread(ctx context.Context, set, where, repository, logi
 }
 
 // DeleteConversation hard-deletes login's thread n on repository: its
-// messages, its proposals and undos, its seen marker and the thread, and
-// answers how many messages went. The inbox stays: ErrNotFound for it,
-// as for no thread.
-func (s *PGStore) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, error) {
+// messages, its images' rows, its proposals and undos, its seen marker
+// and the thread, and answers how many messages went with the ids of
+// the images it removed, their objects the caller's to sweep. The inbox
+// stays: ErrNotFound for it, as for no thread.
+func (s *PGStore) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
 	res, err := tx.ExecContext(ctx, `DELETE FROM chat_conversations WHERE repository = $1 AND login = $2 AND conversation = $3 AND NOT inbox`,
 		repository, login, n)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	if k, err := res.RowsAffected(); err != nil || k == 0 {
-		return 0, cmp.Or(err, ErrNotFound)
+		return 0, nil, cmp.Or(err, ErrNotFound)
 	}
+	rows, err := tx.QueryContext(ctx, `DELETE FROM chat_attachments WHERE repository = $1 AND login = $2 AND conversation = $3 RETURNING id`, repository, login, n)
+	if err != nil {
+		return 0, nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return 0, nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, nil, err
+	}
+	rows.Close()
 	res, err = tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	gone, err := res.RowsAffected()
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	for _, q := range []string{`DELETE FROM chat_seen WHERE repository = $1 AND login = $2 AND conversation = $3`,
 		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`} {
 		if _, err := tx.ExecContext(ctx, q, repository, login, n); err != nil {
-			return 0, err
+			return 0, nil, err
 		}
 	}
-	return gone, tx.Commit()
+	return gone, ids, tx.Commit()
+}
+
+// AbandonChatMessage withdraws a stored message and its image rows — the
+// console's rollback when an image of the message could not be stored —
+// and answers the ids of the images it removed, the objects then
+// swept the same way.
+func (s *PGStore) AbandonChatMessage(ctx context.Context, repository, login string, conversation, id int64) ([]int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	rows, err := tx.QueryContext(ctx, `DELETE FROM chat_attachments WHERE repository = $1 AND login = $2 AND conversation = $3 AND message_id = $4 RETURNING id`,
+		repository, login, conversation, id)
+	if err != nil {
+		return nil, err
+	}
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3 AND id = $4`,
+		repository, login, conversation, id); err != nil {
+		return nil, err
+	}
+	return ids, tx.Commit()
 }
 
 // ThreadSummary is one compaction's result (roadmap 239): the summary of

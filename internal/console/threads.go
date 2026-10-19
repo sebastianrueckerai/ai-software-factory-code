@@ -315,7 +315,7 @@ func (c *Console) chatDelete(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	gone, err := c.cfg.Chat.DeleteConversation(r.Context(), t.p.Repository, t.owner, t.conv)
+	gone, images, err := c.cfg.Chat.DeleteConversation(r.Context(), t.p.Repository, t.owner, t.conv)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
 		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
@@ -324,6 +324,13 @@ func (c *Console) chatDelete(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: delete the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot delete the conversation", http.StatusInternalServerError)
 		return
+	}
+	// the rows are gone; an object the sweep cannot reach is unreachable
+	// through any route, so its failure is logged, not fatal
+	for _, id := range images {
+		if err := c.cfg.Timelines.Delete(r.Context(), fmt.Sprintf("attachments/%d/%d", t.conv, id)); err != nil {
+			log.Printf("console: sweep an image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		}
 	}
 	c.event(context.WithoutCancel(r.Context()), factoryd.Event{Repository: t.p.Repository, Kind: factoryd.EventChatThreadDeleted,
 		Actor: t.a.s.user, Via: factoryd.ViaButton, Detail: map[string]any{"thread": t.conv, "messages": gone}})

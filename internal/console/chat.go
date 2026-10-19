@@ -308,13 +308,17 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read the image", http.StatusInternalServerError)
 		return
 	}
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
 	b, err := c.cfg.Timelines.Get(r.Context(), fmt.Sprintf("attachments/%d/%d", a.Conversation, a.ID))
 	if err != nil {
 		log.Printf("console: the image of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		http.Error(w, "cannot read the image", http.StatusInternalServerError)
 		return
 	}
-	if !ok || len(b) == 0 {
+	if len(b) == 0 {
 		http.NotFound(w, r)
 		return
 	}
@@ -561,6 +565,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			c.abandonMessage(r, t, id)
 			http.Error(w, "cannot store the message", http.StatusInternalServerError)
 			return
 		}
@@ -590,6 +595,23 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	release := c.turns.slot(t.p.Repository, t.parallelTurns())
 	defer release()
 	t.run(task.ID, notice)
+}
+
+// abandonMessage withdraws a message whose images could not all be
+// stored: its row, its image rows and the objects already written, so no
+// half-message stays behind. A withdrawal that itself fails logs and
+// leaves the rows: the member resends.
+func (c *Console) abandonMessage(r *http.Request, t *turn, id int64) {
+	ids, err := c.cfg.Chat.AbandonChatMessage(r.Context(), t.p.Repository, t.owner, t.conv, id)
+	if err != nil {
+		log.Printf("console: withdraw the message of %s on %s: %v", t.owner, t.p.Repository, err)
+		return
+	}
+	for _, a := range ids {
+		if err := c.cfg.Timelines.Delete(r.Context(), fmt.Sprintf("attachments/%d/%d", t.conv, a)); err != nil {
+			log.Printf("console: sweep an image of %s on %s: %v", t.owner, t.p.Repository, err)
+		}
+	}
 }
 
 // chatImage is one image riding a message: its canonical name, the file's
@@ -1141,6 +1163,9 @@ func imageSize(n int64) string {
 // task's account. A name no member sent refuses naming the images there
 // are.
 func (t *turn) lookImage(in toolInput) (string, error) {
+	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
+		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
+	}
 	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
 	if err != nil {
 		return "", err

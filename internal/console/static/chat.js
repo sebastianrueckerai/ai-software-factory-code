@@ -351,8 +351,8 @@ var chatView = (function () {
   // settle concept)
   function pendingOf(msgs) {
     var m = null;
-    (msgs || []).forEach(function (x) { if (x.kind === "escalation" || x.kind === "ask") m = x; });
-    return m && m.choices && m.choices.length && !m.settled ? m : null;
+    (msgs || []).forEach(function (x) { if ((x.kind === "escalation" || x.kind === "ask") && !x.settled) m = x; });
+    return m && m.choices && m.choices.length ? m : null;
   }
   function answerHTML(m) {
     // an ask answers as the member's own message, an escalation through /answer
@@ -536,12 +536,16 @@ var chatView = (function () {
     imagesEl.hidden = pendingImages.length === 0;
   }
   function addImages(files) {
-    for (var i = 0; i < files.length && pendingImages.length < 4; i++) {
+    var dropped = 0;
+    for (var i = 0; i < files.length; i++) {
       var f = files[i];
-      if (!f || !/^image\/(png|jpeg|gif|webp)$/.test(f.type) || f.size > 8 * 1024 * 1024) continue;
+      if (pendingImages.length >= 4 || !f || !/^image\/(png|jpeg|gif|webp)$/.test(f.type) || f.size > 8 * 1024 * 1024) { dropped++; continue; }
       pendingImages.push({name: "img" + (pendingImages.length + 1), file: f, url: URL.createObjectURL(f)});
     }
     drawImages();
+    // a drop the composer makes silently is a drop the member cannot
+    // know to retry: the note names the bounds
+    if (dropped) failed("Dropped " + dropped + (dropped === 1 ? " image" : " images") + ": at most 4 ride a message, each a png, jpeg, gif or webp of at most 8 MiB.");
   }
   function drawDocs() {
     if (!docsEl) return;
@@ -552,12 +556,17 @@ var chatView = (function () {
     docsEl.hidden = pendingDocs.length === 0;
   }
   function addDocuments(files) {
-    for (var i = 0; i < files.length && pendingDocs.length < 4; i++) {
+    var dropped = 0;
+    for (var i = 0; i < files.length; i++) {
       var f = files[i];
-      if (!f) continue;
+      if (pendingDocs.length >= 4 || !f) { dropped++; continue; }
       pendingDocs.push({name: "doc" + (pendingDocs.length + 1), file: f, url: URL.createObjectURL(f), fileName: f.name, bytes: f.size});
     }
     drawDocs();
+    // a drop the composer makes silently is a drop the member cannot
+    // know to retry: the note names the bound (kind and size stay the
+    // server's words, at Send)
+    if (dropped) failed("Dropped " + dropped + (dropped === 1 ? " document" : " documents") + ": at most 4 ride a message.");
   }
   // routeFiles splits files by what they are: images to the image chips,
   // everything else to the document chips — the server refuses at Send

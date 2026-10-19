@@ -1529,7 +1529,8 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "analyze_image", title: "Look at an image",
-		params:   map[string]any{"name": str("the image's name, img1 as its row shows"), "ask": str("what to look for (default what the image shows)")},
+		params:   map[string]any{"name": str("the image's name, img1 as its row shows"),
+			"ask": map[string]any{"type": "string", "maxLength": 2000, "description": "what to look for (default what the image shows)"}},
 		required: []string{"name"},
 		about:    "One look at an image a member sent: the vision model's answer to a question about it.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},

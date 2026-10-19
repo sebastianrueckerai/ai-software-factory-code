@@ -443,6 +443,35 @@ async function text(page) {
         const got = await p.page.request.get(base + pdfHref);
         if (got.status() !== 200 || (got.headers()["content-type"] || "") !== "application/pdf") fails.push("chat: the served PDF = " + got.status() + " " + got.headers()["content-type"]);
       }
+      // the fifth document names the bound, the same note rule as the
+      // images': a silent drop is one the member cannot know to retry
+      await drop([["a.md", "text/markdown", "a\n"], ["b.md", "text/markdown", "b\n"], ["c.md", "text/markdown", "c\n"], ["d.md", "text/markdown", "d\n"], ["e.md", "text/markdown", "e\n"]]);
+      await p.page.waitForTimeout(200);
+      const docMany = await docs.locator("li").count();
+      if (docMany !== 4) fails.push("chat: five dropped documents leave " + docMany + " chips, want 4");
+      const docNotes = await p.page.locator("#chat-log .chat-error").allInnerTexts();
+      if (!docNotes.some((t) => t.startsWith("Dropped 1 document") && t.includes("at most 4")))
+        fails.push("chat: a dropped document names no rule (" + JSON.stringify(docNotes.slice(-2)) + ")");
+      // five pasted images: four chips and a note naming the bounds. A
+      // drop the composer makes silently is a drop the member cannot
+      // know to retry.
+      await p.page.evaluate(() => new Promise((done) => {
+        const c = document.createElement("canvas");
+        c.width = 8; c.height = 8;
+        c.getContext("2d").fillRect(0, 0, 8, 8);
+        c.toBlob((b) => {
+          const dt = new DataTransfer();
+          for (var i = 0; i < 5; i++) dt.items.add(new File([b], "s" + i + ".png", { type: "image/png" }));
+          document.getElementById("chat-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+          done();
+        }, "image/png");
+      }));
+      await p.page.waitForTimeout(200);
+      const many = await chips.locator("li").count();
+      if (many !== 4) fails.push("chat: five pasted images leave " + many + " chips, want 4");
+      const notes = await p.page.locator("#chat-log .chat-error").allInnerTexts();
+      if (!notes.some((t) => t.startsWith("Dropped 1 image") && t.includes("at most 4") && t.includes("8 MiB")))
+        fails.push("chat: a dropped image names no rule (" + JSON.stringify(notes) + ")");
       // the documents (roadmap 277): the Documents button opens the roadmap
       // in the view docked over the board, never over the chat; a link opens
       // the plan it names, Back returns, ?doc= restores, Escape closes
@@ -964,6 +993,38 @@ async function text(page) {
           c.querySelector("summary").getAttribute("aria-label")].join(" | ");
       });
       if (kept !== "within | 3 | days | Routines on the board: within 3 days") fails.push('routines: the control does not keep within 3 days ("' + kept + '")');
+      // the send with images (roadmap 300): four chips and the words go
+      // as one message, the row lands with its thumbs, and a reload
+      // still shows them — the store holds the images, not the page. The
+      // turn itself dies on the lab's dead model door; the row and its
+      // thumbs are what the check reads.
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(800);
+      await p.page.evaluate(() => new Promise((done) => {
+        const c = document.createElement("canvas");
+        c.width = 40; c.height = 30;
+        c.getContext("2d").fillRect(0, 0, 40, 30);
+        c.toBlob((b) => {
+          const dt = new DataTransfer();
+          for (var i = 0; i < 4; i++) dt.items.add(new File([b], "ride" + i + ".png", { type: "image/png" }));
+          document.getElementById("chat-input").dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+          done();
+        }, "image/png");
+      }));
+      await p.page.waitForTimeout(200);
+      await p.page.locator("#chat-input").fill("Four shots ride this message.");
+      await p.page.locator("#chat-form button[type=submit]").click();
+      await p.page.waitForTimeout(1500);
+      const sentRow = p.page.locator("#chat-log .msg.you").filter({ hasText: "Four shots ride this message." });
+      if (!(await sentRow.count())) fails.push("chat: the sent message lands no row");
+      else if ((await sentRow.locator(".chat-thumbs .thumb").count()) !== 4)
+        fails.push("chat: the sent row carries " + (await sentRow.locator(".chat-thumbs .thumb").count()) + " thumbs, want 4");
+      await p.page.reload({ waitUntil: "load" });
+      await p.page.waitForTimeout(900);
+      const keptRow = p.page.locator("#chat-log .msg.you").filter({ hasText: "Four shots ride this message." });
+      if (!(await keptRow.count())) fails.push("chat: a reload loses the sent message's row");
+      else if ((await keptRow.locator(".chat-thumbs .thumb").count()) !== 4)
+        fails.push("chat: a reload loses the message's thumbs");
     }
     if (sc === "fire") {
       // the held run (C16): the ghost and the strip's cell in amber, #781 in Needs you with the chip
@@ -1130,7 +1191,9 @@ async function text(page) {
     }
     if (sc === "escalation") {
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
-      // a choice answers its card with no model turn and the row goes
+      // a choice answers its card with no model turn and the row goes.
+      // A settled ask sits over the escalation: the row still offers the
+      // escalation, once, not the ask's buttons and not silence.
       const row = p.page.locator("#chat-answer");
       const once = await p.page.locator("#chat").getByRole("button", { name: "Postgres", exact: true }).count();
       if (once !== 1) fails.push("escalation: the chat shows the choice Postgres " + once + " times, want once");

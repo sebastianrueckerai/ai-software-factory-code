@@ -857,8 +857,11 @@ func (f *accBatchChat) ChatIntakeClosed(context.Context, string) (bool, error) {
 	return false, nil
 }
 
-func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64) (int64, error) {
-	return 0, nil
+func (f *accBatchChat) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {
+	return nil, nil
+}
+func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64) (int64, []int64, error) {
+	return 0, nil, nil
 }
 
 func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
