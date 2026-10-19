@@ -196,6 +196,31 @@ func checkRoutineStore(t *testing.T, s routineCardStore) {
 		t.Fatalf("state after the skip: %+v", st)
 	}
 
+	// the live toggle: a routine never touched follows its config, a set
+	// side reads back with who set it, and the undo clears both
+	if st := state("linkshort", "audit"); st.NeedsMe != nil || st.NeedsMeBy != "" {
+		t.Fatalf("a routine never touched: %+v", st)
+	}
+	no, yes := false, true
+	if err := s.SetRoutineNeedsMe(ctx, "linkshort", "weekly-bump", &no, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if st := state("linkshort", "weekly-bump"); st.NeedsMe == nil || *st.NeedsMe || st.NeedsMeBy != "sebastian" {
+		t.Fatalf("the toggle set to run on its own: %+v", st)
+	}
+	if err := s.SetRoutineNeedsMe(ctx, "linkshort", "weekly-bump", &yes, "anna"); err != nil {
+		t.Fatal(err)
+	}
+	if st := state("linkshort", "weekly-bump"); st.NeedsMe == nil || !*st.NeedsMe || st.NeedsMeBy != "anna" {
+		t.Fatalf("the toggle flipped to need the member: %+v", st)
+	}
+	if err := s.SetRoutineNeedsMe(ctx, "linkshort", "weekly-bump", nil, ""); err != nil {
+		t.Fatal(err)
+	}
+	if st := state("linkshort", "weekly-bump"); st.NeedsMe != nil || st.NeedsMeBy != "" {
+		t.Fatalf("the toggle undone: %+v", st)
+	}
+
 	if err := s.RoutineRunFiled(ctx, "linkshort", "weekly-bump", 1, "t-1", 790); err != nil {
 		t.Fatal(err)
 	}

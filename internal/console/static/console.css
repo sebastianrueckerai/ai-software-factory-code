@@ -630,6 +630,9 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .col-menu > summary:hover, .col-menu[open] > summary { color: var(--text); border-color: var(--line-strong); background: var(--bg-hover); }
 .col-menu > summary.on { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .menu-pop { position: absolute; right: 0; top: 30px; z-index: 15; min-width: 164px; padding: 4px 12px 8px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); font-size: 12.5px; }
+/* a closed details keeps its content's boxes (content-visibility), and the
+   absolutely placed menu then widens the page: gone when closed */
+.col-menu:not([open]) > .menu-pop { display: none; }
 [data-theme=light] .menu-pop { box-shadow: 0 12px 32px rgba(29, 53, 87, .18); }
 .menu-pop fieldset { display: flex; flex-direction: column; gap: 1px; margin: 0; padding: 6px 0; border: 0; }
 .menu-pop fieldset + fieldset { border-top: 1px solid var(--line); }

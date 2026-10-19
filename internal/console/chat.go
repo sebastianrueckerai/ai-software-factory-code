@@ -418,7 +418,9 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 // settleCounts splits each thread's unread turns for the switcher's badge
 // (the notification-settling concept): the asks still open are its
 // needs-you side, the unread rows past the seen marker that are no open
-// ask its new side. A read that fails leaves the counts as they fall.
+// ask its new side, and the thread's distinct cards with an open ask or
+// poke row are its waits-you side, the tab title's count. A read that
+// fails leaves the counts as they fall.
 func (c *Console) settleCounts(ctx context.Context, repository, login string, list []factoryd.ChatConversation) {
 	asks, err := c.cfg.Chat.ChatAsks(ctx, repository, login)
 	if err != nil {
@@ -442,19 +444,29 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 		}
 	}
 	waits, events := askFacts(ctx, c, ids)
+	waiting := make([]map[string]bool, len(list))
 	for _, m := range asks {
 		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Login == login && th.Number == m.Conversation })
 		if i < 0 {
 			continue
 		}
-		if factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
-			list[i].NeedsYou++
-			if m.ID > list[i].SeenUpto {
-				list[i].NewRows--
-			}
+		if !factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
+			continue
+		}
+		if waiting[i] == nil {
+			waiting[i] = map[string]bool{}
+		}
+		waiting[i][m.TaskID] = true
+		if m.Kind != factoryd.MessageEscalation {
+			continue
+		}
+		list[i].NeedsYou++
+		if m.ID > list[i].SeenUpto {
+			list[i].NewRows--
 		}
 	}
 	for i := range list {
+		list[i].WaitsYou = int64(len(waiting[i]))
 		list[i].NewRows = max(list[i].NewRows, 0)
 	}
 }

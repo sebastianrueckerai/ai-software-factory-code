@@ -31,6 +31,7 @@ var ErrWakeVenueGone = errors.New("the wake's thread is gone")
 type WakeStore interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
 	DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error)

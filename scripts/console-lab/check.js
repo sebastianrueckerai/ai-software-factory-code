@@ -1060,17 +1060,18 @@ async function text(page) {
       if (!(await p.page.evaluate(() => !!document.activeElement && !!document.activeElement.closest("#thread-rows")))) fails.push("threads: Ctrl+k does not reach the switcher");
     }
     if (sc === "poke") {
-      // a poke on another thread: the inbox row first, its split badge, and the split in the tab title (C14, the settle concept)
+      // a poke on another thread: the inbox row first, its split badge, and the tab title's count of what waits (C21, the ruling of 2026-10-19)
       const first = p.page.locator("#thread-rows .trow").first();
       if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
       if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
       const badge = first.locator(".badge, .bsplit").first();
       if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
         fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
-      // the tab title sums the open ask on #606, the inbox's new #600 and the costs thread's
-      // unseen answer (C21); the poke leaves the session store thread open (C14)
+      // the tab title counts the one card that waits for the member now, the
+      // ask on #606; new rows and unseen answers never count (2026-10-19
+      // ruling); the poke leaves the session store thread open (C14)
       const title = await p.page.title();
-      if (!title.startsWith("(3) ")) fails.push('poke: the tab title is "' + title + '", want (3) first');
+      if (!title.startsWith("(1) ")) fails.push('poke: the tab title is "' + title + '", want the one card that waits, "(1) " first');
       if ((await p.page.locator("#thread-head").innerText()).includes("uninvited")) fails.push("poke: the poke opens the inbox by itself");
       await first.click();
       await p.page.waitForTimeout(600);
@@ -1080,7 +1081,7 @@ async function text(page) {
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
-      if (!(await p.page.title()).startsWith("(2) ")) fails.push('poke: opening the inbox leaves the tab title "' + (await p.page.title()) + '", want (2) first');
+      if (!(await p.page.title()).startsWith("(1) ")) fails.push("poke: opening the inbox drops the waiting ask from the tab title");
       // the merge ask's numbers: the PR stays text, the card's ref is the
       // link; the link and the row's body open the card's drawer and
       // light the card. The ask sits settled here, so its fold opens the

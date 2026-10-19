@@ -321,6 +321,21 @@ func (r *Routines) Skip(ctx context.Context, project, routine string, skip bool,
 	return r.Store.SetRoutineSkip(ctx, key, routine, skip, by)
 }
 
+// NeedsMe sets project's routine's live side for by: with needsMe true
+// its runs wait on a person, with false they run on their own, with nil
+// the config's files files again.
+func (r *Routines) NeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error {
+	key, err := r.key(project, routine)
+	if err != nil {
+		return err
+	}
+	return r.Store.SetRoutineNeedsMe(ctx, key, routine, needsMe, by)
+}
+
+// FilesInForce is the side the routine's next run files on: its config's
+// files, or the live toggle's side.
+func (rv RoutineView) FilesInForce() string { return filesInForce(rv.Routine, rv.State) }
+
 // Runs are project's routine's last limit runs, newest first.
 func (r *Routines) Runs(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error) {
 	key, err := r.key(project, routine)

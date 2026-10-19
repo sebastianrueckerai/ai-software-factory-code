@@ -365,6 +365,8 @@ func TestSettleOf(t *testing.T) {
 			[]factoryd.Event{ev(12, 1, factoryd.EventQuestionAnswered, "bob")}, true, false, open},
 		{"an open approval on its pending request", approval, nil, false, true, open},
 		{"an approval whose request is gone moved on", approval, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
+		{"a poke on a card that waits", factoryd.ChatMessage{ID: 11, At: at, Kind: factoryd.MessagePoke, TaskID: "t-w", BirthKind: factoryd.EventRoutineRan}, nil, true, false, open},
+		{"a poke on a card that moved on", factoryd.ChatMessage{ID: 11, At: at, Kind: factoryd.MessagePoke, TaskID: "t-w", BirthKind: factoryd.EventRoutineRan}, nil, false, false, factoryd.PokeSettle{Word: "moved on", At: at}},
 		{"an approved merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeApproved, "sebastian")}, false, true,
 			factoryd.PokeSettle{Word: "approved", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, factoryd.EventMergeApproved, "sebastian")}},
 		{"a denied merge", approval, []factoryd.Event{ev(12, 1, factoryd.EventMergeDenied, "sebastian")}, false, true,

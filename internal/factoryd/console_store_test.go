@@ -12,6 +12,39 @@ import (
 	"time"
 )
 
+// The go action's hand-over claim: one row per card, so of two racing
+// hands InsertIntakeEvent returns 0 to the second, and the failed
+// filing's release lets the next attempt claim again. Requires a
+// disposable Postgres (FACTORYD_TEST_DATABASE_URL), like TestPGStore.
+func TestPGStoreHandoverClaim(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-go", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-go", Kind: IntakeHandover, Author: "sebastian", Body: "handed to the factory"})
+	if err != nil || first == 0 {
+		t.Fatalf("the first claim = %d, %v; want its row", first, err)
+	}
+	if second, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-go", Kind: IntakeHandover, Author: "sebastian", Body: "handed to the factory"}); err != nil || second != 0 {
+		t.Fatalf("the racing claim = %d, %v; want the refusal", second, err)
+	}
+	if err := s.ReleaseHandover(ctx, "t-go"); err != nil {
+		t.Fatal(err)
+	}
+	if again, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-go", Kind: IntakeHandover, Author: "sebastian", Body: "handed to the factory"}); err != nil || again == 0 {
+		t.Fatalf("the claim after the release = %d, %v; want its row", again, err)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL), like TestPGStore.
 func TestPGStoreBoardTasks(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")

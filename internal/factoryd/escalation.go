@@ -112,6 +112,10 @@ const IntakePosterComment = "poster_comment"
 // bot close ends a task (review-task73 m8).
 const IntakeFactoryClosed = "factory_closed"
 
+// IntakeHandover claims a card's hand-over to the factory (the go
+// action): one per card, so of two racing hands only the first files.
+const IntakeHandover = "handover"
+
 // botCloseRecorded reports whether events hold factoryd's record of
 // closing t's issue itself.
 func botCloseRecorded(events []IntakeEvent, t Task) bool {
