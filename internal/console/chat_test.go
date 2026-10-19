@@ -676,6 +676,8 @@ type chatGateway struct {
 	t        *testing.T
 	project  string // the chat's project, ai-software-factory-code when ""
 	mu       sync.Mutex
+	visions  []map[string]any
+	looks    []string
 	replies  [][]string
 	requests []map[string]any
 	// hold, when set, keeps each call open until it closes; arrived
@@ -717,6 +719,21 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(summary))
+		return
+	}
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeVision {
+		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" || r.Header.Get(gateway.HeaderFactoryTask) != task ||
+			body["model"] != "vision" || body["stream"] != true || len(body["messages"].([]any)) != 1 {
+			g.t.Errorf("vision call %s, purpose %q, task %q, body %v: want the vision alias on %s, one message, streamed",
+				r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task)
+		}
+		g.visions = append(g.visions, body)
+		look := "A red deploy button."
+		if len(g.looks) > 0 {
+			look, g.looks = g.looks[0], g.looks[1:]
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(look))
 		return
 	}
 	g.requests = append(g.requests, body)
@@ -1117,12 +1134,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2146,6 +2163,50 @@ func TestChatImageBounds(t *testing.T) {
 	}
 	if n := len(g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
+	}
+}
+
+// The agent looks at a member's image by tool: analyze_image names the
+// image, the vision call rides the chat task under purpose vision with
+// the stored bytes as a data URL, and the look's answer is the tool's
+// result, elided on replay as any read. An unknown name refuses naming
+// the images the conversation holds.
+func TestChatAnalyzeImageLooksAtTheMembersImage(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Filed.")}}
+	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"here is img1"}}, testFile{name: "shot.png", data: png1x1}); code != 200 {
+		t.Fatalf("the send with the image = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"what stands out?"}`)}, {say("It is red.")}}
+	g.looks = []string{"A red deploy button."}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what colour is the button in img1?"}})
+	equal(t, "the look", events, []string{`tool {"arguments":{"name":"img1","ask":"what stands out?"},"duration_ms":0,"name":"analyze_image","result":"img1 (shot.png): A red deploy button."}`,
+		`text {"text":"It is red."}`, `done {}`})
+	if len(g.visions) != 1 {
+		t.Fatalf("%d vision calls, want one", len(g.visions))
+	}
+	part := g.visions[0]["messages"].([]any)[0].(map[string]any)["content"].([]any)[1].(map[string]any)
+	if url := part["image_url"].(map[string]any)["url"]; url != "data:image/png;base64,"+base64.StdEncoding.EncodeToString(png1x1) {
+		t.Fatalf("the image the gateway saw = %.60s…", url)
+	}
+	if g.visions[0]["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"] != "what stands out?" {
+		t.Fatalf("the ask the gateway saw = %v", g.visions[0])
+	}
+}
+
+// A name no member sent refuses, and names the images there are.
+func TestChatAnalyzeImageUnknownNameRefuses(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got it.")}}
+	if code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"see img1"}}, testFile{name: "shot.png", data: png1x1}); code != 200 {
+		t.Fatalf("the send with the image = %d, want 200", code)
+	}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img9"}`)}, {say("There is no img9.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img9?"}})
+	if len(events) != 3 || !strings.Contains(events[0], `"result":"Refused: no image \"img9\": the conversation's images are img1"`) {
+		t.Fatalf("the unknown name = %v", events)
 	}
 }
 

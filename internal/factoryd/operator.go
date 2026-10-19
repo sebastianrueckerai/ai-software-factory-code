@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -91,6 +92,19 @@ func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, mess
 	return answer.Content, err
 }
 
+// Vision is one look at image, ask's answer by the vision alias on chat
+// task taskID's account, purpose vision; an empty ask asks what the
+// image shows. A gateway refusal is a *policy.Refusal in the chain, as
+// Stream's.
+func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask string, image []byte, contentType string) (string, error) {
+	parts := []map[string]any{{"type": "text", "text": cmp.Or(ask, "Describe this image.")},
+		{"type": "image_url", "image_url": map[string]any{"url": "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image)}}}
+	answer, err := m.call(ctx, policy.PurposeVision, taskID, thread, map[string]any{
+		"model": alias, "stream": true, "max_tokens": operatorTokens,
+		"messages": []map[string]any{{"role": "user", "content": parts}}}, func(string) {})
+	return answer.Content, err
+}
+
 // stream is Stream for purpose with an answer of at most maxTokens; no
 // tools sends none, no thread names none.
 func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
@@ -98,6 +112,12 @@ func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens in
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
+	return m.call(ctx, purpose, taskID, thread, body, text)
+}
+
+// call posts body to the gateway's chat door under purpose on task
+// taskID's account and reads its one streamed answer.
+func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string, body map[string]any, text func(string)) (OperatorMessage, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return OperatorMessage{}, err

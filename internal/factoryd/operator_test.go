@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -164,5 +165,50 @@ func TestOperatorStreamFailures(t *testing.T) {
 				t.Fatalf("refusal in %v: %v", err, refusal)
 			}
 		})
+	}
+}
+
+// One look goes to the gateway on the chat task's account with purpose
+// vision: one user message whose parts are the ask and the image as a
+// data URL, no tools, and the answer's text as the look. A refusal comes
+// back as the gateway's decision, as a stream's.
+func TestOperatorVisionLook(t *testing.T) {
+	image := []byte("the png bytes")
+	g := &operatorGateway{chunks: []string{`{"choices":[{"delta":{"content":"A red deploy button."}}]}`, `[DONE]`}}
+	m := g.start(t)
+	look, err := m.Vision(t.Context(), "t-chat-linkshort-2026-10", "vision", "linkshort/linkshort:anna:2", "what stands out?", image, "image/png")
+	if err != nil || look != "A red deploy button." {
+		t.Fatalf("look = %q, err = %v", look, err)
+	}
+	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-linkshort-2026-10" ||
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeVision || g.headers.Get(gateway.HeaderFactoryThread) != "linkshort/linkshort:anna:2" {
+		t.Fatalf("headers = %v", g.headers)
+	}
+	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
+	want := `{"max_tokens":4096,"messages":[{"content":[{"text":"what stands out?","type":"text"},` +
+		`{"image_url":{"url":"` + url + `"},"type":"image_url"}],"role":"user"}],"model":"vision","stream":true}`
+	b, _ := json.Marshal(g.request)
+	if string(b) != want {
+		t.Fatalf("request = %s\nwant       %s", b, want)
+	}
+}
+
+// An empty ask still asks the model something; a refused look is a
+// *policy.Refusal.
+func TestOperatorVisionRefusalAndDefaultAsk(t *testing.T) {
+	g := &operatorGateway{chunks: []string{`{"choices":[{"delta":{"content":"A chart."}}]}`, `[DONE]`}}
+	m := g.start(t)
+	if _, err := m.Vision(t.Context(), "t-chat", "vision", "", "", []byte("png"), "image/png"); err != nil {
+		t.Fatal(err)
+	}
+	if p := g.request["messages"].([]any)[0].(map[string]any)["content"].([]any)[0].(map[string]any); p["text"] != "Describe this image." {
+		t.Fatalf("the default ask = %v", p)
+	}
+	g2 := &operatorGateway{status: http.StatusPaymentRequired, header: map[string]string{gateway.HeaderDecision: "refused_task_budget"},
+		body: `{"error":{"message":"the task's budget is spent"}}`}
+	_, err := g2.start(t).Vision(t.Context(), "t-chat", "vision", "", "", []byte("png"), "image/png")
+	var refusal *policy.Refusal
+	if !errors.As(err, &refusal) || refusal.Decision != "refused_task_budget" {
+		t.Fatalf("err = %v, refusal %v", err, refusal)
 	}
 }
