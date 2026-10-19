@@ -118,7 +118,7 @@ func TestChatIntakeBackfillMigration(t *testing.T) {
 			(now() - interval '1 hour', 'sf/r', 't-runner', 43, 'question_asked', 'factoryd', 'factoryd',
 			 '{"ask":"Which file?","why":"open","info":"none"}')`,
 		`INSERT INTO intake_events (task_id, kind, author, body) VALUES ('t-runner', 'escalation', 'factoryd', 'Which file?')`,
-		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261028240000_chat_intake_backfill.sql'`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261029000000_chat_intake_backfill.sql'`,
 	}
 	for _, q := range seed {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
