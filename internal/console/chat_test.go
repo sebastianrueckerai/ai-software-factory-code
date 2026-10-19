@@ -541,7 +541,7 @@ func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]fact
 	defer f.mu.Unlock()
 	var out []factoryd.ChatMessage
 	for _, m := range f.msgs[repository+" "+login] {
-		if m.Kind == factoryd.MessageEscalation && m.TaskID != "" {
+		if (m.Kind == factoryd.MessageEscalation || m.Kind == factoryd.MessagePoke) && m.TaskID != "" {
 			out = append(out, m)
 		}
 	}

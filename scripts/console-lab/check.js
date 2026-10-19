@@ -896,7 +896,7 @@ async function text(page) {
       if (!(await p.page.evaluate(() => !!document.activeElement && !!document.activeElement.closest("#thread-rows")))) fails.push("threads: Ctrl+k does not reach the switcher");
     }
     if (sc === "poke") {
-      // a poke on another thread: the inbox row first, its split badge, and the split in the tab title (C14, the settle concept)
+      // a poke on another thread: the inbox row first, its split badge, and the tab title's count of what waits (C21, the ruling of 2026-10-19)
       const first = p.page.locator("#thread-rows .trow").first();
       if (!(await first.evaluate((e) => e.classList.contains("inbox")))) fails.push("poke: the inbox is not the first row");
       if (!(await first.evaluate((e) => e.classList.contains("unread")))) fails.push("poke: the inbox row carries no unread badge");
@@ -904,7 +904,7 @@ async function text(page) {
       if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
         fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
       const title = await p.page.title();
-      if (!title.startsWith("(1 needs you · 2 new) ")) fails.push('poke: the tab title is "' + title + '", want the split (1 needs you · 2 new) first');
+      if (!title.startsWith("(1) ")) fails.push('poke: the tab title is "' + title + '", want the one card that waits, "(1) " first');
       await first.click();
       await p.page.waitForTimeout(600);
       const log = await p.page.locator("#chat").innerText();
@@ -912,7 +912,7 @@ async function text(page) {
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
-      if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      if (!(await p.page.title()).startsWith("(1) ")) fails.push("poke: opening the inbox drops the waiting ask from the tab title");
       // the merge ask's numbers: the PR stays text, the card's ref is the
       // link; the link and the row's body open the card's drawer and
       // light the card. The ask sits settled here, so its fold opens the

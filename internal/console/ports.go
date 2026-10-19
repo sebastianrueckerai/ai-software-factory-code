@@ -108,9 +108,9 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
-	// ChatAsks are login's ask rows on repository, every thread's, the
-	// settle rule's read for the switcher's badge (the
-	// notification-settling concept)
+	// ChatAsks are login's ask and poke rows on repository, every
+	// thread's, the settle rule's read for the switcher's badge and the
+	// tab title's count (the notification-settling concept)
 	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)

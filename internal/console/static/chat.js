@@ -299,12 +299,11 @@ var chatView = (function () {
       (working ? " · <span class=\"tmark working\"><i class=\"dot\" aria-hidden=\"true\"></i></span> " + working + " working" : "") +
       "<span class=\"chev\" aria-hidden=\"true\">" + (folded ? "⌄" : "⌃") + "</span>";
   }
-  // unreadOf is the threads' split summed to a number, the tab title's
-  // count: the member's own threads' items that need them now, nothing
-  // when none does
+  // unreadOf is the tab title's count: the member's own threads' cards
+  // that wait for them now, nothing when none does
   function unreadOf(list, login) {
     var own = (list || []).filter(function (t) { return !t.login || t.login === login; });
-    return own.reduce(function (n, t) { return n + (t.needs_you || 0) + (t.new_rows || 0); }, 0);
+    return own.reduce(function (n, t) { return n + (t.waits_you || 0); }, 0);
   }
   // headHTML is the open thread's head: its title (a click renames it),
   // its last turn or the inbox's line or the archived note, and its acts:

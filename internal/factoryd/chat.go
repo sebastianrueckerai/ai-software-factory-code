@@ -196,6 +196,10 @@ type ChatConversation struct {
 	Working  bool      `json:"working,omitempty"`
 	NeedsYou int64     `json:"needs_you,omitempty"`
 	NewRows  int64     `json:"new_rows,omitempty"`
+	// WaitsYou is the thread's distinct cards with an open ask or poke
+	// row, the tab title's count: what waits for the member now, unlike
+	// NeedsYou, which counts open asks only.
+	WaitsYou int64     `json:"waits_you,omitempty"`
 	SeenUpto int64     `json:"-"`
 	// ClearedUpto is the member's cleared marker: the console's Clear old
 	// swept the rows up to it from view, the record keeps them. Cleared is
@@ -816,12 +820,13 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	return out, rows.Err()
 }
 
-// ChatAsks are login's ask rows on repository, every thread's, oldest
-// first: the poke rows about a card that waits for a person, whose state
-// the settle rule derives at read (the notification-settling concept).
+// ChatAsks are login's ask and poke rows on repository, every thread's,
+// oldest first: the rows about a card, whose state the settle rule
+// derives at read (the notification-settling concept).
 func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind FROM chat_messages
-		WHERE repository = $1 AND login = $2 AND kind = $3 AND task_id <> '' ORDER BY id`, repository, login, MessageEscalation)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind, kind FROM chat_messages
+		WHERE repository = $1 AND login = $2 AND kind IN ($3, $4) AND task_id <> '' ORDER BY id`,
+		repository, login, MessageEscalation, MessagePoke)
 	if err != nil {
 		return nil, err
 	}
@@ -829,10 +834,9 @@ func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]Cha
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind); err != nil {
+		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind, &m.Kind); err != nil {
 			return nil, err
 		}
-		m.Kind = MessageEscalation
 		out = append(out, m)
 	}
 	return out, rows.Err()

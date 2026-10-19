@@ -858,7 +858,8 @@ func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([
 	defer a.mu.Unlock()
 	var out []factoryd.ChatMessage
 	for _, m := range a.msgs {
-		if m.Repository == repository && m.Login == login && m.Kind == factoryd.MessageEscalation && m.TaskID != "" {
+		if m.Repository == repository && m.Login == login &&
+			(m.Kind == factoryd.MessageEscalation || m.Kind == factoryd.MessagePoke) && m.TaskID != "" {
 			out = append(out, m.ChatMessage)
 		}
 	}
