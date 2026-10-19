@@ -1969,7 +1969,10 @@ func TestChatProposalIsStored(t *testing.T) {
 	if calls[0].ReadAt.Before(start) || calls[0].ReadAt.After(end) {
 		t.Fatalf("the stored call's ReadAt = %v, want within the turn between %v and %v", calls[0].ReadAt, start, end)
 	}
-	calls[0].ReadAt = time.Time{}
+	if calls[0].At.Before(start) || calls[0].At.After(end) {
+		t.Errorf("the stored call's at = %v, want within the turn between %v and %v", calls[0].At, start, end)
+	}
+	calls[0].ReadAt, calls[0].At, calls[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", calls, []factoryd.ChatToolCall{{ID: "call_1", Name: "new_card", Arguments: args,
 		Result: "Proposed to sebastian: " + desc + ". Nothing runs until they press Do it.", Proposal: tokens[0]}})
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck); !strings.Contains(rec.Body.String(), `"proposal":"`+tokens[0]+`"`) {
