@@ -158,7 +158,7 @@ var accessTable = map[string]accessRule{
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
 	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
-	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember,
+	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember, "analyze_image": rMember,
 	"costs": rFactory, "alerts": rFactory, "resources": rFactory, "settings": rFactory, "policy": rFactory,
 
 	// chat tools: writes

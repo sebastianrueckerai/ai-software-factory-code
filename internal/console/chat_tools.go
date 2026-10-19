@@ -1528,6 +1528,11 @@ var tools = []chatTool{
 			note, err := t.c.doDeleteComment(t.r.Context(), t.a, in.TaskID, int64(in.N))
 			return note, nil, err
 		}},
+	{name: "analyze_image", title: "Look at an image",
+		params:   map[string]any{"name": str("the image's name, img1 as its row shows"), "ask": str("what to look for (default what the image shows)")},
+		required: []string{"name"},
+		about:    "One look at an image a member sent: the vision model's answer to a question about it.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
 }
 
 // diffLimit bounds the diff the agent reads.
@@ -1571,6 +1576,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   ask questions this conversation's member, answered by a press or their next message, and ends the turn.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
   attach_analysis records what you found inside a card's open ask; the members read it with the question.
+  analyze_image looks at an image a member sent, once per question; cite what you saw, and look again rather than guess. A member's image is spend they approved; the chat's monthly budget still bounds the looks.
 `
 
 func (t *turn) systemText() (string, error) {

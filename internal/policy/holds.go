@@ -40,13 +40,17 @@ type HoldRequest struct {
 	// one byte. CacheFloor is the share of Earlier's prompt the provider
 	// serves from its cache at the least, as measured on the ref
 	// (cacheFloor); 0 when none is measured.
-	Bytes      int
-	Earlier    Usage
-	CacheFloor float64
-	Price      Price
-	WantOut    int // the caller's output limit; 0 = none
-	DayEUR     float64
-	MonthEUR   float64
+	Bytes int
+	// ImageTokens is the worst-case prompt tokens a vision call's one
+	// image bills, sniffed from its header; the payload's characters are
+	// already out of Bytes.
+	ImageTokens int
+	Earlier     Usage
+	CacheFloor  float64
+	Price       Price
+	WantOut     int // the caller's output limit; 0 = none
+	DayEUR      float64
+	MonthEUR    float64
 	// Project names the task's project and ProjectEUR its month cap, its
 	// file's budget.month_eur (Tree.ProjectCap): +Inf for none.
 	Project    string
@@ -140,7 +144,8 @@ type Usage struct {
 // Fit clamps a call's output limit, what it asked (WantOut) up to the
 // alias's limit (Price.MaxOutput, Document.Limited), the limit alone when
 // it asked none, to what the free task, day, month and project headroom
-// can pay for, or refuses it. Calibrated by an earlier
+// can pay for, or refuses it. An image's ImageTokens price at the input
+// rate beside the bytes. Calibrated by an earlier
 // call (ruling 274), the prompt is about Bytes times that call's tokens per
 // byte. Of the part up to that call's prompt tokens, the share the
 // provider's measured floor vouches for (CacheFloor) is at the cache-read
@@ -150,12 +155,14 @@ type Usage struct {
 // tokens at the input price.
 func Fit(f Free, r HoldRequest) (Hold, error) {
 	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
-	tokens, measure := float64(r.Bytes), "at most"
+	img := float64(r.ImageTokens)
+	tokens, measure := float64(r.Bytes)+img, "at most"
 	inEUR := tokens * r.Price.In
 	if e := r.Earlier; e.PromptTokens > 0 && e.BodyBytes > 0 {
-		tokens, measure = float64(r.Bytes)*float64(e.PromptTokens)/float64(e.BodyBytes), "about"
-		cached := min(tokens, float64(e.PromptTokens)) * min(r.CacheFloor, 1)
-		inEUR = cached*r.Price.CacheRead + (tokens-cached+tokens/4)*r.Price.In
+		text := float64(r.Bytes) * float64(e.PromptTokens) / float64(e.BodyBytes)
+		tokens, measure = text+img, "about"
+		cached := min(text, float64(e.PromptTokens)) * min(r.CacheFloor, 1)
+		inEUR = cached*r.Price.CacheRead + (text-cached+text/4+img)*r.Price.In
 	}
 	outFit := 0
 	if left := free - inEUR; left > 0 {

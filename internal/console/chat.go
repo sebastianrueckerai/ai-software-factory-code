@@ -106,6 +106,9 @@ type turn struct {
 	// it is an earlier turn's or the turn's own message, a row after it
 	// the turn stored.
 	upto int64
+	// task is the chat task whose account the turn's model calls and
+	// looks bill.
+	task string
 	// conv is the member's thread the turn answers in (roadmap 239); its
 	// owner is whose number space that thread is, the member's own until
 	// the request names another member's thread, which everyone may read
@@ -614,6 +617,7 @@ func scrubTokens(text string) (string, bool) {
 // answer calls none or proposes one. Each call first checks the task's
 // budget.
 func (t *turn) run(id, notice string) {
+	t.task = id
 	ctx := t.r.Context()
 	err := t.begin()
 	var msgs []factoryd.OperatorMessage
@@ -1035,6 +1039,42 @@ func imageSize(n int64) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	return fmt.Sprintf("%.1f KiB", float64(n)/1024)
+}
+
+// lookImage is the analyze_image tool's run: the conversation's newest
+// image under in.Name, looked at once by the vision model on the chat
+// task's account. A name no member sent refuses naming the images there
+// are.
+func (t *turn) lookImage(in toolInput) (string, error) {
+	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		return "", err
+	}
+	var found *factoryd.ChatAttachment
+	var names []string
+	for i := len(atts) - 1; i >= 0; i-- {
+		if !slices.Contains(names, atts[i].Name) {
+			names = append(names, atts[i].Name)
+		}
+		if atts[i].Name == in.Name && found == nil {
+			found = &atts[i]
+		}
+	}
+	if found == nil {
+		if len(names) == 0 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: this conversation holds no image", in.Name))
+		}
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: the conversation's images are %s", in.Name, strings.Join(names, ", ")))
+	}
+	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
+	if err != nil {
+		return "", err
+	}
+	look, err := t.c.cfg.Operator.Vision(t.r.Context(), t.task, t.cfg.VisionModel, t.threadRef(), in.Ask, b, found.ContentType)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s (%s): %s", found.Name, found.FileName, look), nil
 }
 
 // since is at as a replayed row shows it: its time and its age at the
