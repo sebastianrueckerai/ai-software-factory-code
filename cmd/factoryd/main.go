@@ -557,6 +557,7 @@ func main() {
 		Alerts:     store,
 		Projects:   store,
 		Events:     store,
+		Figures:    store,
 		Bus:        eventBus,
 		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
 		ConfigDir:  configDir,

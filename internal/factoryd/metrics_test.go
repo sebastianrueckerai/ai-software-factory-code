@@ -297,7 +297,7 @@ func metricsReport(t *testing.T, repository string) MetricsReport {
 	from, to := metricsTestWindow()
 	s := metricsStore(t)
 	seedMetricsFigures(t, s)
-	r, err := s.Metrics(context.Background(), repository, from, to)
+	r, err := s.ProjectMetrics(context.Background(), repository, from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -448,7 +448,7 @@ func TestMetricsNoDoneCards(t *testing.T) {
 		`INSERT INTO ci_runs (repository, commit, pushed_at, duration_ms) VALUES ('sf/nodone', 'cn', '2026-10-06T09:00Z', 600000), ('sf/nodone', 'cn2', '2026-10-07T09:00Z', 300000)`); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.Metrics(ctx, "sf/nodone", from, to)
+	r, err := s.ProjectMetrics(ctx, "sf/nodone", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestMetricsPreviousWindowEmpty(t *testing.T) {
 		`INSERT INTO ci_runs (repository, commit, pushed_at, duration_ms) VALUES ('sf/late', 'cl', '2026-10-06T09:00Z', 120000)`); err != nil {
 		t.Fatal(err)
 	}
-	r, err := s.Metrics(ctx, "sf/late", from, to)
+	r, err := s.ProjectMetrics(ctx, "sf/late", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +502,7 @@ func TestMetricsWindowEdges(t *testing.T) {
 	seedMetricsFigures(t, s)
 	ctx := context.Background()
 	// one day: only c3 finished on Oct 8, no roll went live that day
-	r, err := s.Metrics(ctx, "sf/code", time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC))
+	r, err := s.ProjectMetrics(ctx, "sf/code", time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 8, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,7 +510,7 @@ func TestMetricsWindowEdges(t *testing.T) {
 		t.Fatalf("one day: throughput %+v cycle %+v lead %+v", r.Throughput, r.CardCycle, r.LeadTime)
 	}
 	// 90 days: every fixture roll but the one past Oct 12; prev window empty
-	r, err = s.Metrics(ctx, "sf/code", time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
+	r, err = s.ProjectMetrics(ctx, "sf/code", time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestMetricsWeekBuckets(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	r, err := s.Metrics(ctx, "sf/buckets", from, to)
+	r, err := s.ProjectMetrics(ctx, "sf/buckets", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}

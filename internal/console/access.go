@@ -90,6 +90,7 @@ var accessTable = map[string]accessRule{
 	"GET /settings/new":                          rFactory,
 	"GET /projects/{name}/status":                rFactory,
 	"GET /projects/{name}/events":                rProject,
+	"GET /projects/{name}/metrics":               rProject,
 	"GET /projects/{name}/events/stream":         rMember, // follows() judges the project's sight
 	"GET /cards/{id}":                            {need: writer, scope: scCard, hide: true},
 	"GET /cards/{id}/drawer":                     rCard,

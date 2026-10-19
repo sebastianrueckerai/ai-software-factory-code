@@ -93,6 +93,12 @@ type Projects interface {
 	Projects(ctx context.Context) ([]factoryd.Project, error)
 }
 
+// Metrics is the metrics page's seam (factoryd.PGStore.Metrics): one
+// project's figures over a window of UTC days and the one before it.
+type Metrics interface {
+	ProjectMetrics(ctx context.Context, repository string, from, to time.Time) (factoryd.MetricsReport, error)
+}
+
 // Events is the event spine (factoryd.Events): one row per action,
 // whatever the input, and a project's feed. FiledPR is the infra pull
 // request of a project's last filing, its project_filed event's.

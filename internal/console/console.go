@@ -147,6 +147,8 @@ type Config struct {
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events
+	// Figures answers a project's metrics page (factoryd.PGStore.Metrics).
+	Figures Metrics
 	// Bus is the in-process event broadcaster: the stream subscribes to it
 	// so every Record fans out without polling the table (factoryd.EventBus).
 	Bus *factoryd.EventBus
@@ -376,6 +378,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /settings/new", c.newProjectForm, "", "the new project's form: the chat creates no project"},
 		{"GET /projects/{name}/status", c.projectStatus, "", "a new project's steps after its form: the chat creates no project, and projects reads its state"},
 		{"GET /projects/{name}/events", c.projectEvents, "", "a project's event feed fragment: the history tool reads the chat project's events"},
+		{"GET /projects/{name}/metrics", c.projectMetrics, "", "a project's figures over the window and the one before: the page, and json for the seam"},
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
@@ -798,7 +801,7 @@ func (c *Console) forbidden(w http.ResponseWriter, user string) {
 var pageOf = map[string]string{
 	"new.html": "new", "settings.html": "settings", "project_new.html": "settings",
 	"resources.html": "resources", "costs.html": "costs", "policy.html": "policy",
-	"notifications.html": "notifications",
+	"notifications.html": "notifications", "metrics.html": "metrics",
 }
 
 func (c *Console) render(w http.ResponseWriter, name string, data any) {

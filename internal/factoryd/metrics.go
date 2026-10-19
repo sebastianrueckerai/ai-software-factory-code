@@ -709,7 +709,7 @@ func metricReviewAcceptance(ctx context.Context, db *sql.DB, repo string, w metr
 }
 
 // Metrics assembles the report every figure function fills one field of.
-func (s *PGStore) Metrics(ctx context.Context, repository string, from, to time.Time) (MetricsReport, error) {
+func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, to time.Time) (MetricsReport, error) {
 	db, w := s.db, newMetricWindow(from, to)
 	r := MetricsReport{Repository: repository, From: w.From, To: w.To}
 	var err error
