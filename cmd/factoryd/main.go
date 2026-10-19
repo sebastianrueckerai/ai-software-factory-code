@@ -549,6 +549,9 @@ func main() {
 		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryPlanCard(ctx, taskID, by)
 		},
+		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
+			return runner.Go(ctx, taskID, by)
+		},
 		Resources:  cloudres.AgentStore(store.CloudResources()),
 		Jobs:       factoryd.ClusterJobs{Kube: kube},
 		Alerts:     store,

@@ -843,6 +843,63 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 	}
 }
 
+// Item 1131: the go of a card that waits on a person hands its work to
+// the factory (factoryd's Go), notes the new issue on the card's issue
+// and closes it; an agent card, a card that asks a question and a card
+// already closed refuse with their sentence and file nothing.
+func TestGoHandsTheWaitingCardOver(t *testing.T) {
+	r := newRig(t)
+	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-wait", Kind: "human", Status: "waiting-human",
+		Objective: "Bump the weekly numbers.", Repository: "sf/code", IssueNumber: 15, Source: factoryd.SourceRoutine}}
+	asking := waiting
+	asking.ID, asking.IssueNumber, asking.Escalation = "t-ask", 16, "Which numbers, the issues or the pull requests?"
+	r.tasks.tasks = append(planTasks(), waiting, asking)
+	ck, s := r.loggedIn(t)
+	hand := func(id, csrf string) *httptest.ResponseRecorder {
+		req := post("/tasks/"+id+"/go", url.Values{"csrf": {csrf}})
+		req.Header.Set("HX-Request", "true")
+		return r.do(req, ck)
+	}
+	if rec := hand("t-run", s.csrf); rec.Code != http.StatusConflict ||
+		strings.TrimSpace(rec.Body.String()) != "Card #11 is an agent card: the factory runs it." || len(r.handed) != 0 {
+		t.Fatalf("the agent card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
+	}
+	if rec := hand("t-ask", s.csrf); rec.Code != http.StatusConflict ||
+		strings.TrimSpace(rec.Body.String()) != "Card #16 waits on your answer, not on the factory." || len(r.handed) != 0 {
+		t.Fatalf("the asking card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
+	}
+	rec := hand("t-wait", s.csrf)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {
+		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(r.handed, []string{"t-wait by sebastian"}) {
+		t.Errorf("GoCard calls %v", r.handed)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "The factory runs it as #16." {
+		t.Errorf("the close note = %q", got)
+	}
+	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) {
+		t.Errorf("the issue stays open: %v", r.fg.patched)
+	}
+	// factoryd ended the card on the close, so a second go refuses
+	i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-wait" })
+	r.tasks.tasks[i].Status = "closed"
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict ||
+		strings.TrimSpace(rec.Body.String()) != "Card #15 does not wait on you: it is closed." || len(r.handed) != 1 {
+		t.Errorf("the second go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
+	}
+	r.tasks.tasks[i].Status = "waiting-human"
+	r.goErr = factoryd.ErrNoGo("Card #15 was already handed over.")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #15 was already handed over." {
+		t.Errorf("a refused go: %d %q", rec.Code, rec.Body)
+	}
+	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory; see the factoryd log." {
+		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
+	}
+}
+
 // accept_plan without a revision proposes the plan's newest, named with
 // its sha256 (a given sha256 kept), and Do it accepts that one: a
 // revision the planner added since makes it stale. A stale revision given

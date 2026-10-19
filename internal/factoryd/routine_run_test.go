@@ -222,6 +222,112 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	}
 }
 
+// The go action on the weekly bump's waiting card: the factory files the
+// work as an agent card in the shape every agent routine's card takes,
+// its objective the card's own words with who handed it over named (the
+// bump names no skill, so no skill line), and the run's row points at
+// the new card: the hold keeps holding and the run ends with the new
+// card, not the waiting one, which stays as it was for the close that
+// follows. A second go is refused: the run no longer names the card.
+// Hand-derived: the run's card is #71, the hand-over #72, the budget the
+// fixture's default 2.
+func TestGoHandsTheCardOver(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, wf := routineRunner(t, routineTree(t))
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	waiting := onlyTask(t, store)
+	issue, err := r.Go(ctx, waiting.ID, "sebastian")
+	if err != nil || issue != 72 {
+		t.Fatalf("Go = %d, %v; want #72", issue, err)
+	}
+	if len(store.tasks) != 2 {
+		t.Fatalf("%d tasks, want the waiting card and its hand-over", len(store.tasks))
+	}
+	if again := store.tasks[waiting.ID]; again.Status != "waiting-human" || again.Kind != "human" {
+		t.Fatalf("the waiting card = %+v, want it as it was for the close", again)
+	}
+	var n Task
+	for id, c := range store.tasks {
+		if id != waiting.ID {
+			n = c
+		}
+	}
+	if n.Kind != "agent" || n.Status != "queued" || n.Lane != policy.LaneReady || n.Process != "maintenance" || n.Source != SourceRoutine ||
+		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 72 || n.Author != "" ||
+		n.Repository != "sf/ai-software-factory-code" || !slices.Equal(n.RequiredCapabilities, []string{"coder"}) {
+		t.Fatalf("the hand-over = %+v", n)
+	}
+	if want := waiting.Objective + "\n\nhanded over by sebastian"; n.Objective != want {
+		t.Fatalf("objective %q, want %q", n.Objective, want)
+	}
+	if len(issues.issues) != 2 || issues.issues[1] != n.Objective {
+		t.Fatalf("issues %q, want the hand-over's issue carrying the objective", issues.issues)
+	}
+	if got := issues.labels[72]; !slices.Equal(got, []string{"routine", "state/queued"}) {
+		t.Errorf("labels = %v", got)
+	}
+	if !slices.Equal(wf.started, []string{n.ID}) {
+		t.Errorf("started %v, want the hand-over's run", wf.started)
+	}
+	runs := store.routineRuns[codeProject+"/weekly-bump"]
+	if len(runs) != 1 || runs[0].TaskID != n.ID || runs[0].Issue != 72 || runs[0].Outcome != "filed" || !runs[0].Ended.IsZero() {
+		t.Fatalf("runs %+v, want the open run on the hand-over", runs)
+	}
+	if _, err := r.Go(ctx, waiting.ID, "sebastian"); err == nil || err.Error() != "Card #71 was already handed over." {
+		t.Fatalf("the second go: %v, want the refusal", err)
+	}
+	if len(store.tasks) != 2 || len(issues.issues) != 2 {
+		t.Fatalf("the second go acted: %d tasks, %d issues", len(store.tasks), len(issues.issues))
+	}
+}
+
+// Go refuses a card that is no human card waiting on a person and files
+// nothing; a human card in the backlog goes too, on its own words, with
+// no routine's label.
+func TestGoRefusedAndBacklog(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, wf := routineRunner(t, routineTree(t))
+	if err := store.CreateTask(ctx, Task{ID: "t-agent", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "maintenance",
+		Repository: "sf/ai-software-factory-code", IssueNumber: 5, Source: SourceRoutine, RiskClass: "standard", BudgetEUR: 2,
+		Objective: "Audit\n\nRun the skill audit."}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "backlog", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 6, Source: "webhook", RiskClass: "standard", Objective: "Tidy the docs\n\nTidy the console's docs."}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Go(ctx, "t-agent", "sebastian"); err == nil || err.Error() != "Card #5 is an agent card: the factory runs it." {
+		t.Fatalf("the go of an agent card: %v, want the refusal", err)
+	}
+	issue, err := r.Go(ctx, "t-back", "sebastian")
+	if err != nil || issue != 71 {
+		t.Fatalf("the go of the backlog card = %d, %v; want #71", issue, err)
+	}
+	if len(store.tasks) != 3 {
+		t.Fatalf("%d tasks, want the two cards and the hand-over", len(store.tasks))
+	}
+	var n Task
+	for id, c := range store.tasks {
+		if id != "t-agent" && id != "t-back" {
+			n = c
+		}
+	}
+	if n.Objective != "Tidy the docs\n\nTidy the console's docs." || n.Source != "webhook" || n.Kind != "agent" || n.Status != "queued" {
+		t.Fatalf("the hand-over = %+v", n)
+	}
+	if got := issues.labels[71]; !slices.Equal(got, []string{"state/queued"}) {
+		t.Errorf("labels = %v, want none but the state's", got)
+	}
+	if len(issues.issues) != 1 || issues.issues[0] != n.Objective {
+		t.Fatalf("issues %q, want the hand-over alone", issues.issues)
+	}
+	if len(wf.started) != 1 || wf.started[0] == "t-back" {
+		t.Fatalf("started %v", wf.started)
+	}
+}
+
 // While the last run's card #781 is open, a routine that holds files
 // nothing: the run ends held, names the card in its note and keeps no
 // task of its own, so the card's end finds the run that filed it. A held

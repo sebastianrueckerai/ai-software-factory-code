@@ -979,6 +979,18 @@ func (s *fakeStore) EndRoutineRun(ctx context.Context, project, routine string, 
 	return fmt.Errorf("routine run %s/%s #%d: %w", project, routine, run, ErrNotFound)
 }
 
+func (s *fakeStore) RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error {
+	for _, runs := range s.routineRuns {
+		for i := range runs {
+			if runs[i].TaskID == taskID && runs[i].Ended.IsZero() {
+				runs[i].TaskID, runs[i].Issue = newTaskID, issue
+				return nil
+			}
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error) {
 	runs := slices.Clone(s.routineRuns[project+"/"+routine])
 	slices.Reverse(runs)

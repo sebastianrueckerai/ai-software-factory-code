@@ -61,6 +61,10 @@ type RoutineStore interface {
 	// until EndRoutineRun. ErrNotFound for a run that never began or ended.
 	RoutineRunFiled(ctx context.Context, project, routine string, run int, taskID string, issue int64) error
 	EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error
+	// RepointRoutineRun moves the open run that filed taskID onto
+	// newTaskID and its issue: the go action's hand-over, so the hold
+	// keeps holding and the run ends with the card that ran the work.
+	RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error
 	// RoutineRuns are the routine's last limit runs, newest first.
 	RoutineRuns(ctx context.Context, project, routine string, limit int) ([]RoutineRun, error)
 	// RoutineRunOfTask is the run that filed the task.
@@ -198,6 +202,15 @@ func (s *PGStore) EndRoutineRun(ctx context.Context, project, routine string, ru
 	res, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET ended = now(), outcome = $4, note = $5, task_id = $6, issue_number = $7, cost_eur = $8
 		WHERE project = $1 AND routine = $2 AND run = $3`, project, routine, run, outcome, note, taskID, issue, costEUR)
 	return routineRunChanged(res, err, project, routine, run)
+}
+
+// RepointRoutineRun moves the open run that filed taskID onto newTaskID
+// and its issue: the go action's hand-over, so the hold keeps holding
+// and the run ends with the card that ran the work.
+func (s *PGStore) RepointRoutineRun(ctx context.Context, taskID, newTaskID string, issue int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE routine_runs SET task_id = $2, issue_number = $3
+		WHERE task_id = $1 AND ended IS NULL`, taskID, newTaskID, issue)
+	return err
 }
 
 // routineRunChanged is the update's error, ErrNotFound when no run matched.
