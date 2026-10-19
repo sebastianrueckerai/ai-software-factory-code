@@ -1314,3 +1314,17 @@ form.composer { position: relative; }
 [data-tip]:hover::after, [data-tip]:focus-visible::after { content: attr(data-tip); position: absolute; left: 50%; bottom: calc(100% + 6px); transform: translateX(-50%); white-space: nowrap; padding: 3px 8px; border: 1px solid var(--line-strong); background: var(--bg-raised); color: var(--text-muted); font: 11px/1.5 var(--font-mono); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); z-index: 80; pointer-events: none; }
 #chat-divider[data-tip]:hover::after, #chat-divider[data-tip]:focus-visible::after { left: 14px; bottom: 50%; transform: translateY(50%); }
 .drawer-close { position: absolute; top: 12px; right: 14px; }
+
+/* a control near the top edge opens its tooltip downward, so no tooltip
+   leaves the screen; the strip's right-hand cells right-align theirs */
+header [data-tip]:hover::after, header [data-tip]:focus-visible::after,
+.chat-head [data-tip]:hover::after, .chat-head [data-tip]:focus-visible::after,
+summary.strip [data-tip]:hover::after, summary.strip [data-tip]:focus-visible::after {
+  top: calc(100% + 6px); bottom: auto;
+}
+summary.strip .cell[data-tip]:hover::after, summary.strip .cell[data-tip]:focus-visible::after {
+  left: auto; right: 0; transform: none;
+}
+/* the input's drag seam lights the composer's top rule, the divider's
+   own way of saying it drags */
+form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible) { border-top-color: var(--accent); }
