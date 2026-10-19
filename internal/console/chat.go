@@ -632,7 +632,7 @@ func readPart(fh *multipart.FileHeader, limit int64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer f.Close() // #nosec G104 -- the read has the whole part; the form file's close carries nothing
 	return io.ReadAll(io.LimitReader(f, limit+1))
 }
 
