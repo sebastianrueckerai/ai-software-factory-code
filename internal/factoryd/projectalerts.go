@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -75,6 +76,14 @@ type ProjectRollRecorder interface {
 	RecordProjectRoll(ctx context.Context, repository, namespace, digest, commit string, readyAt time.Time) error
 }
 
+// The roll row's shapes: the digest form every image carries, the deploy
+// commit a git sha, or none. The poller names both, so the shapes hold at
+// the write.
+var (
+	rollDigestRe = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	rollCommitRe = regexp.MustCompile(`^([0-9a-f]{7,40})?$`)
+)
+
 // ProjectAlertsHandler serves GET /projects/{name}/alerts?namespace=&digest=:
 // the bearer is the project's FACTORY_READ_TOKEN (401 otherwise, an unknown
 // project too), the namespace one of the project's (403 otherwise). The
@@ -127,10 +136,15 @@ func ProjectAlertsHandler(projects ProjectReader, alerts AlertRowReader, deploys
 				return
 			}
 			if confirmed {
+				commit := r.URL.Query().Get("commit")
 				// the rollout the wait asked for is live: recorded once, the
-				// row is the project's deploy fact; a failed write never
-				// fails the answer the promotion reads
-				if err := rolls.RecordProjectRoll(r.Context(), p.Repository, ns, digest, r.URL.Query().Get("commit"), time.Now()); err != nil {
+				// row is the project's deploy fact. The poller names the
+				// digest and the commit, so only a sha256 digest and a hex
+				// commit (or none) reach the table; a refused or failed
+				// write never fails the answer the promotion reads
+				if !rollDigestRe.MatchString(digest) || !rollCommitRe.MatchString(commit) {
+					log.Printf("project %q roll with digest %q, commit %q: not a shape the table keeps", name, digest, commit) // #nosec G706 -- %q escapes every control character
+				} else if err := rolls.RecordProjectRoll(context.WithoutCancel(r.Context()), p.Repository, ns, digest, commit, time.Now()); err != nil {
 					log.Printf("project %q roll %s in %s: %v", name, digest, ns, err) // #nosec G706 -- %q escapes every control character
 				}
 			}
