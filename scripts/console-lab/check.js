@@ -49,7 +49,7 @@ const mustHave = {
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
-    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "Two cards need your decision", "configuration", "version 4",
+    "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
     "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
@@ -62,11 +62,11 @@ const mustHave = {
     "Order and show", "Order", "Show", "newest first", "oldest first", "next up", "by stage", "by spend", "blocked only", "exceptional only", "failed only",
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
-  idle: ["idle", "0 working", "0 need you", "€144.16", "Factory is idle", "#455", "#178", "Done", "#618", "#597", "failed"],
+  idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
-  quiet: ["One card is working", "1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+  quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
 };
 
 async function seed(s) {
@@ -282,7 +282,7 @@ async function text(page) {
         if (!(await d.isVisible())) fails.push("busy: a click on the card does not open the drawer");
         else {
           const dt = await d.innerText();
-          for (const w of ["Overview", "Chat", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
+          for (const w of ["Overview", "Session", "Activity", "Files"]) if (!dt.includes(w)) fails.push('drawer: missing the tab "' + w + '"');
           const tabs = await d.getByRole("tab").allInnerTexts();
           if (tabs[tabs.length - 1] !== "Files") fails.push("drawer: Files is not the last tab (" + tabs.join(", ") + ")");
           const box = await d.boundingBox();
@@ -863,6 +863,15 @@ async function text(page) {
       await fresh.page.waitForTimeout(600);
       if (!(await fresh.page.locator(".chat.sw-collapsed").count())) fails.push("threads: the thread table does not start folded");
       await fresh.ctx.close();
+      // the rows (C14): the inbox pinned first, the others by last turn: the session store
+      // (6 min), the members page (9 min), the costs (41 min), the export (26 h); the members
+      // page's turn in flight its one working dot; no ticker along the foot (C12)
+      const order = await p.page.evaluate(() => Array.from(document.querySelectorAll("#thread-rows .trow[data-thread]"))
+        .map((r) => r.classList.contains("inbox") ? "inbox" : r.dataset.thread).join(","));
+      if (order !== "inbox,4,3,2,1") fails.push("threads: the rows read " + order + ", want inbox,4,3,2,1");
+      const dots = await p.page.locator("#thread-rows .tmark.working").evaluateAll((d) => d.map((x) => x.closest(".trow").dataset.thread).join(","));
+      if (dots !== "3") fails.push("threads: the working dots sit on " + (dots || "no row") + ", want 3");
+      if (await p.page.locator("#ticker").count()) fails.push("threads: the ticker is back (C12)");
       // the commands (C14): "/" at the start of the box opens the palette, the arrows
       // choose, Escape closes it; /compact and /new also sit as chips under the box
       const box = p.page.locator("#chat-input"), pal = p.page.locator("#chat-palette");
@@ -886,8 +895,11 @@ async function text(page) {
       else {
         await del.click();
         const dlg = p.page.locator("#thread-dialog");
-        if (!(await dlg.isVisible()) || !(await dlg.innerText()).includes("go for good")) fails.push("threads: Delete… opens no warning");
+        if (!(await dlg.isVisible())) fails.push("threads: Delete… opens no warning");
         else {
+          const warn = await dlg.innerText();
+          for (const w of ["Delete “Why is the session store card waiting?”?", "Its 2 messages go for good: a hard delete, no archive.",
+            "One event will name you, the thread and the count.", "the events, the audit and git"]) if (!warn.includes(w)) fails.push('threads: the delete warning lacks "' + w + '"');
           await dlg.getByRole("button", { name: "Keep it" }).click();
           if (await dlg.count()) fails.push("threads: Keep it does not close the warning");
         }
@@ -896,7 +908,8 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       const restore = p.page.locator("#thread-rows .tarch [data-restore]");
       if (!(await restore.count())) fails.push("threads: Archive puts no row under the archived rule");
-      else {
+      if ((await p.page.locator("#thread-head").innerText()).includes("Why is the session store card waiting?")) fails.push("threads: the archived thread stays open");
+      if (await restore.count()) {
         // an archived thread opened: its composer is one line with restore (C14)
         await p.page.locator("#thread-rows .tarch [data-thread]").first().click();
         await p.page.waitForTimeout(600);
@@ -905,6 +918,54 @@ async function text(page) {
         await restore.first().click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
+        if (!(await p.page.locator("#chat-input").isVisible())) fails.push("threads: restore does not bring the text box back");
+      }
+      // the fold (C14): ‹ folds the table to a strip of its marks no wider than 40 px that keeps
+      // the open row's rule, the working dot and the count pill; a mark still opens its thread
+      // and the table stays folded; › unfolds it
+      const tg = p.page.locator("#switcher .swtg"), foldedNow = () => p.page.locator(".chat.sw-collapsed").count();
+      await tg.click();
+      if (!(await foldedNow())) fails.push("fold: ‹ does not fold the threads");
+      else {
+        const strip = await p.page.evaluate(() => {
+          const sw = document.getElementById("switcher"), vis = (sel) => Array.from(sw.querySelectorAll(sel)).filter((e) => e.offsetParent && e.getBoundingClientRect().width > 0).length;
+          return { width: sw.getBoundingClientRect().width, titles: vis(".ttitle"), working: vis(".tmark.working"), pills: vis(".badge, .bsplit"), on: vis(".trow.on") };
+        });
+        if (strip.width > 40) fails.push("fold: the folded strip is " + Math.round(strip.width) + " px wide");
+        if (strip.titles) fails.push("fold: the folded strip still shows " + strip.titles + " titles");
+        if (strip.working !== 1) fails.push("fold: the folded strip shows " + strip.working + " working dots, want 1");
+        if (strip.pills !== 1) fails.push("fold: the folded strip shows " + strip.pills + " count pills, want the costs thread's 1");
+        if (strip.on !== 1) fails.push("fold: the folded strip keeps no open row's rule");
+        await p.page.locator('#thread-rows .trow[data-thread="2"]').click();
+        await p.page.waitForTimeout(600);
+        if (!(await p.page.locator("#thread-head").innerText()).includes("Give the costs page a from and a to date.")) fails.push("fold: a mark does not open its thread");
+        if (!(await foldedNow())) fails.push("fold: opening a thread unfolds the table");
+        await tg.click();
+        if (await foldedNow()) fails.push("fold: › does not unfold the threads");
+      }
+      // delete is hard (C14): Delete the thread takes the costs thread's row
+      await p.page.locator('#thread-rows .trow[data-thread="2"]').click();
+      await p.page.waitForTimeout(600);
+      await p.page.locator("#thread-head [data-delete]").click();
+      await p.page.locator('#thread-dialog [data-dlg="delete"]').click();
+      await p.page.waitForTimeout(600);
+      if (await p.page.locator("#thread-dialog").count()) fails.push("threads: Delete the thread leaves the warning open");
+      if (await p.page.locator('#thread-rows .trow[data-thread="2"]').count()) fails.push("threads: Delete the thread leaves its row");
+      // the commands run (C14): "/ne" and Enter in the palette start a new thread, as the
+      // /new chip does, each opening empty with the focus in the box
+      for (const [what, run] of [
+        ["/ne and Enter", async () => { await box.click(); await p.page.keyboard.type("/ne"); await p.page.keyboard.press("Enter"); }],
+        ["the /new chip", () => p.page.locator('#chat-form .cmd[data-cmd="new"]').click()],
+      ]) {
+        await p.page.locator('#thread-rows .trow[data-thread="4"]').click();
+        await p.page.waitForTimeout(600);
+        await run();
+        await p.page.waitForTimeout(800);
+        if (await pal.isVisible()) fails.push("commands: the palette stays open after " + what);
+        const head = (await p.page.locator("#thread-head").innerText()).trim();
+        if (!head.startsWith("New thread")) fails.push('commands: ' + what + ' opens "' + head.split("\n")[0] + '", not a new thread');
+        if (await p.page.locator("#chat-log .msg").count()) fails.push("commands: the thread " + what + " opens is not empty");
+        if (await p.page.evaluate(() => document.activeElement && document.activeElement.id) !== "chat-input") fails.push("commands: after " + what + " the focus is not in the box");
       }
     }
     if (sc === "assisted") {
@@ -924,12 +985,24 @@ async function text(page) {
       await btn.click();
       await p.page.keyboard.press("Escape");
       if (await pop.isVisible()) fails.push("level: Escape does not close the menu");
+      await btn.click();
+      await pop.locator('[data-lvl="autonomous"]').click();
+      await p.page.keyboard.press("Escape");
+      if (await pop.isVisible()) fails.push("level: Escape does not close the confirm");
+      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: Escape on the confirm changed the level");
+      // the agent's own start carries its decider line in the inbox (C14)
+      await p.page.locator("#thread-rows .trow.inbox").click();
+      await p.page.waitForTimeout(600);
+      const deciders = await p.page.locator("#chat-log .decider").allInnerTexts();
+      if (deciders.length !== 1 || !deciders[0].includes("assisted level · started by the agent")) fails.push("assisted: the inbox's deciders read " + JSON.stringify(deciders));
       if (await p.page.locator("form#autonomy").count()) fails.push("level: the board head still carries the old selector");
     }
     if (sc === "escalation") {
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
       // a choice answers its card with no model turn and the row goes
       const row = p.page.locator("#chat-answer");
+      const once = await p.page.locator("#chat").getByRole("button", { name: "Postgres", exact: true }).count();
+      if (once !== 1) fails.push("escalation: the chat shows the choice Postgres " + once + " times, want once");
       if (!(await row.isVisible())) fails.push("escalation: no answer row under the inbox's escalation");
       else {
         await row.getByRole("button", { name: "Postgres" }).click();
@@ -953,16 +1026,20 @@ async function text(page) {
       const badge = first.locator(".badge, .bsplit").first();
       if (!(await badge.count()) || (await badge.getAttribute("aria-label")) !== "1 needs you · 1 new")
         fails.push('poke: the inbox row carries no split badge "1 needs you · 1 new"');
+      // the tab title sums the open ask on #606, the inbox's new #600 and the costs thread's
+      // unseen answer (C21); the poke leaves the session store thread open (C14)
       const title = await p.page.title();
-      if (!title.startsWith("(1 needs you · 2 new) ")) fails.push('poke: the tab title is "' + title + '", want the split (1 needs you · 2 new) first');
+      if (!title.startsWith("(3) ")) fails.push('poke: the tab title is "' + title + '", want (3) first');
+      if ((await p.page.locator("#thread-head").innerText()).includes("uninvited")) fails.push("poke: the poke opens the inbox by itself");
       await first.click();
       await p.page.waitForTimeout(600);
+      if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: the agent speaks here uninvited")) fails.push("poke: the inbox's head does not say it is the factory's thread");
       const log = await p.page.locator("#chat").innerText();
       for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
       if (!(await settled.count())) fails.push("poke: the answered merge ask does not sit settled");
       else if (await settled.locator("button").count()) fails.push("poke: the settled ask keeps its buttons");
-      if ((await p.page.title()).includes("2 new")) fails.push("poke: opening the inbox leaves its count in the tab title");
+      if (!(await p.page.title()).startsWith("(2) ")) fails.push('poke: opening the inbox leaves the tab title "' + (await p.page.title()) + '", want (2) first');
       // the merge ask's numbers: the PR stays text, the card's ref is the
       // link; the link and the row's body open the card's drawer and
       // light the card. The ask sits settled here, so its fold opens the
@@ -1077,19 +1154,39 @@ async function text(page) {
     if (psw > 390) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + ")");
     await pp.ctx.close();
   }
-  // the phone: 44 px targets for the C14 controls and the theme selector, no horizontal scroll
-  for (const sc of ["threads", "escalation"]) {
+  // the phone: 44 px targets for the C14 controls and the bar's, no horizontal scroll
+  for (const sc of ["busy", "threads", "escalation"]) {
     await seed(sc);
     const pp = await open(browser, { width: 390, height: 844 });
     await pp.page.goto(base + "/", { waitUntil: "load" });
     await pp.page.waitForTimeout(600);
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
-      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, .theme-switch button"))
+      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, " +
+      "header nav a, .menu > summary, .menu .s-out button, .switch select, .theme-switch button"))
       .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
     const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
     if (psw > 390) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + ")");
     await pp.ctx.close();
+  }
+  // the phone's fold (C14): folded by default to one summary row, the five threads, the costs
+  // thread's new answer as a pill and the one turn in flight, the list out of view; a tap
+  // unfolds it
+  await seed("threads");
+  {
+    const pf = await open(browser, { width: 390, height: 844 }, true);
+    await pf.page.goto(base + "/", { waitUntil: "load" });
+    await pf.page.waitForTimeout(600);
+    const sumRow = pf.page.locator(".sw-sum");
+    if (!(await sumRow.isVisible())) fails.push("phone: the folded threads show no summary row");
+    else {
+      const said = (await sumRow.innerText()).replace(/\s+/g, " "), pill = await sumRow.locator(".badge").first().getAttribute("aria-label").catch(() => "");
+      if (!said.startsWith("Threads 5 ") || !said.includes("1 working") || pill !== "1 new") fails.push('phone: the summary row reads "' + said + '" with the pill "' + pill + '"');
+      if (await pf.page.locator("#thread-rows").isVisible()) fails.push("phone: the folded threads leave the list in view");
+      await sumRow.click();
+      if (!(await pf.page.locator("#thread-rows").isVisible())) fails.push("phone: a tap on the summary row does not unfold the threads");
+    }
+    await pf.ctx.close();
   }
   // the documents on the phone: the view covers the screen, its controls
   // reach 44 px, Escape closes, no horizontal scroll
