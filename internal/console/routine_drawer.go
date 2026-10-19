@@ -159,7 +159,8 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab,
 	}
 	f.Project = cmp.Or(f.Project, project)
 	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Note: note, Factory: rv.State.Project == "",
-		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
+		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Files: rt.Files, Side: rv.FilesInForce(),
+			Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
 	v, ok := c.inForce(ctx)
 	if !ok {
 		d.Problems = append(d.Problems, "The configuration in force could not be read. See the factoryd log.")

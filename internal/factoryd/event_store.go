@@ -64,6 +64,9 @@ const (
 	// EventRoutineSkipped is a Skip once set or, with undo, cleared:
 	// detail {"project", "routine", "undo"}.
 	EventRoutineSkipped = "routine_skipped"
+	// EventRoutineNeedsMe is the live toggle set or, with undo, cleared:
+	// detail {"project", "routine", "undo", "needs_me"}.
+	EventRoutineNeedsMe = "routine_needs_me"
 	// EventRoutineRunNow is a Run now: detail {"project", "routine",
 	// "outcome"}, the run's outcome or "pending" when none came in time.
 	EventRoutineRunNow = "routine_run_now"

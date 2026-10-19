@@ -870,6 +870,11 @@ type ghost struct {
 	Open                        int64
 	Filter                      boardFilter
 	CSRF                        string
+	// Files is the config's side of what the routine files, Side the one
+	// in force; Toggled says a live override set the side, so the
+	// toggle's act is the undo.
+	Files, Side string
+	Toggled     bool
 	// Drawer says the acts sit in the routine's drawer, which answers them
 	// on its tab Tab.
 	Drawer bool
@@ -2502,7 +2507,7 @@ var filesWords = map[string]string{policy.FilesHuman: "human card", policy.Files
 func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string) ghost {
 	rt := rv.Routine
 	g := ghost{Project: rv.Project, Name: rt.Name, Title: rt.Title, Words: rt.Words(), Soon: rv.Soon, Held: rv.Held, Skipped: rv.State.SkipNext,
-		Filter: f, CSRF: csrf}
+		Files: rt.Files, Side: rv.FilesInForce(), Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: csrf}
 	when, in, kind := nextWords(rv, now)
 	switch {
 	case in != "":
@@ -2535,7 +2540,7 @@ func ghostOf(rv factoryd.RoutineView, now time.Time, f boardFilter, csrf string)
 // event's, which the schedule's words name), how soon a dated one comes
 // ("20 min", else ""), and what it files ("human card").
 func nextWords(rv factoryd.RoutineView, now time.Time) (when, in, kind string) {
-	when, kind = rv.NextWords, filesWords[rv.Routine.Files]
+	when, kind = rv.NextWords, filesWords[rv.FilesInForce()]
 	switch {
 	case !rv.Next.IsZero():
 		in = coarse(rv.Next.Sub(now))

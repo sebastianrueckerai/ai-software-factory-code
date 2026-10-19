@@ -938,6 +938,16 @@ func (s *fakeStore) SetRoutineSkip(ctx context.Context, project, routine string,
 	return nil
 }
 
+func (s *fakeStore) SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error {
+	st, _ := s.RoutineState(ctx, project, routine)
+	st.NeedsMe, st.NeedsMeBy = needsMe, by
+	if needsMe == nil {
+		st.NeedsMeBy = ""
+	}
+	s.routineStates[project+"/"+routine] = st
+	return nil
+}
+
 func (s *fakeStore) BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (RoutineRun, bool, error) {
 	k := r.Project + "/" + r.Routine
 	for _, have := range s.routineRuns[k] {

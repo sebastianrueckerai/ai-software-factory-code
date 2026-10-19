@@ -151,6 +151,7 @@ var accessTable = map[string]accessRule{
 	"POST /projects/{name}/export/sync":         {need: writer | approver, scope: scProject, what: "sync it from GitHub"},
 	"POST /routines/{project}/{name}/skip":      rProject,
 	"POST /routines/{project}/{name}/run":       rProject,
+	"POST /routines/{project}/{name}/needs-me":  rProject,
 
 	// chat tools: reads
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,

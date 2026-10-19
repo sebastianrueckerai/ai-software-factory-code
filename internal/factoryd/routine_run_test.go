@@ -516,6 +516,111 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	}
 }
 
+// The live toggle, read when the run fires: a weekly-bump flipped to run
+// on its own files the agent card of a routine with no skill (no skill
+// line in its words); an audit flipped to need the member files a
+// waiting human card that pokes under any tell; the undo follows the
+// config again; a pull-request routine ignores the toggle. Hand-derived:
+// both first issues are #71, the budget the fixture's default 2.
+func TestRoutineRunNeedsMeToggle(t *testing.T) {
+	ctx := context.Background()
+	no, yes := false, true
+	onTime := time.Now().Truncate(time.Minute)
+
+	r, store, issues, wf := routineRunner(t, routineTree(t))
+	if err := store.SetRoutineNeedsMe(ctx, codeProject, "weekly-bump", &no, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
+		t.Fatal(err)
+	}
+	card := onlyTask(t, store)
+	if card.Kind != "agent" || card.Status != "queued" || card.Lane != policy.LaneReady || card.Source != SourceRoutine || card.BudgetEUR != 2 || card.IssueNumber != 71 || card.Author != "" {
+		t.Fatalf("the flipped bump's card %+v", card)
+	}
+	if obj := card.Objective; !strings.HasPrefix(obj, "Weekly bump of the pinned outside inputs\n\nThe factory pins") ||
+		!strings.HasSuffix(obj, "does not start.") || strings.Contains(obj, "Run the skill") {
+		t.Errorf("objective:\n%s", obj)
+	}
+	if body := issues.issues[0]; strings.Contains(body, "Run the skill") || !strings.HasSuffix(body, "filed by the factory · routine weekly-bump · run 1") {
+		t.Errorf("the issue:\n%s", body)
+	}
+	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "state/queued"}) {
+		t.Errorf("labels = %v", got)
+	}
+	if !slices.Equal(wf.started, []string{card.ID}) {
+		t.Errorf("started %v, want the card's run", wf.started)
+	}
+	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
+		Content: `Filed #71 "Weekly bump of the pinned outside inputs".`, TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventRoutineRan}}
+	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
+		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
+	}
+
+	tree := routineTree(t)
+	audit, _ := tree.Routine(codeProject, "audit")
+	audit.Brief = "routines/audit.md"
+	tree.Briefs = maps.Clone(tree.Briefs)
+	tree.Briefs[audit.Brief] = "Hunt bugs in the code changed since the last audit.\n"
+	r, store, issues, wf = routineRunner(t, withRoutines(tree, codeProject, audit))
+	if err := store.SetRoutineNeedsMe(ctx, codeProject, "audit", &yes, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "audit", Trigger: "merges", Due: onTime}); err != nil {
+		t.Fatal(err)
+	}
+	card = onlyTask(t, store)
+	if card.Kind != "human" || card.Status != "waiting-human" || card.Source != SourceRoutine || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "factory-agent" {
+		t.Fatalf("the flipped audit's card %+v", card)
+	}
+	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
+		t.Errorf("labels = %v", got)
+	}
+	if body := issues.issues[0]; !strings.HasSuffix(body, "Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1") {
+		t.Errorf("the issue:\n%s", body)
+	}
+	if len(wf.started) != 0 {
+		t.Errorf("a human card started %v", wf.started)
+	}
+	want = fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
+		Content: "#71 needs you: Audit: bug hunt and architecture review.", TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventRoutineRan}}
+	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
+		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
+	}
+
+	// the undo clears the override: the config's side files again
+	r, store, _, _ = routineRunner(t, routineTree(t))
+	for _, side := range []*bool{&no, nil} {
+		if err := store.SetRoutineNeedsMe(ctx, codeProject, "weekly-bump", side, "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
+		t.Fatal(err)
+	}
+	if card := onlyTask(t, store); card.Kind != "human" || card.Status != "waiting-human" {
+		t.Fatalf("the undone bump's card %+v", card)
+	}
+
+	// a pull-request routine ignores the toggle
+	r, store, _, _ = routineRunner(t, routineTree(t))
+	if err := store.SetRoutineNeedsMe(ctx, "", "template-pass", &no, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	passes := 0
+	r.TemplatePass = func(context.Context) (int, error) {
+		passes++
+		return 2, nil
+	}
+	res, err := r.RoutineRun(ctx, RoutineRunInput{Routine: "template-pass", Trigger: "cron", Due: onTime})
+	if err != nil || res != (RoutineRunResult{Outcome: "filed", Note: "2 cards"}) || passes != 1 {
+		t.Fatalf("the template pass under the toggle: %+v %v passes %d", res, err, passes)
+	}
+	if len(store.tasks) != 0 {
+		t.Fatalf("the pass left cards %+v", store.tasks)
+	}
+}
+
 // policy.yaml's template pass runs the registrar's pass over every
 // project: the cards it filed are the run's note, a pass that filed none
 // ends no change, and the factory's routine pokes no inbox, even under

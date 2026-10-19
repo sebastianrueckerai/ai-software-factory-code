@@ -454,6 +454,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/export/sync", http.HandlerFunc(c.githubSync), sync},
 		{"POST /routines/{project}/{name}/skip", http.HandlerFunc(c.routineSkip), routines},
 		{"POST /routines/{project}/{name}/run", http.HandlerFunc(c.routineRun), routines},
+		{"POST /routines/{project}/{name}/needs-me", http.HandlerFunc(c.routineNeedsMe), routines},
 	}
 }
 

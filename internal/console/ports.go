@@ -229,6 +229,9 @@ type Routines interface {
 	// Skip sets the routine's Skip once for by, or with skip false
 	// clears it.
 	Skip(ctx context.Context, project, routine string, skip bool, by string) error
+	// NeedsMe sets the routine's live side for by: true waits on a
+	// person, false runs on its own, nil follows the config's files.
+	NeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error
 	// RunNow starts a run due now and returns before its outcome.
 	RunNow(ctx context.Context, project, routine string) error
 }

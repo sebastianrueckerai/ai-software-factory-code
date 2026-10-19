@@ -26,6 +26,11 @@ type RoutineState struct {
 	SkipNext         bool
 	SkipBy           string
 	Runs             int // runs so far, the next run's number is Runs+1
+	// NeedsMe is the live toggle's side: nil follows the config's files,
+	// else true waits on a person and false runs on its own. NeedsMeBy
+	// is who set it, "" with none.
+	NeedsMe   *bool
+	NeedsMeBy string
 }
 
 // RoutineRun is one run of a routine, written when it begins and ended
@@ -52,6 +57,10 @@ type RoutineStore interface {
 	RoutineStates(ctx context.Context, project string) ([]RoutineState, error)
 	SetRoutineMerges(ctx context.Context, project, routine string, merges int) error
 	SetRoutineSkip(ctx context.Context, project, routine string, skip bool, by string) error
+	// SetRoutineNeedsMe sets the routine's live side for by: nil follows
+	// the config's files, else true waits on a person and false runs on
+	// its own.
+	SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error
 	// BeginRoutineRun writes run Runs+1 of r's routine and returns it with
 	// began true. A run of the same due returns that run with began false.
 	// With skip a pending Skip once is consumed: the new run's outcome is
@@ -79,11 +88,11 @@ type RoutineStore interface {
 	CountRoutineMerges(ctx context.Context, through int64, merged map[string]int) error
 }
 
-const routineStateColumns = `project, routine, merges, skip_next, skip_by, runs`
+const routineStateColumns = `project, routine, merges, skip_next, skip_by, runs, needs_me, needs_me_by`
 
 func scanRoutineState(scan func(dest ...any) error) (RoutineState, error) {
 	var st RoutineState
-	err := scan(&st.Project, &st.Routine, &st.Merges, &st.SkipNext, &st.SkipBy, &st.Runs)
+	err := scan(&st.Project, &st.Routine, &st.Merges, &st.SkipNext, &st.SkipBy, &st.Runs, &st.NeedsMe, &st.NeedsMeBy)
 	return st, err
 }
 
@@ -143,6 +152,15 @@ func (s *PGStore) SetRoutineSkip(ctx context.Context, project, routine string, s
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO routine_state (project, routine, skip_next, skip_by) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (project, routine) DO UPDATE SET skip_next = EXCLUDED.skip_next, skip_by = EXCLUDED.skip_by`, project, routine, skip, by)
+	return err
+}
+
+func (s *PGStore) SetRoutineNeedsMe(ctx context.Context, project, routine string, needsMe *bool, by string) error {
+	if needsMe == nil {
+		by = ""
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO routine_state (project, routine, needs_me, needs_me_by) VALUES ($1, $2, $3, $4)
+		ON CONFLICT (project, routine) DO UPDATE SET needs_me = EXCLUDED.needs_me, needs_me_by = EXCLUDED.needs_me_by`, project, routine, needsMe, by)
 	return err
 }
 

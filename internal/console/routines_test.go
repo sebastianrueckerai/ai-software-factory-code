@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -34,6 +35,9 @@ type fakeRoutines struct {
 	limits  []int
 	runsErr error
 	onSkip  func(project, routine string, skip bool)
+	// needsMe holds the side a live toggle set, "human by <login>" or
+	// "agent by <login>", "" once undone
+	needsMe map[string]string
 }
 
 // known reports whether project's board shows routine, as the service's
@@ -133,6 +137,23 @@ func (f *fakeRoutines) RunNow(_ context.Context, project, routine string) error 
 	return nil
 }
 
+func (f *fakeRoutines) NeedsMe(_ context.Context, project, routine string, needsMe *bool, by string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.known(project, routine); err != nil {
+		return err
+	}
+	if f.needsMe == nil {
+		f.needsMe = map[string]string{}
+	}
+	side := ""
+	if needsMe != nil {
+		side = map[bool]string{true: "human", false: "agent"}[*needsMe] + " by " + by
+	}
+	f.needsMe[project+"/"+routine] = side
+	return nil
+}
+
 // weeklyBump is the code project's weekly bump as its board shows it
 // with a Skip once pending: the next run after the skipped one.
 func weeklyBump() factoryd.RoutineView {
@@ -193,6 +214,87 @@ func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	}
 	if r.events.count() != before {
 		t.Fatal("an unknown routine left an event")
+	}
+}
+
+// The live toggle: a human or agent routine's ghost names the side in
+// force and offers its flip, an override offers the undo, and a
+// pull-request routine offers none. Each flip is one event with its via,
+// the undo follows the config again, and a routine the project does not
+// run is 404 without an event.
+func TestRoutineToggle(t *testing.T) {
+	r := newRig(t)
+	nightly := factoryd.RoutineView{Project: "ai-software-factory-code",
+		Routine: policy.Routine{Name: "nightly", Title: "Nightly", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 3 * * *"}}},
+		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "nightly"}}
+	roll := factoryd.RoutineView{Project: "ai-software-factory-code",
+		Routine: policy.Routine{Name: "roll-prs", Title: "Roll PRs", Files: policy.FilesPullRequest, Schedule: []policy.Trigger{{On: "push-main"}}},
+		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "roll-prs"}}
+	no := false
+	overridden := nightly
+	overridden.Routine.Name, overridden.Routine.Title = "nightly-hold", "Nightly hold"
+	overridden.State.Routine = "nightly-hold"
+	overridden.State.NeedsMe, overridden.State.NeedsMeBy = &no, "sebastian"
+	r.routines.views = []factoryd.RoutineView{weeklyBump(), audit(), overridden, roll}
+	ck, s := r.loggedIn(t)
+	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#board" hx-swap="outerHTML">` +
+		`<input type="hidden" name="csrf" value="` + s.csrf + `">%s<input type="hidden" name="project" value="ai-software-factory-code">` +
+		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
+	bumpG := ghostIn(t, queued, "weekly-bump")
+	if want := fmt.Sprintf(form, "weekly-bump", "weekly-bump", `<input type="hidden" name="needs_me" value="0">`, "Weekly bump runs on its own", "Runs on its own"); !strings.Contains(bumpG, want) {
+		t.Fatalf("the bump's ghost lacks its flip to the agent side:\n%s", bumpG)
+	}
+	if !strings.Contains(bumpG, "human card") {
+		t.Fatalf("the bump's ghost names no side:\n%s", bumpG)
+	}
+	auditG := ghostIn(t, queued, "audit")
+	if want := fmt.Sprintf(form, "audit", "audit", `<input type="hidden" name="needs_me" value="1">`, "Audit needs you", "Needs me"); !strings.Contains(auditG, want) {
+		t.Fatalf("the audit's ghost lacks its flip to the human side:\n%s", auditG)
+	}
+	overG := ghostIn(t, queued, "nightly-hold")
+	if want := fmt.Sprintf(form, "nightly-hold", "nightly-hold", `<input type="hidden" name="undo" value="1">`, "Nightly hold follows its config", "Follow the config"); !strings.Contains(overG, want) {
+		t.Fatalf("an overridden ghost lacks the undo:\n%s", overG)
+	}
+	if !strings.Contains(overG, "agent card") {
+		t.Fatalf("the override's ghost names no side:\n%s", overG)
+	}
+	if g := ghostIn(t, queued, "roll-prs"); strings.Contains(g, "needs-me") {
+		t.Fatalf("a pull-request routine carries the toggle:\n%s", g)
+	}
+
+	for _, tt := range []struct {
+		routine, field, note, side string
+	}{
+		{"weekly-bump", "needs_me=0", "Weekly bump runs on its own.", "agent by sebastian"},
+		{"audit", "needs_me=1", "Audit needs you.", "human by sebastian"},
+		{"nightly-hold", "undo=1", "Nightly hold follows its config.", ""},
+	} {
+		name, value, _ := strings.Cut(tt.field, "=")
+		rec := r.do(htmxPost("/routines/ai-software-factory-code/"+tt.routine+"/needs-me", url.Values{"csrf": {s.csrf}, name: {value}}), ck)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">`+tt.note+`</p>`) {
+			t.Fatalf("%s = %d:\n%s", tt.field, rec.Code, rec.Body)
+		}
+		if got := r.routines.needsMe["ai-software-factory-code/"+tt.routine]; got != tt.side {
+			t.Fatalf("%s reached the port as %q", tt.field, got)
+		}
+	}
+	var got []string
+	for _, e := range r.events.all() {
+		got = append(got, fmt.Sprintf("%s %s %s %s %s %v", e.Kind, e.Repository, e.Actor, e.Via, e.TaskID, e.Detail))
+	}
+	equal(t, "the events", got, []string{
+		"routine_needs_me sf/code sebastian button  map[needs_me:false project:ai-software-factory-code routine:weekly-bump undo:false]",
+		"routine_needs_me sf/code sebastian button  map[needs_me:true project:ai-software-factory-code routine:audit undo:false]",
+		"routine_needs_me sf/code sebastian button  map[needs_me:false project:ai-software-factory-code routine:nightly-hold undo:true]",
+	})
+
+	before := r.events.count()
+	if rec := r.do(htmxPost("/routines/ai-software-factory-code/gone/needs-me", url.Values{"csrf": {s.csrf}, "needs_me": {"1"}}), ck); rec.Code != http.StatusNotFound {
+		t.Fatalf("an unknown routine = %d %s", rec.Code, rec.Body)
+	}
+	if r.events.count() != before || len(r.routines.needsMe) != 3 {
+		t.Fatal("an unknown routine toggled or left an event")
 	}
 }
 
@@ -282,21 +384,21 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	}
 }
 
-// Both acts take a writer of the routine's project: a writer of another
+// Every act takes a writer of the routine's project: a writer of another
 // project gets 403 in the writer's words, and nothing reaches the port.
 func TestRoutineRoutesNeedTheProjectsWriter(t *testing.T) {
 	r := newRig(t)
 	members(r)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
 	bk, bs := memberLogin(t, r, "bob")
-	for _, act := range []string{"skip", "run"} {
+	for _, act := range []string{"skip", "run", "needs-me"} {
 		rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/"+act, url.Values{"csrf": {bs.csrf}}), bk)
 		if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "you write no project of ai-software-factory-code" {
 			t.Errorf("%s as bob = %d %q", act, rec.Code, rec.Body)
 		}
 	}
-	if len(r.routines.skips) != 0 || len(r.routines.ran) != 0 || r.events.count() != 0 {
-		t.Fatalf("a refused act acted: skips %v, ran %v, %d events", r.routines.skips, r.routines.ran, r.events.count())
+	if len(r.routines.skips) != 0 || len(r.routines.ran) != 0 || len(r.routines.needsMe) != 0 || r.events.count() != 0 {
+		t.Fatalf("a refused act acted: skips %v, ran %v, needs %v, %d events", r.routines.skips, r.routines.ran, r.routines.needsMe, r.events.count())
 	}
 	if rec := r.do(htmxPost("/routines/nowhere/weekly-bump/skip", url.Values{"csrf": {bs.csrf}}), bk); rec.Code != http.StatusNotFound {
 		t.Fatalf("a missing project = %d", rec.Code)
