@@ -1674,7 +1674,10 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	if stored[0].ReadAt.Before(time.Now().Add(-time.Minute)) {
 		t.Errorf("the stored call's ReadAt = %v, want a fresh read", stored[0].ReadAt)
 	}
-	stored[0].ReadAt = time.Time{}
+	if stored[0].At.Before(time.Now().Add(-time.Minute)) || stored[0].At.After(time.Now()) {
+		t.Errorf("the stored call's at = %v, want the turn's time", stored[0].At)
+	}
+	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
 		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The member may undo it."}})
 }
@@ -1993,7 +1996,10 @@ func TestChatProposalIsStored(t *testing.T) {
 	if read := doRow.ToolCalls[0].ReadAt; read.Before(start) || read.After(time.Now()) {
 		t.Fatalf("the Do it's ReadAt = %v, want a fresh read", read)
 	}
-	doRow.ToolCalls[0].ReadAt = time.Time{}
+	if at := doRow.ToolCalls[0].At; at.Before(start) || at.After(time.Now()) {
+		t.Errorf("the Do it's call at = %v, want within the turn since %v", at, start)
+	}
+	doRow.ToolCalls[0].ReadAt, doRow.ToolCalls[0].At, doRow.ToolCalls[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the Do it's row", doRow, factoryd.ChatMessage{ID: stored[0].ID, Role: "assistant", At: stored[0].At,
 		Conversation: 1,
 		ToolCalls:    []factoryd.ChatToolCall{{ID: "do-" + tokens[0][:12], Name: "new_card", Arguments: args, Result: filed + " It cannot be undone."}}})

@@ -97,6 +97,10 @@ type ChatToolCall struct {
 	// ReadAt is when the result was read: a later turn replays a read
 	// without its result, for its time and age.
 	ReadAt time.Time `json:"read_at,omitempty"`
+	// At is when the call ran, Ms how long it took, the hard data of the
+	// chat's tool work (roadmap 198).
+	At time.Time `json:"at,omitempty"`
+	Ms int64     `json:"ms,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`
 }

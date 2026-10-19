@@ -788,11 +788,12 @@ func (t *turn) run(id, notice string) {
 		proposed := false
 		var results []factoryd.OperatorMessage
 		for i, call := range answer.ToolCalls {
+			start := time.Now()
 			result, token := t.call(call)
 			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
-				Result: result, ReadAt: t.freshRead, Proposal: token})
+				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
@@ -981,12 +982,14 @@ func (t *turn) apply(p factoryd.ChatProposal) {
 	var in toolInput
 	tool, ok := t.c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
+	start := time.Now()
 	if ok && json.Unmarshal(p.Args, &in) == nil {
 		result = t.runTool(tool, string(p.Args), in)
 	}
 	t.freshRead = time.Now()
 	if !t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
-		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result, ReadAt: t.freshRead}}}) {
+		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result, At: start,
+			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}) {
 		return
 	}
 	if !strings.HasPrefix(result, "Refused: ") {
