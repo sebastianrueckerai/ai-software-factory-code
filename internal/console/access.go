@@ -198,6 +198,7 @@ var accessTable = map[string]accessRule{
 	"write_doc":        {need: writer, scope: scChat},
 	"notes_write":      {need: writer, scope: scChat},
 	"escalate":         {need: writer, scope: scChat},
+	"ask":              {need: writer, scope: scChat},
 	"attach_analysis":  {need: writer, scope: scChat},
 }
 

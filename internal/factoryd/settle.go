@@ -30,11 +30,14 @@ type PokeSettle struct {
 
 // AskFamily is poke row m's family in the settle rule: question or
 // approval for an ask, "" for an inform, which the seen marker settles.
+// A chat ask row is a question outright.
 // The row's birth kind tells it, as the Poker wrote it; an escalation
 // row with none is a question whatever the join found, since only a
 // question's ask reads as one there.
 func AskFamily(m ChatMessage) string {
 	switch {
+	case m.Kind == MessageAsk:
+		return "question"
 	case m.Kind == MessageEscalation && m.BirthKind != EventApprovalRequested:
 		return "question"
 	case m.BirthKind == EventApprovalRequested:

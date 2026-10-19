@@ -141,6 +141,26 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	return strings.TrimSuffix(note, ".") + fmt.Sprintf(" with “%s”; the card goes on.", choice), nil
 }
 
+// askMember is the ask tool: the question kept in this thread as an ask
+// row, its choices offered as presses. The row rides the answer's own
+// row (run merges it in), and the turn ends on it: the member's press or
+// their next message is the answer the next turn reads.
+func (t *turn) askMember(question string, choices []string) (string, error) {
+	question = strings.TrimSpace(question)
+	for i := range choices {
+		choices[i] = strings.TrimSpace(choices[i])
+	}
+	switch {
+	case question == "" || len(question) > 2000:
+		return "", refuse(http.StatusBadRequest, "question: the question of 1 to 2000 characters")
+	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
+		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+	}
+	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices}
+	return "Asked the member; this turn ends. A press or their next message answers it.", nil
+}
+
 // escalate is the escalate tool: the question and its five parts (the
 // question format) filed as a human-lane card in Needs you, which the
 // inbox's poke carries to the project's members. The writer's own ask is

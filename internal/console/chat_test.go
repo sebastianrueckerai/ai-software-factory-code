@@ -1033,12 +1033,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "resources", "settings", "policy",
 			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
 			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "new_card", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
 			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer"}},
 	} {
 		r, _, g := newChatRig(t)
@@ -1901,6 +1901,72 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	}
 	if got := stored[2].ToolCalls[0].Result; got != filed+" It cannot be undone." {
 		t.Fatalf("the corrected Do it's row = %q, want %q", got, filed+" It cannot be undone.")
+	}
+}
+
+// The ask tool questions the conversation's member in place: one row of
+// the thread, kind ask with its choices, the turn ending on it. Their
+// answer, pressed or typed, is the member's next message, and any row
+// after it settles the ask.
+func TestChatAskOffersChoices(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"File the card now?","choices":["file it","hold"]}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
+	equal(t, "the ask turn", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the member; this turn ends. A press or their next message answers it."}`,
+		`done {}`})
+	if n := len(g.calls()); n != 1 {
+		t.Fatalf("%d model calls, want the ask to end the turn", n)
+	}
+	read := func() chatGetAnswer {
+		t.Helper()
+		var answer chatGetAnswer
+		if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		return answer
+	}
+	answer := read()
+	if len(answer.Messages) == 0 || answer.Messages[len(answer.Messages)-1].Kind != "ask" || answer.Messages[len(answer.Messages)-1].Settled {
+		t.Fatalf("the read's newest row is not an open ask: %+v", answer.Messages)
+	}
+	row := answer.Messages[len(answer.Messages)-1]
+	if row.Content != "File the card now?" || row.Choices[0] != "file it" || row.Choices[1] != "hold" {
+		t.Fatalf("the ask row = %+v", row)
+	}
+	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it"}})
+	if !slices.Contains(events, `text {"text":"Filed."}`) {
+		t.Fatalf("the pressed answer fed no turn: %v", events)
+	}
+	if n := len(g.calls()); n != 2 {
+		t.Fatalf("%d model calls after the answer, want the answer to feed a turn", n)
+	}
+	answer = read()
+	row = answer.Messages[len(answer.Messages)-3]
+	if row.Kind != "ask" || !row.Settled {
+		t.Fatalf("the answered ask row = %+v", row)
+	}
+}
+
+// The ask tool refuses a question without its bounds: a choice short of
+// two names the rule, the refusal feeds the model a correction, and no
+// ask row is stored.
+func TestChatAskBounds(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Go?","choices":["only"]}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask with two choices.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go when ready"}})
+	equal(t, "the refused ask", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: choices: 2 to 5 answers of 1 to 60 characters"}`,
+		`text {"text":"I will ask with two choices."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	for _, m := range rows {
+		if m.Kind == "ask" {
+			t.Fatalf("a refused ask stored a row: %+v", m)
+		}
 	}
 }
 

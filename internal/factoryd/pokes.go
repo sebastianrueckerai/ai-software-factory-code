@@ -25,9 +25,11 @@ import (
 
 const (
 	// MessagePoke is a poke's kind; MessageEscalation a poke about a card
-	// that waits for a person, which the chat marks "needs you".
+	// that waits for a person, which the chat marks "needs you";
+	// MessageAsk the chat's own question to the thread's member.
 	MessagePoke       = "poke"
 	MessageEscalation = "escalation"
+	MessageAsk        = "ask"
 )
 
 // ChoiceRerun is the inbox's answer that runs a factory pull request's red

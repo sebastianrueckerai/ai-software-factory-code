@@ -325,17 +325,20 @@ var chatView = (function () {
       "</h3><span class=\"thint" + (t.inbox || t.state === "archived" ? "" : " when") + "\">" + esc(hint) + "</span>" +
       (acts ? "<span class=\"tacts\">" + acts + "</span>" : "");
   }
-  // pendingOf is the escalation the thread's answer row offers: its newest
-  // ask row, while it is open — settled, the row's reason line stands in
-  // its place (the settle concept)
+  // pendingOf is the row the thread's answer row offers: its newest open
+  // question, an escalation's to every member or the chat's own ask to
+  // this one — settled, the row's reason line stands in its place (the
+  // settle concept)
   function pendingOf(msgs) {
     var m = null;
-    (msgs || []).forEach(function (x) { if (x.kind === "escalation") m = x; });
+    (msgs || []).forEach(function (x) { if (x.kind === "escalation" || x.kind === "ask") m = x; });
     return m && m.choices && m.choices.length && !m.settled ? m : null;
   }
   function answerHTML(m) {
+    // an ask answers as the member's own message, an escalation through /answer
+    var k = m.kind === "ask" ? "data-choice" : "data-answer";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
-      return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
+      return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>";
     }).join("") + "<span class=\"answer-or\">or in your words below</span>";
   }
   // levelMenuHTML is the level control's menu (C14): its head, then the
@@ -1120,6 +1123,14 @@ var chatView = (function () {
     }
   });
   if (answerRow) answerRow.addEventListener("click", function (e) {
+    var c = e.target.closest("[data-choice]");
+    if (c && pending) {
+      var choice = c.dataset.choice;
+      pending = null;
+      drawAnswer();
+      queueOf(openRef()).add(choice);
+      return;
+    }
     var b = e.target.closest("[data-answer]");
     if (!b || !pending) return;
     var n = open, m = pending;

@@ -69,9 +69,10 @@ type toolInput struct {
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it, Regex makes Find a pattern,
 	// From and To read a line range.
-	// Ask and Choices are an escalation's question and answers; Why and
-	// Info the question format's why and what-would-change-your-mind,
-	// Recommendation its suggested answer, all the writer's own.
+	// Ask and Choices are an escalation's question and answers, and the
+	// ask tool's question too; Why and Info the question format's why and
+	// what-would-change-your-mind, Recommendation its suggested answer,
+	// all the writer's own.
 	Ask            string   `json:"ask,omitempty"`
 	Why            string   `json:"why,omitempty"`
 	Info           string   `json:"info,omitempty"`
@@ -1459,6 +1460,16 @@ var tools = []chatTool{
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
+	{name: "ask", title: "Ask the member",
+		params: map[string]any{"ask": str("the question, with its state and its numbers"),
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+				"description": "the answers the member may press"}},
+		required: []string{"ask", "choices"},
+		about:    "Ask this conversation's member a question, answered by a press or their next message.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.askMember(in.Ask, in.Choices)
+			return s, nil, err
+		}},
 	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
 		params: map[string]any{"task_id": taskParam,
 			"found":          str("what you learned about the ask, the facts with their numbers"),
@@ -1557,6 +1568,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
+  ask questions this conversation's member, answered by a press or their next message, and ends the turn.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
   attach_analysis records what you found inside a card's open ask; the members read it with the question.
 `

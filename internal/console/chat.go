@@ -103,6 +103,9 @@ type turn struct {
 	// and talk in.
 	conv  int64
 	owner string
+	// ask is the ask row the tool's run left for the answer's own row,
+	// which the turn ends on; nil until an ask runs.
+	ask *factoryd.ChatMessage
 	// pageQuery is the view the member's page stands on (282): the board's
 	// data-query the chat's POST carries, whose controls the view tools
 	// merge their words onto. present are the argument keys the call itself
@@ -319,6 +322,13 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	for i, m := range msgs {
+		if m.Kind == factoryd.MessageAsk {
+			// an ask stands open while it is the thread's newest row: any
+			// row after it, the member's press or reply or another turn's,
+			// answers it
+			msgs[i].Settled = i < len(msgs)-1
+			continue
+		}
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
 			continue
 		}
@@ -538,10 +548,14 @@ func (t *turn) run(id, notice string) {
 				Result: result, ReadAt: t.freshRead, Proposal: token})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
+		if t.ask != nil {
+			row.Kind, row.Content, row.Choices = t.ask.Kind, t.ask.Content, t.ask.Choices
+			t.ask = nil
+		}
 		if !t.save(row) {
 			return
 		}
-		if len(answer.ToolCalls) == 0 || proposed {
+		if len(answer.ToolCalls) == 0 || proposed || row.Kind == factoryd.MessageAsk {
 			t.send("done", struct{}{})
 			return
 		}
