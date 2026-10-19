@@ -112,7 +112,8 @@ func (c *upstreamCall) end() {
 	}
 	c.span.End()
 	ctx := context.Background()
-	c.t.calls.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", c.kind), attribute.String("name", c.name), attribute.String("status", c.status)))
+	c.t.calls.Add(ctx, 1, metric.WithAttributes(attribute.String("kind", c.kind), attribute.String("name", c.name),
+		attribute.String("project", c.task.Repository), attribute.String("status", c.status)))
 	c.t.duration.Record(ctx, time.Since(c.start).Seconds(), metric.WithAttributes(attribute.String("kind", c.kind), attribute.String("name", c.name)))
 }
 

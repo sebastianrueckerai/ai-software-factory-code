@@ -248,7 +248,8 @@ func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	}
 	m := rig.collect(t)
 	if got := m["gateway.calls"]; !reflect.DeepEqual(got, map[string]float64{
-		"kind=model,name=coding-cheap,status=200": 1, "kind=model,name=coding-cheap,status=500": 1}) {
+		"kind=model,name=coding-cheap,project=sf/demo,status=200": 1,
+		"kind=model,name=coding-cheap,project=sf/demo,status=500": 1}) {
 		t.Fatalf("gateway.calls = %v", got)
 	}
 	if got := m["gateway.call.duration"]; !reflect.DeepEqual(got, map[string]float64{"kind=model,name=coding-cheap": 2}) {
@@ -327,7 +328,8 @@ func TestGatewaySpansAndMetricsOfAToolCall(t *testing.T) {
 	}
 	m := rig.collect(t)
 	if got := m["gateway.calls"]; !reflect.DeepEqual(got, map[string]float64{
-		"kind=tool,name=web_scrape,status=ok": 1, "kind=tool,name=web_scrape,status=402": 1}) {
+		"kind=tool,name=web_scrape,project=sf/demo,status=ok": 1,
+		"kind=tool,name=web_scrape,project=sf/demo,status=402": 1}) {
 		t.Fatalf("gateway.calls = %v", got)
 	}
 	if got := m["gateway.spend.eur"]; !reflect.DeepEqual(got, map[string]float64{"project=sf/demo": 0.005}) {
