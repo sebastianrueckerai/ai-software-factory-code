@@ -52,9 +52,11 @@ type RollRow struct {
 
 type fakeRollRecords struct {
 	rows []RollRow
+	ctxs []context.Context
 }
 
-func (r *fakeRollRecords) RecordProjectRoll(_ context.Context, repository, namespace, digest, commit string, readyAt time.Time) error {
+func (r *fakeRollRecords) RecordProjectRoll(ctx context.Context, repository, namespace, digest, commit string, readyAt time.Time) error {
+	r.ctxs = append(r.ctxs, ctx)
 	r.rows = append(r.rows, RollRow{Repository: repository, Namespace: namespace, Digest: digest, Commit: commit, ReadyAt: readyAt})
 	return nil
 }
@@ -416,6 +418,63 @@ func TestPGStoreProjectRolls(t *testing.T) {
 	var n int
 	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM project_rolls`).Scan(&n); err != nil || n != 2 {
 		t.Fatalf("rows = %d, %v; want 2", n, err)
+	}
+}
+
+// The roll write sits at a trust boundary: the poller names the digest and
+// the commit, so only a sha256 digest and a hex commit (or none) reach the
+// table. A bad shape records nothing, and the answer the promotion reads
+// stays the same. The write outlives the request: a poll cancelled right
+// after its confirmation still lands its row.
+func TestProjectAlertsRollShapeAndLiveContext(t *testing.T) {
+	_, alerts, kube, h, token := alertsRig(t)
+	running := func(digest string) {
+		kube.deploys["demo-staging"] = []DeploymentState{{Name: "linkshort", Generation: 1, ObservedGeneration: 1,
+			Replicas: 1, StatusReplicas: 1, UpdatedReplicas: 1, AvailableReplicas: 1,
+			Images: []string{"git.aisoftwarefactory.world/sf/linkshort@" + digest}}}
+	}
+	// a digest that is no sha256 confirms nothing into the table
+	running("deadbeef")
+	rec := getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest=deadbeef", token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("the garbage-digest poll = %d %s", rec.Code, rec.Body)
+	}
+	if len(alerts.recordedRolls.rows) != 0 {
+		t.Fatalf("a garbage digest recorded %+v", alerts.recordedRolls.rows)
+	}
+	// a commit that is no hex records nothing, the answer stays []
+	a := "sha256:" + strings.Repeat("a", 64)
+	running(a)
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest="+a+"&commit=DROP+TABLE+project_rolls", token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("the garbage-commit poll = %d %s", rec.Code, rec.Body)
+	}
+	if len(alerts.recordedRolls.rows) != 0 {
+		t.Fatalf("a garbage commit recorded %+v", alerts.recordedRolls.rows)
+	}
+	// an absent commit records the roll with none
+	b := "sha256:" + strings.Repeat("b", 64)
+	running(b)
+	rec = getAlerts(h, "/projects/demo-app/alerts?namespace=demo-staging&digest="+b, token)
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Fatalf("the commit-less poll = %d %s", rec.Code, rec.Body)
+	}
+	if len(alerts.recordedRolls.rows) != 1 || alerts.recordedRolls.rows[0].Commit != "" || alerts.recordedRolls.rows[0].Digest != b {
+		t.Fatalf("rolls = %+v, want the one commit-less confirmation of %s", alerts.recordedRolls.rows, b)
+	}
+	// the write outlives the request: a poll cancelled after its
+	// confirmation still lands its row
+	c := "sha256:" + strings.Repeat("c", 64)
+	running(c)
+	req := httptest.NewRequest(http.MethodGet, "/projects/demo-app/alerts?namespace=demo-staging&digest="+c+"&commit=abc5678", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	pollCtx, cancel := context.WithCancel(context.Background())
+	req = req.WithContext(pollCtx)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	cancel()
+	if alerts.recordedRolls.ctxs[1].Err() != nil {
+		t.Fatalf("the roll write died with the request: %v", alerts.recordedRolls.ctxs[1].Err())
 	}
 }
 
