@@ -34,6 +34,7 @@ func TestChatPanel(t *testing.T) {
 	body := page(ck, code)
 	for _, want := range []string{
 		`<div id="screen" class="main with-chat">
+<button type="button" class="edge-tab" data-tip="The board back; Esc also works">board</button>
 <section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title"`,
 		`<section id="chat" class="chat with-threads sw-collapsed" aria-labelledby="chat-title" data-project="ai-software-factory-code" data-login="sebastian">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="wctl" aria-pressed="false" aria-label="Chat and board" data-tip="Grow the chat to the whole screen; the glyph flips, click again or press Esc for the board back"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="exp" d="M9.5 2.5h4v4M6.5 13.5h-4v-4M3 13l10-10" fill="none" stroke="currentColor" stroke-width="1.5"/><path class="col" d="M13.5 6.5v-4h-4M2.5 9.5v4h4M13 3L3 13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button> <button type="button" id="intake-btn" class="intake" data-intake="open" aria-pressed="false" data-tip="The project's intake: open takes the agent's own filings, closed refuses them; your ask always files.">intake <span class="intake-name">open</span></button> <button type="button" id="chat-new" class="chat-new" data-tip="Start a new thread">New</button></div>
