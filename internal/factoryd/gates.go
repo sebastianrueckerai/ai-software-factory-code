@@ -1273,10 +1273,8 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": in.PR.Number, "commit": in.Commit, "class": in.Gates.Policy.Class})
-	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class}
-	if in.Factory && in.RedChecks {
-		detail["rerun"] = true
-	}
+	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class,
+		"factory": in.Factory, "red_checks": in.RedChecks}
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
 	return nil
 }

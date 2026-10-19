@@ -1703,9 +1703,13 @@ type boardView struct {
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
-	deploys         map[string]bool // a done card whose change is not live yet: it tracks its own deploy (roadmap 296)
-	unchecked       bool            // a may-move check failed, logged once per render
-	problems        []string
+	// mergePended names the tasks whose merge approval pends: in the four
+	// columns the card yields In progress to that approval (Needs you
+	// holds it), as a plan does to its acceptance.
+	mergePended map[string]bool
+	deploys     map[string]bool // a done card whose change is not live yet: it tracks its own deploy (roadmap 296)
+	unchecked   bool            // a may-move check failed, logged once per render
+	problems    []string
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
@@ -1723,6 +1727,7 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 	for _, a := range v.pending {
 		v.carded[a.TaskID] = true
 		v.planned[a.TaskID] = v.planned[a.TaskID] || a.Kind == factoryd.ApprovalPlan
+		v.mergePended[a.TaskID] = v.mergePended[a.TaskID] || a.Kind == factoryd.ApprovalMerge
 	}
 	return v, all, nil
 }
@@ -1733,7 +1738,8 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
 	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
-		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, deploys: map[string]bool{}}
+		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{}, deploys: map[string]bool{},
+		mergePended: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
@@ -2287,6 +2293,11 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			}
 			needs = append(needs, n)
 		case col >= 0:
+			// a card whose merge approval pends yields In progress to
+			// that approval, as a plan yields to its acceptance card
+			if col == colProgress && v.mergePended[t.ID] && !v.planned[t.ID] {
+				break
+			}
 			d.Columns[col].Cards = append(d.Columns[col].Cards, k)
 		}
 	}

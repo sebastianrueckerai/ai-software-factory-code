@@ -1016,13 +1016,13 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}
 	}
-	for _, gone := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
+	for _, gone := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, "0018_x.sql", "Earlier review", "Security audit", "Why a human", "<details", "<dt>"} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the merge item shows %s, which the drawer holds:\n%s", gone, card)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human; risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %s", want)
 		}

@@ -1268,7 +1268,8 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m2/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
 		"<p class=\"need-line brief\">first line of the merge brief\nsecond line of the merge brief</p>",
-		`<p class="why">first why; second why</p>`,
+		`<p class="why">first why</p>`,
+		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
 		`<p class="finding">0018_x.sql: add a default</p>`,
 		`<p class="need-line">Criterion no schema migration: yours to judge at this merge. the diff moves the column</p>`,

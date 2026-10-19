@@ -133,7 +133,7 @@
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
 {{end}}
 
-{{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<p class="reason detail">{{.}}</p>{{end}}{{end}}{{end}}
+{{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<div class="reason detail">{{markup .}}</div>{{end}}{{end}}{{end}}
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" data-card="{{.TaskID}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
 {{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}" target="_blank" rel="noopener">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{if .Healed}}{{if .HealedSHA}} <span class="chip">branch moved on, its checks green at {{printf "%.8s" .HealedSHA}}</span>{{else}} <span class="chip">checks healed after a re-run</span>{{end}}{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>
@@ -155,9 +155,9 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
-<div class="acts">{{end}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else if .Returns}}Return or close{{else}}Deny{{end}}</button>
+<div class="acts">{{end}}{{if not .Returns}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else}}Deny{{end}}</button>{{end}}
 {{template "split" .}}</div>
-<form method="post" action="/approvals/{{.ID}}/deny" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}" hidden>
+<form method="post" action="/approvals/{{.ID}}/deny" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}"{{if not .Returns}} hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else if .Returns}}What the agent changes, or why it closes, posted on the pull request as you{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
 <textarea id="note-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
@@ -189,7 +189,7 @@
 {{end}}{{if .Merge.WhyHuman}}<dt>Why a human</dt><dd>{{range $i, $w := .Merge.WhyHuman}}{{if $i}}; {{end}}{{$w}}{{end}}</dd>
 {{end}}</dl>{{end}}
 
-{{define "merge-brief"}}{{if .IDSuffix}}{{with .Merge.WhyHuman}}<p class="why">{{range $i, $w := .}}{{if $i}}; {{end}}{{$w}}{{end}}</p>
+{{define "merge-brief"}}{{if .IDSuffix}}{{range .Merge.WhyHuman}}<p class="why">{{.}}</p>
 {{end}}<p class="info"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
 {{range .Merge.Review.Findings}}<p class="finding">{{.}}</p>
 {{end}}{{range $c := .Merge.Review.Criteria}}{{if eq $c.Kind "human"}}<p class="need-line">Criterion {{$c.Criterion}}: yours to judge at this merge. {{$c.Evidence}}</p>

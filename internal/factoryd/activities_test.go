@@ -935,6 +935,50 @@ func TestLogTailCapped(t *testing.T) {
 	}
 }
 
+// logTail keeps a failed scanner's findings, not the log's tail: the bare
+// "Results:" line through the "Summary:" block its counts close, when the
+// log has one. The per-file checking chatter before it and the runner's
+// git post-amble after it never reach a finding again.
+func TestLogTailKeepsTheResultsSection(t *testing.T) {
+	log := strings.Join([]string{
+		"[gosec] 2026/10/19 12:01:53 Checking file: /run/cmd/factoryd/main.go",
+		"[gosec] 2026/10/19 12:01:53 Checking file: /run/internal/gateway/server.go",
+		"Results:",
+		"[/run/internal/gateway/server.go:917] - G704 (CWE-918): SSRF via taint analysis (Confidence: HIGH, Severity: HIGH)",
+		"    916: ",
+		"  > 917: \t\tres, err := s.http.Do(upReq)",
+		"",
+		"Autofix: ",
+		"",
+		"Summary:",
+		"  Gosec  : 2.29.0",
+		"  Files  : 205",
+		"  Issues : 1",
+		"",
+		"⚙️ [runner]: RUN exit status 1",
+		"[command]/usr/bin/git config --global --add safe.directory /run",
+		"  ✅  Success - Post actions/checkout@v4",
+		"🏁  Job failed",
+		"Job 'security' failed",
+	}, "\n")
+	want := strings.Join([]string{
+		"Results:",
+		"[/run/internal/gateway/server.go:917] - G704 (CWE-918): SSRF via taint analysis (Confidence: HIGH, Severity: HIGH)",
+		"    916: ",
+		"  > 917: \t\tres, err := s.http.Do(upReq)",
+		"",
+		"Autofix: ",
+		"",
+		"Summary:",
+		"  Gosec  : 2.29.0",
+		"  Files  : 205",
+		"  Issues : 1",
+	}, "\n")
+	if got := logTail([]byte(log)); got != want {
+		t.Fatalf("logTail = %q, want %q", got, want)
+	}
+}
+
 // logTail strips each surviving line's leading Forgejo Actions timestamp
 // before the byte cap ever sees it, freeing that budget for the line's own
 // text (M2, review-task115.md).
