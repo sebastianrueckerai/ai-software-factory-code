@@ -299,3 +299,51 @@ func TestTemporalAliveIsARunningWorkflow(t *testing.T) {
 		t.Fatal("a Temporal outage must be an error, not a dead workflow")
 	}
 }
+
+// staleStore is escalateStale's store double: the calls it saw, and an
+// injectable failure of the intake insert.
+type staleStore struct {
+	calls      []string
+	status     string
+	failInsert error
+}
+
+func (s *staleStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	return nil, nil
+}
+func (s *staleStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error) {
+	return nil, nil
+}
+func (s *staleStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	s.calls = append(s.calls, "TransitionTask")
+	s.status = to
+	return nil
+}
+func (s *staleStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
+	s.calls = append(s.calls, "InsertIntakeEvent")
+	if s.failInsert != nil {
+		return 0, s.failInsert
+	}
+	return 1, nil
+}
+func (s *staleStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
+	s.calls = append(s.calls, "InsertAlert")
+	return 1, nil
+}
+
+// A stale escalation that cannot write its intake row fails before the
+// wait: no transition, no alert, the sweep retries. Without an Intake
+// (no Forgejo, no timeline) the row is still the gate.
+func TestEscalateStaleFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
+	s := &staleStore{status: "running", failInsert: errors.New("the store is gone")}
+	err := escalateStale(context.Background(), s, nil, Task{ID: "t1", Status: "running", Repository: "sf/repo"}, time.Hour)
+	if err == nil {
+		t.Fatal("escalateStale with a failing intake insert = nil error, want the insert's error")
+	}
+	if s.status != "running" {
+		t.Fatalf("task status = %q, want running: a card waits only behind its row", s.status)
+	}
+	if want := []string{"InsertIntakeEvent"}; !slices.Equal(s.calls, want) {
+		t.Fatalf("calls = %q, want %q: the transition and the alert never ran", s.calls, want)
+	}
+}

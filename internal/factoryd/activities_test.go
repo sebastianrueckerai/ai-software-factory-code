@@ -1641,6 +1641,28 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 }
 
+// The intake escalation row is the ask's durable anchor: when the row
+// cannot be written the escalation fails, and the card never moves to
+// waiting-human ahead of its row. The ask's comment is posted first, so
+// the row can name it.
+func TestEscalateFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+	r, store, _ := newActivityRunner(t, prTask, fj)
+	store.failIntakeEvent = errors.New("the store is gone")
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", "The agent asks: Which file?\nWhy: open"); err == nil {
+		t.Fatal("Escalate with a failing intake insert = nil error, want the insert's error")
+	}
+	if got := store.tasks["t1"].Status; got != "running" {
+		t.Fatalf("task status = %q, want running: a card waits only behind its row", got)
+	}
+	if alerts := store.alertRows(); len(alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none: the escalation stopped at its row", alerts)
+	}
+	if len(fj.comments) != 1 {
+		t.Fatalf("issue comments = %d, want 1: the ask was posted before the row", len(fj.comments))
+	}
+}
+
 // The agent's choices ride with its escalation, sanitised like the reason
 // since a click posts one as the member's comment: on the intake event the
 // board reads, on the timeline's escalated step, and in the question_asked

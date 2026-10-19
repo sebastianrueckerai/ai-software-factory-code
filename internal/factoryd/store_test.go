@@ -48,18 +48,20 @@ type fakeStore struct {
 	finished     map[string]time.Time
 	settled      map[string]bool
 	intakeEvents []IntakeEvent
-	events       []Event // newest last, as NewestTaskEvents reads them
-	deliveries   map[string]bool
-	pruned       []time.Duration
-	approvals    []ApprovalRequest
-	gates        []string // "task gate since", in order
-	projects     []Project
-	alertsMu     sync.Mutex
-	alerts       []Alert
-	rolls        []RollRequest
-	chain        []fakeChainRun
-	liveSessions map[string]LiveSession
-	pauses       map[string]QueuePause
+	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
+	failIntakeEvent error
+	events          []Event // newest last, as NewestTaskEvents reads them
+	deliveries      map[string]bool
+	pruned          []time.Duration
+	approvals       []ApprovalRequest
+	gates           []string // "task gate since", in order
+	projects        []Project
+	alertsMu        sync.Mutex
+	alerts          []Alert
+	rolls           []RollRequest
+	chain           []fakeChainRun
+	liveSessions    map[string]LiveSession
+	pauses          map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
 	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
 	// less daySpent
@@ -329,6 +331,9 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
+	if s.failIntakeEvent != nil {
+		return 0, s.failIntakeEvent
+	}
 	for _, have := range s.intakeEvents {
 		if (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
 			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) {
