@@ -180,7 +180,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 	for _, want := range []string{
 		`data-query="?project=ai-software-factory-code&amp;routines=within&amp;unit=hours&amp;within=2"`,
 		`<summary class="on" aria-label="Routines on the board: within 2 hours" title="Routines on the board">↻ routines</summary>`,
-		`<form method="get" action="/" class="menu-pop auto-submit"><input type="hidden" name="project" value="ai-software-factory-code"><fieldset><legend>Show</legend>`,
+		`<form method="get" action="/" class="menu-pop auto-submit" hx-get="/" hx-select="#board" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="project" value="ai-software-factory-code"><fieldset><legend>Show</legend>`,
 		`<label><input type="radio" name="routines" value="all"><span>all</span></label><div class="within"><label><input type="radio" name="routines" value="within" checked><span>within</span></label>` +
 			`<input type="number" name="within" min="1" max="999" value="2" aria-label="The period's length"><select name="unit" aria-label="The period's unit"><option value="days">days</option><option value="hours" selected>hours</option></select></div>`,
 		`<input type="hidden" name="project" value="ai-software-factory-code"><input type="hidden" name="routines" value="within"><input type="hidden" name="within" value="2"><input type="hidden" name="unit" value="hours"><label class="visually-hidden" for="q">`,

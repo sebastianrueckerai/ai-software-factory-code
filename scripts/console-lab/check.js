@@ -681,6 +681,56 @@ async function text(page) {
       if (!(await p.page.locator("#board .col-state .col-x").count())) fails.push("menus: no × on the state line");
       if (!(await p.page.locator('#board input[name="done-only"][value="failed"]:checked').count())) fails.push("menus: the Done menu does not show failed only as chosen");
       if ((await p.page.locator("#board .column > .col-menu").count()) !== 3) fails.push("menus: not three column menus");
+      // a choice reads the board in place (Sebastian, 2026-10-14): the page does not load
+      // anew, the query it stands on is one history entry, the menu stays open with the
+      // focus on the choice, a second choice applies without reopening it, Escape closes it
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      await p.page.evaluate(() => { window.labStay = true; });
+      const depth = await p.page.evaluate(() => history.length);
+      const doneMenu = p.page.locator("#board details.col-menu:has(input[type=radio][name=done])");
+      const menuNow = () => p.page.evaluate(() => {
+        const a = document.activeElement;
+        return { stay: window.labStay === true, depth: history.length, open: !!document.querySelector("#board details.col-menu[open] input[type=radio][name=done]"),
+          focus: a && a.name ? a.name + "=" + a.value : "", state: Array.from(document.querySelectorAll("#board .col-state span")).map((x) => x.textContent).join(" | ") };
+      });
+      for (const [what, radio, want, state, entries] of [
+        ["failed only", 'input[name="done-only"][value="failed"]', { "done-only": "failed" }, "failed only", 1],
+        ["oldest first", 'input[name="done"][value="oldest"]', { "done-only": "failed", done: "oldest" }, "oldest first · failed only", 2],
+      ]) {
+        if (!(await doneMenu.evaluate((d) => d.open))) await doneMenu.locator("summary").click();
+        await doneMenu.locator(radio).check();
+        try {
+          await p.page.waitForURL((u) => Object.entries(want).every(([k, v]) => u.searchParams.get(k) === v), { timeout: 5000 });
+        } catch (e) {
+          fails.push("menus: " + what + " does not apply (" + p.page.url() + ")");
+          continue;
+        }
+        await p.page.waitForTimeout(400);
+        const m = await menuNow(), radioFocus = radio.replace(/input\[name="([^"]+)"\]\[value="([^"]+)"\]/, "$1=$2");
+        if (!m.stay) fails.push("menus: " + what + " loads the page anew");
+        if (m.depth !== depth + entries) fails.push("menus: after " + what + " the history holds " + (m.depth - depth) + " entries more, want " + entries);
+        if (!m.open) fails.push("menus: the menu closes after " + what);
+        if (m.focus !== radioFocus) fails.push("menus: after " + what + " the focus is on " + (m.focus || "nothing") + ", want " + radioFocus);
+        if (m.state !== state) fails.push('menus: after ' + what + ' the state line reads "' + m.state + '", want "' + state + '"');
+      }
+      await p.page.keyboard.press("Escape");
+      if ((await menuNow()).open) fails.push("menus: Escape does not close the menu after a choice");
+      // without script a choice waits for Apply, which loads the board under it
+      const ns = await browser.newContext({ viewport: { width: 1440, height: 900 }, javaScriptEnabled: false });
+      await ns.addCookies([{ name, value, domain: new URL(base).hostname, path: "/", secure: true, httpOnly: true, sameSite: "Lax" }]);
+      const nsp = await ns.newPage();
+      await nsp.goto(base + "/", { waitUntil: "load" });
+      const nsDone = nsp.locator("#board details.col-menu:has(input[type=radio][name=done])");
+      await nsDone.locator("summary").click();
+      await nsDone.locator('input[name="done-only"][value="failed"]').check();
+      await nsp.waitForTimeout(300);
+      if (new URL(nsp.url()).searchParams.has("done-only")) fails.push("menus: without script a choice applies before Apply");
+      await nsDone.getByRole("button", { name: "Apply" }).click();
+      await nsp.waitForLoadState("load");
+      if (new URL(nsp.url()).searchParams.get("done-only") !== "failed") fails.push("menus: without script Apply does not apply the choice (" + nsp.url() + ")");
+      if (!(await nsp.locator("#board .col-state").allInnerTexts()).some((t) => t.includes("failed only"))) fails.push("menus: without script Apply leaves no state line");
+      await ns.close();
     }
     if (sc === "busy") {
       // the routines (C16): every ghost at the foot of Queued, Needs you holds only the
@@ -742,8 +792,8 @@ async function text(page) {
       // the period (2026-10-15): choosing within, a number or a unit applies at once; the
       // dependency update runs in 3 d 0 h 20 min, the bump and the template pass in under
       // half an hour, the audit after merges, so 1 day, 2 hours and 3 days hide the
-      // dependency update and 4 days none; all and none send no period, and a number
-      // changed under none chooses within
+      // dependency update and 4 days none; all and none send no period, all, the default,
+      // leaves the URL, and a number changed under none chooses within
       await seed("busy");
       await p.page.goto(base + "/", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
@@ -756,12 +806,12 @@ async function text(page) {
           { routines: "within", within: "4", unit: "days" }, all, ""],
         ["within 2 hours", async () => { await ctl.locator("input[name=within]").fill("2"); await ctl.locator("select[name=unit]").selectOption("hours"); },
           { routines: "within", within: "2", unit: "hours" }, soon, "1 routine hidden"],
-        ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: "all" }, all, ""],
+        ["choosing all", () => ctl.locator("input[name=routines][value=all]").check(), { routines: null }, all, ""],
         ["choosing none", () => ctl.locator("input[name=routines][value=none]").check(), { routines: "none" }, "", "4 routines hidden"],
         ["a number of 3 under none", async () => { await ctl.locator("input[name=within]").fill("3"); await ctl.locator("input[name=within]").press("Tab"); },
           { routines: "within", within: "3", unit: "days" }, soon, "1 routine hidden"],
       ]) {
-        await ctl.locator("summary").click();
+        if (!(await ctl.evaluate((d) => d.open))) await ctl.locator("summary").click();
         await act();
         try {
           await p.page.waitForURL((u) => Object.entries(want).every(([k, v]) => u.searchParams.get(k) === v), { timeout: 5000 });

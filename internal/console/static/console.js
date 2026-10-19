@@ -17,6 +17,14 @@ function busy(el) {
   }
   return false;
 }
+// reads: the request of d, an htmx event's detail, is a read of the board
+// the member asked for, the find or a column menu's choice, which lands on
+// the board in place. Its requestConfig names the form that asked even
+// once the swap has taken it off the page.
+function reads(d) {
+  var f = (d.requestConfig || d).elt;
+  return f.id === "find" || f.classList.contains("menu-pop");
+}
 // The board's own requests, the swaps the stream asks for, skip a busy
 // board.
 document.addEventListener("htmx:beforeRequest", function (e) {
@@ -24,10 +32,10 @@ document.addEventListener("htmx:beforeRequest", function (e) {
 });
 // A board that loaded more finished cards keeps them: what answers the
 // board, a swap or an action, reads as many of each column's as it shows.
-// The find reads the board anew, as its Enter does, and its URL is the
-// one it puts in the address bar.
+// The find and the menus read the board anew, as a reload does, and their
+// URL is the one they put in the address bar.
 document.addEventListener("htmx:configRequest", function (e) {
-  if (!e.detail.target || e.detail.target.id !== "board" || e.detail.elt.id === "find") return;
+  if (!e.detail.target || e.detail.target.id !== "board" || reads(e.detail)) return;
   document.querySelectorAll("#board [data-finished]").forEach(function (col) {
     e.detail.parameters[col.dataset.finished + "-shown"] = col.querySelectorAll("[data-card]").length;
   });
@@ -56,11 +64,11 @@ document.addEventListener("htmx:beforeSwap", function (e) {
 // guard sits on the targeted board, which htmx tells of the swap even once
 // it left the page, knows its answer by the request's xhr, and goes when
 // the xhr ends. The stream's reads and the cards' and the drawer's forms
-// aimed at the board pass here; the find lands on the board in place
-// instead.
+// aimed at the board pass here; the find and the menus land on the board
+// in place instead.
 document.addEventListener("htmx:beforeRequest", function (e) {
   var t = e.detail.target, xhr = e.detail.xhr;
-  if (e.defaultPrevented || !t || t.id !== "board" || e.detail.elt.id === "find") return;
+  if (e.defaultPrevented || !t || t.id !== "board" || reads(e.detail)) return;
   function guard(ev) {
     if (ev.detail.xhr === xhr && !t.isConnected) ev.detail.shouldSwap = false;
   }
@@ -109,26 +117,21 @@ document.addEventListener("change", function (e) {
   if (e.target.id === "project") offerLanes();
   // a setting applies at once, with no button to press: the board's
   // project, a column's order and show, the routines shown, a card's
-  // accent; a change of the routines' period chooses within, and the
-  // period goes with within alone (a disabled field is not sent, and the
-  // form's fields are read when it submits)
+  // accent; a change of the routines' period chooses within
   var f = e.target.form;
   if (!f || !f.classList.contains("auto-submit")) return;
   var el = f.elements;
-  if (!el.within || !el.unit) return f.requestSubmit();
-  if (e.target === el.within || e.target === el.unit) el.routines.value = "within";
-  el.within.disabled = el.unit.disabled = el.routines.value !== "within";
+  if (el.within && (e.target === el.within || e.target === el.unit)) el.routines.value = "within";
   f.requestSubmit();
-  el.within.disabled = el.unit.disabled = false;
 });
 document.addEventListener("DOMContentLoaded", offerLanes);
 
 // The find narrows the board as you type: its form swaps the board around
-// itself, which it outlives (hx-preserve). Its answer lands on the board in
-// place when it comes, which a stream swap may have replaced since it
-// asked, and its good answer writes its query into the URL in place of the
-// current entry, the open drawer's hash and the open document's doc= kept,
-// so typing adds no history entry. A browser without moveBefore (Safari)
+// itself, which it outlives (hx-preserve). Its answer, as a menu's, lands
+// on the board in place when it comes, which a stream swap may have
+// replaced since it asked, and its good answer writes its query into the
+// URL in place of the current entry, the open drawer's hash and the open
+// document's doc= kept, so typing adds no history entry. A browser without moveBefore (Safari)
 // takes the form out and puts it back at each swap of the board, which
 // drops the box's focus: the swap gives it back with the caret.
 (function () {
@@ -138,7 +141,7 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     caret = target && target.id === "board" && a && a.id === "q" ? [a.selectionStart, a.selectionEnd] : null;
   }
   document.addEventListener("htmx:beforeOnLoad", function (e) {
-    if (e.detail.elt.id !== "find") return;
+    if (!reads(e.detail)) return;
     e.detail.target = document.getElementById("board");
     keep(e.detail.target);
   });
@@ -211,10 +214,10 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // the agent's text and the steers reach the drawer's Chat. A swap a busy
 // card or board would wipe waits until the focus lands outside a field, a
 // fold or the drawer closes; the find's box, focused, holds none. A find
-// in flight holds them all until its answer is in, or its handling
-// failed, and a read of the board in flight holds the next, which runs
-// once it is in or its handling failed (htmx then never settles its
-// promise): htmx would queue it behind the first and drop it with the
+// or a menu's choice in flight holds them all until its answer is in, or
+// its handling failed, and a read of the board in flight holds the next,
+// which runs once it is in or its handling failed (htmx then never settles
+// its promise): htmx would queue it behind the first and drop it with the
 // board the first replaced. A find that changes the board's query moves
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down, and a stream a refused connect
@@ -238,17 +241,16 @@ document.addEventListener("DOMContentLoaded", offerLanes);
   document.addEventListener("toggle", retry, true);
   document.addEventListener("drawerclosed", retry);
   document.addEventListener("htmx:beforeRequest", function (e) {
-    if (e.detail.elt.id === "find") finding = true;
+    if (reads(e.detail)) finding = true;
   });
   // a read whose handling failed is let go once htmx has let go of the
   // board, after its error handler: a read asked for before would queue
   // behind the failed one and settle at once while still in flight
   function released(e) {
-    var id = e.detail.elt.id;
-    if (id === "find") {
+    if (reads(e.detail)) {
       finding = false;
       retry();
-    } else if (id === "board" && e.type === "htmx:onLoadError") {
+    } else if (e.detail.elt.id === "board" && e.type === "htmx:onLoadError") {
       Promise.resolve().then(function () {
         reading = false;
         retry();
@@ -654,9 +656,34 @@ document.addEventListener("view", function (e) {
 })();
 
 // The column menus (C13): a choice submits the menu's form (auto-submit),
-// so the board reloads with the column's order and show in its query;
-// Escape or a click outside closes an open menu. An open menu holds the
-// board's swaps, as any open disclosure does.
+// which reads the board under it in place, adds the query it stands on to
+// the history as a click does, and opens the menu again, the focus where
+// it was; Escape or a click outside closes an open menu. An open menu
+// holds the board's swaps, as any open disclosure does.
+(function () {
+  var again = null;
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var f = e.detail.requestConfig.elt, a = document.activeElement;
+    if (!f.classList.contains("menu-pop")) return;
+    again = {menu: 'input[type=radio][name="' + CSS.escape(f.querySelector("input[type=radio]").name) + '"]',
+      focus: a && f.contains(a) && a.name ? a.tagName + '[name="' + CSS.escape(a.name) + '"]' + (a.type === "radio" ? '[value="' + CSS.escape(a.value) + '"]' : "") : null};
+  });
+  document.addEventListener("htmx:afterSwap", function () {
+    var g = again, r = g && document.querySelector("#board .menu-pop " + g.menu);
+    again = null;
+    if (!r) return;
+    var d = r.closest("details"), f = g.focus && d.querySelector(g.focus);
+    d.open = true;
+    if (f) f.focus();
+  });
+  document.addEventListener("htmx:afterRequest", function (e) {
+    if (!e.detail.requestConfig.elt.classList.contains("menu-pop") || !e.detail.successful) return;
+    var u = new URL(location.href), doc = new URLSearchParams(location.search).get("doc");
+    u.search = document.getElementById("board").dataset.query;
+    if (doc !== null) u.searchParams.set("doc", doc);
+    history.pushState(history.state, "", u.pathname + u.search + location.hash);
+  });
+})();
 document.addEventListener("click", function (e) {
   document.querySelectorAll("details.col-menu[open]").forEach(function (d) { if (!d.contains(e.target)) d.open = false; });
 });
