@@ -312,8 +312,9 @@ func TestMetricsFigures(t *testing.T) {
 			t.Fatalf("%s = %+v, want %+v", name, got, want)
 		}
 	}
-	// deploys: r2+r4 in window, r0+r1 in prev; buckets by ready_at
-	fig(t, "deploys", r.Deploys, Figure{Value: 2, Prev: 2, Has: true, PrevHas: true,
+	// deploys: the last weekly bucket answers (r4+r2 in b6), the bucket
+	// before it moves (b5 empty) — a per-week name never shows a window total
+	fig(t, "deploys", r.Deploys, Figure{Value: 2, Prev: 0, Has: true, PrevHas: true,
 		Weeks: [7]float64{1, 0, 0, 1, 1, 0, 2}})
 	// lead: r2 59 min, r4 60 min -> median 59.5 min; prev r0 30, r1 45 -> 37.5
 	fig(t, "lead time", r.LeadTime, Figure{Value: 3570000, Prev: 2250000, Has: true, PrevHas: true,
@@ -336,8 +337,9 @@ func TestMetricsFigures(t *testing.T) {
 	// restore: a1 fixed by c6 13 h later; a2 has no fingerprinted fix; prev 122 h
 	fig(t, "time to restore", r.TimeToRestore, Figure{Value: 46800000, Prev: 439200000, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 439200000, 0, 0, 46800000}})
-	// spend: 2 + 3.6 + 2.2 + 1 (chat) = 8.8; prev 1.5
-	fig(t, "spend", r.Spend, Figure{Value: 8.80, Prev: 1.50, Has: true, PrevHas: true,
+	// spend: the last week's euros (c3 2.2 + chat c4 1), the week before
+	// (c1 2 + c2 3.6) — per week, not the window's 8.8
+	fig(t, "spend", r.Spend, Figure{Value: 3.20, Prev: 5.60, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1.50, 0, 5.60, 3.20}})
 	// per card: totals 2, 3.6, 2.2, 0 -> median (2+2.2)/2 = 2.1
 	fig(t, "per card", r.PerCard, Figure{Value: 2.10, Prev: 1.50, Has: true, PrevHas: true,
@@ -372,8 +374,8 @@ func TestMetricsFigures(t *testing.T) {
 	// review acceptance: c1 accepted, c3 changes, c2 c6 never reviewed -> 1/2
 	fig(t, "review acceptance", r.ReviewAcceptance, Figure{Value: 0.5, Prev: 1, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1, 0, 1, 0}})
-	// self deploys: s1+s2 window, s3 prev (s4 outside)
-	fig(t, "self deploys", r.SelfDeploys, Figure{Value: 2, Prev: 1, Has: true, PrevHas: true,
+	// self deploys: the last weekly bucket (s2) and the one before (s1)
+	fig(t, "self deploys", r.SelfDeploys, Figure{Value: 1, Prev: 1, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 1}})
 	// diff size: medians of {3,120,40} and {9,240,95}; prev c5 alone
 	if r.DiffSize != (DiffSize{Files: 6, Insertions: 180, Deletions: 67.5, Prev: [3]float64{5, 80, 20}, Has: true, PrevHas: true,
@@ -394,10 +396,10 @@ func TestMetricsFigures(t *testing.T) {
 // sf/code's (every sf/code expectation above already encodes that).
 func TestMetricsScoping(t *testing.T) {
 	r := metricsReport(t, "sf/other")
-	if r.Throughput.Value != 1 || r.Spend.Value != 99 || r.Deploys.Value != 1 ||
+	if r.Throughput.Value != 1 || r.Spend.Weeks[5] != 99 || r.Deploys.Weeks[5] != 1 ||
 		r.Escalations.Value != 1 || !r.CIDuration.Has || r.CIDuration.Value != 500000 {
-		t.Fatalf("sf/other = throughput %v spend %v deploys %v escalations %v ci %+v",
-			r.Throughput.Value, r.Spend.Value, r.Deploys.Value, r.Escalations.Value, r.CIDuration)
+		t.Fatalf("sf/other = throughput %v spend %+v deploys %+v escalations %v ci %+v",
+			r.Throughput.Value, r.Spend, r.Deploys, r.Escalations.Value, r.CIDuration)
 	}
 }
 
@@ -509,12 +511,17 @@ func TestMetricsWindowEdges(t *testing.T) {
 	if r.Throughput.Value != 1 || r.CardCycle.Value != 194400000 || r.LeadTime.Has {
 		t.Fatalf("one day: throughput %+v cycle %+v lead %+v", r.Throughput, r.CardCycle, r.LeadTime)
 	}
-	// 90 days: every fixture roll but the one past Oct 12; prev window empty
+	// 90 days: every fixture card but the one past Oct 12; the per-week
+	// rows still answer the last weekly bucket; the report serves the
+	// asked inclusive dates
 	r, err = s.ProjectMetrics(ctx, "sf/code", time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.Deploys.Value != 5 || r.Deploys.Prev != 0 || r.Throughput.Value != 5 || r.Throughput.Prev != 0 {
+	if !r.From.Equal(time.Date(2026, 7, 13, 0, 0, 0, 0, time.UTC)) || !r.To.Equal(time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("window = %v..%v, want the asked inclusive dates", r.From, r.To)
+	}
+	if r.Deploys.Value != 2 || r.Deploys.Prev != 0 || r.Throughput.Value != 5 || r.Throughput.Prev != 0 {
 		t.Fatalf("90 days: deploys %+v throughput %+v", r.Deploys, r.Throughput)
 	}
 }

@@ -1319,13 +1319,13 @@ func TestLabMetricsScene(t *testing.T) {
 		value, prev float64
 		first, last float64
 	}{
-		{"deploys", m.Deploys, 23, 19, 16, 23},
+		{"deploys", m.Deploys, 23, 21, 16, 23},
 		{"lead time", m.LeadTime, 12000000, 13500000, 16800000, 12000000},
 		{"card cycle", m.CardCycle, 21900000, 19500000, 18600000, 21900000},
 		{"throughput", m.Throughput, 31, 25, 21, 31},
 		{"change failure", m.ChangeFailure, 0.06, 0.08, 0.11, 0.06},
 		{"time to restore", m.TimeToRestore, 34200000, 37800000, 44400000, 34200000},
-		{"spend", m.Spend, 87.4, 78.3, 61.2, 87.4},
+		{"spend", m.Spend, 87.4, 82.6, 61.2, 87.4},
 		{"per card", m.PerCard, 2.6, 2.9, 3.4, 2.6},
 		{"interventions", m.Interventions, 1.4, 1.7, 1.9, 1.4},
 		{"human-blocked", m.HumanBlocked, 0.18, 0.22, 0.24, 0.18},
@@ -1361,8 +1361,8 @@ func TestLabMetricsScene(t *testing.T) {
 			t.Errorf("%s: a flat spark runs %v..%v", c.name, c.fig.Weeks[0], c.fig.Weeks[6])
 		}
 	}
-	if !m.SelfDeploys.Has || m.SelfDeploys.PrevHas || m.SelfDeploys.Value != 2 {
-		t.Errorf("self-deploys = %v (has %v, prevHas %v), want 2 with no move", m.SelfDeploys.Value, m.SelfDeploys.Has, m.SelfDeploys.PrevHas)
+	if !m.SelfDeploys.Has || !m.SelfDeploys.PrevHas || m.SelfDeploys.Value != 2 || m.SelfDeploys.Prev != 1 {
+		t.Errorf("self-deploys = %v from %v (has %v, prevHas %v), want 2 from 1", m.SelfDeploys.Value, m.SelfDeploys.Prev, m.SelfDeploys.Has, m.SelfDeploys.PrevHas)
 	}
 	if m.SelfDeploys.Weeks[0] == m.SelfDeploys.Weeks[6] {
 		t.Error("self-deploys: the deck's low ticks read as a flat line")
@@ -1391,9 +1391,10 @@ func metricsScene(now time.Time) labScene {
 }
 
 // labMetricsReport is the deck's demo report: every figure of the five
-// sections, its weeks traced as the deck's spark words read. The flat
-// sparks seed equal weeks — a one-unit wiggle on small counts swings the
-// whole band under the widen rule and reads as motion.
+// sections, its weeks traced as the deck's spark words read, the / week
+// rows' moves week-over-week (the deck's demo moves were invented). The
+// flat sparks seed equal weeks — a one-unit wiggle on small counts
+// swings the whole band under the widen rule and reads as motion.
 func labMetricsReport(now time.Time) factoryd.MetricsReport {
 	move := func(value, prev float64, weeks [7]float64) factoryd.Figure {
 		return factoryd.Figure{Value: value, Prev: prev, Has: true, PrevHas: true, Weeks: weeks}
@@ -1405,7 +1406,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Repository:    "sf/code",
 		From:          now.AddDate(0, 0, -27),
 		To:            now,
-		Deploys:       move(23, 19, [7]float64{16, 17, 15, 18, 19, 21, 23}),
+		Deploys:       move(23, 21, [7]float64{16, 17, 15, 18, 19, 21, 23}),
 		LeadTime:      move(12000000, 13500000, [7]float64{16800000, 16200000, 15600000, 15000000, 13800000, 12900000, 12000000}),
 		CardCycle:     move(21900000, 19500000, [7]float64{18600000, 19200000, 20100000, 19800000, 21000000, 21600000, 21900000}),
 		Throughput:    move(31, 25, [7]float64{21, 23, 25, 26, 28, 29, 31}),
@@ -1413,7 +1414,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		RevertedRefiled: factoryd.RevertedRefiled{Reverted: 2, Refiled: 1, Prev: [2]float64{2, 1}, Has: true,
 			Weeks: [7]float64{2, 2, 2, 2, 2, 2, 2}},
 		TimeToRestore: move(34200000, 37800000, [7]float64{44400000, 42000000, 40200000, 38400000, 36600000, 35400000, 34200000}),
-		Spend:         move(87.4, 78.3, [7]float64{61.2, 68.4, 74.9, 71.8, 79.2, 82.6, 87.4}),
+		Spend:         move(87.4, 82.6, [7]float64{61.2, 68.4, 74.9, 71.8, 79.2, 82.6, 87.4}),
 		PerCard:       move(2.6, 2.9, [7]float64{3.4, 3.3, 3.1, 3.0, 2.9, 2.7, 2.6}),
 		TokensPerCard: flat(84000),
 		ModelMix: []factoryd.MixShare{
@@ -1425,7 +1426,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Escalations:      flat(5),
 		HumanBlocked:     move(0.18, 0.22, [7]float64{0.24, 0.23, 0.22, 0.21, 0.20, 0.19, 0.18}),
 		ReviewAcceptance: move(0.824, 0.794, [7]float64{0.74, 0.76, 0.77, 0.78, 0.79, 0.80, 0.824}),
-		SelfDeploys:      factoryd.Figure{Value: 2, Has: true, Weeks: [7]float64{1, 2, 1, 1, 2, 1, 2}},
+		SelfDeploys:      move(2, 1, [7]float64{1, 2, 1, 1, 2, 1, 2}),
 		DiffSize: factoryd.DiffSize{Files: 9, Insertions: 240, Deletions: 95, Prev: [3]float64{9, 240, 95}, Has: true,
 			Weeks: [7]float64{9, 9, 9, 9, 9, 9, 9}},
 		ChatWork: factoryd.ChatWork{Calls: 312, Minutes: 41, PrevCalls: 274, PrevMinutes: 36,

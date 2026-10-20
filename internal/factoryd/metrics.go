@@ -259,11 +259,23 @@ func doneCardWeeks(order string) string {
 		metricBucket("finished_at"), order)
 }
 
+// metricWeekFigure is the shape of every per-week figure: the last
+// weekly bucket answers, the bucket before it moves — a per-week name
+// never shows a window total.
+func metricWeekFigure(ctx context.Context, db *sql.DB, weeks string, args ...any) (Figure, error) {
+	f := Figure{Has: true, PrevHas: true}
+	var err error
+	if f.Weeks, err = metricWeeks(ctx, db, weeks, args...); err != nil {
+		return f, err
+	}
+	f.Value, f.Prev = f.Weeks[6], f.Weeks[5]
+	return f, nil
+}
+
 // metricDeploys: project deployments the rollout wait confirmed.
 func metricDeploys(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
-	return metricCount(ctx, db, repo, w,
-		`SELECT count(*) FROM project_rolls WHERE repository = $1 AND ready_at >= $2 AND ready_at < $3`,
-		`SELECT `+metricBucket("ready_at")+", count(*) FROM project_rolls WHERE repository = $1 AND ready_at >= $2 AND ready_at < $3 GROUP BY 1")
+	return metricWeekFigure(ctx, db,
+		`SELECT `+metricBucket("ready_at")+", count(*) FROM project_rolls WHERE repository = $1 AND ready_at >= $2 AND ready_at < $3 GROUP BY 1", repo, w.SparkFrom, w.To)
 }
 
 // metricLeadTime: push to live, the median over the window's rolls.
@@ -331,14 +343,12 @@ func metricTimeToRestore(ctx context.Context, db *sql.DB, repo string, w metricW
 }
 
 // metricSpend: the ledger's euros, chat tasks included — what the
-// project cost. Days, so the bucket math is date arithmetic.
+// project costs a week. Days, so the bucket math is date arithmetic.
 func metricSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	const pair = ` FROM ledger l JOIN tasks t ON t.id = l.task_id
-		WHERE t.repository = $1 AND l.day >= %s::date AND l.day < $3::date`
-	const agg = `COALESCE(sum(l.eur), 0)::float8`
-	return metricCount(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT `+agg+pair, "$2"),
-		fmt.Sprintf(`SELECT ((l.day - $2::date) / 7), `+agg+pair+` GROUP BY 1`, "$2"))
+		WHERE t.repository = $1 AND l.day >= $2::date AND l.day < $3::date`
+	return metricWeekFigure(ctx, db,
+		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+pair+` GROUP BY 1`, repo, w.SparkFrom, w.To)
 }
 
 // metricPerCard: what one card costs, the median of the window's cards'
@@ -433,18 +443,8 @@ func metricEscalations(ctx context.Context, db *sql.DB, repo string, w metricWin
 // metricSelfDeploys: the factory's own rolls — every project reads the
 // same count; the table has no repository.
 func metricSelfDeploys(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
-	const scalar = `SELECT count(*) FROM rolls WHERE live_at >= $1 AND live_at < $2`
-	weeks := `SELECT ` + metricBucketFrom("live_at", "$1") + `, count(*) FROM rolls WHERE live_at >= $1 AND live_at < $2 GROUP BY 1`
-	f := Figure{Has: true, PrevHas: true}
-	var err error
-	if f.Value, _, err = metricScalar(ctx, db, scalar, w.From, w.To); err != nil {
-		return f, err
-	}
-	if f.Prev, _, err = metricScalar(ctx, db, scalar, w.PrevFrom, w.PrevTo); err != nil {
-		return f, err
-	}
-	f.Weeks, err = metricWeeks(ctx, db, weeks, w.SparkFrom, w.To)
-	return f, err
+	return metricWeekFigure(ctx, db,
+		`SELECT `+metricBucketFrom("live_at", "$1")+", count(*) FROM rolls WHERE live_at >= $1 AND live_at < $2 GROUP BY 1", w.SparkFrom, w.To)
 }
 
 // metricDiffSize: the median diff of the window's shipped cards.
@@ -711,7 +711,7 @@ func metricReviewAcceptance(ctx context.Context, db *sql.DB, repo string, w metr
 // Metrics assembles the report every figure function fills one field of.
 func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, to time.Time) (MetricsReport, error) {
 	db, w := s.db, newMetricWindow(from, to)
-	r := MetricsReport{Repository: repository, From: w.From, To: w.To}
+	r := MetricsReport{Repository: repository, From: w.From, To: w.To.AddDate(0, 0, -1)}
 	var err error
 	if r.Deploys, err = metricDeploys(ctx, db, repository, w); err != nil {
 		return r, err
