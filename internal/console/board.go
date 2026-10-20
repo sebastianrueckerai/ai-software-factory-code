@@ -2267,7 +2267,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if factoryd.Final(t.Status) {
 				break
 			}
-			// a choice card's question answers from its face, as an
+			// a human card's question answers from its face, as an
 			// escalation's does
 			asks := k.Question != nil && v.escalated(t)
 			n := need{Since: t.CreatedAt, Card: k}

@@ -451,23 +451,32 @@ func monthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 
 // routineQuestion is the card a routine that files to a person puts: its
 // title the ask, its brief and provenance the info.
-func routineQuestion(rt policy.Routine, brief, provenance string) HumanQuestion {
+func routineQuestion(rt policy.Routine, brief, provenance string, agents bool) HumanQuestion {
 	return HumanQuestion{
 		Ask:     askOf(rt.Title, ""),
 		Why:     "the routine " + rt.Name + " fired and files to a person",
 		Info:    brief + "\n\n" + provenance,
-		Choices: []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}},
+		Choices: doneChoices(agents),
 	}
+}
+
+// doneChoices are the answers of a card a person does: the factory's
+// hand-over only where the project runs agents, then Done.
+func doneChoices(agents bool) []QuestionChoice {
+	if agents {
+		return []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}
+	}
+	return []QuestionChoice{{AnswerClose, "Done"}}
 }
 
 // issueQuestion is the card of an issue a person filed into the human
 // lane: the issue's title is the ask.
-func issueQuestion(title, body, poster string) HumanQuestion {
+func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	return HumanQuestion{
 		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + " into the human lane",
 		Info:    body,
-		Choices: []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}},
+		Choices: doneChoices(agents),
 	}
 }
 

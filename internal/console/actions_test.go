@@ -225,8 +225,8 @@ func TestRollFailedCardAnswers(t *testing.T) {
 	face, lanes = need(face), need(lanes)
 	for name, page := range map[string]string{"drawer": drawer, "face": face, "lanes view": lanes} {
 		// only its choices: the question's Close alone, no free answer
-		if n := strings.Count(page, `action="/tasks/t-roll/close"`); n != 1 || strings.Contains(page, `name="answer"`) {
-			t.Errorf("the %s has %d close forms and a free answer form %t; want the question's Close alone:\n%s", name, n, strings.Contains(page, `name="answer"`), page)
+		if strings.Contains(page, `action="/tasks/t-roll/close"`) || strings.Contains(page, `name="answer"`) {
+			t.Errorf("the %s has a close form of its own or a free answer form; want the choices alone:\n%s", name, page)
 		}
 		for value, want := range map[string]string{
 			factoryd.AnswerRetryRoll: `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
@@ -243,8 +243,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		for _, want := range []string{
 			`<button type="submit" aria-label="Retry the roll, posted on the issue as you">Retry the roll</button>`,
 			`<button type="submit" aria-label="Park, kept off the issue: the card stays waiting">Park</button>`,
-			`<form method="post" action="/tasks/t-roll/close" hx-post="/tasks/t-roll/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">`,
-			`<button type="submit" class="deny" aria-label="Close">Close</button>`,
+			`<input type="hidden" name="value" value="close">` + "\n" + `<button type="submit" class="deny" aria-label="Close, posted on the issue as you">Close</button>`,
 		} {
 			if !strings.Contains(page, want) {
 				t.Errorf("the %s lacks %q:\n%s", name, want, page)
@@ -312,11 +311,13 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 }
 
 // A human card's answers act by its choices: park keeps the card and
-// posts nothing, close ends it on the label, the factory choice hands it
-// over, free words are the member's comment and the card keeps waiting; a
-// value the question does not offer is refused with the labels.
+// posts nothing, close ends it on the label, free words are the member's
+// comment, signal no workflow, and the card keeps waiting; a value the
+// question does not offer is refused with the labels. The go choice is
+// TestGoHandsTheWaitingCardOver's.
 func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
+	signals := 0
 	q := func() factoryd.BoardTask {
 		return humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
 			factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
@@ -325,6 +326,7 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{q()}
+		r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { signals++; return nil }
 		ck, s := r.loggedIn(t)
 		form.Set("csrf", s.csrf)
 		before := ev.count()
@@ -348,9 +350,28 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Errorf("free text = %d, comment %q, patched %v; want one comment and the card kept", code, r.fg.comments[comments], r.fg.patched)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq"})
+	if signals != 0 {
+		t.Errorf("the human card's words signalled %d workflows, want none", signals)
+	}
 
 	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
 	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
 		t.Errorf("nonsense = %d %q; want a refusal naming the labels", code, body)
 	}
+}
+
+// A chat escalation's choices are their own labels as values: one that
+// reads like a stall or roll value closes its card on the label, and
+// calls no stall action.
+func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "dismiss", Label: "dismiss"}, factoryd.QuestionChoice{Value: "retry", Label: "retry"})}
+	ck, s := r.loggedIn(t)
+	before := ev.count()
+	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {"dismiss"}}), ck)
+	if rec.Code != http.StatusSeeOther || len(r.dismissed) != 0 || r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"] != "dismiss" ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Errorf("dismiss = %d, dismissed %v, comment %q, patched %v; want a close on the label", rec.Code, r.dismissed, r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"], r.fg.patched)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"})
 }

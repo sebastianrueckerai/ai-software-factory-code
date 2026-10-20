@@ -245,11 +245,6 @@ func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
 	c.showNote(w, r, c.doRetry)
 }
 
-// goCard is the face's Have the factory do it (doGo).
-func (c *Console) goCard(w http.ResponseWriter, r *http.Request) {
-	c.showNote(w, r, c.doGo)
-}
-
 // closeCard is the face's Close and Close with note (doClose, on the form's note).
 func (c *Console) closeCard(w http.ResponseWriter, r *http.Request) {
 	c.showNote(w, r, func(ctx context.Context, a actor, id string) (string, error) {

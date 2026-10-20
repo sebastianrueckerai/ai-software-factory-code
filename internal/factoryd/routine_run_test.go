@@ -959,3 +959,24 @@ func TestRoutineRunFailedKeepsTheSkip(t *testing.T) {
 		t.Fatalf("state %+v: the failure took the mark", st)
 	}
 }
+
+// A project that runs no agents has no process to file the work into:
+// Go refuses with the state and files nothing.
+func TestGoRefusedOnAProjectWithoutAgents(t *testing.T) {
+	ctx := context.Background()
+	r, store, issues, _ := routineRunner(t, routineTree(t))
+	store.projects[0].Agents = policy.AgentsNone
+	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
+		IssueNumber: 6, Source: "webhook", RiskClass: "standard", Objective: "Tidy the docs"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.Go(ctx, "t-back", "sebastian")
+	var no ErrNoGo
+	want := "project " + codeProject + " runs no agents: the factory cannot do this card; do it yourself and press Done"
+	if !errors.As(err, &no) || err.Error() != want {
+		t.Fatalf("the go = %v, want the refusal %q", err, want)
+	}
+	if len(store.tasks) != 1 || len(issues.issues) != 0 {
+		t.Errorf("%d tasks and issues %q, want nothing filed", len(store.tasks), issues.issues)
+	}
+}

@@ -215,10 +215,14 @@ func TestHumanCardQuestions(t *testing.T) {
 		"month cap": {monthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
 			"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?",
 			[]QuestionChoice{{AnswerPark, "Let it stand"}, {AnswerClose, "Decided, close"}}},
-		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov"),
+		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
 			"Bump the pins", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
-		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian"),
+		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian", true),
 			"Two lines here", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
+		"routine without agents": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", false),
+			"Bump the pins", []QuestionChoice{{AnswerClose, "Done"}}},
+		"issue without agents": {issueQuestion("Two\nlines  here", "text", "sebastian", false),
+			"Two lines here", []QuestionChoice{{AnswerClose, "Done"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := tt.q
@@ -245,8 +249,8 @@ func TestAsksFitTheTitle(t *testing.T) {
 		"roll refused": {rollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
 		"rerun":        {rerunQuestion("abc1234", long, []string{"l"}).Ask, ", its runner was lost."},
 		"config":       {configRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
-		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p").Ask, ""},
-		"issue":        {issueQuestion(long, "b", "p").Ask, ""},
+		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p", true).Ask, ""},
+		"issue":        {issueQuestion(long, "b", "p", true).Ask, ""},
 	} {
 		if len(tt.ask) > MaxAsk || strings.Contains(tt.ask, "\n") || !strings.HasSuffix(tt.ask, tt.tail) || !strings.Contains(tt.ask, "…") {
 			t.Errorf("%s: ask %q (%d bytes), want one line within %d, cut with the tail %q", name, tt.ask, len(tt.ask), MaxAsk, tt.tail)

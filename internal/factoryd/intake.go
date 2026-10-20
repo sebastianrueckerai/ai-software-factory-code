@@ -878,7 +878,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		in.keepLaneLabel(ctx, via, repo, issue.Index, names, task.Lane)
 	}
 	if task.Kind == "human" {
-		if err := recordAsk(ctx, in.Store, in.Timeline, task, issueQuestion(issue.Title, issue.Body, poster), "factoryd", "webhook", ViaFactoryd); err != nil {
+		if err := recordAsk(ctx, in.Store, in.Timeline, task, issueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone), "factoryd", "webhook", ViaFactoryd); err != nil {
 			return err
 		}
 	}

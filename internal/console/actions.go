@@ -1043,6 +1043,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		}
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
+	if !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value) {
+		return c.doClose(ctx, a, t.ID, label)
+	}
 	var gone factoryd.ErrStallGone
 	switch value {
 	case factoryd.AnswerRerunAgain:

@@ -27,7 +27,7 @@ func TestChatAnswerRow(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 14, Objective: "needs you: which store?"},
-		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "close", Label: "Postgres"}, {Value: "close", Label: "SQLite"}}}})
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}}}})
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
