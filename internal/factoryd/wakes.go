@@ -117,6 +117,14 @@ func (w *Waker) Pass(ctx context.Context) error {
 	return nil
 }
 
+// wakesNobody: event e wakes no project agent. The agent's own doing
+// wakes nobody, and neither does a month cap's ask: the cap refuses the
+// agent's own calls.
+func wakesNobody(e Event) bool {
+	source, _ := e.Detail["source"].(string)
+	return e.Via == ViaChat || e.Kind == EventQuestionAsked && source == SourceMonthCap
+}
+
 // pendingAsk is one unhandled ask of a batch, with its mark key.
 type pendingAsk struct {
 	e   Event
@@ -159,11 +167,8 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 				return err
 			}
 		}
-		if e.Via == ViaChat {
-			continue // the agent's own doing wakes nobody
-		}
-		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
-			continue // the month cap refuses the agent's own calls: its ask wakes nobody
+		if wakesNobody(e) {
+			continue
 		}
 		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
 			sum := sha256.Sum256([]byte(askSentence(e)))

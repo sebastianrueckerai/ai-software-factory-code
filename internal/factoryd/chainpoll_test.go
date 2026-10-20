@@ -2062,21 +2062,8 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
-	const title = "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure"
-	if len(rows.rows) != 1 || rows.rows[0].Kind != EventQuestionAsked || rows.rows[0].TaskID != card.ID ||
-		rows.rows[0].Via != ViaFactoryd || rows.rows[0].Actor != FactoryDecider || rows.rows[0].Detail["question"] != title {
-		t.Fatalf("event rows %+v, want the card's one needs-you row", rows.rows)
-	}
-	// the Poker reads the row as the events table gives it back
-	stored := rows.rows[0]
-	b, _ := json.Marshal(stored.Detail)
-	stored.Detail = nil
-	if err := json.Unmarshal(b, &stored.Detail); err != nil {
-		t.Fatal(err)
-	}
-	m, ok := pokeOf(stored, card)
-	if want := "#31 needs you: " + title; !ok || m.Kind != MessageEscalation || m.Content != want || deliveryLevel(m) != LevelNeedsYou {
-		t.Fatalf("the poke = %+v, %v; want the needs-you poke %q at the needs-you level", m, ok, want)
+	if wakesNobody(needsYouPoke(t, rows.rows, card, "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure")) {
+		t.Fatal("the repair card's row wakes nobody, want the project agent woken at autonomous")
 	}
 }
 

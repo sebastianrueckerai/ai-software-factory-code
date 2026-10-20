@@ -43,6 +43,8 @@ func TestMonthAlarm(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
+	rows := &fakeEventRecorder{}
+	alarm.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	step := func(spend MonthSpend, want ...string) {
 		t.Helper()
 		store.monthSpend = spend
@@ -89,6 +91,11 @@ func TestMonthAlarm(t *testing.T) {
 	if len(store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || task.Source != SourceMonthCap ||
 		task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 {
 		t.Fatalf("tasks = %+v", store.tasks)
+	}
+	// the person is told; the month cap refuses the agent's calls too, so
+	// its row wakes no agent
+	if !wakesNobody(needsYouPoke(t, rows.rows, task, "budget: the month cap of 50.00 EUR is reached (2026-09)")) {
+		t.Fatal("the month-cap card's row wakes the project agent")
 	}
 	for _, a := range store.alertRows() {
 		switch {

@@ -143,7 +143,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green "+
 			"result ends the pause, and factoryd closes this issue.\n\nfiled by factoryd",
 			run.Index, run.CommitSHA, strings.Join(lost, "\n\n"))
-		t, ref, err = FileTask(ctx, r.Store, r.Forgejo, p.Repo(), title, body, []string{"human"}, Task{
+		t, ref, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 			ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceRerun,
 			Author: r.Forgejo.BotUser,
 		})

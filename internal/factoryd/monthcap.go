@@ -246,6 +246,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 	if err != nil {
 		return err
 	}
+	recordNeedsYou(ctx, a.Timeline, t, title)
 	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
 }
 

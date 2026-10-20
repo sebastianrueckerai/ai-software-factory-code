@@ -41,7 +41,8 @@ var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprov
 	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged}
 
-// budgetSources are the escalation sources of a card stopped by money.
+// budgetSources are the escalation sources of a card stopped by money; a
+// human card asking about money needs its person all the same.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
@@ -241,7 +242,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	case EventQuestionAsked:
 		m.Kind = MessageEscalation
 		m.Content = ref + " needs you: " + str("question")
-		if slices.Contains(budgetSources, str("source")) {
+		if slices.Contains(budgetSources, str("source")) && t.Kind != "human" {
 			m.Content = ref + " is stopped by its budget: " + str("question")
 		}
 		if cs, ok := e.Detail["choices"].([]any); ok {

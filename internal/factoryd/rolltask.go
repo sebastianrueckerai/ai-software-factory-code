@@ -937,8 +937,8 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
-	_, ref, err := FileTask(ctx, r.Store, r.Forgejo, r.Repo, title, body, []string{"human"}, Task{
-		ID: req.TaskID, Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA,
+	_, ref, err := fileHumanCard(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, title, body, nil, Task{
+		ID: req.TaskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA,
 		Source: SourceRollRefused, Author: r.Forgejo.BotUser,
 	})
 	if err != nil {

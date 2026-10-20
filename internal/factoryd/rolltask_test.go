@@ -866,6 +866,8 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	delete(f.registry, "sf/opencode-worker/manifests/sha256-"+strings.TrimPrefix(sha256Of(workerNewIdx), "sha256:"))
 	roller, store, wf := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
+	rows := &fakeEventRecorder{}
+	roller.Timeline = &Timeline{Store: store, Events: rows}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -897,6 +899,9 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	if card.Kind != "human" || card.Source != SourceRollRefused || card.Status != "waiting-human" || card.SHA != commitC1 ||
 		card.IssueNumber != 31 || card.Objective != want || len(store.tasks) != 1 {
 		t.Fatalf("card %+v of tasks %v, want the one human card", card, store.tasks)
+	}
+	if wakesNobody(needsYouPoke(t, rows.rows, card, title)) {
+		t.Fatal("the refused roll's row wakes nobody")
 	}
 	if len(wf.started) != 0 || len(f.pulls) != 0 {
 		t.Fatalf("a roll ran: starts %v, pull requests %v", wf.started, f.pulls)

@@ -96,7 +96,10 @@ func main() {
 	if err := metrics.Tasks(otelProviders.Analytics.Meter("factoryd")); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
-	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics}
+	// the runner's timeline comes later; the alarm records only its card's
+	// needs-you row, so a commit refused at boot tells its person too
+	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics,
+		Timeline: &factoryd.Timeline{Events: store, Store: store}}
 	// a ladder model outside the coder class would be refused mid-task
 	configSource := &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir}
 	policyLoader := &factoryd.PolicyLoader{

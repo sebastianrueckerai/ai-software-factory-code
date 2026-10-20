@@ -735,6 +735,8 @@ type ConfigAlarm struct {
 	Dir  string
 	// Metrics counts the outcome of the tasks Resolve ends; nil counts none.
 	Metrics *telemetry.Metrics
+	// Timeline records the card's needs-you row; nil records none.
+	Timeline *Timeline
 }
 
 // Raise is PolicyLoader.Rejected. The alerts row, the dedupe key, is
@@ -761,8 +763,8 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 	body := fmt.Sprintf("factoryd refused the configuration tree %s/ at commit %s (%s). %s\n\nReasons (`factoryd config check %s` shows the same):\n\n%s\n\n"+
 		"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue.\n\nfiled by factoryd",
 		a.Dir, commit, link, stays, a.Dir, fenced(reason.Error()))
-	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, []string{"human"}, Task{
-		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
+	t, ref, err := fileHumanCard(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, Task{
+		ID: NewTaskID(), RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
 		Source: SourceConfig, Author: a.Forgejo.BotUser,
 	})
 	if err != nil {

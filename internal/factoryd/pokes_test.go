@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -10,6 +11,35 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
+
+// needsYouPoke checks that rows hold one needs-you row, card's, factoryd's,
+// its question the card's title, and that the Poker, reading the row as
+// the events table gives it back, words it "#N needs you: <title>" at the
+// needs-you level, the messengers' copy. It answers the row as read back.
+func needsYouPoke(t *testing.T, rows []Event, card Task, title string) Event {
+	t.Helper()
+	var asked []Event
+	for _, e := range rows {
+		if e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Via != ViaFactoryd || asked[0].Actor != FactoryDecider ||
+		asked[0].Detail["question"] != title || asked[0].Detail["source"] != card.Source {
+		t.Fatalf("question_asked rows %+v, want card %s's one needs-you row on %q", asked, card.ID, title)
+	}
+	stored := asked[0]
+	b, _ := json.Marshal(stored.Detail)
+	stored.Detail = nil
+	if err := json.Unmarshal(b, &stored.Detail); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := pokeOf(stored, card)
+	if want := fmt.Sprintf("#%d needs you: %s", card.IssueNumber, title); !ok || m.Kind != MessageEscalation || m.Content != want || deliveryLevel(m) != LevelNeedsYou {
+		t.Fatalf("the poke = %+v, %v; want %q at the needs-you level", m, ok, want)
+	}
+	return stored
+}
 
 // Each poke class's row, hand-derived from the event and its card
 // (roadmap 239, C14's inbox).

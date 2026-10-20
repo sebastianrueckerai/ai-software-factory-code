@@ -686,7 +686,9 @@ func TestConfigAlarm(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
 	store := newFakeStore()
 	m, reader := testMetrics(t)
-	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m}
+	rows := &fakeEventRecorder{}
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m,
+		Timeline: &Timeline{Store: store, Events: rows}}
 	ctx := context.Background()
 	reason := errors.New("processes/maintenance.yaml: stages.policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
@@ -716,6 +718,11 @@ func TestConfigAlarm(t *testing.T) {
 	}
 	var task Task
 	for _, task = range store.tasks {
+	}
+	// the person is told once, the retried filing's raise included, and
+	// the project agent wakes at autonomous
+	if wakesNobody(needsYouPoke(t, rows.rows, task, "config: factory/ at c9c9c9c9c9 rejected")) {
+		t.Fatal("the rejected config's row wakes nobody")
 	}
 	if task.Kind != "human" || task.Status != "waiting-human" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 ||
 		task.Source != SourceConfig || task.SHA != "c9c9c9c9c9c9c9c9" || len(task.RequiredCapabilities) != 0 {
