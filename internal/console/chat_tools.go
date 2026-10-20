@@ -1353,7 +1353,7 @@ var tools = []chatTool{
 	{name: "fund", title: "Fund a card", write: true,
 		params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
 		required: []string{"task_id", "eur", "text"},
-		about:    "Raise a card's budget from the project's monthly pool, with an answer to its question.",
+		about:    "Raise a card's budget with an answer to its question: the pool's money, or the member's.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.fund(in)
 			return note, nil, err
@@ -1619,6 +1619,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   ask questions this conversation's member, answered by a press or their next message, and ends the turn.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
   attach_analysis records what you found inside a card's open ask; the members read it with the question.
+  fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the member's raise, and a project without a pool takes it too.
   analyze_image looks at an image a member sent, once per question; cite what you saw, and look again rather than guess. A member's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
@@ -1677,10 +1678,11 @@ func (t *turn) systemText() (string, error) {
 	return b.String(), nil
 }
 
-// fund is the fund tool: doFund after the member's login and the bounds
-// of the project's budget block and the policy, each refusal naming its
-// bound and the fitting action. The pool itself is checked in doFund's
-// transaction, so parallel turns cannot overspend it. Money compares in
+// fund is the fund tool, fundWithinBounds' door: the agent's own raise
+// meets the bounds of the project's budget block and the policy, each
+// refusal naming its bound and the fitting action; the pool and the card's
+// cap are checked in doFund's transaction, so parallel turns overspend
+// neither. A raise the member confirmed meets none. Money compares in
 // cents.
 func (t *turn) fund(in toolInput) (string, error) {
 	return t.c.fundWithinBounds(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text)

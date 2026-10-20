@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -242,16 +243,51 @@ func TestMemberDecidedFundIgnoresTheAgentsLimits(t *testing.T) {
 	}
 }
 
-// The member's own click in the chat inbox is their decision (no decider):
-// it raises on a project that sets no pool.
+// The member's own click on the chat inbox's fund choice runs the real
+// answer route (the member's button, no decider): it raises on a project
+// that sets no pool, with the pool full.
 func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
-	r := needRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder"}
-	if _, err := answerFund(t, r, factoryd.ViaChat, ""); err != nil {
-		t.Fatalf("the member's fund click: %v", err)
+	r, chat, _ := newChatRig(t)
+	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) {
+		if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
+			return "", nil
+		}
+		return needRefusal, nil
+	}
+	r.tasks.fundedEUR = 3
+	r.tasks.tasks[0].Question = factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{})
+	ck, s := r.loggedIn(t)
+	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#13 needs you: fund?", Choices: []string{"Fund one more session"}, TaskID: "t-e", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"Fund one more session"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("the answer = %d %q", code, body)
 	}
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
-		t.Errorf("budget_eur = %v, want 2.9", task.BudgetEUR)
+		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", inbox, 50)
+		t.Errorf("budget_eur = %v, want 2.9 raised past a project with no pool; the thread: %+v", task.BudgetEUR, rows)
+	}
+}
+
+// A raise another agent turn's raise left past the card's cap reaches the
+// member as the capSpent line through doFund, the budget unchanged.
+func TestFundCardCapErrorReachesTheMemberThroughDoFund(t *testing.T) {
+	r := needRig(t)
+	_, s := r.loggedIn(t)
+	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go",
+		&factoryd.FundBounds{PoolEUR: 10, CardCapEUR: 2.5})
+	var no *refusal
+	if !errors.As(err, &no) || no.msg != capSpent(13, 2, 0.9, 2.5) {
+		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, capSpent(13, 2, 0.9, 2.5))
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
+		t.Errorf("budget_eur = %v after the refusal, want 2", task.BudgetEUR)
 	}
 }
 

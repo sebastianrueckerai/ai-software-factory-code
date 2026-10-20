@@ -192,13 +192,9 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 		unmet = append(unmet, fmt.Sprintf("the reproduction exited %d at the head", rp.Exit))
 	case rp.Reproduced() || rp.NotReproduced != "" || criteriaProve(rv.Criteria):
 	case rp.Ran:
-		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit))
+		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)+unmetCriteria(rv.Criteria))
 	default:
-		line := "no reproduction command and no fault the agent recorded"
-		if len(rv.Criteria) > 0 {
-			line += ", and the review's criteria are not all met"
-		}
-		unmet = append(unmet, line)
+		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
 	}
 	// ruling 169: on both routes the review must find no drawback
 	if rv.Verdict != "" && (rv.StrictImprovement == nil || !*rv.StrictImprovement) {
@@ -212,6 +208,15 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
 	return len(unmet) == 0, unmet
+}
+
+// unmetCriteria is the tail of an unmet line when the review's criteria
+// are there and do not prove the change.
+func unmetCriteria(cs []CriterionVerdict) string {
+	if len(cs) > 0 {
+		return ", and the review's criteria are not all met"
+	}
+	return ""
 }
 
 // criteriaProve: the review answered every plan criterion met or waived.

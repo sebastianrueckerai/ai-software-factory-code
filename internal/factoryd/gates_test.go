@@ -2012,6 +2012,21 @@ func TestAForbiddenChangeAlwaysAsksAHuman(t *testing.T) {
 	}
 }
 
+// A reproduction that ran but did not fail at the base proves nothing, and
+// unmet criteria say so beside it.
+func TestUnreproducedWithUnmetCriteriaNamesThem(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	g.Reproduction = ReproResult{Ran: true, Exit: 0, BaseExit: 0}
+	base := "not reproduced at base: the reproduction exited 0 before the fix, and the agent recorded no fault it fixed"
+	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base}) {
+		t.Fatalf("without criteria: ok %v, unmet %q", ok, unmet)
+	}
+	rv.Criteria = []CriterionVerdict{{Criterion: "a", Verdict: "met"}, {Criterion: "b", Verdict: "unmet"}}
+	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base + ", and the review's criteria are not all met"}) {
+		t.Fatalf("with an unmet criterion: ok %v, unmet %q", ok, unmet)
+	}
+}
+
 func TestCriteriaMetProveAFeature(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	g.Reproduction = ReproResult{}

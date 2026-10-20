@@ -450,10 +450,10 @@ func TestAgentFundedEURSumsTheMonth(t *testing.T) {
 	}
 	got, err := agentFundedEUR(ctx, s.db, "sf/r", at("2026-10-20T08:00:00Z"))
 	if err != nil || got != 2 {
-		t.Fatalf("AgentFundedEUR = %v, %v; want 2", got, err)
+		t.Fatalf("agentFundedEUR = %v, %v; want 2", got, err)
 	}
 	if got, err := agentFundedEUR(ctx, s.db, "sf/none", at("2026-10-20T08:00:00Z")); err != nil || got != 0 {
-		t.Fatalf("AgentFundedEUR of a repository with none = %v, %v; want 0", got, err)
+		t.Fatalf("agentFundedEUR of a repository with none = %v, %v; want 0", got, err)
 	}
 }
 
