@@ -1674,10 +1674,16 @@ func (t *turn) systemText() (string, error) {
 	return b.String(), nil
 }
 
-// fund is the fund tool: doFund, after the three bounds of the project's
-// budget block and the policy, each refusal naming its bound.
+// fund is the fund tool: doFund after the member's login and the bounds
+// of the project's budget block and the policy, each refusal naming its
+// bound and the fitting action. The pool itself is checked in doFund's
+// transaction, so parallel turns cannot overspend it. Money compares in
+// cents.
 func (t *turn) fund(in toolInput) (string, error) {
 	ctx := t.r.Context()
+	if _, err := t.c.accessToken(ctx, t.a.s); err != nil {
+		return "", refuse(http.StatusConflict, "the member's login has lapsed: the answer cannot be posted; record your analysis with attach_analysis")
+	}
 	v, ok := t.c.inForce(ctx)
 	if !ok {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
@@ -1690,22 +1696,26 @@ func (t *turn) fund(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	funded, err := t.c.cfg.Tasks.AgentFundedEUR(ctx, t.p.Repository, time.Now())
-	if err != nil {
-		log.Printf("console: the month's chat funding of %s: %v", t.p.Repository, err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the month's funding")
+	ceiling, bound := v.Document.Budget.TaskMaxEUR, "the policy's task_max_eur"
+	if own := b.TaskMaxEUR; own > 0 && factoryd.Cents(own) < factoryd.Cents(ceiling) {
+		ceiling, bound = own, "the project's budget.task_max_eur"
 	}
 	switch {
-	case funded+in.EUR > b.DiscretionaryEUR:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The month's pool is €%.2f of discretionary_eur and €%.2f is funded: €%.2f left, short of €%.2f. Ask a member to fund the card.",
-			b.DiscretionaryEUR, funded, max(b.DiscretionaryEUR-funded, 0), in.EUR))
-	case in.EUR > b.RaiseMaxEUR:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by less, or ask a member to fund the card.", in.EUR, b.RaiseMaxEUR))
-	case card.BudgetEUR+in.EUR > v.Document.Budget.TaskMaxEUR:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes the policy's task_max_eur of €%.2f: raise by at most €%.2f, or split the card.",
-			card.IssueNumber, card.BudgetEUR, in.EUR, v.Document.Budget.TaskMaxEUR, max(v.Document.Budget.TaskMaxEUR-card.BudgetEUR, 0)))
+	case factoryd.Cents(b.DiscretionaryEUR) <= 0:
+		return "", refuse(http.StatusConflict, "This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the member.")
+	case factoryd.Cents(in.EUR) > factoryd.Cents(b.RaiseMaxEUR):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by at most that, or record your analysis with attach_analysis so the member can fund more.", in.EUR, b.RaiseMaxEUR))
+	case factoryd.Cents(card.BudgetEUR)+factoryd.Cents(in.EUR) > factoryd.Cents(ceiling):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the member can make a sizing exception.",
+			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
-	return t.c.doFund(ctx, t.a, in.TaskID, in.EUR, in.Text)
+	return t.c.doFund(ctx, t.a, in.TaskID, in.EUR, in.Text, &b.DiscretionaryEUR)
+}
+
+// poolSpent is the refusal of a raise past the month's pool.
+func poolSpent(pool, funded, eur float64) string {
+	return fmt.Sprintf("The month's pool is €%.2f (discretionary_eur) and €%.2f is funded: €%.2f left, short of €%.2f. Record your analysis with attach_analysis; the ask then reaches the member.",
+		pool, funded, max(pool-funded, 0), eur)
 }
 
 // limitLines are the policy's task budget and limits, one indented line

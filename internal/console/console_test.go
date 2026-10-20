@@ -278,12 +278,28 @@ type fakeTasks struct {
 	deps     map[string][]string // the tasks a task depends on
 	carries  map[string][]string // the cards a roll task carries
 	read     func(s *fakeTasks, id string)
-	// fundedEUR is the month's chat funding AgentFundedEUR answers
+	// fundedEUR is the month's chat funding FundCard's pool counts, events
+	// the ledger its card_funded row goes to
 	fundedEUR float64
+	events    *fakeEvents
 }
 
-func (s *fakeTasks) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
-	return s.fundedEUR, nil
+// FundCard raises task id's budget and records e, both or neither, as the
+// store's one transaction does.
+func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, pool *float64, e factoryd.Event) (float64, float64, error) {
+	if pool != nil && factoryd.Cents(s.fundedEUR)+factoryd.Cents(eur) > factoryd.Cents(*pool) {
+		return 0, 0, &factoryd.PoolSpentError{Funded: s.fundedEUR}
+	}
+	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	if _, err := s.events.Record(ctx, e); err != nil {
+		s.RaiseTaskBudget(ctx, id, -eur)
+		return 0, 0, err
+	}
+	return from, to, nil
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -964,6 +980,7 @@ func newRig(t *testing.T) *rig {
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
+	r.tasks.events = r.events
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
 	c, err := New(Config{

@@ -170,20 +170,42 @@ type Events interface {
 }
 
 func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
+	e, inserted, err := insertEvent(ctx, s.db, e)
+	if err != nil || !inserted {
+		return 0, err
+	}
+	s.publish(e)
+	return e.ID, nil
+}
+
+func (s *PGStore) publish(e Event) {
+	if s.bus != nil {
+		s.bus.Publish(e)
+	}
+}
+
+// rowQuerier is the one-row query of a database or a transaction.
+type rowQuerier interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// insertEvent writes e as a row of q; inserted is false for the row a
+// conflict dropped.
+func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted bool, _ error) {
 	if e.Repository == "" || e.Kind == "" {
-		return 0, errors.New("event: repository and kind are required")
+		return e, false, errors.New("event: repository and kind are required")
 	}
 	detail := any(nil)
 	if e.Detail != nil {
 		b, err := json.Marshal(e.Detail)
 		if err != nil {
-			return 0, err
+			return e, false, err
 		}
 		detail = b
 	}
 	// only a second row naming the same answer comment conflicts (the
 	// partial unique index of 20261011170500_events_grant_once.sql)
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
 		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
 		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind IN ('question_answered', 'session_granted') DO NOTHING
@@ -191,14 +213,11 @@ func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
 		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&e.ID, &e.At)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
-		return 0, nil
+		return e, false, nil
 	case err != nil:
-		return 0, err
+		return e, false, err
 	}
-	if s.bus != nil {
-		s.bus.Publish(e)
-	}
-	return e.ID, nil
+	return e, true, nil
 }
 
 // nullTime is t as a SQL NULL when it is the zero time, so the column

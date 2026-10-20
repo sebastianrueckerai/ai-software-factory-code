@@ -237,6 +237,11 @@ var threadKinds = []string{factoryd.EventCardFiled, factoryd.EventCardSteered}
 // the autonomy state, the decider and the chat task behind it (roadmap
 // 239's recording), and a filing's or a steer's thread (its card link).
 func (c *Console) record(ctx context.Context, a actor, repository, taskID string, issue int64, kind string, detail map[string]any) {
+	c.event(context.WithoutCancel(ctx), c.eventOf(a, repository, taskID, issue, kind, detail))
+}
+
+// eventOf is the row record writes for a's action.
+func (c *Console) eventOf(a actor, repository, taskID string, issue int64, kind string, detail map[string]any) factoryd.Event {
 	if a.level != "" {
 		if detail == nil {
 			detail = map[string]any{}
@@ -258,8 +263,8 @@ func (c *Console) record(ctx context.Context, a actor, repository, taskID string
 		}
 		detail["thread"] = a.thread
 	}
-	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
-		Actor: a.s.user, Via: a.via, Detail: detail})
+	return factoryd.Event{Repository: repository, TaskID: taskID, IssueNumber: issue, Kind: kind,
+		Actor: a.s.user, Via: a.via, Detail: detail}
 }
 
 // cardIn is card id for a: 404 when there is none, when it is a chat task,
@@ -979,7 +984,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
 		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
-			return c.doFund(ctx, a, id, need, text)
+			return c.doFund(ctx, a, id, need, text, nil)
 		}
 		return "", refuse(http.StatusConflict, "this answer needs the Fund form on the card: name the amount")
 	}
@@ -1196,8 +1201,10 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
 // doAnswer posts it, so the raise resumes the card in one step. When the
 // floor still refuses a session after the raise, the raise and the note
 // stand and the response is a refusal naming the floor's reason, so the
-// member learns the amount now, not on the card's next question.
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
+// member learns the amount now, not on the card's next question. The raise
+// and its card_funded row commit together; a non-nil pool is the month's
+// pool in EUR, which the store checks under a lock before it raises.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, pool *float64) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
@@ -1219,8 +1226,12 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	case !factoryd.BudgetRefusal(why):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
 	}
-	from, to, err := c.cfg.Tasks.RaiseTaskBudget(ctx, t.ID, eur)
+	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, pool,
+		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, map[string]any{"reason": note}))
+	var spent *factoryd.PoolSpentError
 	switch {
+	case errors.As(err, &spent):
+		return "", refuse(http.StatusConflict, poolSpent(*pool, spent.Funded, eur))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
 	case err != nil:
@@ -1228,8 +1239,6 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
 	}
 	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded,
-		map[string]any{"from_eur": from, "to_eur": to, "amount_eur": eur, "reason": note})
 	short := c.unfundedSession(ctx, t)
 	if err := c.answerCard(ctx, a, t, note); err != nil {
 		log.Printf("console: %s funded %s, the answer failed: %v", a.s.user, t.ID, err)

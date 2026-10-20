@@ -2976,7 +2976,7 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"))
+	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
 	if err != nil {
 		c.fail(w, r, err)
 		return

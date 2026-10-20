@@ -159,8 +159,8 @@ const (
 var AutonomyMeaning = map[string]string{
 	AutonomyManual:     "every action of the agent confirms, as today",
 	AutonomyAssisted:   "the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask",
-	AutonomyAutonomous: "the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond a card's budget still ask",
-	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond a card's budget",
+	AutonomyAutonomous: "the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask",
+	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool",
 }
 
 // AutonomyStates are the four states the level control offers (C14):
@@ -192,12 +192,12 @@ var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_ver
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
-// base as its files set it with the always-confirm set, assisted takes
+// base as its files set it with the always-confirm set and fund, assisted takes
 // the starts and filings off and keeps the always-confirm set, autonomous
 // keeps the always-confirm set only, with merges following the rule.
 func ConfirmFor(level, mergeRule string, base []string) []string {
 	ensure := func(list []string) []string {
-		for _, t := range AlwaysConfirm {
+		for _, t := range append(slices.Clone(AlwaysConfirm), "fund") {
 			if !slices.Contains(list, t) {
 				list = append(list, t)
 			}

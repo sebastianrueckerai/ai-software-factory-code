@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"math"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -1146,12 +1148,77 @@ func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (
 	return from, to, err
 }
 
+// Cents is eur in whole cents, the unit money compares in.
+func Cents(eur float64) int64 { return int64(math.Round(eur * 100)) }
+
+// PoolSpentError is FundCard's refusal of a raise the pool cannot cover:
+// Funded is what the month's pool has funded already.
+type PoolSpentError struct{ Funded float64 }
+
+func (e *PoolSpentError) Error() string {
+	return fmt.Sprintf("the month's pool has funded %.2f EUR already", e.Funded)
+}
+
+// FundCard raises task id's budget by eur and writes e, the raise's
+// card_funded row with from_eur, to_eur and amount_eur added to its
+// detail, in one transaction. A non-nil pool is the month's pool in EUR:
+// under a lock on e's repository the month's agent funding plus eur must
+// fit it, else the PoolSpentError, so parallel turns cannot overspend it.
+// ErrNotFound when there is no such task.
+func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, pool *float64, e Event) (from, to float64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	if pool != nil {
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "agent-fund:"+e.Repository); err != nil {
+			return 0, 0, err
+		}
+		funded, err := agentFundedEUR(ctx, tx, e.Repository, time.Now())
+		if err != nil {
+			return 0, 0, err
+		}
+		if Cents(funded)+Cents(eur) > Cents(*pool) {
+			return 0, 0, &PoolSpentError{Funded: funded}
+		}
+	}
+	err = tx.QueryRowContext(ctx,
+		`UPDATE tasks SET budget_eur = budget_eur + $2 WHERE id = $1
+		 RETURNING (budget_eur - $2::numeric)::float8, budget_eur::float8`,
+		id, eur).Scan(&from, &to)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e, _, err = insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	s.publish(e)
+	return from, to, nil
+}
+
 // AgentFundedEUR is the EUR the project agent funded cards with via chat
 // in repository, the card_funded events of the UTC calendar month of
 // month.
 func (s *PGStore) AgentFundedEUR(ctx context.Context, repository string, month time.Time) (float64, error) {
+	return agentFundedEUR(ctx, s.db, repository, month)
+}
+
+func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month time.Time) (float64, error) {
 	var eur float64
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8 FROM events
 		 WHERE repository = $1 AND kind = $2 AND via = $3
 		   AND at >= date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'

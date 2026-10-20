@@ -419,7 +419,7 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	text := calls[0].text
 	for _, want := range []string{
 		"#40: Use a replica?",
-		"\n\nRead each card. Settle what your permissions allow; a card waiting on its budget takes fund from your pool. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
+		"\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the wake text %q misses %q", text, want)
@@ -557,5 +557,30 @@ func TestDeadBudgetWatchedCardAsksForMoney(t *testing.T) {
 	}
 	if !slices.Contains(wakeStateKeys(t, s, "sf/wake"), "budget:"+clock.Format("2006-01")) {
 		t.Fatalf("no budget mark for %s", clock.Format("2006-01"))
+	}
+}
+
+// fund is named in the wake only where the woken login is offered it: an
+// approver of an autonomous project.
+func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
+	for _, tc := range []struct {
+		approvers []string
+		autonomy  string
+		want      bool
+	}{
+		{nil, policy.AutonomyAutonomous, false},
+		{[]string{"sebastian"}, policy.AutonomyAutonomous, true},
+		{[]string{"morgan"}, policy.AutonomyAutonomous, false},
+	} {
+		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+			"wake-proj": {Repository: "sf/wake", Autonomy: tc.autonomy, Notify: []string{"sebastian"}, Approvers: tc.approvers}})
+		wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+		if err := w.Pass(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		calls := starter.recorded()
+		if len(calls) != 1 || strings.Contains(calls[0].text, "fund") != tc.want {
+			t.Errorf("approvers %v at %s: wake %+v, want fund named %v", tc.approvers, tc.autonomy, calls, tc.want)
+		}
 	}
 }

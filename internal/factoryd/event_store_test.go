@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -450,5 +451,101 @@ func TestAgentFundedEURSumsTheMonth(t *testing.T) {
 	}
 	if got, err := s.AgentFundedEUR(ctx, "sf/none", at("2026-10-20T08:00:00Z")); err != nil || got != 0 {
 		t.Fatalf("AgentFundedEUR of a repository with none = %v, %v; want 0", got, err)
+	}
+}
+
+func fundStore(t *testing.T) *PGStore {
+	t.Helper()
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, Status: "waiting-human", Repository: "sf/r", IssueNumber: 7}); err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+func fundEvent() Event {
+	return Event{Repository: "sf/r", TaskID: "t-c", IssueNumber: 7, Kind: EventCardFunded, Actor: "alice", Via: ViaChat, Detail: map[string]any{"reason": "go"}}
+}
+
+// FundCard raises the budget and writes the card_funded row, from, to and
+// amount filled in, in one transaction; a ledger row that cannot be
+// written rolls the raise back.
+func TestFundCardRaisesAndRecordsOrNothing(t *testing.T) {
+	s := fundStore(t)
+	ctx := context.Background()
+	from, to, err := s.FundCard(ctx, "t-c", 0.5, nil, fundEvent())
+	if err != nil || from != 2 || to != 2.5 {
+		t.Fatalf("FundCard = (%v, %v, %v), want (2, 2.5, nil)", from, to, err)
+	}
+	rows, err := s.TaskEvents(ctx, "t-c", 10)
+	if err != nil || len(rows) != 1 || rows[0].Detail["from_eur"] != 2.0 || rows[0].Detail["to_eur"] != 2.5 || rows[0].Detail["amount_eur"] != 0.5 || rows[0].Detail["reason"] != "go" {
+		t.Fatalf("the rows = %+v, %v; want one card_funded row of 2 to 2.5 by 0.5", rows, err)
+	}
+	bad := fundEvent()
+	bad.Detail = map[string]any{"unmarshalable": make(chan int)}
+	if _, _, err := s.FundCard(ctx, "t-c", 1, nil, bad); err == nil {
+		t.Fatal("a ledger row that cannot be written was accepted")
+	}
+	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 2.5 {
+		t.Fatalf("budget_eur = %v after a failed ledger write, want 2.5 (rolled back)", got.BudgetEUR)
+	}
+	if _, _, err := s.FundCard(ctx, "nope", 1, nil, fundEvent()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FundCard of no task = %v, want ErrNotFound", err)
+	}
+}
+
+// The pool is checked under a lock the raise commits within: of five
+// parallel funds of 1 EUR against a pool of 3, exactly three raise; money
+// compares in cents, so 0.1 and 0.2 fill a pool of 0.3.
+func TestFundCardPoolHoldsUnderParallelTurns(t *testing.T) {
+	s := fundStore(t)
+	ctx := context.Background()
+	pool := 3.0
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var ok, spent int
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := s.FundCard(ctx, "t-c", 1, &pool, fundEvent())
+			mu.Lock()
+			defer mu.Unlock()
+			var p *PoolSpentError
+			switch {
+			case err == nil:
+				ok++
+			case errors.As(err, &p):
+				spent++
+			default:
+				t.Errorf("FundCard: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 3 || spent != 2 {
+		t.Fatalf("%d raised and %d refused, want 3 and 2", ok, spent)
+	}
+	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 5 {
+		t.Fatalf("budget_eur = %v, want 5", got.BudgetEUR)
+	}
+	s = fundStore(t)
+	pool = 0.3
+	for _, eur := range []float64{0.1, 0.2} {
+		if _, _, err := s.FundCard(ctx, "t-c", eur, &pool, fundEvent()); err != nil {
+			t.Fatalf("FundCard %v within the pool of 0.3: %v", eur, err)
+		}
+	}
+	var p *PoolSpentError
+	if _, _, err := s.FundCard(ctx, "t-c", 0.01, &pool, fundEvent()); !errors.As(err, &p) || p.Funded != 0.3 {
+		t.Fatalf("a cent past the pool = %v, want PoolSpentError of 0.3 funded", err)
 	}
 }

@@ -341,8 +341,8 @@ func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error    { re
 func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *acceptTasks) AgentFundedEUR(_ context.Context, _ string, _ time.Time) (float64, error) {
-	return 0, nil
+func (s *acceptTasks) FundCard(_ context.Context, _ string, _ float64, _ *float64, _ factoryd.Event) (float64, float64, error) {
+	return 0, 0, nil
 }
 func (s *acceptTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil

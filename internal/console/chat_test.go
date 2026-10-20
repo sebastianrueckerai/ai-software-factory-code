@@ -1204,8 +1204,8 @@ func TestChatToolSentences(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	for _, f := range offered(r, g) {
 		about := f["description"].(string)
-		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)); always != strings.Contains(about, "(needs OK)") {
-			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and nothing else", f["name"], about)
+		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)) || f["name"] == "fund"; always != strings.Contains(about, "(needs OK)") {
+			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and fund, nothing else", f["name"], about)
 		}
 	}
 }
@@ -1530,8 +1530,8 @@ func TestSystemTool(t *testing.T) {
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
 			"  assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask\n"+
-			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond a card's budget still ask\n"+
-			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond a card's budget\n",
+			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask\n"+
+			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+

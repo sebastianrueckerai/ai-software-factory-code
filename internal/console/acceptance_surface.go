@@ -695,8 +695,8 @@ func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float6
 	return 0, 0, factoryd.ErrNotFound
 }
 
-func (a *AcceptanceRig) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
-	return 0, nil
+func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ *float64, _ factoryd.Event) (float64, float64, error) {
+	return a.RaiseTaskBudget(ctx, id, eur)
 }
 
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }

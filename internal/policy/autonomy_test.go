@@ -48,13 +48,13 @@ func TestConfirmForCustomBase(t *testing.T) {
 	// so a custom list confirms a routine's write too; assisted takes the
 	// starts and filings off a custom list and keeps the always-confirm set
 	manual := []string{"close", "approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync",
-		"write_doc", "set_autonomy", "routine_write", "routine_delete"}
+		"write_doc", "set_autonomy", "routine_write", "routine_delete", "fund"}
 	if got := ConfirmFor(AutonomyManual, MergeHuman, []string{"close"}); !slices.Equal(got, manual) {
 		t.Errorf("ConfirmFor(manual, [close]) = %v, want %v", got, manual)
 	}
 	got := ConfirmFor(AutonomyAssisted, MergeHuman, []string{"deny_merge", "new_card"})
 	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
-		"routine_write", "routine_delete"}
+		"routine_write", "routine_delete", "fund"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ConfirmFor(assisted, [deny_merge new_card]) = %v, want %v", got, want)
 	}
@@ -79,7 +79,7 @@ func TestChatOfAutonomy(t *testing.T) {
 func TestChatOfManualKeepsConfirm(t *testing.T) {
 	d := Document{}
 	p := ProjectConfig{Chat: &ChatConfig{Confirm: []string{"close"}}}
-	if got := d.ChatOf(p).Confirm; got[0] != "close" || !slices.Contains(got, "routine_write") || len(got) != 1+len(AlwaysConfirm) {
+	if got := d.ChatOf(p).Confirm; got[0] != "close" || !slices.Contains(got, "routine_write") || len(got) != 2+len(AlwaysConfirm) {
 		t.Errorf("ChatOf(manual, confirm [close]) = %v, want close and the always-confirm set", got)
 	}
 }
@@ -183,5 +183,29 @@ func TestFundIsConfirmedBelowAutonomous(t *testing.T) {
 	}
 	if !slices.Contains(ChatTools, "fund") {
 		t.Error("fund is no chat tool")
+	}
+}
+
+func TestConfirmForKeepsFundWhereMoneyAsks(t *testing.T) {
+	for _, tt := range []struct {
+		level, merge string
+		want         bool
+	}{
+		{AutonomyManual, MergeHuman, true},
+		{AutonomyAssisted, MergeHuman, true},
+		{AutonomyAutonomous, MergeHuman, false},
+		{AutonomyAutonomous, MergeAuto, false},
+	} {
+		if got := slices.Contains(ConfirmFor(tt.level, tt.merge, []string{}), "fund"); got != tt.want {
+			t.Errorf("an empty confirm list at %s/%s holds fund = %v, want %v", tt.level, tt.merge, got, tt.want)
+		}
+	}
+}
+
+func TestMoneyMeaningNamesWhatStillAsks(t *testing.T) {
+	for state, want := range map[string]string{AutonomyAssisted: "money beyond a card's budget", AutonomyAutonomous: "money beyond the pool", AutonomyFullAuto: "money beyond the pool"} {
+		if !strings.Contains(AutonomyMeaning[state], want) {
+			t.Errorf("%s: %q lacks %q", state, AutonomyMeaning[state], want)
+		}
 	}
 }
