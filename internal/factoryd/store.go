@@ -1504,9 +1504,23 @@ func (s *PGStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint s
 // SetTaskMergeCommit records the commit the merge made on the base; the
 // first write stands, so a later write on a set column changes nothing
 // and reports no error (the merge queue may pass a merged card twice).
+// Zero rows also cover an unknown id — a fact the queue dropped — which
+// earns a log line, not silence.
 func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = $2 WHERE id = $1 AND merge_commit = ''`, id, commit)
-	return err
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = $2 WHERE id = $1 AND merge_commit = ''`, id, commit)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		var exists bool
+		if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM tasks WHERE id = $1)`, id).Scan(&exists); err != nil {
+			return err
+		}
+		if !exists {
+			log.Printf("task %s: merge commit %s dropped, no such task", id, commit)
+		}
+	}
+	return nil
 }
 
 func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {

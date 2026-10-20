@@ -1,8 +1,11 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +158,38 @@ func TestPGStoreSetTaskMergeCommit(t *testing.T) {
 	}
 }
 
+// An unknown task id drops the merge-commit fact with a log line; the
+// re-pass of a card whose commit already stands stays quiet.
+func TestPGStoreSetTaskMergeCommitUnknownTaskLogs(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES ('u1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prev)
+	for _, c := range [][2]string{{"u1", "m-abc"}, {"u1", "m-later"}, {"nope", "m-x"}} {
+		if err := s.SetTaskMergeCommit(ctx, c[0], c[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	log.SetOutput(prev)
+	if strings.Count(buf.String(), "nope") != 1 {
+		t.Fatalf("log = %q, want one line naming the unknown task", buf.String())
+	}
+	if strings.Contains(buf.String(), "u1") {
+		t.Fatalf("log = %q, want the first write and the re-pass quiet", buf.String())
+	}
+}
+
 // The metrics fixture: repository sf/code over window [Sep 28, Oct 12)
 // (prev [Sep 14, Sep 28)), spark buckets b0..b6 = seven weeks from Aug 24,
 // each ending where the window does. sf/other holds the scoping rows.
@@ -173,7 +208,8 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		}
 	}
 	// cards: c1, c2 (reverted+refiled), c3, c6 (the SigNoz fix), c5 (prev),
-	// c4 (chat, no card), o1 (sf/other)
+	// c4 (chat, no card), c7 (running, reverted — no figure may count it),
+	// o1 (sf/other)
 	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, files, insertions, deletions, merge_commit) VALUES
 		('c1', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $1, $2, 3, 120, 40, 'm-c1'),
 		('c2', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $3, $4, NULL, NULL, NULL, ''),
@@ -190,6 +226,10 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	must(`UPDATE tasks SET reverted_at = '2026-09-22T09:00Z' WHERE id = 'c5'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-x' WHERE id = 'c6'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-p' WHERE id = 'c5'`)
+	must(`UPDATE tasks SET alert_fingerprint = '' WHERE id = 'c3'`)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at) VALUES
+		('c7', 1, 0, 'running', 'sf/code', 'agent', 'webhook', '2026-10-05T08:00Z')`)
+	must(`UPDATE tasks SET reverted_at = '2026-10-06T10:00Z' WHERE id = 'c7'`)
 	status := func(task, at, status string) {
 		t.Helper()
 		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES ($1, 'sf/code', $2, 'task_status', 'factoryd', 'factoryd', $3)`,
@@ -239,12 +279,14 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('2026-10-08T16:05Z', 'c3', 'call', '', 'coding-frontier', 1200, 600),
 		('2026-10-08T16:10Z', 'c3', 'call', '', 'glm-flash', 200, 100),
 		('2026-10-07T12:05Z', 'c4', 'call', '', 'pulse', 300, 100),
+		('2026-10-07T12:06Z', 'c4', 'call', '', '', 100, 100),
 		('2026-09-20T10:05Z', 'c5', 'call', '', 'coding-frontier', 500, 250),
 		('2026-10-02T17:05Z', 'o1', 'call', '', 'coding-frontier', 9999, 9999)`)
 	must(`INSERT INTO alerts (kind, source, task_id, raised_at, fingerprint) VALUES
 		('alert', 'signoz', 'c6', '2026-10-06T08:00Z', 'fp-x'),   -- fixed 13 h later by c6
 		('alert', 'signoz', 'c2', '2026-10-04T12:00Z', NULL),     -- c2's refile, no fix task
 		('alert', 'signoz', 'c5', '2026-09-15T08:00Z', 'fp-p'),   -- prev: fixed 122 h later by c5
+		('alert', 'signoz', 'c3', '2026-10-07T13:30Z', ''),       -- empty fingerprint pairs with nothing
 		('escalation', 'gate', 'c3', '2026-10-07T13:00Z', NULL),
 		('escalation', 'gate', 'c5', '2026-09-21T10:00Z', NULL),
 		('escalation', 'gate', 'o1', '2026-10-02T18:30Z', NULL)`)
@@ -329,12 +371,14 @@ func TestMetricsFigures(t *testing.T) {
 	// change failure: 1 reverted (c2) of 4; prev c5 1 of 1
 	fig(t, "change failure", r.ChangeFailure, Figure{Value: 0.25, Prev: 1, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1, 0, 0.5, 0}})
-	// reverted/refiled: c2 refiled (alert at its reverted_at), c5 a bare revert
+	// reverted/refiled: c2 refiled (alert at its reverted_at), c5 a bare
+	// revert; c7's revert is no done card, so the spark drops it too
 	if r.RevertedRefiled != (RevertedRefiled{Reverted: 0, Refiled: 1, Prev: [2]float64{1, 0}, Has: true,
 		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 0}}) {
 		t.Fatalf("reverted/refiled = %+v", r.RevertedRefiled)
 	}
-	// restore: a1 fixed by c6 13 h later; a2 has no fingerprinted fix; prev 122 h
+	// restore: a1 fixed by c6 13 h later; the empty fingerprint pairs with
+	// nothing; prev 122 h
 	fig(t, "time to restore", r.TimeToRestore, Figure{Value: 46800000, Prev: 439200000, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 439200000, 0, 0, 46800000}})
 	// spend: the last week's euros (c3 2.2 + chat c4 1), the week before
@@ -347,12 +391,13 @@ func TestMetricsFigures(t *testing.T) {
 	// tokens/card: c1 1500 + c2 1500 + c3 2100 = 5100 over 4 cards; prev c5 750 over 1
 	fig(t, "tokens per card", r.TokensPerCard, Figure{Value: 1275, Prev: 750, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 750, 0, 1500, 1050}})
-	// mix: coding 4500, pulse 400 (chat c4 counts), glm 300, review 300 -> other
+	// mix: coding 4500, pulse 400 (chat c4 counts), glm 300; review 300 and
+	// the empty alias's 200 fold into other (of 5700)
 	wantMix := []MixShare{
-		{"coding-frontier", 4500.0 / 55.0}, // = 81.8182 % of 5500
-		{"pulse", 400.0 / 55.0},
-		{"glm-flash", 300.0 / 55.0},
-		{"other", 300.0 / 55.0},
+		{"coding-frontier", 4500.0 / 57.0}, // = 78.9474 % of 5700
+		{"pulse", 400.0 / 57.0},
+		{"glm-flash", 300.0 / 57.0},
+		{"other", 500.0 / 57.0},
 	}
 	if len(r.ModelMix) != len(wantMix) {
 		t.Fatalf("model mix = %+v", r.ModelMix)

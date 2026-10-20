@@ -327,14 +327,14 @@ func metricRevertedRefiled(ctx context.Context, db *sql.DB, repo string, w metri
 		return r, err
 	}
 	var err error
-	r.Weeks, err = metricWeeks(ctx, db, `SELECT `+metricBucket("reverted_at")+", count(*) FROM tasks WHERE repository = $1 AND kind <> 'chat' AND reverted_at IS NOT NULL AND reverted_at >= $2 AND reverted_at < $3 GROUP BY 1", repo, w.SparkFrom, w.To)
+	r.Weeks, err = metricWeeks(ctx, db, `SELECT `+metricBucket("reverted_at")+", count(*) FROM tasks WHERE "+doneCardWhere+` AND reverted_at IS NOT NULL AND reverted_at >= $2 AND reverted_at < $3 GROUP BY 1`, repo, w.SparkFrom, w.To)
 	return r, err
 }
 
 // metricTimeToRestore: alert to the fix card's finish, by fingerprint.
 func metricTimeToRestore(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	const pair = ` FROM alerts a JOIN tasks ot ON ot.id = a.task_id
-		CROSS JOIN LATERAL (SELECT min(t.finished_at) AS fix FROM tasks t WHERE t.alert_fingerprint = a.fingerprint AND t.finished_at > a.raised_at) f
+		CROSS JOIN LATERAL (SELECT min(t.finished_at) AS fix FROM tasks t WHERE t.alert_fingerprint = a.fingerprint AND t.alert_fingerprint <> '' AND t.finished_at > a.raised_at) f
 		WHERE a.kind = 'alert' AND a.raised_at >= %s AND a.raised_at < $3 AND ot.repository = $1 AND f.fix IS NOT NULL`
 	const agg = `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (f.fix - a.raised_at)) * 1000)`
 	return metricMedian(ctx, db, repo, w,
@@ -371,9 +371,9 @@ func metricTokensPerCard(ctx context.Context, db *sql.DB, repo string, w metricW
 }
 
 // metricModelMix: the window's tokens by model, top three by tokens
-// then the rest folded into other.
+// then the rest folded into other. An empty alias is other.
 func metricModelMix(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
-	rows, err := db.QueryContext(ctx, `SELECT a.model_alias, sum(a.prompt_tokens + a.output_tokens)::float8
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(NULLIF(a.model_alias, ''), 'other'), sum(a.prompt_tokens + a.output_tokens)::float8
 		FROM audit a JOIN tasks t ON t.id = a.task_id WHERE t.repository = $1 AND a.ts >= $2 AND a.ts < $3 GROUP BY 1`, repo, w.From, w.To)
 	if err != nil {
 		return nil, err
@@ -409,9 +409,6 @@ func metricModelMix(ctx context.Context, db *sql.DB, repo string, w metricWindow
 	for i, p := range ps {
 		alias := p.alias
 		if i >= 3 {
-			if alias == "" {
-				continue
-			}
 			alias = "other"
 		}
 		if len(mix) > 0 && mix[len(mix)-1].Alias == alias {

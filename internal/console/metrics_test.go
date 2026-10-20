@@ -169,6 +169,20 @@ func TestProjectMetricsPage(t *testing.T) {
 			t.Errorf("page lacks window word %q", word)
 		}
 	}
+	// a figure with a previous window carries its move; one without shows
+	// none — there is nothing to move against
+	for _, line := range strings.Split(body, "\n") {
+		switch {
+		case strings.Contains(line, ">deploys / week<"):
+			if !strings.Contains(line, "mmove") {
+				t.Errorf("deploys row lacks its move: %s", line)
+			}
+		case strings.Contains(line, ">lead time, push to live<"):
+			if strings.Contains(line, "mmove") {
+				t.Errorf("lead time row shows a move without a previous window: %s", line)
+			}
+		}
+	}
 	if strings.Contains(body, `aria-pressed="true">7 days`) || strings.Contains(body, `aria-pressed="true">90 days`) {
 		t.Error("an inactive window word carries aria-pressed=true")
 	}
