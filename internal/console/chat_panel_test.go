@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -303,7 +304,9 @@ console.log(JSON.stringify({
 // arriving over the page's stream settles the list (the tab title's
 // count with it), the tab coming back to the front reads the list at
 // once, and the ten-second tick keeps reading it in a hidden tab, so
-// the count cannot sit stale until a reload.
+// the count cannot sit stale until a reload. A settling event in a
+// hidden tab reads the list but not the open thread, which the tab
+// coming back reads once; a reopened stream reads both.
 func TestChatPanelRefreshesItself(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -328,7 +331,7 @@ var document = {title: "Factory console", hidden: false,
   documentElement: el()};
 var sandbox = {document: document, console: {log: function () {}, error: function () {}},
   fetch: function (url) { fetched.push(String(url)); return Promise.resolve({ok: true, json: function () {
-    return Promise.resolve(String(url).endsWith("/conversations") ? [] : {messages: [], thread: {number: 0, title: "", state: "active"}}); }}); },
+    return Promise.resolve(String(url).endsWith("/conversations") ? [] : {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}}); }}); },
   setInterval: function (fn) { intervals.push(fn); return intervals.length; },
   setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
@@ -340,6 +343,8 @@ vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
 var drain = function () { return new Promise(function (res) { setImmediate(res); }).then(function () {
   return new Promise(function (res) { setImmediate(res); }); }); };
 var sawList = function () { return fetched.some(function (u) { return u.indexOf("/conversations", u.length - 14) !== -1; }); };
+var sawThread = function () { return fetched.some(function (u) { return u.indexOf("?conversation=3") !== -1; }); };
+var fire = function (kind, e) { (listeners[kind] || []).forEach(function (fn) { fn(e); }); };
 var out = {};
 Promise.resolve().then(drain).then(function () {
   fetched.length = 0;
@@ -356,6 +361,26 @@ Promise.resolve().then(drain).then(function () {
   intervals.forEach(function (fn) { fn(); });
 }).then(drain).then(function () {
   out.hiddenTick = sawList();
+  fetched.length = 0;
+  fire("factoryevent", {detail: {kind: "question_answered"}});
+}).then(drain).then(function () {
+  out.hiddenEvent = [sawList(), sawThread()];
+  fetched.length = 0;
+  document.hidden = false;
+  fire("visibilitychange", {});
+}).then(drain).then(function () {
+  out.back = sawThread();
+  fetched.length = 0;
+  document.hidden = true;
+  fire("visibilitychange", {});
+  document.hidden = false;
+  fire("visibilitychange", {});
+}).then(drain).then(function () {
+  out.backAgain = sawThread();
+  fetched.length = 0;
+  fire("streamopen", {});
+}).then(drain).then(function () {
+  out.reopened = [sawList(), sawThread()];
   console.log(JSON.stringify(out));
 });`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
@@ -364,9 +389,24 @@ Promise.resolve().then(drain).then(function () {
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	var got struct{ Asked, Visible, HiddenTick bool }
+	var got struct {
+		Asked, Visible, HiddenTick, Back, BackAgain bool
+		HiddenEvent, Reopened                       []bool
+	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !slices.Equal(got.HiddenEvent, []bool{true, false}) {
+		t.Errorf("a settling event in a hidden tab read the list and the thread: %v, want [true false]", got.HiddenEvent)
+	}
+	if !got.Back {
+		t.Error("the tab coming back does not read the thread a hidden event passed")
+	}
+	if got.BackAgain {
+		t.Error("the tab coming back again reads the thread with no event passed")
+	}
+	if !slices.Equal(got.Reopened, []bool{true, true}) {
+		t.Errorf("a reopened stream read the list and the thread: %v, want [true true]", got.Reopened)
 	}
 	if !got.Asked {
 		t.Error("an ask arriving over the stream does not settle the thread list")

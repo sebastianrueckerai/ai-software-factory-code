@@ -626,7 +626,9 @@ spec:
         # the agent sandboxes get the same endpoint (ruling 158)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://signoz-otel-collector.platform.svc.cluster.local:4318
-        readinessProbe: {httpGet: {path: /readyz, port: http}}
+        # every second: the console has no backend between the old pod and
+        # the new, which takes traffic at its first good probe
+        readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 1}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
           runAsNonRoot: true

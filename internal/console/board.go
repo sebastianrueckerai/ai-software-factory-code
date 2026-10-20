@@ -26,6 +26,7 @@ import (
 )
 
 var funcs = template.FuncMap{
+	"build": func() string { return build },
 	// markup is the writer's markdown as HTML, for the drawer's question
 	// text; askline is a text's first line, what a card's face shows
 	"markup": markup, "askline": askline,

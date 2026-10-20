@@ -81,7 +81,13 @@ func connect(t *testing.T, r *rig, ck *http.Cookie) (*http.Response, *bufio.Read
 	var once sync.Once
 	end := func() { once.Do(func() { cancel(); resp.Body.Close(); srv.Close() }) }
 	t.Cleanup(end)
-	return resp, bufio.NewReader(resp.Body), end
+	br := bufio.NewReader(resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		if got := nextMessage(t, br); !slices.Equal(got, pinged) {
+			t.Fatalf("the stream opened with %q, want %q", got, pinged)
+		}
+	}
+	return resp, br, end
 }
 
 // A stream connect whose sight check errors still follows the board

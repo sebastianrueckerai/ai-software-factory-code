@@ -42,13 +42,21 @@ document.addEventListener("htmx:configRequest", function (e) {
 });
 
 // A refused board action (a move the lane does not take from you) answers
-// one sentence; htmx swaps nothing on an error, so show it.
-document.addEventListener("htmx:responseError", function (e) {
-  var flash = document.getElementById("flash");
-  if (!flash) return;
-  flash.textContent = e.detail.xhr.responseText.trim() || "The factory refused: " + e.detail.xhr.status;
+// one sentence; htmx swaps nothing on an error, so show it. Every answer of
+// the console carries its Content-Security-Policy: a 502 to 504 without
+// it, or no answer at all, is the router's while the console's pod rolls,
+// and says so in place of the router's text. The board's own reads flash
+// nothing: the stream reads the board again once it is back.
+function refused(e) {
+  var flash = document.getElementById("flash"), xhr = e.detail.xhr;
+  if (!flash || e.detail.elt.id === "board") return;
+  var rolling = !xhr.status || xhr.status >= 502 && xhr.status <= 504 && !xhr.getResponseHeader("Content-Security-Policy");
+  flash.textContent = rolling ? "The factory did not answer: it restarts after a deploy. Try again in a moment." :
+    xhr.responseText.trim() || "The factory refused: " + xhr.status;
   flash.hidden = false;
-});
+}
+document.addEventListener("htmx:responseError", refused);
+document.addEventListener("htmx:sendError", refused);
 // A refusal that answers the board (a plan revision gone stale) is
 // swapped in: its line stands on the card it concerns.
 document.addEventListener("htmx:beforeSwap", function (e) {
@@ -221,9 +229,11 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // board the first replaced. A find that changes the board's query moves
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down, and a stream a refused connect
-// closed (a roll's 503 gap) the board reopens itself.
+// closed (a roll's 503 gap, a session's end) the board reopens itself, as
+// it does one closed or silent when the tab comes back. A page whose build
+// the stream's ping does not name loads itself anew once it is hidden.
 (function () {
-  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null;
+  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null, heard = 0, outdated = false;
   function board() { return document.getElementById("board"); }
   function retry() {
     var ids = Object.keys(missed);
@@ -408,30 +418,43 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     text.textContent = d.text || "";
     if (end) box.scrollTop = box.scrollHeight;
   }
-  function follow(project, query) {
+  // follow opens the stream; down says it was down before, as a drop is
+  function follow(project, query, down) {
     var opened = es !== null;
     if (es) es.close();
     following = query;
     var s = es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query);
     s.onopen = function () {
+      heard = Date.now();
       document.getElementById("live").textContent = "";
       // the replay after a reconnect holds at most the newest 500 events,
       // a stream moved to a new query replays none, and the agent's text
-      // is never replayed: the board and the Chat are read again
+      // is never replayed: the board and the drawer's Chat are read again,
+      // and after a time down the chat's thread too
       if (opened) {
         swapBoard();
         chat("");
+        if (down) document.dispatchEvent(new CustomEvent("streamopen"));
       }
       opened = true;
+      down = false;
     };
     s.onerror = function () {
+      down = true;
       document.getElementById("live").textContent = "The live stream is down; it reconnects by itself.";
       // a connect the server refused (the 503 the router answers while the
-      // console's pod rolls) closes the EventSource for good: the browser
-      // never retries it, so the board opens one itself, and its onopen
-      // reads the board again, healing the cards the gap froze
-      if (s.readyState === EventSource.CLOSED) setTimeout(function () { if (es === s) follow(project, query); }, 5000);
+      // console's pod rolls, the login page once the session ended) closes
+      // the EventSource for good: the browser never retries it, so the
+      // board reopens it itself
+      if (s.readyState === EventSource.CLOSED) setTimeout(function () { if (es === s) reopen(); }, 5000);
     };
+    // the ping comes at the open and at every heartbeat, its data the
+    // console's build
+    s.addEventListener("ping", function (m) {
+      heard = Date.now();
+      outdated = outdated || m.data !== document.querySelector('meta[name="build"]').content;
+      reload();
+    });
     s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
       document.dispatchEvent(new CustomEvent("factoryevent", { detail: e }));
@@ -448,6 +471,32 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     s.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
     s.addEventListener("board", function () { swapBoard(); });
   }
+  // reopen reads the board, which an ended session answers with the way
+  // to the login (htmx follows it), and opens the stream anew, whose open
+  // reads the board again for the events between
+  function reopen() {
+    var b = board();
+    swapBoard();
+    follow(b.dataset.project, b.dataset.query, true);
+  }
+  // a tab back in front, the network back or a page restored from the
+  // back-forward cache asks whether its stream still talks: one closed, or
+  // silent past two heartbeats (a sleep or a network change can drop a
+  // connection without a word), is reopened
+  function check() {
+    if (document.hidden || !es) return;
+    if (es.readyState === EventSource.CLOSED || es.readyState === EventSource.OPEN && Date.now() - heard > 60000) reopen();
+  }
+  // an outdated page loads itself anew while it is hidden and nothing on
+  // it is being filled in or streams; a member looking at it keeps it
+  // until they leave the tab
+  function reload() {
+    if (outdated && document.hidden && !busy(document.body) && !document.querySelector('[aria-busy="true"]')) location.reload();
+  }
+  document.addEventListener("visibilitychange", check);
+  document.addEventListener("visibilitychange", reload);
+  window.addEventListener("online", check);
+  window.addEventListener("pageshow", check);
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
     if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);

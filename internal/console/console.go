@@ -8,9 +8,11 @@ package console
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"html/template"
 	"io/fs"
@@ -32,6 +34,28 @@ var templateFS embed.FS
 
 //go:embed static
 var staticFS embed.FS
+
+// build names the page's code, the templates and the static files: a page
+// whose build is not the stream's was served before a deploy and loads
+// itself anew.
+var build = func() string {
+	h := sha256.New()
+	for _, fsys := range []fs.FS{templateFS, staticFS} {
+		err := fs.WalkDir(fsys, ".", func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() {
+				return err
+			}
+			b, err := fs.ReadFile(fsys, path)
+			h.Write([]byte(path)) // #nosec G104 -- a hash.Hash never fails a write
+			h.Write(b)            // #nosec G104 -- as above
+			return err
+		})
+		if err != nil {
+			panic(err) // the embedded files are readable
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}()
 
 // Scopes are requested on every authorization: an authorization without an
 // explicit scope yields a token with the user's full power, instance admin
@@ -314,6 +338,9 @@ type Console struct {
 	// budget counts on the inbox's row instead of writing it anew.
 	chatAsks   map[string]time.Time
 	chatAsksMu sync.Mutex
+	// ended closes as the console's server shuts down (EndStreams)
+	ended  chan struct{}
+	ending sync.Once
 }
 
 // writerLists are each project's writers by repository and the factory's
@@ -477,7 +504,7 @@ func New(cfg Config) (*Console, error) {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
-	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate()}
+	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), ended: make(chan struct{})}
 	gets, err := c.getRoutes()
 	if err != nil {
 		return nil, err
@@ -495,6 +522,12 @@ func New(cfg Config) (*Console, error) {
 	}
 	return c, nil
 }
+
+// EndStreams ends every event stream, for the server's shutdown: the
+// router still sends to a stopping pod while no other answers, and its
+// connects are refused while the streams hold the closed listener's
+// shutdown open.
+func (c *Console) EndStreams() { c.ending.Do(func() { close(c.ended) }) }
 
 func (c *Console) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
