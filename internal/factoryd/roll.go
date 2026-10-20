@@ -137,9 +137,6 @@ type RollStore interface {
 	RollRecorded(ctx context.Context, sha, image string) (bool, error)
 	// RecordRoll inserts r once; false when its sha and image are recorded.
 	RecordRoll(ctx context.Context, r Roll) (bool, error)
-	// MarkRollsFailed fails the opened roll requests of the roll task
-	// whose pull request landed the watched roll (RollFailed).
-	MarkRollsFailed(ctx context.Context, repository string, pr int64) error
 }
 
 // RollWatcher records the rolls of the code repository's main: the newest
@@ -162,7 +159,6 @@ type RollWatcher struct {
 
 	path     string // the newest commit the k8s/ path query answered
 	sha      string // the commit measured: path, or the merge that landed it
-	pr       int64  // the pull request that landed sha; 0 when none did
 	parent   string
 	deadline time.Time
 	done     bool
@@ -199,11 +195,11 @@ func (w *RollWatcher) step(ctx context.Context) error {
 		return err
 	}
 	if path != w.path {
-		sha, pr, err := w.landed(ctx, path, &parent)
+		sha, err := w.landed(ctx, path, &parent)
 		if err != nil {
 			return err
 		}
-		w.path, w.sha, w.parent, w.pr = path, sha, parent, pr
+		w.path, w.sha, w.parent = path, sha, parent
 		w.deadline, w.done, w.pending, w.pushed = time.Now().Add(w.Timeout), false, nil, time.Time{}
 	}
 	if w.done {
@@ -235,11 +231,6 @@ func (w *RollWatcher) step(ctx context.Context) error {
 	}
 	if time.Now().After(w.deadline) {
 		log.Printf("roll %s: %s not live within %s; not recorded", w.sha, strings.Join(slices.Sorted(maps.Keys(w.pending)), ", "), w.Timeout)
-		if w.pr > 0 {
-			if err := w.Store.MarkRollsFailed(ctx, w.Owner+"/"+w.Repo, w.pr); err != nil {
-				return err
-			}
-		}
 		w.done = true
 	}
 	return nil
@@ -254,16 +245,16 @@ func (w *RollWatcher) step(ctx context.Context) error {
 // The newest roll task's pull request is read by its number first; any
 // other (a human's or an agent's that touched k8s/) is looked for among
 // the closed pull requests updated last.
-func (w *RollWatcher) landed(ctx context.Context, path string, parent *string) (sha string, pr int64, err error) {
+func (w *RollWatcher) landed(ctx context.Context, path string, parent *string) (sha string, err error) {
 	var merged []MergedPullRequest
 	rolls, err := w.Store.RollTaskPRs(ctx, w.Owner+"/"+w.Repo)
 	if err != nil {
-		return "", 0, err
+		return "", err
 	}
 	if len(rolls) > 0 {
 		p, err := w.Forgejo.PullRequestState(ctx, w.Owner, w.Repo, slices.Max(rolls))
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		if p.Merged {
 			merged = append(merged, MergedPullRequest{Number: p.Number, MergeCommit: p.MergeCommit, HeadSHA: p.HeadSHA})
@@ -272,7 +263,7 @@ func (w *RollWatcher) landed(ctx context.Context, path string, parent *string) (
 	if !slices.ContainsFunc(merged, func(p MergedPullRequest) bool { return p.HeadSHA == path }) {
 		recent, err := w.Forgejo.RecentMergedPullRequests(ctx, w.Owner, w.Repo)
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		merged = append(merged, recent...)
 	}
@@ -282,15 +273,15 @@ func (w *RollWatcher) landed(ctx context.Context, path string, parent *string) (
 		}
 		parents, err := w.Forgejo.CommitParents(ctx, w.Owner, w.Repo, p.MergeCommit)
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		if len(parents) == 0 {
-			return "", 0, fmt.Errorf("merge %s of pull request #%d has no parent", p.MergeCommit, p.Number)
+			return "", fmt.Errorf("merge %s of pull request #%d has no parent", p.MergeCommit, p.Number)
 		}
 		*parent = parents[0]
-		return p.MergeCommit, p.Number, nil
+		return p.MergeCommit, nil
 	}
-	return path, 0, nil
+	return path, nil
 }
 
 // judge finds the targets the commit changed and not yet recorded, by

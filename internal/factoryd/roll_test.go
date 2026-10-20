@@ -193,10 +193,9 @@ func (f *fakeDeployments) set(name, body string) {
 }
 
 type fakeRolls struct {
-	mu     sync.Mutex
-	rows   map[string]Roll // sha/image
-	prs    []int64         // the roll tasks' pull requests
-	failed []int64         // the pull requests whose rolls were marked failed
+	mu   sync.Mutex
+	rows map[string]Roll // sha/image
+	prs  []int64         // the roll tasks' pull requests
 }
 
 func (s *fakeRolls) RollTaskPRs(ctx context.Context, repository string) ([]int64, error) {
@@ -221,16 +220,6 @@ func (s *fakeRolls) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	}
 	s.rows[r.SHA+"/"+r.Image] = r
 	return true, nil
-}
-
-func (s *fakeRolls) MarkRollsFailed(ctx context.Context, repository string, pr int64) error {
-	if repository != "sf/ai-software-factory-code" {
-		return fmt.Errorf("repository %q", repository)
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.failed = append(s.failed, pr)
-	return nil
 }
 
 func at(s string) time.Time {
@@ -496,10 +485,10 @@ func TestRollFindsTheRollsMergeByItsRecordedPullRequest(t *testing.T) {
 	}
 }
 
-// Past its timeout the watcher fails the roll requests the roll task's
-// pull request carried, once, and posts no commit status: the roll's
-// settle owns factory/roll.
-func TestTheWatcherPostsNoStatusAtItsDeadline(t *testing.T) {
+// Past its timeout the watcher only logs, once: it posts no commit status
+// and changes no roll request, which the roll task's own bound and the
+// settle decide.
+func TestTheWatcherOnlyLogsAtItsDeadline(t *testing.T) {
 	rolled := k8sManifests(digestOld, digestNew, digestWorkerNew, digestRunner)
 	hub := &rollHub{head: [2]string{"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c", "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
 		manifests: map[string]map[string]string{
@@ -519,20 +508,17 @@ func TestTheWatcherPostsNoStatusAtItsDeadline(t *testing.T) {
 	w := newTestRollWatcher(t, hub, deps, rolls)
 
 	steps(t, w, 2)
-	if len(hub.statuses) != 0 || len(rolls.failed) != 0 {
-		t.Fatalf("before the deadline: statuses %+v, failed %v", hub.statuses, rolls.failed)
+	logs := captureLog(t)
+	if len(hub.statuses) != 0 || logs.Len() != 0 {
+		t.Fatalf("before the deadline: statuses %+v, log %q", hub.statuses, logs.String())
 	}
 	w.deadline = time.Now().Add(-time.Second)
-	steps(t, w, 1)
-	if len(hub.statuses) != 0 {
-		t.Fatalf("statuses %+v, want none", hub.statuses)
+	steps(t, w, 3)
+	if len(hub.statuses) != 0 || len(rolls.rows) != 0 {
+		t.Fatalf("statuses %+v, rolls %+v, want none", hub.statuses, rolls.rows)
 	}
-	if !reflect.DeepEqual(rolls.failed, []int64{21}) {
-		t.Fatalf("marked failed %v, want pull request 21's rolls", rolls.failed)
-	}
-	steps(t, w, 2)
-	if len(hub.statuses) != 0 || len(rolls.failed) != 1 {
-		t.Fatalf("after done: statuses %+v, failed %v", hub.statuses, rolls.failed)
+	if n := strings.Count(logs.String(), "not live within"); n != 1 {
+		t.Fatalf("the deadline logged %d times, want once: %q", n, logs.String())
 	}
 }
 
@@ -564,10 +550,13 @@ func TestTheWatcherPostsNoStatus(t *testing.T) {
 	}
 	deps.set("factoryd", deploymentJSON("2026-09-29T12:01:00Z", "2026-09-29T12:02:00Z", registryHost+"factory-gateway@"+digestOld, registryHost+"ci-runner@"+digestRunner, registryHost+"opencode-worker@"+digestWorkerNew))
 	steps(t, w, 2)
-	if len(hub.statuses) != 0 || len(rolls.rows) == 0 {
-		t.Fatalf("statuses %+v, rolls %+v: want the roll recorded and no status", hub.statuses, rolls.rows)
+	const merge = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d"
+	pushed := at("2026-09-29T12:00:00Z")
+	want := map[string]Roll{
+		merge + "/gateway": {SHA: merge, Image: "gateway", Deployment: "factory-gateway", PushedAt: pushed, AppliedAt: at("2026-09-29T12:01:01Z"), LiveAt: at("2026-09-29T12:01:30Z")},
+		merge + "/worker":  {SHA: merge, Image: "worker", Deployment: "factoryd", PushedAt: pushed, AppliedAt: at("2026-09-29T12:01:00Z"), LiveAt: at("2026-09-29T12:02:00Z")},
 	}
-	if len(rolls.failed) != 0 {
-		t.Fatalf("a concluded success also failed rolls: %v", rolls.failed)
+	if len(hub.statuses) != 0 || !reflect.DeepEqual(rolls.rows, want) {
+		t.Fatalf("statuses %+v, rolls %+v, want no status and %+v", hub.statuses, rolls.rows, want)
 	}
 }

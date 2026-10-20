@@ -1879,6 +1879,36 @@ func TestRollerReportsItsVerdictAsACommitStatus(t *testing.T) {
 	}
 }
 
+// A roll task that ends failed (its rollout bound passed or its pull
+// request closed) settles its request failed, and the settle posts the
+// failure on the commit: the one writer of that outcome.
+func TestARollTaskThatFailsEndsItsCommitsStatusFailed(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := store.rolls[0].TaskID
+	store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{commitC1 + " pending factory/roll", commitC1 + " failure factory/roll"}
+	if !slices.Equal(f.reported, want) || store.rolls[0].State != RollFailed {
+		t.Fatalf("reported %v, request %s, want %v and failed", f.reported, store.rolls[0].State, want)
+	}
+}
+
 // The roll ladder's end: when a roll request settles failed and three
 // have failed since the last merged roll, the roller asks a person — the
 // five-part question, Retry the roll / Park / Close as its buttons —
