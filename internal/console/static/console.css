@@ -1309,7 +1309,8 @@ tr.closed td a { color: inherit; }
 .mname { grid-column: 1; color: var(--text-muted); font-size: 13px; padding-right: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mname[title] { cursor: help; text-decoration: underline dotted; text-underline-offset: 3px; text-decoration-color: var(--text-faint); }
 .mval { grid-column: 2; color: var(--text); font: 600 15px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.mval.long { grid-column: 2 / 6; white-space: normal; }
+.mval.long { grid-column: 2 / 6; white-space: normal; display: inline-grid; grid-template-columns: max-content max-content; column-gap: 14px; row-gap: 2px; justify-self: start; }
+.mval.long .mshare { text-align: right; }
 .mmove { grid-column: 3; padding-left: 12px; color: var(--text-muted); font: 400 12.5px/1.3 var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mspark { grid-column: 5; display: block; width: 100%; height: 30px; }
 .mspark path { fill: none; stroke: var(--text-faint); stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; }

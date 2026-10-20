@@ -47,7 +47,7 @@ var funcs = template.FuncMap{
 	// spark, and the window-move subtraction
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
 	"mEur": mEur, "mEurMove": mEurMove, "mCount": mCount, "mCountMove": mCountMove,
-	"mK": mK, "mDec": mDec, "mDecMove": mDecMove, "mMix": mMix, "mDiff": mDiff,
+	"mK": mK, "mDec": mDec, "mDecMove": mDecMove, "mShare": mShare, "mDiff": mDiff,
 	"mChat": mChat, "msub": msub, "sparkSVG": sparkSVG,
 	// accents are the colour labels a writer may put on a card
 	"accents": func() []string { return factoryd.Accents },
