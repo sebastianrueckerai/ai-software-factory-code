@@ -52,18 +52,6 @@ func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, er
 	return head, nil
 }
 
-// ChainHeadRow mirrors PGStore's read: the repository's head row, its
-// sha and run.
-func (s *fakeStore) ChainHeadRow(ctx context.Context, repository string) (string, int64, bool, error) {
-	var row fakeChainRun
-	for _, c := range s.chain {
-		if c.repo == repository && c.pr == 0 && c.run >= row.run {
-			row = c
-		}
-	}
-	return row.sha, row.run, row.sha != "", nil
-}
-
 func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
 	for i, c := range s.chain {
 		if c.repo != repository || c.pr != pr {
@@ -562,10 +550,9 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 
 // A carry row carries its commit's verdict, not its run's own status:
 // a run concluding success while a required context is still pending
-// writes its carry row pending, so the coverage read holds the card and
-// the workflow's entry read agrees — re-read after a chain-wait
-// restart, it still holds — and the context concluding green is what
-// covers the card. Requires a disposable Postgres
+// writes its carry row pending, so the coverage read holds the card —
+// re-read after a restart, it still holds — and the context concluding
+// green is what covers the card. Requires a disposable Postgres
 // (FACTORYD_TEST_DATABASE_URL).
 func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -602,7 +589,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	projects := newFakeStore()
 	projects.projects = []Project{seedProject(codeRepo)}
 	fj := f.srv(t)
-	poll := func() { // a fresh poller: the restart a chain wait re-reads under
+	poll := func() { // a fresh poller: factoryd restarted
 		t.Helper()
 		p := &ChainPoller{Forgejo: fj, Store: pg, Projects: projects, Policy: chainPolicy}
 		if err := p.poll(ctx); err != nil {
@@ -616,23 +603,13 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 		}
 		return status
 	}
-	facts := func() ChainFacts {
-		t.Helper()
-		r := &Runner{store: pg, cfg: RunnerConfig{Policy: chainPolicy}}
-		out, err := r.ChainFacts(ctx, "t-wait")
-		if err != nil {
-			t.Fatalf("ChainFacts: %v", err)
-		}
-		return out
-	}
-	covered := func() bool {
+	covered := func() int64 { // the run that covers t-wait, 0 for none
 		t.Helper()
 		m, err := pg.ChainCovered(ctx, codeRepo)
 		if err != nil {
 			t.Fatalf("ChainCovered: %v", err)
 		}
-		_, ok := m["t-wait"]
-		return ok
+		return m["t-wait"]
 	}
 	// the run concluded success, the context has not: the carry row holds
 	// the commit's verdict, the card stays uncovered
@@ -640,19 +617,16 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if got := row(); got != "pending" {
 		t.Fatalf("carry row = %s, want pending: the pending context holds the commit", got)
 	}
-	if covered() {
-		t.Fatal("t-wait covered by a chain whose required context is pending")
+	if run := covered(); run != 0 {
+		t.Fatalf("t-wait covered by run %d, a chain whose required context is pending", run)
 	}
-	if got := facts(); got.Live {
-		t.Fatalf("facts %+v, want the card not live", got)
-	}
-	// the restart's entry read re-checks the recorded facts: they hold
+	// the restart reads the recorded facts again: they hold
 	poll()
 	if got := row(); got != "pending" {
 		t.Fatalf("carry row = %s after the restart, want pending", got)
 	}
-	if covered() || facts().Live {
-		t.Fatalf("after the restart: covered %v, facts %+v, want the card still held", covered(), facts())
+	if run := covered(); run != 0 {
+		t.Fatalf("after the restart: covered by run %d, want the card still held", run)
 	}
 	// the context concludes success: the same row concludes, the card is
 	// covered and live at the run that carried it
@@ -661,8 +635,8 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if got := row(); got != "success" {
 		t.Fatalf("carry row = %s after the context concluded, want success", got)
 	}
-	if !covered() || !facts().Live || facts().RunID != 61 {
-		t.Fatalf("after the context concluded: covered %v, facts %+v, want live at run 61", covered(), facts())
+	if run := covered(); run != 61 {
+		t.Fatalf("after the context concluded: covered by run %d, want live at run 61", run)
 	}
 }
 
@@ -1216,39 +1190,6 @@ func TestCoveredCardWithoutAWorkflowFinishesInTheStore(t *testing.T) {
 	}
 	if len(wf.signals) != 2 {
 		t.Fatalf("signals = %v, want both cards told", wf.signals)
-	}
-}
-
-// The workflow's own stall timer raises the same chain_stalled alert
-// the poller's watchdog writes (the final review): a poller down or
-// crash-looping cannot be the one to record, so the timer's verdict is
-// durable — one open row per repository however often it fires, the
-// repository in the fingerprint, the head sha in the detail.
-func TestChainStalledRaisesTheAlert(t *testing.T) {
-	store := newFakeStore()
-	store.tasks["t-wait"] = Task{ID: "t-wait", Status: "merged", Repository: demoRepo, PRNumber: 3}
-	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: demoCommit, run: 21, status: "pending"}}
-	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version {
-		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
-			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Stall: time.Minute}},
-		}}}
-	}}}
-	for range 2 { // two firings of the timer
-		if err := r.ChainStalled(context.Background(), "t-wait"); err != nil {
-			t.Fatalf("ChainStalled: %v", err)
-		}
-	}
-	var raised []Alert
-	for _, a := range store.alerts {
-		if a.Kind == AlertChainStalled {
-			raised = append(raised, a)
-		}
-	}
-	if len(raised) != 1 {
-		t.Fatalf("chain_stalled alerts %+v, want one open row however often the timer fires", raised)
-	}
-	if a := raised[0]; a.Fingerprint != demoRepo || a.Source != demoRepo || a.Detail["sha"] != demoCommit {
-		t.Fatalf("alert %+v, want the repository's fingerprint and the head sha named", a)
 	}
 }
 

@@ -1192,6 +1192,109 @@ func TestFinishDoneFromInReview(t *testing.T) {
 	}
 }
 
+// chainRunner is a runner over card task in project repo, whose chain
+// mode is mode: the card's two tokens live beside another card's, its
+// session on.
+func chainRunner(t *testing.T, task Task, mode string) (*Runner, *forgejoHub, *fakeStore, *fakeObjectStore) {
+	t.Helper()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, task, newFakeKube(), objects)
+	v := r.cfg.Policy()
+	v.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", Chain: policy.ChainConfig{Mode: mode}}
+	r.cfg.Policy = func() policy.Version { return v }
+	hub.tokens = []TokenRef{{ID: 1, Name: TokenName(task.ID)}, {ID: 2, Name: BaseTokenName(task.ID)}, {ID: 3, Name: TokenName("t-other")}}
+	store.liveSessions = map[string]LiveSession{task.ID: {TaskID: task.ID, SessionID: "s1"}}
+	return r, hub, store, objects
+}
+
+// taskEnds are the states and reasons of task id's task_ended events, in order.
+func taskEnds(t *testing.T, objects *fakeObjectStore, id string) []string {
+	t.Helper()
+	b, _ := objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
+	var out []string
+	for line := range strings.Lines(string(b)) {
+		var e map[string]any
+		if json.Unmarshal([]byte(line), &e) == nil && e["event"] == EventTaskEnded {
+			out = append(out, e["state"].(string)+": "+e["reason"].(string))
+		}
+	}
+	return out
+}
+
+var mergedCard = Task{ID: "t1", Status: "running", Kind: "agent", Objective: "Add a make check target", Repository: "sf/repo",
+	PRNumber: 7, Source: "api"}
+
+// A merged pull request in a project whose chain runs ends its card in
+// merged: every cleanup of a done card runs at the merge, the final step
+// names merged, and no task_ended fires before the chain covers it.
+func TestFinishEndsAMergedPullRequestInMerged(t *testing.T) {
+	r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if !slices.Equal(hub.revoked, []int64{1, 2}) {
+		t.Fatalf("revoked = %v, want the card's two tokens", hub.revoked)
+	}
+	if _, on := store.liveSessions["t1"]; on {
+		t.Fatal("the live session survived the merge")
+	}
+	if got := taskEnds(t, objects, "t1"); len(got) != 0 {
+		t.Fatalf("task_ended = %q, want none at the merge", got)
+	}
+	if got := timelineStep(t, objects, "t1", "final"); got["state"] != "merged" || got["reason"] != "pull request merged" {
+		t.Fatalf("final step = %v, want merged with the merge's reason", got)
+	}
+}
+
+// A roll measures its own live (its rollout) before it finishes: it ends
+// done at once.
+func TestFinishEndsARollDone(t *testing.T) {
+	r, _, store, objects := chainRunner(t, withSource(mergedCard, SourceRoll), policy.ChainModeRun)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged; rollout live: factoryd"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged; rollout live: factoryd"}) {
+		t.Fatalf("task_ended = %q", got)
+	}
+}
+
+// A project whose chain is none is live at the merge: done at once.
+func TestFinishEndsANoneModeProjectDone(t *testing.T) {
+	r, _, store, objects := chainRunner(t, mergedCard, chainModeNone)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged"}) {
+		t.Fatalf("task_ended = %q", got)
+	}
+}
+
+// The chain covering a merged card ends it done, task_ended naming the
+// run; a second end of the done card changes nothing.
+func TestFinishEndsAMergedCardDone(t *testing.T) {
+	r, _, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
+	for range 2 {
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+		t.Fatalf("task_ended = %q, want one naming the run", got)
+	}
+}
+
 // A workflow restarted by the heal pass for a task already closing (its
 // first workflow died mid-completion) cannot run it again: the refusal is
 // terminal, so the new workflow goes straight to Finish.

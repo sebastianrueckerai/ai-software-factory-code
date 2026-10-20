@@ -119,7 +119,7 @@ func TestWorkflowAutoMergesWithoutACard(t *testing.T) {
 	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover}) || !slices.Equal(g.autoNotes, []string{"9 c1"}) || len(g.approvals) != 0 {
 		t.Fatalf("merges %q, notes %q, approvals %d: want one auto merge with its note, no card", g.merges, g.autoNotes, len(g.approvals))
 	}
-	if g.finals[0][1] != "live: covered by run 41" {
+	if g.finals[0][1] != "pull request merged by factory-merge on the merge rule auto" {
 		t.Fatalf("reason = %q", g.finals[0][1])
 	}
 }

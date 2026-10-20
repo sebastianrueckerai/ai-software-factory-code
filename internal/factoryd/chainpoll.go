@@ -31,22 +31,6 @@ func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, erro
 	return head, err
 }
 
-// ChainHeadRow is the repository's head row: the sha and run its chain
-// last recorded — what a stall the poller cannot record names.
-func (s *PGStore) ChainHeadRow(ctx context.Context, repository string) (string, int64, bool, error) {
-	var sha string
-	var run int64
-	err := s.db.QueryRowContext(ctx, `SELECT sha, run_id FROM chain_runs
-		WHERE repository = $1 AND pr_number = 0 ORDER BY run_id DESC LIMIT 1`, repository).Scan(&sha, &run)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", 0, false, nil
-	}
-	if err != nil {
-		return "", 0, false, err
-	}
-	return sha, run, true, nil
-}
-
 // ChainCovered lists repository's merged cards a green chain covers, each
 // with the newest green run that covers it: a card whose carry row is
 // recorded and that the newest green run on main sits at or after — so a

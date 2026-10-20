@@ -269,7 +269,7 @@ func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	if in.PR.Number != 9 || in.Gates.Policy.Class != "normal" || in.Review.Verdict != "approve" {
 		t.Fatalf("approval input = %+v", in)
 	}
-	if g.finals[0][1] != "live: covered by run 41" {
+	if !strings.Contains(g.finals[0][1], "factory-merge after sebastian's approval") {
 		t.Fatalf("reason = %q", g.finals[0][1])
 	}
 }
@@ -578,7 +578,7 @@ func TestWorkflowHumanMergeAfterARefusalIsDone(t *testing.T) {
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	g.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	if final := g.run(t); final != "done" || g.finals[0][1] != "live: covered by run 41" || len(g.merges) != 1 {
+	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged" || len(g.merges) != 1 {
 		t.Fatalf("final = %q (%v) after merges %v", final, g.finals, g.merges)
 	}
 }
@@ -695,7 +695,7 @@ func TestWorkflowMergeFoundDoneByAHuman(t *testing.T) {
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "alice", PR: 9})
-	if final := g.run(t); final != "done" || g.finals[0][1] != "live: covered by run 41" {
+	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged by sebastian" {
 		t.Fatalf("final = %q (%v)", final, g.finals)
 	}
 }

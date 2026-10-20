@@ -131,6 +131,11 @@ func (p *Poker) Pass(ctx context.Context) error {
 					return err
 				}
 			}
+			if _, c, _ := tree.ProjectOf(e.Repository); e.Kind == EventPullRequestMerged && !Final(t.Status) && endsMerged(t, c.Chain) {
+				// Finish lands the card in merged after its cleanup: a pass
+				// reading the merge first finds it on its way there
+				t.Status = "merged"
+			}
 			if e.Kind == EventPullRequestMerged && t.Status == "merged" {
 				// the inform's words carry the chain's facts at poke time,
 				// not at merge: the poller may have concluded the chain

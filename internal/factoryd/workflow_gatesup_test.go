@@ -301,7 +301,7 @@ func TestWorkflowGateEscalationAnswerRunsTheGateAgain(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if len(g.sessions) != 1 || len(g.escalated) != 1 || !slices.Equal(g.states, []string{"running", "in-review", "in-review", "merged"}) {
+	if len(g.sessions) != 1 || len(g.escalated) != 1 || !slices.Equal(g.states, []string{"running", "in-review", "in-review"}) {
 		t.Fatalf("sessions %d, escalations %q, states %v; want one session, one escalation, in-review again after the answer", len(g.sessions), g.escalated, g.states)
 	}
 	if last := g.usage[len(g.usage)-1]; last.ExtraAttempts != 0 {
@@ -325,7 +325,7 @@ func TestWorkflowMergeEscalationKeepsTheApproval(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if n := len(g.approvals); n != 1 || len(g.sessions) != 1 || g.finals[0][1] != "live: covered by run 41" {
+	if n := len(g.approvals); n != 1 || len(g.sessions) != 1 || !strings.Contains(g.finals[0][1], "after sebastian's approval") {
 		t.Fatalf("approval requests %d, sessions %d, reason %q; want the one approval merged", n, len(g.sessions), g.finals[0][1])
 	}
 	if want := []string{"9 c1 sebastian", "9 c1 sebastian"}; !slices.Equal(g.merges, want) {

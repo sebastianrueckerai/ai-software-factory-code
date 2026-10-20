@@ -156,7 +156,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if handover.at.Before(h.escalatedAt[0]) {
 			t.Fatalf("the cap card at %v must precede the granted session at %v", h.escalatedAt[0], handover.at)
 		}
-		if h.finals[0] != [2]string{"done", "live: covered by run 41"} {
+		if h.finals[0] != [2]string{"done", "pull request merged"} {
 			t.Fatalf("finals = %v, want the merge", h.finals)
 		}
 	})

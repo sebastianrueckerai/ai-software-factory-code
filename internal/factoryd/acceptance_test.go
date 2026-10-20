@@ -275,8 +275,8 @@ func TestWorkflowClosesOnAnAcceptanceGreen(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, want done", final)
 		}
-		if !slices.Equal(h.states, []string{"running", "in-review", "merged"}) {
-			t.Fatalf("states = %v, want the pushed session's verification into merged", h.states)
+		if !slices.Equal(h.states, []string{"running", "in-review"}) {
+			t.Fatalf("states = %v, want the pushed session's verification", h.states)
 		}
 	})
 }

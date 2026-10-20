@@ -139,8 +139,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityFileSplit:                   r.FileSplit,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
-		ActivityChainFacts:                  r.ChainFacts,
-		ActivityChainStalled:                r.ChainStalled,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -279,9 +277,8 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 	return r.timeline.Append(ctx, taskID, "intake", map[string]any{"source": t.Source, "issue": t.IssueNumber, "started": rfc3339(t.CreatedAt)})
 }
 
-// SetState moves the task to running (a session starts), in-review (its
-// pull request is open) or merged (its pull request merged; the run
-// waits for the chain) and mirrors the state onto the issue.
+// SetState moves the task to running (a session starts) or in-review (its
+// pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
 		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"},
@@ -289,9 +286,6 @@ func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 		// again; waiting-poster: a cap right after the author's answer
 		// verifies the branch's head
 		"in-review": {"running", "in-review", "waiting-human", "waiting-poster"},
-		// merged holds itself: a run restarted mid-wait moves there again
-		// without a verdict
-		"merged": {"running", "in-review", "waiting-human", "waiting-poster", "merged"},
 	}[state]
 	if from == nil {
 		return terminalError("unknown task state %q", state)
@@ -2114,84 +2108,6 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	return pr.Merged, err
 }
 
-// ChainFacts is the chain's answer to a merged card's wait: its project's
-// resolved chain — mode none: the merge itself is live — the stall bound
-// the wait arms itself on, and whether a green run already covers the
-// card's change, naming the run that covers it.
-type ChainFacts struct {
-	Mode  string
-	Stall time.Duration
-	Live  bool
-	RunID int64
-}
-
-// chainCoveredReader is what ChainFacts reads of the store: the merged
-// cards a repository's green chain covers. PGStore has it; a store
-// without it covers nothing.
-type chainCoveredReader interface {
-	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
-}
-
-// ChainFacts reads a task's chain facts: the chain block of its project's
-// file, and the coverage the recorded runs give its merged change.
-func (r *Runner) ChainFacts(ctx context.Context, taskID string) (ChainFacts, error) {
-	t, ok, err := r.store.Task(ctx, taskID)
-	if err != nil || !ok {
-		return ChainFacts{}, err
-	}
-	_, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository)
-	chain := cfg.Chain.Resolved()
-	f := ChainFacts{Mode: chain.Mode, Stall: chain.Stall}
-	if chain.Mode != policy.ChainModeRun || t.PRNumber == 0 {
-		f.Live = true
-		return f, nil
-	}
-	reader, ok := r.store.(chainCoveredReader)
-	if !ok {
-		return f, nil
-	}
-	covered, err := reader.ChainCovered(ctx, t.Repository)
-	if err != nil {
-		return ChainFacts{}, err
-	}
-	f.RunID, f.Live = covered[t.ID]
-	return f, nil
-}
-
-// chainHeadReader is what ChainStalled reads of the store: the
-// repository's head row. PGStore has it; a store without it raises the
-// alert without the sha.
-type chainHeadReader interface {
-	ChainHeadRow(ctx context.Context, repository string) (sha string, run int64, ok bool, err error)
-}
-
-// ChainStalled is a merged card's wait past the project's stall bound
-// with no covering run: a poller down or crash-looping cannot silence a
-// card, the workflow decides the stall itself. The stall it decides
-// raises the chain_stalled alert — the same row the poller's watchdog
-// writes, deduped against it — so the timer's verdict is durable even
-// when the poller is the thing that is down. The repair it starts is
-// the chain poller's work (Task 5).
-func (r *Runner) ChainStalled(ctx context.Context, taskID string) error {
-	t, ok, err := r.store.Task(ctx, taskID)
-	if err != nil || !ok {
-		return err
-	}
-	_, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository)
-	detail := map[string]any{"task": taskID, "bound": cfg.Chain.Resolved().Stall.String()}
-	if reader, can := r.store.(chainHeadReader); can {
-		sha, _, found, err := reader.ChainHeadRow(ctx, t.Repository)
-		if err != nil {
-			return err
-		}
-		if found {
-			detail["sha"] = sha
-		}
-	}
-	_, err = r.store.InsertAlert(ctx, Alert{Kind: AlertChainStalled, Source: t.Repository, Fingerprint: t.Repository, Detail: detail})
-	return err
-}
-
 // alertStoreReader is what an alert card's pre-check reads of the alert
 // store: the newest alerts row of a fingerprint. PGStore has it; a test
 // store without it takes the check as passing.
@@ -2238,7 +2154,9 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
 // issue label) and, for a failure, the reason as an issue comment.
 // Finishing an already-finished task is a no-op, so a retried Finish never
-// double-completes.
+// double-completes. A done end of a card that waits for its chain
+// (endsMerged) runs every step of done and lands in merged, not final and
+// without task_ended: its Finish with done at live ends it.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -2246,6 +2164,10 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	}
 	if !ok || Final(t.Status) {
 		return nil // nothing to finish: gone, or already final
+	}
+	state := final
+	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && t.Status != "merged" && endsMerged(t, cfg.Chain) {
+		state = "merged"
 	}
 	if t.Source == SourceRoll {
 		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
@@ -2281,10 +2203,10 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 			}
 		}
 	}
-	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+final+": "+reason); err != nil {
+	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+state+": "+reason); err != nil {
 		return err
 	}
-	if err := r.leaveQueue(ctx, taskID, "the task ended "+final); err != nil {
+	if err := r.leaveQueue(ctx, taskID, "the task ended "+state); err != nil {
 		return err
 	}
 	if v := alertVerdict(final, reason); v != "" {
@@ -2306,7 +2228,7 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 			return err
 		}
 	}
-	if err := r.completion.Complete(ctx, taskID, final); err != nil {
+	if err := r.completion.Complete(ctx, taskID, state); err != nil {
 		return err
 	}
 	if repoErr == nil && final == "failed" && t.IssueNumber != 0 {
@@ -2314,11 +2236,21 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 			log.Printf("task %s: comment failure reason: %v", taskID, err)
 		}
 	}
-	r.record(ctx, taskID, "final", map[string]any{"state": final, "reason": reason})
+	r.record(ctx, taskID, "final", map[string]any{"state": state, "reason": reason})
+	if state == "merged" {
+		return nil
+	}
 	// after the final state, never ahead of an end that may not come; a
 	// crash between the two loses only this record
 	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final, why)
 	return nil
+}
+
+// endsMerged tells a card whose done end waits for its chain: its pull
+// request merged in a project whose chain runs. A roll is live when its
+// own rollout says so, before it finishes.
+func endsMerged(t Task, chain policy.ChainConfig) bool {
+	return t.PRNumber > 0 && t.Source != SourceRoll && chain.Resolved().Mode == policy.ChainModeRun
 }
 
 // cleanup passes a Finish cleanup step's Forgejo refusal, logged, and

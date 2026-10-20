@@ -29,6 +29,7 @@ func wantSums(t *testing.T, got, want map[string]float64) {
 // merge rule (the repository and human when no project row names it), the
 // alias of its last session and its attempts, and records its spend in
 // EUR by alias and outcome: merged for a done task with a pull request.
+// The merge itself is no outcome: the card counts when its chain ends it.
 func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
 	merged := prTask
@@ -38,8 +39,8 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	m, reader := testMetrics(t)
 	r.completion.Metrics = m
 	store.projects = []Project{{Name: "demo", Repository: "sf/repo", MergeRule: policy.MergeAuto}}
-	for range 2 {
-		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+	for _, reason := range []string{"pull request merged", "live: covered by run 12", "live: covered by run 12"} {
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -277,8 +278,10 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
-		t.Fatal(err)
+	for _, reason := range []string{"pull request merged", "live: covered by run 12"} {
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
+			t.Fatal(err)
+		}
 	}
 	roll := prTask
 	roll.ID, roll.Status, roll.Source = "t-roll", "in-review", SourceRoll

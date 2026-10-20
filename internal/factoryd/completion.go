@@ -46,10 +46,11 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	return nil
 }
 
-// finished counts a completed task's outcome and swaps its linked Forgejo
-// issue onto exactly one state/* label, via the shared mirrorTaskState
-// helper. Failures are logged, never returned: Complete's own result must
-// never depend on Forgejo being reachable.
+// finished counts a completed task's outcome — merged is none: the card
+// counts at its done — and swaps its linked Forgejo issue onto exactly
+// one state/* label, via the shared mirrorTaskState helper. Failures are
+// logged, never returned: Complete's own result must never depend on
+// Forgejo being reachable.
 func (c *Completion) finished(ctx context.Context, taskID, state string) {
 	t, ok, err := c.Store.Task(ctx, taskID)
 	if err != nil {
@@ -59,7 +60,9 @@ func (c *Completion) finished(ctx context.Context, taskID, state string) {
 	if !ok {
 		return
 	}
-	countOutcome(ctx, c.Metrics, c.Store, t, state)
+	if Final(state) {
+		countOutcome(ctx, c.Metrics, c.Store, t, state)
+	}
 	mirrorTaskState(ctx, c.Forgejo, t, state)
 }
 

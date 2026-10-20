@@ -351,6 +351,62 @@ func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 // busyLine is the chat's line as the poker sees it: a turn runs in the
 // inbox of each login busy marks, and landed holds the queued rows handed
 // to land there.
+// Finish lands a merged card in merged after its cleanup, so a pass can
+// read the merge while the card is on its way there: one in review or
+// closing in a project whose chain runs informs as a merged one does; a
+// roll and a card of a project without a chain end done at the merge and
+// inform nobody.
+func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_pokes"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor, events, tasks, chain_runs CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	tasks := []Task{
+		{ID: "t-rev", Kind: "agent", Repository: "sf/code", IssueNumber: 601, PRNumber: 9, Status: "in-review", Objective: "Feed page"},
+		{ID: "t-cls", Kind: "agent", Repository: "sf/code", IssueNumber: 602, PRNumber: 10, Status: "closing", Objective: "Feed page"},
+		{ID: "t-roll", Kind: "agent", Repository: "sf/code", IssueNumber: 603, PRNumber: 11, Status: "closing", Source: SourceRoll, Objective: "roll"},
+		{ID: "t-none", Kind: "agent", Repository: "sf/demo", IssueNumber: 604, PRNumber: 3, Status: "closing", Objective: "Feed page"},
+	}
+	for _, task := range tasks {
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tree := policy.Tree{Projects: map[string]policy.ProjectConfig{
+		"code": {Repository: "sf/code", Notify: []string{"bob"}},
+		"demo": {Repository: "sf/demo", Notify: []string{"bob"}, Chain: policy.ChainConfig{Mode: chainModeNone}},
+	}}
+	p := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, task := range tasks {
+		if _, err := s.Record(ctx, Event{Repository: task.Repository, TaskID: task.ID, Kind: EventPullRequestMerged, Actor: MergeUser, Via: ViaFactoryd,
+			Detail: map[string]any{"pr": float64(task.PRNumber), "by": MergeUser}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, repository := range []string{"sf/code", "sf/demo"} {
+		inbox, _ := s.EnsureInbox(ctx, repository, "bob")
+		rows, _ := s.ChatMessages(ctx, repository, "bob", inbox, 10)
+		for _, r := range rows {
+			got = append(got, r.Content)
+		}
+	}
+	if want := []string{"#601 merged; the chain is running.", "#602 merged; the chain is running."}; !slices.Equal(got, want) {
+		t.Fatalf("bob's inboxes = %q, want %q", got, want)
+	}
+}
+
 type busyLine struct {
 	busy   map[string]bool
 	landed map[string][]int64
