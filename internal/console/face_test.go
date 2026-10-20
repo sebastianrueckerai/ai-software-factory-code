@@ -1219,16 +1219,16 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 }
 
 // A human card shows the question a chat escalation files it from
-// (values are the labels): the ask and one button per choice on its face,
+// (values are the labels in the "say:" namespace): the ask and one button per choice on its face,
 // the five parts in the drawer, and the card's own Close beside them.
 func TestAHumanCardShowsItsQuestion(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51,
-		factoryd.QuestionChoice{Value: "Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "SQLite", Label: "SQLite"})}
+		factoryd.QuestionChoice{Value: "say:Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "say:SQLite", Label: "SQLite"})}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	esc := escalationOf(t, body, "t-hq")
-	for _, want := range []string{`<p class="ask">Which store keeps the snapshots?</p>`, `name="value" value="Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
+	for _, want := range []string{`<p class="ask">Which store keeps the snapshots?</p>`, `name="value" value="say:Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the human card lacks %q:\n%s", want, esc)
 		}

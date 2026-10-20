@@ -364,14 +364,16 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 // reads like a stall or roll value closes its card on the label, and
 // calls no stall action.
 func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
-	r, ev := newRigWithEvents(t)
-	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "dismiss", Label: "dismiss"}, factoryd.QuestionChoice{Value: "retry", Label: "retry"})}
-	ck, s := r.loggedIn(t)
-	before := ev.count()
-	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {"dismiss"}}), ck)
-	if rec.Code != http.StatusSeeOther || len(r.dismissed) != 0 || r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"] != "dismiss" ||
-		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
-		t.Errorf("dismiss = %d, dismissed %v, comment %q, patched %v; want a close on the label", rec.Code, r.dismissed, r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"], r.fg.patched)
+	for _, word := range []string{"dismiss", "go"} {
+		r, ev := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "say:" + word, Label: word}, factoryd.QuestionChoice{Value: "say:retry", Label: "retry"})}
+		ck, s := r.loggedIn(t)
+		before := ev.count()
+		rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {"say:" + word}}), ck)
+		if rec.Code != http.StatusSeeOther || len(r.dismissed) != 0 || r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"] != word ||
+			!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+			t.Errorf("%s = %d, dismissed %v, comment %q, patched %v; want a close on the label", word, rec.Code, r.dismissed, r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"], r.fg.patched)
+		}
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"})
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"})
 }

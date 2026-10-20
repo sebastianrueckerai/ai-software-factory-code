@@ -27,7 +27,7 @@ func TestChatAnswerRow(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 14, Objective: "needs you: which store?"},
-		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}}}})
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}})
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
@@ -104,31 +104,39 @@ func TestChatEscalate(t *testing.T) {
 		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", "", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", []string{" Postgres ", "SQLite"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's members with its choices.", error(nil)})
 	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
-		Ask:     "Which store?",
-		Why:     "Postgres runs out of connections at the measured peak.",
-		Info:    "The counts and the plan section both say so.",
-		Choices: []factoryd.QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}},
+		Ask:            "Which store?",
+		Why:            "Postgres runs out of connections at the measured peak.",
+		Info:           "The counts and the plan section both say so.",
+		Recommendation: "Postgres, plan section 3",
+		Source:         "the agent's",
+		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
 	}}})
+	two := []string{"a", "b"}
 	for _, in := range []struct {
-		ask, why, info, recommendation string
-		choices                        []string
+		name, ask, why, info, recommendation string
+		choices                              []string
+		want                                 string
 	}{
-		{"", "why", "info", "", nil},
-		{"Which?", "", "info", "", nil},
-		{"Which?", "why", "", "", nil},
+		{"no ask", "", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 0"},
+		{"two lines", "One.\nTwo.", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 9"},
+		{"201 bytes", strings.Repeat("x", 201), "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 201"},
+		{"no why", "Which?", "", "info", "rec", two, "why: why the card cannot go on without a person, 1 to 2000 characters"},
+		{"no info", "Which?", "why", "", "rec", two, "info: what a person should know to answer well, 1 to 2000 characters"},
+		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
+		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"six choices", "Which?", "why", "info", "rec", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"twice", "Which?", "why", "info", "rec", []string{"a", " a"}, "choices: each answer once"},
 	} {
-		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || !strings.HasPrefix(err.Error(), "why:") && !strings.HasPrefix(err.Error(), "ask:") && !strings.HasPrefix(err.Error(), "info:") {
-			t.Errorf("escalate %+q = %v", in, err)
+		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || err.Error() != in.want {
+			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)
 		}
 	}
-	for _, choices := range [][]string{{"one"}, {"a", "b", "c", "d", "e", "f"}, {"a", ""}} {
-		if _, err := trn.escalate("Which?", "why", "info", "", choices); err == nil || err.Error() != "choices: 2 to 5 answers of 1 to 60 characters, or none" {
-			t.Errorf("choices %q = %v", choices, err)
-		}
-	}
+	equal(t, "refusals file nothing", len(filed), 1)
 }
 
 // An answer that approves a merge or accepts a plan needs an approver, as
