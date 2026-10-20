@@ -496,7 +496,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:a7b6e1f8099d45341dd00ad9a0c415e53d27dfcf97eed4e10c74cff04df44bf7
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:7d3d6ff4a86bfc11f68baddf4004de0bb56253f4adceeb95e254ba85c8ed7f28
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -591,7 +591,7 @@ spec:
         - name: SIGNOZ_WEBHOOK_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:e2ba48ba5d59aabd4b45fee3a6f0d6352907b1f2ea51e0b87862b9fcfd768009
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:a7856a477e68939cee8a593e40eb04b674138b9ca7bb11d40ebdd0e859587e7e
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -603,7 +603,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:dfbe1896d9c528e2e742560cf230ec3f3ba5fc181d09a7dcd285d93a9dd25dc3
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:481f24cfd5b49d01f6eb3a7411944b770224a3f01a34f8ba76fad3b120a21372
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
