@@ -1256,7 +1256,8 @@ func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, car
 }
 
 // rerun re-runs proj's runs through Forgejo's rerun API: ErrNoRerun when
-// Forgejo has none, the other failures joined.
+// Forgejo re-runs none (no rerun API, or an actions token without the
+// right), the other failures joined.
 func (p *ChainPoller) rerun(ctx context.Context, proj Project, runs []ActionRun) error {
 	repo := proj.Repo()
 	var errs []error
@@ -1277,8 +1278,9 @@ var ErrNothingToRerun = errors.New("no run of the head is pending: a skipped run
 // RerunStall is the stall card's "re-run again" on the stall of
 // repository's head at sha: its stuck runs re-run now, the head row's
 // re-run stamped anew. ErrStallGone when the head moved on from sha or
-// concluded, ErrNothingToRerun when no run of it is stuck, ErrNoRerun on
-// a Forgejo without the rerun API.
+// concluded, ErrNothingToRerun when no run of it is stuck, ErrNoRerun
+// when Forgejo re-runs none: no rerun API, or the project's actions token
+// without the right.
 func (p *ChainPoller) RerunStall(ctx context.Context, repository, sha string) error {
 	proj, ok, err := p.projectOf(ctx, repository)
 	if err != nil {

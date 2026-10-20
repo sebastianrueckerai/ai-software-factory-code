@@ -1053,7 +1053,9 @@ func (c *Console) doChoiceAnswer(ctx context.Context, a actor, t factoryd.Task, 
 		case errors.As(err, &gone):
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 		case errors.Is(err, factoryd.ErrNoRerun):
-			return "", refuse(http.StatusConflict, "This Forgejo offers no re-run of an action run (the rerun API came with Forgejo 17): check again or dismiss.")
+			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+			return "", refuse(http.StatusConflict, "Forgejo re-runs no action run of "+t.Repository+
+				": it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss.")
 		case errors.Is(err, factoryd.ErrNothingToRerun):
 			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
 		case err != nil:

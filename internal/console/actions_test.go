@@ -1,11 +1,14 @@
 package console
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -31,7 +34,8 @@ func stallCard() factoryd.BoardTask {
 // re-runs the head's pending runs and keeps the card waiting, nothing
 // posted; "check again" closes the card and touches nothing else;
 // "dismiss" dismisses the stall as the member and closes the card. A
-// Forgejo without the rerun API refuses the re-run with what still fits;
+// Forgejo that re-runs nothing refuses the re-run with both causes and
+// what still fits;
 // a head that moved on or concluded refuses with its own line, the card
 // left as it is.
 func TestStallCardAnswers(t *testing.T) {
@@ -86,17 +90,29 @@ func TestStallCardAnswers(t *testing.T) {
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
 		detail: map[string]any{"answer": "Re-run again", "value": factoryd.AnswerRerunAgain}})
 
-	r, ev = newRigWithEvents(t)
-	r.tasks.tasks = []factoryd.BoardTask{stallCard()}
-	r.rerunErr = factoryd.ErrNoRerun
-	ck, s = r.loggedIn(t)
-	before = ev.count()
-	rec := r.do(post("/tasks/t-stall/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerRerunAgain}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Forgejo 17") || !strings.Contains(rec.Body.String(), "check again or dismiss") {
-		t.Fatalf("re-run again without the API = %d %q, want 409 naming Forgejo 17 and what fits", rec.Code, rec.Body.String())
-	}
-	if ev.count() != before || len(r.fg.patched) != 0 {
-		t.Fatalf("the refused re-run recorded %d rows, patched %v; want nothing", ev.count()-before, r.fg.patched)
+	// Forgejo re-runs nothing: a 404 (no rerun API before 17) or a 403 (a
+	// token without the right) both arrive as ErrNoRerun; the line names
+	// both, the cause is logged once
+	for _, cause := range []string{"forgejo: not found", "forgejo: refused: status 403: user does not have permission"} {
+		r, ev = newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{stallCard()}
+		r.rerunErr = fmt.Errorf("run 21 of sf/code: %w: %s", factoryd.ErrNoRerun, cause)
+		ck, s = r.loggedIn(t)
+		before = ev.count()
+		var logs bytes.Buffer
+		log.SetOutput(&logs)
+		rec := r.do(post("/tasks/t-stall/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerRerunAgain}}), ck)
+		log.SetOutput(os.Stderr)
+		want := "Forgejo re-runs no action run of sf/code: it has no rerun API (that came with Forgejo 17), or the project's actions token lacks the right. Check again or dismiss."
+		if rec.Code != http.StatusConflict || !strings.HasPrefix(rec.Body.String(), want) {
+			t.Fatalf("re-run again on %q = %d %q, want 409 %q", cause, rec.Code, rec.Body.String(), want)
+		}
+		if n := strings.Count(logs.String(), "console: sebastian re-runs the stall of sf/code: run 21 of sf/code: "+factoryd.ErrNoRerun.Error()+": "+cause+"\n"); n != 1 {
+			t.Fatalf("the cause logged %d times, want once:\n%s", n, logs.String())
+		}
+		if ev.count() != before || len(r.fg.patched) != 0 {
+			t.Fatalf("the refused re-run recorded %d rows, patched %v; want nothing", ev.count()-before, r.fg.patched)
+		}
 	}
 
 	r, ev, before, code, body = click(t, factoryd.AnswerCheckAgain)
