@@ -2091,8 +2091,9 @@ func replacesNothing(p Plan, id string) bool {
 // restartChildren runs the restart rules a new revision carries (piece
 // 10): the checks re-ran with the filing, every card that never started
 // takes the new revision's brief, a card the new plan drops ends closed
-// with its issue, a started card keeps its branch (the merge check holds
-// it there) and a final card never reopens.
+// with its issue unless it merged (Finish leaves a merged card to its
+// chain, which ends it done), a started card keeps its branch (the merge
+// check holds it there) and a final card never reopens.
 func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Plan) {
 	cards, err := r.store.PlanCards(ctx, t.ID)
 	if err != nil {
