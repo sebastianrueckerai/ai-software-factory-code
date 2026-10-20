@@ -39,6 +39,10 @@ type Document struct {
 	// a resource; a project file's approvers replace them for its project.
 	// Empty: nobody.
 	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
+	// AIMembers are the console members an AI works through (the
+	// controller sessions): their acts read as an AI's on the metrics
+	// page, beside the project agent's own.
+	AIMembers []string `yaml:"ai_members,omitempty" json:"ai_members"`
 	// Bounds are how many seconds one run of an activity may take before
 	// it raises a gate_bound alert, per activity name and a default for the
 	// rest; absent keys take DefaultBounds.

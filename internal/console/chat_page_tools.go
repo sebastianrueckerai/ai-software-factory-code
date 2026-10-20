@@ -391,7 +391,11 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v strin
 	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
 		return "", refuse(http.StatusBadRequest, "the verdict is real or noise")
 	}
-	switch err := c.cfg.Alerts.SetAlertVerdict(ctx, id, v, a.s.user); {
+	by := a.s.user
+	if a.decider == "agent" {
+		by = factoryd.AgentDecider
+	}
+	switch err := c.cfg.Alerts.SetAlertVerdict(ctx, id, v, by); {
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("alert %d is no open human alert (any more); reload the page", id))
 	case err != nil:

@@ -63,7 +63,7 @@ func TestProjectMetricsJSON(t *testing.T) {
 	}
 	for _, key := range []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
 		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
-		"interventions", "escalations", "escalated_share", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+		"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 		"chat_tool_work", "ci_duration"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("body lacks %s", key)
@@ -145,8 +145,8 @@ func TestProjectMetricsPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// every row's name carries its one-sentence explanation as a tooltip
-	if n := strings.Count(body, `class="mname" title="`); n != 21 {
-		t.Fatalf("%d row names carry a title, want 21", n)
+	if n := strings.Count(body, `class="mname" title="`); n != 22 {
+		t.Fatalf("%d row names carry a title, want 22", n)
 	}
 	wants := []string{
 		`class="page page-metrics"`,
@@ -154,7 +154,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
 		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
-		"interventions / card", "escalations", "human-blocked", "review acceptance",
+		"interventions / card", "escalations", "escalations handled", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work",
 		"How the project runs its work, over the window and against the one before.",
 		`aria-pressed="true">28 days`,
