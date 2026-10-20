@@ -305,6 +305,11 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('c2', '2026-10-03', 'model', 'x', 0.60),
 		('c3', '2026-10-08', 'model', 'x', 2.20),
 		('c4', '2026-10-07', 'model', 'x', 1.00),
+		('c4', '2026-10-07', 'tool', 'web_scrape', 0.30),
+		('c4', '2026-10-07', 'tool', 'web_search', 0.10),
+		('c4', '2026-10-07', 'tool', 'fal_run', 0.05),
+		('c4', '2026-10-07', 'tool', 'replicate_predict', 0.01),
+		('m1', '2026-09-20', 'tool', 'web_scrape', 0.20),
 		('c5', '2026-09-20', 'model', 'x', 1.50),
 		('o1', '2026-10-02', 'model', 'x', 99.00)`)
 	must(`INSERT INTO audit (ts, task_id, decision, reason, model_alias, prompt_tokens, output_tokens) VALUES
@@ -421,10 +426,24 @@ func TestMetricsFigures(t *testing.T) {
 	// nothing; prev 122 h
 	fig(t, "time to restore", r.TimeToRestore, Figure{Value: 46800000, Prev: 439200000, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 439200000, 0, 0, 46800000}})
-	// spend: the last week's euros (c3 2.2 + chat c4 1), the week before
+	// spend: the last week's euros (c3 2.2, chat c4 1 and its tools 0.46), the week before
 	// (c1 2 + c2 3.6) — per week, not the window's 8.8
-	fig(t, "spend", r.Spend, Figure{Value: 3.20, Prev: 5.60, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 1.50, 0, 5.60, 3.20}})
+	fig(t, "spend", r.Spend, Figure{Value: 3.66, Prev: 5.60, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1.70, 0, 5.60, 3.66}})
+	// tools: c4's four calls 0.46 in the last week, m1's 0.20 in b3
+	fig(t, "tool spend", r.ToolSpend, Figure{Value: 0.46, Prev: 0, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 0.20, 0, 0, 0.46}})
+	// tool mix: of the window's 0.46, scrape 0.30, search 0.10, fal 0.05,
+	// replicate 0.01 -> other
+	wantTools := []MixShare{{"web_scrape", 3000.0 / 46}, {"web_search", 1000.0 / 46}, {"fal_run", 500.0 / 46}, {"other", 100.0 / 46}}
+	if len(r.ToolMix) != len(wantTools) {
+		t.Fatalf("tool mix = %+v", r.ToolMix)
+	}
+	for i, w := range wantTools {
+		if r.ToolMix[i].Alias != w.Alias || math.Abs(r.ToolMix[i].Share-w.Share) > 1e-9 {
+			t.Fatalf("tool mix[%d] = %+v, want %+v", i, r.ToolMix[i], w)
+		}
+	}
 	// per card: totals 2, 3.6, 2.2, 0 -> median (2+2.2)/2 = 2.1
 	fig(t, "per card", r.PerCard, Figure{Value: 2.10, Prev: 1.50, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1.50, 0, 2.80, 1.10}})
@@ -455,6 +474,10 @@ func TestMetricsFigures(t *testing.T) {
 	// escalations: es1 window, es2 prev (es3 is sf/other's)
 	fig(t, "escalations", r.Escalations, Figure{Value: 1, Prev: 1, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0, 1, 0, 1}})
+	// escalated share: of the window's done cards c1 c2 c3 c6, c3 escalated
+	// -> 1/4; prev c5 1/1; weeks by the cards' finish: b3 c5, b6 c3 of c3 c6
+	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 0.25, Prev: 1, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0.5}})
 	// human blocked: (5 h + 24 h) / (76 + 49 + 54 + 12) h; prev 22/50 h
 	fig(t, "human blocked", r.HumanBlocked, Figure{Value: 104400.0 / 687600, Prev: 0.44, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0.44, 0, 0.232, 0}})
@@ -523,14 +546,14 @@ func TestMetricsEmptyProject(t *testing.T) {
 		"lead time": r.LeadTime, "card cycle": r.CardCycle, "per card": r.PerCard,
 		"tokens per card": r.TokensPerCard, "change failure": r.ChangeFailure,
 		"time to restore": r.TimeToRestore, "interventions": r.Interventions,
-		"human blocked": r.HumanBlocked, "review acceptance": r.ReviewAcceptance,
+		"human blocked": r.HumanBlocked, "review acceptance": r.ReviewAcceptance, "escalated share": r.EscalatedShare,
 		"ci duration": r.CIDuration,
 	} {
 		if f != (Figure{}) {
 			t.Fatalf("%s = %+v, want the zero figure", name, f)
 		}
 	}
-	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelMix) != 0 {
+	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelMix) != 0 || len(r.ToolMix) != 0 {
 		t.Fatalf("refiled %+v diff %+v mix %+v", r.RevertedRefiled, r.DiffSize, r.ModelMix)
 	}
 	if r.ChatWork != (ChatWork{}) {
@@ -538,7 +561,7 @@ func TestMetricsEmptyProject(t *testing.T) {
 	}
 	// counts are facts even at zero
 	if !r.Deploys.Has || r.Deploys.Value != 0 || !r.Throughput.Has || r.Throughput.Value != 0 ||
-		!r.Spend.Has || r.Spend.Value != 0 || !r.Escalations.Has {
+		!r.Spend.Has || r.Spend.Value != 0 || !r.Escalations.Has || !r.ToolSpend.Has || r.ToolSpend.Value != 0 {
 		t.Fatalf("counts: %+v %+v %+v %+v", r.Deploys, r.Throughput, r.Spend, r.Escalations)
 	}
 }
@@ -571,7 +594,7 @@ func TestMetricsNoDoneCards(t *testing.T) {
 		t.Fatalf("deploys %+v ci %+v", r.Deploys, r.CIDuration)
 	}
 	if r.Throughput.Value != 0 || r.PerCard.Has || r.TokensPerCard.Has || r.Interventions.Has ||
-		r.ReviewAcceptance.Has || r.HumanBlocked.Has || r.ChangeFailure.Has {
+		r.ReviewAcceptance.Has || r.HumanBlocked.Has || r.ChangeFailure.Has || r.EscalatedShare.Has {
 		t.Fatalf("card figures: %+v %+v %+v %+v", r.Throughput, r.PerCard, r.TokensPerCard, r.ReviewAcceptance)
 	}
 }

@@ -62,8 +62,8 @@ func TestProjectMetricsJSON(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	for _, key := range []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
-		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_mix",
-		"interventions", "escalations", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_mix", "tool_spend", "tool_mix",
+		"interventions", "escalations", "escalated_share", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 		"chat_tool_work", "ci_duration"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("body lacks %s", key)
@@ -149,7 +149,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"Delivery", "Stability", "Cost", "Autonomy", "The factory itself",
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
-		"spend / week", "per card, median", "tokens / card", "model mix",
+		"spend / week", "per card, median", "tokens / card", "model mix", "tools / week", "tool mix",
 		"interventions / card", "escalations", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work",
 		"How the project runs its work, over the window and against the one before.",

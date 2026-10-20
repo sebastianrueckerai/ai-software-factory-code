@@ -36,7 +36,8 @@ type RevertedRefiled struct {
 	Weeks    [7]float64 `json:"weeks"`
 }
 
-// MixShare is one model's share of the window's tokens, 0..100.
+// MixShare is one model's share of the window's tokens, or one tool's
+// share of its euros, 0..100.
 type MixShare struct {
 	Alias string  `json:"alias"`
 	Share float64 `json:"share"`
@@ -81,8 +82,11 @@ type MetricsReport struct {
 	PerCard          Figure          `json:"per_card"`
 	TokensPerCard    Figure          `json:"tokens_per_card"`
 	ModelMix         []MixShare      `json:"model_mix"`
+	ToolSpend        Figure          `json:"tool_spend"`
+	ToolMix          []MixShare      `json:"tool_mix"`
 	Interventions    Figure          `json:"interventions"`
 	Escalations      Figure          `json:"escalations"`
+	EscalatedShare   Figure          `json:"escalated_share"`
 	HumanBlocked     Figure          `json:"human_blocked"`
 	ReviewAcceptance Figure          `json:"review_acceptance"`
 	SelfDeploys      Figure          `json:"self_deploys"`
@@ -350,13 +354,16 @@ func metricTimeToRestore(ctx context.Context, db *sql.DB, repo string, w metricW
 		fmt.Sprintf(`SELECT `+metricBucket("a.raised_at")+", "+agg+pair+` GROUP BY 1`, "$2"))
 }
 
-// metricSpend: the ledger's euros, chat tasks included — what the
-// project costs a week. Days, so the bucket math is date arithmetic.
-func metricSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
-	const pair = ` FROM ledger l JOIN tasks t ON t.id = l.task_id
+// ledgerPair is the project's ledger rows in a span of days: the ledger
+// keeps days, so the bucket math is date arithmetic.
+const ledgerPair = ` FROM ledger l JOIN tasks t ON t.id = l.task_id
 		WHERE t.repository = $1 AND l.day >= $2::date AND l.day < $3::date`
+
+// metricSpend: the ledger's euros, chat tasks included — what the
+// project costs a week.
+func metricSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	return metricWeekFigure(ctx, db,
-		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+pair+` GROUP BY 1`, repo, w.SparkFrom, w.To)
+		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+ledgerPair+` GROUP BY 1`, repo, w.SparkFrom, w.To)
 }
 
 // metricPerCard: what one card costs, the median of the window's cards'
@@ -380,8 +387,25 @@ func metricTokensPerCard(ctx context.Context, db *sql.DB, repo string, w metricW
 // metricModelMix: the window's tokens by model, top three by tokens
 // then the rest folded into other. An empty alias is other.
 func metricModelMix(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
-	rows, err := db.QueryContext(ctx, `SELECT COALESCE(NULLIF(a.model_alias, ''), 'other'), sum(a.prompt_tokens + a.output_tokens)::float8
+	return metricShares(ctx, db, `SELECT COALESCE(NULLIF(a.model_alias, ''), 'other'), sum(a.prompt_tokens + a.output_tokens)::float8
 		FROM audit a JOIN tasks t ON t.id = a.task_id WHERE t.repository = $1 AND a.ts >= $2 AND a.ts < $3 GROUP BY 1`, repo, w.From, w.To)
+}
+
+// metricToolSpend: the ledger's euros on paid tools, a week.
+func metricToolSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	return metricWeekFigure(ctx, db,
+		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+ledgerPair+` AND l.kind = 'tool' GROUP BY 1`, repo, w.SparkFrom, w.To)
+}
+
+// metricToolMix: the window's tool euros by tool, top three then other.
+func metricToolMix(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
+	return metricShares(ctx, db, `SELECT l.ref, sum(l.eur)::float8`+ledgerPair+` AND l.kind = 'tool' GROUP BY 1`, repo, w.From, w.To)
+}
+
+// metricShares reads (name, amount) rows into shares of their total: the
+// top three by amount, the rest folded into other.
+func metricShares(ctx context.Context, db *sql.DB, query string, args ...any) ([]MixShare, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -451,6 +475,15 @@ func metricEscalations(ctx context.Context, db *sql.DB, repo string, w metricWin
 // selfRolls is one row per roll of the factory: the commit and when its
 // last image went live — the rolls table holds a row per image.
 const selfRolls = `(SELECT sha, max(live_at) AS live FROM rolls GROUP BY sha) r`
+
+// metricEscalatedShare: the share of the window's done cards that
+// escalated to a human at least once in their life.
+func metricEscalatedShare(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const escalated = `EXISTS (SELECT 1 FROM alerts a WHERE a.task_id = tasks.id AND a.kind = 'escalation')`
+	return metricRatioFigure(ctx, db, repo, w,
+		`SELECT count(*) FILTER (WHERE `+escalated+`), count(*) FROM tasks WHERE `+doneCardWhere,
+		fmt.Sprintf(`SELECT %s, count(*) FILTER (WHERE `+escalated+`), count(*) FROM tasks WHERE `+doneCardWhere+` GROUP BY 1`, metricBucket("finished_at")))
+}
 
 // metricSelfDeploys: the factory's own rolls — every project reads the
 // same count; the table has no repository.
@@ -780,10 +813,19 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.ModelMix, err = metricModelMix(ctx, db, repository, w); err != nil {
 		return r, err
 	}
+	if r.ToolSpend, err = metricToolSpend(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.ToolMix, err = metricToolMix(ctx, db, repository, w); err != nil {
+		return r, err
+	}
 	if r.Interventions, err = metricInterventions(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	if r.Escalations, err = metricEscalations(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.EscalatedShare, err = metricEscalatedShare(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	if r.HumanBlocked, err = metricHumanBlocked(ctx, db, repository, w); err != nil {
