@@ -300,29 +300,30 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('2026-10-03T10:04Z', 'sf/code', 'r1', 'merge_approved', 'sebastian', 'button', '{}'),
 		('2026-10-02T18:00Z', 'sf/other', 'o1', 'comment', 'sebastian', 'button', '{}')`)
 	must(`INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
-		('c1', '2026-10-02', 'model', 'x', 2.00),
-		('c2', '2026-10-03', 'model', 'x', 3.00),
-		('c2', '2026-10-03', 'model', 'x', 0.60),
-		('c3', '2026-10-08', 'model', 'x', 2.20),
-		('c4', '2026-10-07', 'model', 'x', 1.00),
+		('c1', '2026-10-02', 'model', 'big', 2.00),
+		('c2', '2026-10-03', 'model', 'small', 3.00),
+		('c2', '2026-10-03', 'model', 'review/big', 0.60),
+		('c3', '2026-10-08', 'model', 'big', 2.20),
+		('c4', '2026-10-07', 'model', 'compact/small', 1.00),
+		('c4', '2026-10-07', 'model', 'vision/vision', 0.05),
 		('c4', '2026-10-07', 'tool', 'web_scrape', 0.30),
 		('c4', '2026-10-07', 'tool', 'web_search', 0.10),
 		('c4', '2026-10-07', 'tool', 'fal_run', 0.05),
 		('c4', '2026-10-07', 'tool', 'replicate_predict', 0.01),
 		('m1', '2026-09-20', 'tool', 'web_scrape', 0.20),
-		('c5', '2026-09-20', 'model', 'x', 1.50),
-		('o1', '2026-10-02', 'model', 'x', 99.00)`)
-	must(`INSERT INTO audit (ts, task_id, decision, reason, model_alias, prompt_tokens, output_tokens) VALUES
-		('2026-10-02T10:05Z', 'c1', 'call', '', 'coding-frontier', 1000, 500),
-		('2026-10-03T09:05Z', 'c2', 'call', '', 'coding-frontier', 800, 400),
-		('2026-10-03T09:10Z', 'c2', 'call', '', 'review-frontier', 200, 100),
-		('2026-10-08T16:05Z', 'c3', 'call', '', 'coding-frontier', 1200, 600),
-		('2026-10-08T16:10Z', 'c3', 'call', '', 'glm-flash', 200, 100),
-		('2026-10-07T12:05Z', 'c4', 'call', '', 'pulse', 300, 100),
-		('2026-10-07T12:06Z', 'c4', 'call', '', '', 100, 100),
-		('2026-10-03T10:03Z', 'r1', 'call', '', 'coding-cheap', 100, 50),
-		('2026-09-20T10:05Z', 'c5', 'call', '', 'coding-frontier', 500, 250),
-		('2026-10-02T17:05Z', 'o1', 'call', '', 'coding-frontier', 9999, 9999)`)
+		('c5', '2026-09-20', 'model', 'big', 1.50),
+		('o1', '2026-10-02', 'model', 'big', 99.00)`)
+	must(`INSERT INTO audit (ts, task_id, decision, reason, model_alias, deployment, prompt_tokens, output_tokens, call_cost_eur) VALUES
+		('2026-10-02T10:05Z', 'c1', 'call', '', 'big', 'zai/glm-5.3', 1000, 500, 0.50),
+		('2026-10-03T09:05Z', 'c2', 'call', '', 'big', 'zai/glm-5.3', 800, 400, 0.40),
+		('2026-10-03T09:10Z', 'c2', 'call', '', 'big', 'dashscope/qwen3.8-max', 200, 100, 0.10), -- the fallback served the review
+		('2026-10-08T16:05Z', 'c3', 'call', '', 'big', 'zai/glm-5.3', 1200, 600, 0.60),
+		('2026-10-08T16:10Z', 'c3', 'call', '', 'small', 'zai/glm-5.3-flash', 200, 100, 0.02),
+		('2026-10-07T12:05Z', 'c4', 'call', '', 'small', 'zai/glm-5.3-flash', 300, 100, 0.03),
+		('2026-10-07T12:06Z', 'c4', 'call', '', 'vision', 'dashscope/qwen3-vl-plus', 100, 100, 0.05),
+		('2026-10-03T10:03Z', 'r1', 'call', '', 'small', 'zai/glm-5.3-flash', 100, 50, 0.01),
+		('2026-09-20T10:05Z', 'c5', 'call', '', 'big', 'zai/glm-5.3', 500, 250, 0.25),
+		('2026-10-02T17:05Z', 'o1', 'call', '', 'big', 'zai/glm-5.3', 9999, 9999, 9.99)`)
 	must(`INSERT INTO alerts (kind, source, task_id, raised_at, fingerprint) VALUES
 		('alert', 'signoz', 'c6', '2026-10-06T08:00Z', 'fp-x'),   -- fixed 13 h later by c6
 		('alert', 'signoz', 'c2', '2026-10-04T12:00Z', 'fp-c2'),  -- c2's refile: its alert back at the revert, no fix task
@@ -398,6 +399,17 @@ func TestMetricsFigures(t *testing.T) {
 			t.Fatalf("%s = %+v, want %+v", name, got, want)
 		}
 	}
+	shares := func(t *testing.T, name string, got, want []MixShare) {
+		t.Helper()
+		if len(got) != len(want) {
+			t.Fatalf("%s = %+v, want %+v", name, got, want)
+		}
+		for i, w := range want {
+			if got[i].Alias != w.Alias || math.Abs(got[i].Share-w.Share) > 1e-9 {
+				t.Fatalf("%s[%d] = %+v, want %+v", name, i, got[i], w)
+			}
+		}
+	}
 	// deploys: the last weekly bucket answers (r4+r2 in b6), the bucket
 	// before it moves (b5 empty) — a per-week name never shows a window total
 	fig(t, "deploys", r.Deploys, Figure{Value: 2, Prev: 0, Has: true, PrevHas: true,
@@ -426,47 +438,33 @@ func TestMetricsFigures(t *testing.T) {
 	// nothing; prev 122 h
 	fig(t, "time to restore", r.TimeToRestore, Figure{Value: 46800000, Prev: 439200000, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 439200000, 0, 0, 46800000}})
-	// spend: the last week's euros (c3 2.2, chat c4 1 and its tools 0.46), the week before
+	// spend: the last week's euros (c3 2.2, chat c4 1, its vision look 0.05 and its tools 0.46), the week before
 	// (c1 2 + c2 3.6) — per week, not the window's 8.8
-	fig(t, "spend", r.Spend, Figure{Value: 3.66, Prev: 5.60, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 1.70, 0, 5.60, 3.66}})
-	// tools: c4's four calls 0.46 in the last week, m1's 0.20 in b3
-	fig(t, "tool spend", r.ToolSpend, Figure{Value: 0.46, Prev: 0, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 0.20, 0, 0, 0.46}})
-	// tool mix: of the window's 0.46, scrape 0.30, search 0.10, fal 0.05,
-	// replicate 0.01 -> other
-	wantTools := []MixShare{{"web_scrape", 3000.0 / 46}, {"web_search", 1000.0 / 46}, {"fal_run", 500.0 / 46}, {"other", 100.0 / 46}}
-	if len(r.ToolMix) != len(wantTools) {
-		t.Fatalf("tool mix = %+v", r.ToolMix)
-	}
-	for i, w := range wantTools {
-		if r.ToolMix[i].Alias != w.Alias || math.Abs(r.ToolMix[i].Share-w.Share) > 1e-9 {
-			t.Fatalf("tool mix[%d] = %+v, want %+v", i, r.ToolMix[i], w)
-		}
-	}
+	fig(t, "spend", r.Spend, Figure{Value: 3.71, Prev: 5.60, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1.70, 0, 5.60, 3.71}})
+	// tools: c4's four tool calls 0.46 and its vision look 0.05 in the
+	// last week, m1's 0.20 in b3
+	fig(t, "tool spend", r.ToolSpend, Figure{Value: 0.51, Prev: 0, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 0.20, 0, 0, 0.51}})
+	// tool mix: of the window's 0.51, scrape 0.30, search 0.10, fal 0.05
+	// (before vision's 0.05 by name), then vision and replicate 0.01 -> other
+	shares(t, "tool mix", r.ToolMix, []MixShare{{"web_scrape", 3000.0 / 51}, {"web_search", 1000.0 / 51}, {"fal_run", 500.0 / 51}, {"other", 600.0 / 51}})
 	// per card: totals 2, 3.6, 2.2, 0 -> median (2+2.2)/2 = 2.1
 	fig(t, "per card", r.PerCard, Figure{Value: 2.10, Prev: 1.50, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 1.50, 0, 2.80, 1.10}})
 	// tokens/card: c1 1500 + c2 1500 + c3 2100 = 5100 over 4 cards; prev c5 750 over 1
 	fig(t, "tokens per card", r.TokensPerCard, Figure{Value: 1275, Prev: 750, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 750, 0, 1500, 1050}})
-	// mix: coding 4500, pulse 400 (chat c4 counts), glm 300; review 300,
-	// the empty alias's 200 and the roll card's cheap 150 fold into other
-	// (of 5850)
-	wantMix := []MixShare{
-		{"coding-frontier", 4500.0 / 58.5}, // = 76.9231 % of 5850
-		{"pulse", 400.0 / 58.5},
-		{"glm-flash", 300.0 / 58.5},
-		{"other", 650.0 / 58.5},
-	}
-	if len(r.ModelMix) != len(wantMix) {
-		t.Fatalf("model mix = %+v", r.ModelMix)
-	}
-	for i, w := range wantMix {
-		if r.ModelMix[i].Alias != w.Alias || math.Abs(r.ModelMix[i].Share-w.Share) > 1e-9 {
-			t.Fatalf("model mix[%d] = %+v, want %+v", i, r.ModelMix[i], w)
-		}
-	}
+	// spend by model, the window's ledger model rows by the class in
+	// their ref: big c1 2 + c2's review 0.6 + c3 2.2 = 4.8, small c2 3 +
+	// chat c4's compaction 1 = 4; the vision row is a tool's
+	wantSpend := []MixShare{{"big", 480.0 / 8.8}, {"small", 400.0 / 8.8}}
+	shares(t, "model spend", r.ModelSpend, wantSpend)
+	// served by, the window's audit euros by deployment: glm-5.3 1.50,
+	// qwen3.8-max 0.10 (the fallback), glm-5.3-flash 0.06, then the vision
+	// model's 0.05 folds into other, of 1.71
+	shares(t, "served by", r.ServedBy, []MixShare{{"zai/glm-5.3", 150.0 / 1.71}, {"dashscope/qwen3.8-max", 10.0 / 1.71},
+		{"zai/glm-5.3-flash", 6.0 / 1.71}, {"other", 5.0 / 1.71}})
 	// interventions: 4 human events over 4 cards (r1's approval is a roll
 	// card's: none); prev none over 1; b5 holds 3 over c1 and c2
 	fig(t, "interventions", r.Interventions, Figure{Value: 1, Prev: 0, Has: true, PrevHas: true,
@@ -553,8 +551,8 @@ func TestMetricsEmptyProject(t *testing.T) {
 			t.Fatalf("%s = %+v, want the zero figure", name, f)
 		}
 	}
-	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelMix) != 0 || len(r.ToolMix) != 0 {
-		t.Fatalf("refiled %+v diff %+v mix %+v", r.RevertedRefiled, r.DiffSize, r.ModelMix)
+	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelSpend) != 0 || len(r.ServedBy) != 0 || len(r.ToolMix) != 0 {
+		t.Fatalf("refiled %+v diff %+v mix %+v", r.RevertedRefiled, r.DiffSize, r.ModelSpend)
 	}
 	if r.ChatWork != (ChatWork{}) {
 		t.Fatalf("chat work = %+v", r.ChatWork)

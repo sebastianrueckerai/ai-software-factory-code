@@ -154,8 +154,8 @@ func TestCardFaceCalls(t *testing.T) {
 		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no calls", BudgetEUR: 5, SpentEUR: 1.2})
 	r.ledger.calls = map[string][]policy.ModelCall{
 		"t-calls": {
-			{Ref: "coding-cheap", EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000, OutputTokens: 1200}},
-			{Ref: "coding-frontier", EUR: 0.0240, Usage: policy.Usage{PromptTokens: 30000, OutputTokens: 800}},
+			{Ref: "small", EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000, OutputTokens: 1200}},
+			{Ref: "big", EUR: 0.0240, Usage: policy.Usage{PromptTokens: 30000, OutputTokens: 800}},
 		},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -181,7 +181,7 @@ func TestCardFaceChips(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare", CreatedAt: time.Now()}},
 		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "full",
-			ModelAlias: "coding-cheap"}, Dependencies: "#3, #5"},
+			ModelAlias: "small"}, Dependencies: "#3, #5"},
 		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Lane: "ready", Repository: "sf/code", Objective: "deps done"}},
 		{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-deps", Lane: "ready", Repository: "sf/code", Objective: "waits"},
 			WaitingOn: "#7", Dependencies: "#7"},
@@ -191,7 +191,7 @@ func TestCardFaceChips(t *testing.T) {
 	if want := `<span class="chip blocked" title="#3, #5">blocked by 2</span>`; !strings.Contains(full, want) {
 		t.Errorf("t-full lacks %s:\n%s", want, full)
 	}
-	if strings.Contains(full, "coding-cheap") || strings.Contains(full, `class="badge"`) {
+	if strings.Contains(full, "small") || strings.Contains(full, `class="badge"`) {
 		t.Errorf("the face names the model or the default lane:\n%s", full)
 	}
 	if bare := faceOf(t, body, "t-bare"); strings.Contains(bare, `class="chips"`) || strings.Contains(bare, `class="transitions"`) {

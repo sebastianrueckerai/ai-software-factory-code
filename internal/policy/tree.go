@@ -192,9 +192,9 @@ func checkSessions(d Document) error {
 // gateway: a version stored before the key stays readable, and the
 // gateway refuses its calls (Document.Limited).
 func checkOutputLimits(d Document) error {
-	aliases := append(slices.Clone(ChatModels), PulseModel)
+	aliases := append(slices.Clone(ChatModels), Small)
 	for _, c := range d.Classes {
-		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel)
+		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel)
 		aliases = append(aliases, c.Models...)
 	}
 	slices.Sort(aliases)

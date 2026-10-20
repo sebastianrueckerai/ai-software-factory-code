@@ -735,7 +735,7 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeCompact {
-		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.PulseModel || body["max_tokens"] != float64(2048) {
+		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.Small || body["max_tokens"] != float64(2048) {
 			g.t.Errorf("compaction call: task %q, body %v: want the cheap alias on %s", r.Header.Get(gateway.HeaderFactoryTask), body, task)
 		}
 		g.compacts = append(g.compacts, body)
@@ -765,8 +765,8 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.requests = append(g.requests, body)
 	if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
-		body["model"] != "operator" || body["stream"] != true || body["max_tokens"] != float64(4096) {
-		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias operator, streamed",
+		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(4096) {
+		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias big, streamed",
 			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task)
 	}
 	if len(g.replies) == 0 {

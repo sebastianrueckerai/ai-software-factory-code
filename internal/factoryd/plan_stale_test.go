@@ -171,7 +171,7 @@ func TestRunSessionStampsThePlanRevision(t *testing.T) {
 		"\n" + resultLine(true, "Links API done.")
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "t-card", Attempt: 1, Model: "factory/coding-frontier"})
+		val, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "t-card", Attempt: 1, Model: "factory/big"})
 		if err == nil {
 			var res SessionResult
 			err = val.Get(&res)

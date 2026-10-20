@@ -994,7 +994,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 			Tree: policy.Tree{
 				Document: policy.Document{Version: 1, Chat: chat,
 					Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
-					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 					Approvers:       []string{"sebastian"},
 					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The metrics page's figures (roadmap 147): every number is a query over
@@ -36,8 +38,8 @@ type RevertedRefiled struct {
 	Weeks    [7]float64 `json:"weeks"`
 }
 
-// MixShare is one model's share of the window's tokens, or one tool's
-// share of its euros, 0..100.
+// MixShare is one class's, deployment's or tool's share of the window's
+// euros, 0..100.
 type MixShare struct {
 	Alias string  `json:"alias"`
 	Share float64 `json:"share"`
@@ -81,7 +83,8 @@ type MetricsReport struct {
 	Spend            Figure          `json:"spend"`
 	PerCard          Figure          `json:"per_card"`
 	TokensPerCard    Figure          `json:"tokens_per_card"`
-	ModelMix         []MixShare      `json:"model_mix"`
+	ModelSpend       []MixShare      `json:"model_spend"`
+	ServedBy         []MixShare      `json:"served_by"`
 	ToolSpend        Figure          `json:"tool_spend"`
 	ToolMix          []MixShare      `json:"tool_mix"`
 	Interventions    Figure          `json:"interventions"`
@@ -384,22 +387,38 @@ func metricTokensPerCard(ctx context.Context, db *sql.DB, repo string, w metricW
 		fmt.Sprintf(`SELECT `+metricBucket("a.ts")+", "+agg+pair+` GROUP BY 1`, "$2"))
 }
 
-// metricModelMix: the window's tokens by model, top three by tokens
-// then the rest folded into other. An empty alias is other.
-func metricModelMix(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
-	return metricShares(ctx, db, `SELECT COALESCE(NULLIF(a.model_alias, ''), 'other'), sum(a.prompt_tokens + a.output_tokens)::float8
-		FROM audit a JOIN tasks t ON t.id = a.task_id WHERE t.repository = $1 AND a.ts >= $2 AND a.ts < $3 GROUP BY 1`, repo, w.From, w.To)
+// A ledger ref's alias: the bare alias of an agent's call, the part after
+// the purpose of factoryd's (review/big). The ledger is immutable, so the
+// purpose aliases of before 2026-10-20 read as the classes they named.
+// The text classes are big and small; a model row of any other alias
+// (vision) is a tool on the page.
+const ledgerAlias = `(CASE regexp_replace(l.ref, '^.*/', '')
+	WHEN 'coding-frontier' THEN 'big' WHEN 'review-frontier' THEN 'big' WHEN 'supervisor' THEN 'big' WHEN 'checkin' THEN 'big' WHEN 'operator' THEN 'big'
+	WHEN 'coding-cheap' THEN 'small' WHEN 'pulse' THEN 'small' ELSE regexp_replace(l.ref, '^.*/', '') END)`
+const textClassRow = `l.kind = 'model' AND ` + ledgerAlias + ` IN ('` + policy.Big + `', '` + policy.Small + `')`
+const toolRow = `(l.kind = 'tool' OR l.kind = 'model' AND ` + ledgerAlias + ` NOT IN ('` + policy.Big + `', '` + policy.Small + `'))`
+
+// metricModelSpend: the window's model euros by class, big and small.
+func metricModelSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
+	return metricShares(ctx, db, `SELECT `+ledgerAlias+`, sum(l.eur)::float8`+ledgerPair+` AND `+textClassRow+` GROUP BY 1`, repo, w.From, w.To)
 }
 
-// metricToolSpend: the ledger's euros on paid tools, a week.
+// metricServedBy: the window's model euros by the deployment that served
+// each call, which tells how much the fallback behind a class carried.
+func metricServedBy(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
+	return metricShares(ctx, db, `SELECT a.deployment, COALESCE(sum(a.call_cost_eur), 0)::float8
+		FROM audit a JOIN tasks t ON t.id = a.task_id WHERE t.repository = $1 AND a.deployment <> '' AND a.ts >= $2 AND a.ts < $3 GROUP BY 1`, repo, w.From, w.To)
+}
+
+// metricToolSpend: the ledger's euros on tools, a week.
 func metricToolSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	return metricWeekFigure(ctx, db,
-		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+ledgerPair+` AND l.kind = 'tool' GROUP BY 1`, repo, w.SparkFrom, w.To)
+		`SELECT ((l.day - $2::date) / 7), COALESCE(sum(l.eur), 0)::float8`+ledgerPair+` AND `+toolRow+` GROUP BY 1`, repo, w.SparkFrom, w.To)
 }
 
 // metricToolMix: the window's tool euros by tool, top three then other.
 func metricToolMix(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
-	return metricShares(ctx, db, `SELECT l.ref, sum(l.eur)::float8`+ledgerPair+` AND l.kind = 'tool' GROUP BY 1`, repo, w.From, w.To)
+	return metricShares(ctx, db, `SELECT `+ledgerAlias+`, sum(l.eur)::float8`+ledgerPair+` AND `+toolRow+` GROUP BY 1`, repo, w.From, w.To)
 }
 
 // metricShares reads (name, amount) rows into shares of their total: the
@@ -810,7 +829,10 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.TokensPerCard, err = metricTokensPerCard(ctx, db, repository, w); err != nil {
 		return r, err
 	}
-	if r.ModelMix, err = metricModelMix(ctx, db, repository, w); err != nil {
+	if r.ModelSpend, err = metricModelSpend(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.ServedBy, err = metricServedBy(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	if r.ToolSpend, err = metricToolSpend(ctx, db, repository, w); err != nil {

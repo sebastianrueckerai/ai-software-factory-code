@@ -146,10 +146,10 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 			Reason: `provider answered 401: {"detail":"Invalid token r8_0123456789abcdefghijABCDEFGHIJ"}`},
 		{TaskID: "t1", Decision: "allowed", ModelAlias: "sk-sneaky-alias-0123", PolicyVersion: &three, SpendEUR: &spend,
 			OutputLimit: &limit, HoldEUR: &hold, OverHold: "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full", Deployment: "deepseek/deepseek-flash"},
-		{TaskID: "t1", Decision: "refused_budget", Reason: "task headroom 0.000000 EUR", ModelAlias: "coding-cheap", PolicyVersion: &three},
+		{TaskID: "t1", Decision: "refused_budget", Reason: "task headroom 0.000000 EUR", ModelAlias: "small", PolicyVersion: &three},
 		// a task id as long as a key stays whole: it is the join key
 		{TaskID: "t-0123456789abcdef0123456789abcdef01", Decision: "escalated", Tool: policy.ToolEscalate},
-		{TaskID: "t1", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "review-frontier", PolicyVersion: &three, SpendEUR: &spend,
+		{TaskID: "t1", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "big", PolicyVersion: &three, SpendEUR: &spend,
 			OutputLimit: &limit, HoldEUR: &hold},
 	}
 	for _, row := range rows {
@@ -167,9 +167,9 @@ func TestAuditRowsGoToOTelScrubbed(t *testing.T) {
 			"audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.output_limit": "2250", "audit.hold_eur": "0.5",
 			"audit.over_hold": "COST OVER HOLD: model x cost 0.6 EUR against a hold of 0.5 EUR; booked in full", "audit.deployment": "deepseek/deepseek-flash"},
 		{"body": "audit refused_budget", "task.id": "t1", "audit.decision": "refused_budget", "audit.kind": "agent", "audit.reason": "task headroom 0.000000 EUR",
-			"audit.model_alias": "coding-cheap", "audit.policy_version": "3"},
+			"audit.model_alias": "small", "audit.policy_version": "3"},
 		{"body": "audit escalated", "task.id": "t-0123456789abcdef0123456789abcdef01", "audit.decision": "escalated", "audit.kind": "agent", "audit.tool": policy.ToolEscalate},
-		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.kind": "review", "audit.model_alias": "review-frontier",
+		{"body": "audit allowed", "task.id": "t1", "audit.decision": "allowed", "audit.kind": "review", "audit.model_alias": "big",
 			"audit.policy_version": "3", "audit.spend_eur": "0.25", "audit.output_limit": "2250", "audit.hold_eur": "0.5"},
 	}
 	got := rig.logs.attributes()
@@ -206,16 +206,16 @@ func (failingAudit) InsertAudit(context.Context, AuditRow) error { return errors
 func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	rig := newTelemetryRig(t)
 	stub := newStubUpstream(t)
-	store := newMemStore(Task{Classes: coder, ModelAlias: "coding-cheap", ID: "t1", BudgetEUR: 5, Status: "running", Repository: "sf/demo"})
+	store := newMemStore(Task{Classes: coder, ModelAlias: "small", ID: "t1", BudgetEUR: 5, Status: "running", Repository: "sf/demo"})
 	store.setPolicy(testPolicy(3, 1))
 	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "u"}}, Store: rig.tel.Audited(store),
 		Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices, Telemetry: rig.tel})
 	stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0125", "x-litellm-model-name": "zai/glm-5.3"}})
-	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusOK {
+	if rr := doChat(t, s.Routes("test"), chatBody("small")); rr.Code != http.StatusOK {
 		t.Fatalf("call = %d %s", rr.Code, rr.Body.String())
 	}
 	stub.setResp(stubResp{status: http.StatusInternalServerError, body: `{"error":"boom"}`})
-	if rr := doChat(t, s.Routes("test"), chatBody("coding-cheap")); rr.Code != http.StatusInternalServerError {
+	if rr := doChat(t, s.Routes("test"), chatBody("small")); rr.Code != http.StatusInternalServerError {
 		t.Fatalf("failing call = %d", rr.Code)
 	}
 
@@ -224,13 +224,13 @@ func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 		t.Fatalf("%d spans, want 2 server spans and 2 upstream calls", len(ended))
 	}
 	for i, want := range []map[string]string{
-		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "coding-cheap", "upstream.status": "200",
-			"hold_eur": "0.131204", "cost_eur": "0.0125", "over_hold": "false", "deployment": "zai/glm-5.3"},
-		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "coding-cheap", "upstream.status": "500",
-			"hold_eur": "0.131204", "cost_eur": "0", "over_hold": "false"},
+		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "small", "upstream.status": "200",
+			"hold_eur": "0.13119699999999998", "cost_eur": "0.0125", "over_hold": "false", "deployment": "zai/glm-5.3"},
+		{"task.id": "t1", "project": "sf/demo", "kind": "model", "name": "small", "upstream.status": "500",
+			"hold_eur": "0.13119699999999998", "cost_eur": "0", "over_hold": "false"},
 	} {
 		call, server := ended[2*i], ended[2*i+1]
-		if call.Name() != "model coding-cheap" || server.Name() != "POST /v1/chat/completions" {
+		if call.Name() != "model small" || server.Name() != "POST /v1/chat/completions" {
 			t.Fatalf("spans %q, %q", call.Name(), server.Name())
 		}
 		if call.Parent().SpanID() != server.SpanContext().SpanID() {
@@ -248,11 +248,11 @@ func TestGatewaySpansAndMetricsOfAModelCall(t *testing.T) {
 	}
 	m := rig.collect(t)
 	if got := m["gateway.calls"]; !reflect.DeepEqual(got, map[string]float64{
-		"kind=model,name=coding-cheap,project=sf/demo,status=200": 1,
-		"kind=model,name=coding-cheap,project=sf/demo,status=500": 1}) {
+		"kind=model,name=small,project=sf/demo,status=200": 1,
+		"kind=model,name=small,project=sf/demo,status=500": 1}) {
 		t.Fatalf("gateway.calls = %v", got)
 	}
-	if got := m["gateway.call.duration"]; !reflect.DeepEqual(got, map[string]float64{"kind=model,name=coding-cheap": 2}) {
+	if got := m["gateway.call.duration"]; !reflect.DeepEqual(got, map[string]float64{"kind=model,name=small": 2}) {
 		t.Fatalf("gateway.call.duration samples = %v", got)
 	}
 	if got := m["gateway.spend.eur"]; !reflect.DeepEqual(got, map[string]float64{"project=sf/demo": 0.0125}) {

@@ -1093,7 +1093,7 @@ func TestPlanLoopAcceptFilesTheCards(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.models, []string{"factory/coding-frontier"}) ||
+	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.models, []string{"factory/big"}) ||
 		!slices.Equal(h.requests, []int{1}) || !slices.Equal(h.created, []string{"1 sebastian 7"}) || !slices.Equal(h.states, []string{"running"}) {
 		t.Fatalf("plans %q models %v requests %v created %v states %v", h.plans, h.models, h.requests, h.created, h.states)
 	}
@@ -1447,7 +1447,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener\n\nBuild a link shortener, cc @ops."})
 	raw, sha, _ := planSHA(testPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(true, "built")); err != nil {
 		t.Fatal(err)
 	}
@@ -1480,7 +1480,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	splitStore.CreateTask(ctx, Task{ID: "t-big", Kind: "agent", Status: "closed", Repository: "sf/r", IssueNumber: 7, PRNumber: 9, Objective: "Links\n\nThe page and the API."})
 	raw, sha, _ = planSHA(splitPlan())
 	splitStore.AddPlanRevision(ctx, "t-big", raw, sha)
-	if _, err := runSession(t, nil, splitRunner, SessionInput{TaskID: "t3", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(true, "built")); err != nil {
+	if _, err := runSession(t, nil, splitRunner, SessionInput{TaskID: "t3", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
 		t.Fatal(err)
 	}
 	env = podEnv(kube.podAt(0))
@@ -1684,7 +1684,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string{"an earlier finding"})
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -1726,7 +1726,7 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -1876,7 +1876,7 @@ func TestRunPlanTakesAToolFiling(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -1939,8 +1939,8 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 		files[file] = []byte(strings.Replace(s, old, new, 1))
 	}
 	edit("policy.yaml", "  agent_time: 20m\n", "  agent_time: 20m\n  check_in: 15m\n")
-	edit("policy.yaml", "  planner:\n    session: plan\n    models: [coding-cheap, coding-frontier]\n    supervisor_model: supervisor\n",
-		"  planner:\n    session: plan\n    models: [coding-cheap, coding-frontier]\n    supervisor_model: supervisor\n    time: {agent_time: 5m, check_in: 0s}\n")
+	edit("policy.yaml", "  planner:\n    session: plan\n    models: [small, big]\n    supervisor_model: supervisor\n",
+		"  planner:\n    session: plan\n    models: [small, big]\n    supervisor_model: supervisor\n    time: {agent_time: 5m, check_in: 0s}\n")
 	tree, err := policy.ParseTree(files)
 	if err != nil {
 		t.Fatal(err)
@@ -1961,7 +1961,7 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(true, "no plan yet")
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string{})
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{})
 		if err == nil {
 			var res PlanResult
 			err = val.Get(&res)
@@ -2125,7 +2125,7 @@ func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -2156,7 +2156,7 @@ func TestRunPlanNamesACap(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -2183,14 +2183,14 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
-	store.overHolds = map[string]OverHoldCall{"t-plan": {Alias: "coding-frontier", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576,
+	store.overHolds = map[string]OverHoldCall{"t-plan": {Alias: "big", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576,
 		OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745}}
 	pinned := fixtureVersion(t)
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/coding-frontier", int64(7), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -2202,7 +2202,7 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	want := []string{"plan: the session ended without filing a plan through the file_plan tool",
-		"plan: the session ended without a last message: " + said + "; a model call on coding-frontier crossed its cost hold: " +
+		"plan: the session ended without a last message: " + said + "; a model call on big crossed its cost hold: " +
 			"22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
 			"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"}
 	if !slices.Equal(res.Findings, want) {

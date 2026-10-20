@@ -1101,7 +1101,7 @@ func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
 // The stronger model is declared beside the session's, so a running
 // session can switch to it (roadmap 222, item 5); none twice.
 func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 0, "", "coding-frontier", "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 0, "", "big", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1114,12 +1114,12 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	models := cfg.Provider["factory"].Models
-	if len(models) != 2 || models["coding-cheap"] == nil || models["coding-frontier"] == nil {
+	if len(models) != 2 || models["small"] == nil || models["big"] == nil {
 		t.Fatalf("models = %v, want both rungs", models)
 	}
-	oc := &Opencode{Model: "factory/coding-cheap"}
-	oc.SetModel("factory/coding-frontier")
-	if p, id := oc.model(); p != "factory" || id != "coding-frontier" {
+	oc := &Opencode{Model: "factory/small"}
+	oc.SetModel("factory/big")
+	if p, id := oc.model(); p != "factory" || id != "big" {
 		t.Fatalf("model after the switch = %s/%s", p, id)
 	}
 }
@@ -1128,7 +1128,7 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 // model, declared beside the session's (roadmap 222, item 6); the work
 // guide names the rule once a class lists delegate.
 func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-frontier", 10000, 40, 0, "factory/coding-cheap", "coding-cheap")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "big", 10000, 40, 0, "factory/small", "small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1141,10 +1141,10 @@ func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
 	if err := json.Unmarshal(got, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Agent["general"]["model"] != "factory/coding-cheap" || cfg.Agent["explore"]["model"] != "factory/coding-cheap" || cfg.Agent["build"]["model"] != nil {
+	if cfg.Agent["general"]["model"] != "factory/small" || cfg.Agent["explore"]["model"] != "factory/small" || cfg.Agent["build"]["model"] != nil {
 		t.Fatalf("agents = %v, want general and explore on the cheap model, build on the session's", cfg.Agent)
 	}
-	if models := cfg.Provider["factory"].Models; len(models) != 2 || models["coding-cheap"] == nil {
+	if models := cfg.Provider["factory"].Models; len(models) != 2 || models["small"] == nil {
 		t.Fatalf("models = %v, want the cheap model declared", models)
 	}
 	if g := workGuide([]string{policy.ToolEscalate, policy.ToolDelegate}); !strings.Contains(g, downARung) {
@@ -1169,7 +1169,7 @@ func TestBriefStatesTheSessionsFacts(t *testing.T) {
 // limit.input - compaction.reserved (overflow.ts, v1.18.32): with reserved 0,
 // the threshold is limit.input.
 func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
-	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 100000, "")
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 100000, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1184,7 +1184,7 @@ func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	limit := cfg.Provider["factory"].Models["coding-cheap"].Limit
+	limit := cfg.Provider["factory"].Models["small"].Limit
 	if limit["input"] != 100000 || limit["context"] != 200000 || limit["output"] != 10000 {
 		t.Fatalf("limit = %v, want input 100000 inside context 200000", limit)
 	}
@@ -1195,7 +1195,7 @@ func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
 
 // A version pinned before context_tokens leaves opencode's own threshold.
 func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
-	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "coding-cheap", 10000, 40, 0, "")
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 0, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -63,7 +63,7 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   only the alias the task's class names for the purpose
   (`supervisor_model`, `review_model`, `audit_model`; 403 `refused_capability` else),
   runs while the task is running or in review, is held and booked like an
-  agent's under the ref `<purpose>/<alias>` (e.g. `review/review-frontier`),
+  agent's under the ref `<purpose>/<alias>` (e.g. `review/big`),
   and its audit row has the purpose as `kind` (`agent` for an agent's
   call, `factoryd` for a factoryd call refused before its purpose is
   known). The `X-Factory-*` headers are read only behind the token: with
@@ -263,7 +263,7 @@ completion (`closing`), a closed issue or a PR closed without merge
 finish it failed; an open PR is adopted, and the run goes straight to
 its checks and the review wait, with no new session. Then: up to
 `limits.sessions` (3) attempts, each `SetState running` then
-`RunSession`, the first on `MODEL` (default `factory/coding-cheap`), or
+`RunSession`, the first on `MODEL` (default `factory/small`), or
 on `STRONGER_MODEL` when the task is a coding card (`session: code`) of
 a project whose file sets `model: stronger` (the planner and the
 screening keep their own rungs); every session starts from the task branch's head on the fork when the
@@ -286,7 +286,7 @@ retry through a Forgejo outage, so no failed task keeps an open PR; one
 Forgejo refuses (a 4xx, which no retry fixes) is logged and the task
 completes anyway.
 Red checks make the next attempt climb to `STRONGER_MODEL` (default
-`factory/coding-frontier`) with the failures as findings; supervision
+`factory/big`) with the failures as findings; supervision
 (below) can redirect, climb or escalate. Red checks on a head that a
 session left as it was (the agent could not act on them) run once more
 before their findings go back to the agent: `RerunChecks` puts an empty
@@ -903,8 +903,8 @@ must be the class's alias for the purpose; else 403 `refused_capability`),
 the task headroom (else 402 `refused_budget`), the day headroom (else
 402 `refused_day_cap`), the month headroom (else 402
 `refused_month_cap`) and the project's month headroom (else 402
-`refused_project_cap`). `review-frontier` and `supervisor` are not in
-`coder`'s `models`: the agent cannot call them.
+`refused_project_cap`). The agent's key names the class's `models`
+only; a purpose's call rides factoryd's token.
 
 Intake gives every agent task the capability class `coder`
 (`tasks.required_capabilities`; a one-shot backfill gave it to older
@@ -2346,7 +2346,7 @@ Metrics:
   step reports, `direction` `input`, `output` or `reasoning`.
 
 `model_alias` is the part of `MODEL` after the provider
-(`coding-cheap`), the gateway's alias.
+(`small`), the gateway's alias.
 
 ## factoryd's own network
 

@@ -19,7 +19,7 @@ import (
 // readsTimeline is t-r's timeline as factoryd writes it: one session that
 // pushed c0ffee1, two checks runs (the newest 1/2), two model reviews and
 // an audit.
-const readsTimeline = `{"step":"session_start","time":"2026-10-11T09:00:00Z","session":"s-1","attempt":1,"model":"coding-cheap"}
+const readsTimeline = `{"step":"session_start","time":"2026-10-11T09:00:00Z","session":"s-1","attempt":1,"model":"small"}
 {"step":"checks","time":"2026-10-11T09:20:00Z","started":"2026-10-11T09:15:00Z","commit":"c0ffee0","state":"failure","jobs":[{"name":"test","status":"failure","run_s":58}]}
 {"step":"model_review","time":"2026-10-11T09:21:00Z","started":"2026-10-11T09:20:00Z","commit":"c0ffee0","verdict":"concerns","summary":"the cache leaks","findings":["cache.go: evict","cache.go: bound","cache_test.go: test"],"round":1}
 {"step":"pushed","time":"2026-10-11T09:40:00Z","session":"s-1","branch":"factory/t-r","commit":"c0ffee1"}
@@ -171,13 +171,13 @@ func TestChatPlanBuiltFromAnswers(t *testing.T) {
 // checks, the plan and the sessions, before its objective.
 func TestChatCardInFull(t *testing.T) {
 	r, g := newReadsRig(t)
-	// t-r's four coding-cheap calls (trCalls): prompt tokens 30,000 to
+	// t-r's four small calls (trCalls): prompt tokens 30,000 to
 	// 52,000, the lower of the middle two 40,000; 130,000 of 168,651 cached
 	// (77.1%); 0.0072 EUR over four
 	equal(t, "the card reads", reads(t, r, g, "card", `{"task_id":"t-r"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`), []string{
 		`#11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox), €1.23 of €5.00` + "\n" +
 			"lane ready of process maintenance\nissue https://git.example/sf/code/issues/11\nsessions: 1 of 3\n" +
-			"cost: coding-cheap, 4 calls, prompt tokens per call median 40,000 max 52,000, 77% cached, 0.0018 EUR per call\n" + s2Cost +
+			s2Cost + "cost: small, 4 calls, prompt tokens per call median 40,000 max 52,000, 77% cached, 0.0018 EUR per call\n" +
 			"pull request #9 https://git.example/sf/code/pulls/9, head c0ffee1, open\n" +
 			"reviews: concerns (2 findings): see pr\naudit: clear: see pr\nchecks: 1/2: see pr\nsessions: 1: see session\n" +
 			"objective: Speed up the board.",

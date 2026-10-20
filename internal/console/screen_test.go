@@ -701,7 +701,7 @@ func TestDrawerOverview(t *testing.T) {
 	for _, want := range []string{`<h4>Reviews and audit of <a href="https://git.example/sf/code/pulls/9" target="_blank" rel="noopener">PR #9</a></h4>`,
 		"<dd>approve: adds the column safely<br>- remark: a follow-up files the docs<br>- dropped (grep finds the client closed in handler.go:40): internal/api.go: the handler leaks the client</dd>",
 		"<dt>Earlier review 1</dt><dd>concerns: the column lacks a default<br>- 0018_x.sql: add a default<br>- dropped (main already held the default): 0018_x.sql: add a default</dd>",
-		"<dt>Security audit</dt><dd>findings (coding-frontier, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
+		"<dt>Security audit</dt><dd>findings (big, zai/glm-5.3)<br>- secret in the diff: private key: <code>internal/x/x_test.go:14</code>"} {
 		if !strings.Contains(merge, want) {
 			t.Errorf("t-m's overview lacks %s", want)
 		}
@@ -791,14 +791,14 @@ func TestDrawerChat(t *testing.T) {
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
 	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2026-10-11T09:00:00Z","step":"session_start","session":"s-1","model":"coding-standard","attempt":1}
 {"time":"2026-10-11T09:20:00Z","step":"session_end","session":"s-1","outcome":"failed"}
-{"time":"2026-10-11T10:00:00Z","step":"session_start","session":"s-2","model":"coding-frontier","attempt":2}
+{"time":"2026-10-11T10:00:00Z","step":"session_start","session":"s-2","model":"big","attempt":2}
 `)
 	r.objects["sessions/t-run/s-2.jsonl"] = []byte(`{"time":"2026-10-11T10:01:00.5Z","kind":"model_call","detail":{"text":"Reading the cache first.","cost":0.01}}
 {"time":"2026-10-11T10:01:30Z","kind":"tool_call","detail":{"tool":"read"}}
 {"time":"2026-10-11T10:02:00Z","kind":"model_call","detail":{"cost":0.01}}
 {"time":"2026-10-11T10:04:00Z","kind":"model_call","detail":{"text":"Done <b>here</b>.\nNext: the tests."}}
 `)
-	r.objects["sessions/t-pr/timeline.jsonl"] = []byte(`{"time":"2026-10-11T08:00:00Z","step":"session_start","session":"s-9","model":"coding-cheap","attempt":1}
+	r.objects["sessions/t-pr/timeline.jsonl"] = []byte(`{"time":"2026-10-11T08:00:00Z","step":"session_start","session":"s-9","model":"small","attempt":1}
 {"time":"2026-10-11T08:30:00Z","step":"session_end","session":"s-9","outcome":"pushed"}
 `)
 	r.objects["sessions/t-pr/s-9.jsonl"] = []byte(`{"time":"2026-10-11T08:10:00Z","kind":"model_call","detail":{"text":"Drawing it."}}
@@ -824,7 +824,7 @@ func TestDrawerChat(t *testing.T) {
 		drawerTabMarkup("t-run", "overview", "Overview", false) + drawerTabMarkup("t-run", "chat", "Session", true) +
 			drawerTabMarkup("t-run", "activity", "Activity", false) + drawerTabMarkup("t-run", "files", "Files", false) + `</nav>`,
 		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
-<p class="meta">Session 2 · coding-frontier · running</p>
+<p class="meta">Session 2 · big · running</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 2" data-task="t-run" data-session="s-2">
 <div class="msg agent" data-key="s-2@2026-10-11T10:01:00.5Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 10:01Z</time></p><p class="said">Reading the cache first.</p></div>
 <div class="msg you" data-key="e2"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 10:03Z</time></p><p class="said">Rebase first.</p></div>
@@ -845,7 +845,7 @@ Next: the tests.</p></div>
 	if ended := drawer(t, r, ck, "t-pr", ""); !strings.Contains(ended, drawerTabMarkup("t-pr", "overview", "Overview", true)) {
 		t.Errorf("a card that runs no session does not open on Overview:\n%s", ended)
 	}
-	if got, want := drawer(t, r, ck, "t-pr", "chat"), `<p class="meta">Session 1 · coding-cheap · pushed</p>
+	if got, want := drawer(t, r, ck, "t-pr", "chat"), `<p class="meta">Session 1 · small · pushed</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session 1" data-task="t-pr" data-session="s-9">
 <div class="msg agent" data-key="s-9@2026-10-11T08:10:00Z"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">agent</span> <time>10-11 08:10Z</time></p><p class="said">Drawing it.</p></div>
 <div class="msg you" data-key="e4"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 08:20Z</time></p><p class="said">Use the grid.</p></div>
@@ -870,7 +870,7 @@ func TestDrawerSteer(t *testing.T) {
 		steered = append(steered, taskID+" "+user+": "+text)
 		return nil
 	}
-	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2020-01-01T00:00:00Z","step":"session_start","session":"s-1","model":"coding-frontier","attempt":1}
+	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2020-01-01T00:00:00Z","step":"session_start","session":"s-1","model":"big","attempt":1}
 `)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()

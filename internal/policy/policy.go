@@ -82,8 +82,8 @@ func (d Document) Location() (*time.Location, error) {
 // file, whose keys replace the policy's: a preference, not a cap, but for
 // monthly_eur, which may not exceed the policy's.
 type ChatConfig struct {
-	// Model is the LiteLLM alias the project agent calls (purpose
-	// operator).
+	// Model is the class the project agent calls (purpose operator); the
+	// compaction of its threads calls Small.
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
 	// VisionModel is the alias a chat turn's image look runs on (purpose
 	// vision); the member who pasted the image approved its spend.
@@ -131,13 +131,13 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}
 
 // ChatModels are the aliases a chat block may name.
-var ChatModels = []string{"operator"}
+var ChatModels = []string{Big, Small}
 
 // ChatVisionModels are the vision aliases a chat block may name.
 var ChatVisionModels = []string{"vision"}
 
 // DefaultChat is the chat block of a policy without one.
-var DefaultChat = ChatConfig{Model: "operator", VisionModel: "vision", MonthlyEUR: 5,
+var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
@@ -851,9 +851,14 @@ const (
 // Purposes are the factoryd purposes the gateway admits.
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision}
 
-// PulseModel is the LiteLLM alias of a chat thread's compaction (purpose
-// compact), its name a leftover of the pulse band it once served.
-const PulseModel = "pulse"
+// The two model classes every text call names (Sebastian, 2026-10-20).
+// A class is a LiteLLM alias routed to its z.ai model, the Alibaba model
+// behind it as fallback. A call's purpose sits on its audit row and in
+// its ledger ref, not in its alias.
+const (
+	Big   = "big"
+	Small = "small"
+)
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -1188,14 +1193,14 @@ const ClassChat = "chat"
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
 // project agent's (operator) is the chat block's and the compaction's is
-// PulseModel, for a chat task only.
+// Small, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
 	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeVision {
 		switch {
 		case !slices.Contains(classes, ClassChat):
 			return ""
 		case purpose == PurposeCompact:
-			return PulseModel
+			return Small
 		case purpose == PurposeVision:
 			return d.ChatOf(ProjectConfig{}).VisionModel
 		}

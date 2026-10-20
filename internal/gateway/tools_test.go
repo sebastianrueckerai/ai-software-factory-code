@@ -28,7 +28,7 @@ import (
 // 90 s, fal megapixel endpoints held at 4 megapixels.
 func toolPolicy(scrape policy.ToolCap) policy.Version {
 	v := testPolicy(7, 20)
-	v.Document.Classes["coder"] = policy.Class{Models: []string{"coding-cheap"}, Tools: map[string]policy.ToolCap{
+	v.Document.Classes["coder"] = policy.Class{Models: []string{"small"}, Tools: map[string]policy.ToolCap{
 		policy.ToolWebScrape: scrape,
 		policy.ToolWebSearch: {MaxRequests: 30, MaxEUR: 0.2},
 		policy.ToolReplicate: {MaxRequests: 5, MaxEUR: 0.5},
@@ -327,7 +327,7 @@ func TestAskToolsSayWhenToCallThem(t *testing.T) {
 // audited like any tool the class lacks.
 func TestMCPListsOnlyTheClassTools(t *testing.T) {
 	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
-	pv.Document.Classes["reader"] = policy.Class{Models: []string{"coding-cheap"}, Tools: map[string]policy.ToolCap{
+	pv.Document.Classes["reader"] = policy.Class{Models: []string{"small"}, Tools: map[string]policy.ToolCap{
 		policy.ToolWebSearch: {MaxRequests: 3, MaxEUR: 0.1}, policy.ToolRequestInfo: {}}}
 	for _, tc := range []struct {
 		classes []string

@@ -61,12 +61,12 @@ limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 
 classes:
   coder:
     session: code
-    models: [coding-cheap, coding-frontier]
+    models: [small, big]
     tools: {}
-    review_model: review-frontier
+    review_model: big
     supervisor_model: supervisor
 prices:
-  max_output_tokens: {coding-cheap: 24576, coding-frontier: 24576, review-frontier: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
+  max_output_tokens: {small: 24576, big: 24576, supervisor: 18432, operator: 4096, pulse: 2048}
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}
@@ -640,7 +640,7 @@ func newHarness(t *testing.T, reg *registry) *harness {
 		FactoryNamespace:     factoryNS,
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
 		GitBaseURL:           "http://forgejo-http.forgejo.svc.cluster.local:3000",
-		Models:               factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
+		Models:               factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		ChecksPoll:           time.Millisecond,

@@ -262,7 +262,7 @@ func TestRunSessionCountsAsLiveUntilItEnds(t *testing.T) {
 	}
 	var atPod []string
 	kube.onCreatePod = func() { atPod = runner.liveSessions("r1") }
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}

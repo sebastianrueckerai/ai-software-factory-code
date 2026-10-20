@@ -178,12 +178,12 @@ func TestLedgerCosts(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
-		('t1', (now() AT TIME ZONE 'UTC')::date, 'model', 'coding-cheap', 0.5),
-		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'coding-cheap', 0.25),
+		('t1', (now() AT TIME ZONE 'UTC')::date, 'model', 'small', 0.5),
+		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'small', 0.25),
 		('t1', (now() AT TIME ZONE 'UTC')::date, 'settlement', 'litellm', 0.125),
-		('t1', '2026-01-01', 'model', 'coding-cheap', 3),
-		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/review-frontier', 0.0625),
-		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/review-frontier', 0.0625)`); err != nil {
+		('t1', '2026-01-01', 'model', 'small', 3),
+		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/big', 0.0625),
+		('t2', (now() AT TIME ZONE 'UTC')::date, 'model', 'review/big', 0.0625)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, stmt := range []string{
@@ -209,8 +209,8 @@ func TestLedgerCosts(t *testing.T) {
 			{Day: today.Format(DateLayout), ByKind: map[string]float64{"model": 0.875, "settlement": 0.125}, Total: 1},
 		},
 		Tasks: []TaskCost{
-			{TaskID: "t1", EUR: 3.625, Lines: []CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 3.5}, {Kind: "settlement", Ref: "litellm", EUR: 0.125}}},
-			{TaskID: "t2", EUR: 0.375, Lines: []CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 0.25}, {Kind: "model", Ref: "review/review-frontier", EUR: 0.125}}},
+			{TaskID: "t1", EUR: 3.625, Lines: []CostLine{{Kind: "model", Ref: "small", EUR: 3.5}, {Kind: "settlement", Ref: "litellm", EUR: 0.125}}},
+			{TaskID: "t2", EUR: 0.375, Lines: []CostLine{{Kind: "model", Ref: "review/big", EUR: 0.125}, {Kind: "model", Ref: "small", EUR: 0.25}}},
 		},
 	}
 	if !reflect.DeepEqual(c, want) {
@@ -234,7 +234,7 @@ func TestHolds(t *testing.T) {
 		('a', 0.02, 0.01, 'running'), ('b', 1, 0, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "coding-cheap", Bytes: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
+	req := HoldRequest{TaskID: "a", Kind: KindModel, Ref: "small", Bytes: 1000, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
 
 	// task a: 0.01 free; 1000 input tokens cost 0.001, 0.009 buys 2250 output tokens
 	h, err := TakeHold(ctx, db, req)
@@ -340,7 +340,7 @@ func TestHolds(t *testing.T) {
 		rows.Scan(&l)
 		ledger = append(ledger, l)
 	}
-	want := []string{"a model coding-cheap 0.004", "a model coding-cheap 0.006", "standing:sf/app standing resource/1 5", "b model x 0.003", "b model y 0.003",
+	want := []string{"a model small 0.004", "a model small 0.006", "standing:sf/app standing resource/1 5", "b model x 0.003", "b model y 0.003",
 		"b model z 0.004", "b model z 0.004", "b model z 0.004"}
 	if !reflect.DeepEqual(ledger, want) {
 		t.Fatalf("ledger = %q, want %q", ledger, want)
@@ -361,7 +361,7 @@ func TestModelHoldCalibrates(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status) VALUES ('c', 5, 'running'), ('d', 5, 'running')`); err != nil {
 		t.Fatal(err)
 	}
-	req := HoldRequest{TaskID: "c", Kind: KindModel, Ref: "coding-cheap", Bytes: 480000, Price: Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: unbound},
+	req := HoldRequest{TaskID: "c", Kind: KindModel, Ref: "small", Bytes: 480000, Price: Price{In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: unbound},
 		WantOut: 4096, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf}
 	// 480,000 × 0.30e-6 + 4,096 × 1.50e-6
 	h, err := TakeHold(ctx, db, req)
@@ -373,8 +373,8 @@ func TestModelHoldCalibrates(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
-		('c', 'model', 'coding-cheap', 0.02, 0, 0, 0, 500000), ('c', 'model', 'review/coding-cheap', 0.01, 1000, 0, 10, 2000),
-		('d', 'model', 'coding-cheap', 0.01, 5000, 0, 10, 100000)`); err != nil {
+		('c', 'model', 'small', 0.02, 0, 0, 0, 500000), ('c', 'model', 'review/small', 0.01, 1000, 0, 10, 2000),
+		('d', 'model', 'small', 0.01, 5000, 0, 10, 100000)`); err != nil {
 		t.Fatal(err)
 	}
 	req.Bytes = 495000
@@ -382,10 +382,10 @@ func TestModelHoldCalibrates(t *testing.T) {
 		t.Fatalf("calibrated hold without a measured floor = (%+v, %v), want 0.05835103125 EUR", h, err)
 	}
 	// e's second call found its first call's 1,000 prompt tokens cached;
-	// its two calls on review/coding-cheap found nothing cached
+	// its two calls on review/small found nothing cached
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
-		('e', 'model', 'coding-cheap', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'coding-cheap', 0.01, 1200, 1000, 10, 4800),
-		('e', 'model', 'review/coding-cheap', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'review/coding-cheap', 0.01, 1200, 0, 10, 4800)`); err != nil {
+		('e', 'model', 'small', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'small', 0.01, 1200, 1000, 10, 4800),
+		('e', 'model', 'review/small', 0.01, 1000, 0, 10, 4000), ('e', 'model', 'review/small', 0.01, 1200, 0, 10, 4800)`); err != nil {
 		t.Fatal(err)
 	}
 	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.02190103125) {
@@ -393,13 +393,13 @@ func TestModelHoldCalibrates(t *testing.T) {
 	}
 	// f's second call found 1,000 of its first call's 2,000 tokens cached
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
-		('f', 'model', 'coding-cheap', 0.01, 2000, 0, 10, 8000), ('f', 'model', 'coding-cheap', 0.01, 3000, 1000, 10, 12000)`); err != nil {
+		('f', 'model', 'small', 0.01, 2000, 0, 10, 8000), ('f', 'model', 'small', 0.01, 3000, 1000, 10, 12000)`); err != nil {
 		t.Fatal(err)
 	}
 	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.04012603125) {
 		t.Fatalf("calibrated hold under a floor of half = (%+v, %v), want 0.04012603125 EUR", h, err)
 	}
-	req.Ref = "coding-frontier"
+	req.Ref = "big"
 	if h, err := TakeHold(ctx, db, req); err != nil || !near(h.EUR, 0.154644) {
 		t.Fatalf("first hold on another ref = (%+v, %v), want the byte bound's 0.154644 EUR", h, err)
 	}
@@ -413,8 +413,8 @@ func TestModelHoldCalibrates(t *testing.T) {
 		}
 		calls[i].At = time.Time{}
 	}
-	want := []ModelCall{{Ref: "coding-cheap", EUR: 0.007818, Usage: Usage{135000, 131600, 900, 480000}},
-		{Ref: "coding-cheap", EUR: 0.02, Usage: Usage{BodyBytes: 500000}}, {Ref: "review/coding-cheap", EUR: 0.01, Usage: Usage{1000, 0, 10, 2000}}}
+	want := []ModelCall{{Ref: "small", EUR: 0.007818, Usage: Usage{135000, 131600, 900, 480000}},
+		{Ref: "small", EUR: 0.02, Usage: Usage{BodyBytes: 500000}}, {Ref: "review/small", EUR: 0.01, Usage: Usage{1000, 0, 10, 2000}}}
 	if !reflect.DeepEqual(calls, want) {
 		t.Fatalf("model calls = %+v, want %+v", calls, want)
 	}
@@ -422,9 +422,9 @@ func TestModelHoldCalibrates(t *testing.T) {
 
 // A session's opening is every model call that started before its first
 // one ended (roadmap 243): s-a's three calls, its side call on
-// coding-cheap on its own alias, not a4, started after a1 ended; s-b's
-// one. s-c's first call was on coding-cheap, so its call after
-// the climb opens nothing on coding-frontier; s-d's first call, a swept
+// small on its own alias, not a4, started after a1 ended; s-b's
+// one. s-c's first call was on small, so its call after
+// the climb opens nothing on big; s-d's first call, a swept
 // hold, has no measure, so s-d counts none; factoryd's calls, rows from
 // before the session and a late release without a hold count none either.
 // Newest first, by the first call. Without an opening on the ref every
@@ -445,27 +445,27 @@ func TestOpeningIsWhatASessionStartsBeforeItsFirstCallEnds(t *testing.T) {
 			t.Fatalf("opening on %s = (%+v, %v), want %+v", ref, o, err, want)
 		}
 	}
-	opening("coding-frontier", Opening{AnyRef: true})
+	opening("big", Opening{AnyRef: true})
 
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, body_bytes) VALUES
-		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
-		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
-		('x', 'model', 'coding-cheap', 's-a', '2026-10-15T10:00:02Z', '2026-10-15T10:00:04Z', 4096, 0.001, 300, 1200),
-		('x', 'model', 'coding-frontier', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
-		('x', 'model', 'coding-frontier', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
-		('x', 'model', 'coding-cheap', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
-		('x', 'model', 'coding-frontier', 's-c', '2026-10-15T10:00:40Z', '2026-10-15T10:01:40Z', 24576, 0.30, 97021, 368195),
-		('x', 'model', 'coding-frontier', 's-d', '2026-10-15T10:00:50Z', '2026-10-15T11:00:50Z', 24576, 0.15, 0, 0),
-		('x', 'model', 'coding-frontier', 's-d', '2026-10-15T10:00:51Z', '2026-10-15T10:00:55Z', 24576, 0.02, 2000, 90000),
-		('x', 'model', 'review/coding-frontier', '', '2026-10-15T10:01:00Z', '2026-10-15T10:01:05Z', 4096, 0.02, 20000, 95000),
-		('x', 'model', 'coding-frontier', '', NULL, '2026-10-15T09:00:00Z', 0, 0.40, 140000, 600000),
-		('x', 'model', 'coding-frontier', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
+		('x', 'model', 'big', 's-a', '2026-10-15T10:00:00Z', '2026-10-15T10:00:08Z', 24576, 0.01, 1607, 7031),
+		('x', 'model', 'big', 's-a', '2026-10-15T10:00:01Z', '2026-10-15T10:00:09Z', 24576, 0.02, 10144, 44342),
+		('x', 'model', 'small', 's-a', '2026-10-15T10:00:02Z', '2026-10-15T10:00:04Z', 4096, 0.001, 300, 1200),
+		('x', 'model', 'big', 's-a', '2026-10-15T10:00:09Z', '2026-10-15T10:00:15Z', 24576, 0.02, 12000, 50000),
+		('x', 'model', 'big', 's-b', '2026-10-15T10:00:20Z', '2026-10-15T10:00:25Z', 24576, 0.02, 9946, 43683),
+		('x', 'model', 'small', 's-c', '2026-10-15T10:00:30Z', '2026-10-15T10:00:35Z', 24576, 0.01, 11000, 50000),
+		('x', 'model', 'big', 's-c', '2026-10-15T10:00:40Z', '2026-10-15T10:01:40Z', 24576, 0.30, 97021, 368195),
+		('x', 'model', 'big', 's-d', '2026-10-15T10:00:50Z', '2026-10-15T11:00:50Z', 24576, 0.15, 0, 0),
+		('x', 'model', 'big', 's-d', '2026-10-15T10:00:51Z', '2026-10-15T10:00:55Z', 24576, 0.02, 2000, 90000),
+		('x', 'model', 'review/big', '', '2026-10-15T10:01:00Z', '2026-10-15T10:01:05Z', 4096, 0.02, 20000, 95000),
+		('x', 'model', 'big', '', NULL, '2026-10-15T09:00:00Z', 0, 0.40, 140000, 600000),
+		('x', 'model', 'big', 's-b', NULL, '2026-10-15T10:00:26Z', 0, 0.01, 0, 0)`); err != nil {
 		t.Fatal(err)
 	}
-	side := OpeningCall{Ref: "coding-cheap", Bytes: 1200, WantOut: 4096}
-	a := []OpeningCall{{Ref: "coding-frontier", Bytes: 7031, WantOut: 24576}, {Ref: "coding-frontier", Bytes: 44342, WantOut: 24576}, side}
-	b := []OpeningCall{{Ref: "coding-frontier", Bytes: 43683, WantOut: 24576}}
-	opening("coding-frontier", Opening{Sessions: [][]OpeningCall{b, a}})
+	side := OpeningCall{Ref: "small", Bytes: 1200, WantOut: 4096}
+	a := []OpeningCall{{Ref: "big", Bytes: 7031, WantOut: 24576}, {Ref: "big", Bytes: 44342, WantOut: 24576}, side}
+	b := []OpeningCall{{Ref: "big", Bytes: 43683, WantOut: 24576}}
+	opening("big", Opening{Sessions: [][]OpeningCall{b, a}})
 	opening("coding-strong", Opening{Sessions: [][]OpeningCall{{{Ref: "coding-strong", Bytes: 50000, WantOut: 24576}}, {{Ref: "coding-strong", Bytes: 43683, WantOut: 24576}},
 		{{Ref: "coding-strong", Bytes: 7031, WantOut: 24576}, {Ref: "coding-strong", Bytes: 44342, WantOut: 24576}, side}}, AnyRef: true})
 
@@ -871,7 +871,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 	for _, id := range []string{"run", "rev", "done", "failed", "closing", "wait", "queued"} {
 		for _, kind := range []string{KindTool, KindModel} {
-			req := HoldRequest{TaskID: id, Kind: kind, Ref: "coding-cheap", Bytes: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
+			req := HoldRequest{TaskID: id, Kind: kind, Ref: "small", Bytes: 10, Price: testPrice, DayEUR: 20, MonthEUR: 50, ProjectEUR: inf,
 				EUR: 0.001, Cap: ToolCap{MaxRequests: 5, MaxEUR: 1}}
 			_, err := TakeHold(ctx, db, req)
 			var r *Refusal
@@ -902,10 +902,10 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, session, eur, expires_at) VALUES
-		('s', 'model', 'audit/coding-frontier', '', 0.146422, now() - interval '1 second'),
-		('s', 'model', 'coding-cheap', 's-1', 0.004, now() - interval '1 second'),
+		('s', 'model', 'audit/big', '', 0.146422, now() - interval '1 second'),
+		('s', 'model', 'small', 's-1', 0.004, now() - interval '1 second'),
 		('s', 'tool', 'web_scrape', 's-1', 0.02, now() - interval '1 second'),
-		('s', 'model', 'coding-cheap', 's-1', 0.5, now() + interval '1 hour'),
+		('s', 'model', 'small', 's-1', 0.5, now() + interval '1 hour'),
 		('s', 'resource', 'cx23', '', 0.0096, now() - interval '1 second')`); err != nil {
 		t.Fatal(err)
 	}
@@ -927,16 +927,16 @@ func TestSweepWritesAnAuditRowPerHold(t *testing.T) {
 		got = append(got, l)
 	}
 	want := []string{
-		"agent swept coding-cheap  0.004 0.004 true alice",
+		"agent swept small  0.004 0.004 true alice",
 		"agent swept  web_scrape 0.02 0.02 true alice",
-		"audit swept coding-frontier  0.146422 0.146422 true alice",
+		"audit swept big  0.146422 0.146422 true alice",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("audit rows = %q, want %q", got, want)
 	}
 	var booked string
 	if err := db.QueryRowContext(ctx, `SELECT string_agg(ref || '@' || session || '@' || (held_at IS NOT NULL)::text, ' ' ORDER BY eur) FROM ledger WHERE task_id = 's'`).Scan(&booked); err != nil ||
-		booked != "coding-cheap@s-1@true web_scrape@s-1@true audit/coding-frontier@@true" {
+		booked != "small@s-1@true web_scrape@s-1@true audit/big@@true" {
 		t.Fatalf("ledger = (%q, %v), want each swept hold's session and start", booked, err)
 	}
 	var spent float64

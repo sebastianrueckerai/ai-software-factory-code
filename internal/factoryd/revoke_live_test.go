@@ -42,7 +42,7 @@ func TestLiveRevocationRefusesTaskCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	minter := &gateway.LiteLLM{BaseURL: env["FACTORYD_LIVE_LITELLM_URL"], MasterKey: env["FACTORYD_LIVE_LITELLM_MASTER_KEY"]}
-	key, err := minter.Mint(ctx, taskID, taskID, []string{"coding-cheap"})
+	key, err := minter.Mint(ctx, taskID, taskID, []string{"small"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestLiveRevocationRefusesTaskCredentials(t *testing.T) {
 	}
 	modelCall := func() int {
 		req, _ := http.NewRequest(http.MethodPost, env["FACTORYD_LIVE_LITELLM_URL"]+"/v1/chat/completions",
-			strings.NewReader(`{"model":"coding-cheap","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`))
+			strings.NewReader(`{"model":"small","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`))
 		req.Header.Set("Authorization", "Bearer "+key)
 		req.Header.Set("Content-Type", "application/json")
 		return status(t, req)

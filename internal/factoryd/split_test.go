@@ -120,7 +120,7 @@ func TestRunSplitRefusesAnOverBoundFileWithoutASession(t *testing.T) {
 	v := runner.cfg.Policy()
 	v.Document.Risk.LargeLines = 1000
 	runner.cfg.Policy = func() policy.Version { return v }
-	val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), []string(nil))
+	val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/big", int64(0), []string(nil))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,7 +157,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), []string{"an earlier finding"})
+		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/big", int64(0), []string{"an earlier finding"})
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -213,7 +213,7 @@ func TestRunSplitRunsTheSessionWhenAllFilesAreUnderBound(t *testing.T) {
 	var res PlanResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), []string(nil))
+		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/big", int64(0), []string(nil))
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -272,7 +272,7 @@ func TestRunSplitSpendsNoSessionOnAnOverBoundRefusal(t *testing.T) {
 
 	run := func(findings []string) PlanResult {
 		t.Helper()
-		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/coding-frontier", int64(0), findings)
+		val, err := execActivity(t, runner, ActivityRunSplit, "t1", "factory/big", int64(0), findings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -398,7 +398,7 @@ func TestSplitFilesTheCardsAndCloses(t *testing.T) {
 	if final := g.run(t); final != "closed" || len(g.finals) != 1 || g.finals[0][1] != "split into #12, #13" {
 		t.Fatalf("final %q, finals %v", final, g.finals)
 	}
-	if !slices.Equal(*calls, []string{"run factory/coding-frontier 7 []", "file 1 sebastian 7"}) || slices.Contains(g.steps, "merge") {
+	if !slices.Equal(*calls, []string{"run factory/big 7 []", "file 1 sebastian 7"}) || slices.Contains(g.steps, "merge") {
 		t.Fatalf("calls %q, steps %v", *calls, g.steps)
 	}
 }
@@ -414,7 +414,7 @@ func TestSplitFailsTwiceThenAsksAHuman(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v", final, g.finals)
 	}
-	want := []string{"run factory/coding-frontier 7 []", `run factory/coding-frontier 7 ["split: no card's directories cover web/app.css"]`}
+	want := []string{"run factory/big 7 []", `run factory/big 7 ["split: no card's directories cover web/app.css"]`}
 	if !slices.Equal(*calls, want) {
 		t.Fatalf("calls %q, want %q", *calls, want)
 	}
@@ -439,8 +439,8 @@ func TestSplitSessionWhosePodNeverStartedIsNoTry(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v", final, g.finals)
 	}
-	want := []string{"run factory/coding-frontier 7 []", "run factory/coding-frontier 7 []", "run factory/coding-frontier 7 []",
-		`run factory/coding-frontier 7 ["split: no card's directories cover web/app.css"]`}
+	want := []string{"run factory/big 7 []", "run factory/big 7 []", "run factory/big 7 []",
+		`run factory/big 7 ["split: no card's directories cover web/app.css"]`}
 	if !slices.Equal(*calls, want) {
 		t.Fatalf("calls %q, want %q", *calls, want)
 	}
@@ -462,7 +462,7 @@ func TestSplitThatCannotStartAsksAHumanAtOnce(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v", final, g.finals)
 	}
-	if !slices.Equal(*calls, []string{"run factory/coding-frontier 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
+	if !slices.Equal(*calls, []string{"run factory/big 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
 		t.Fatalf("calls %q, escalated %q; want one session and the start failure asked", *calls, g.escalated)
 	}
 }
@@ -480,7 +480,7 @@ func TestSplitAtACapAsksAHumanAtOnce(t *testing.T) {
 	}
 	ask := "the gateway refused the split's session at a cap (refused_day_cap): split the pull request again once the day's free headroom funds a session, " +
 		"at the latest when the UTC day turns at 2026-10-15T00:00:00Z, or approve or deny it.\nfree headroom -1.000000 EUR"
-	if !slices.Equal(*calls, []string{"run factory/coding-frontier 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
+	if !slices.Equal(*calls, []string{"run factory/big 7 []"}) || !slices.Equal(g.escalated, []string{ask}) {
 		t.Fatalf("calls %q, escalated %q; want one session and the cap asked", *calls, g.escalated)
 	}
 	if got := escalationSource(ask); got != "split_cap" {
@@ -514,7 +514,7 @@ func TestSplitCancelledByTheGateSupervisorIsATry(t *testing.T) {
 	if final := g.run(t); final != "closed" || g.finals[0][1] != "split into #12, #13" {
 		t.Fatalf("final %q, finals %v", final, g.finals)
 	}
-	want := `run factory/coding-frontier 7 ["split: the gate supervisor cancelled RunSplit: stuck"]`
+	want := `run factory/big 7 ["split: the gate supervisor cancelled RunSplit: stuck"]`
 	if n := len(*calls); n < 2 || (*calls)[n-2] != want || (*calls)[n-1] != "file 1 sebastian 7" {
 		t.Fatalf("calls %q", *calls)
 	}

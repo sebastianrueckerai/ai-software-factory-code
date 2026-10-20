@@ -73,7 +73,7 @@ func TestStagesRedChecksKeepThenClimbThenCard(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
-	if got := models(g.sessions); !slices.Equal(got, []string{"coding-cheap", "coding-cheap", "coding-frontier"}) {
+	if got := models(g.sessions); !slices.Equal(got, []string{"small", "small", "big"}) {
 		t.Fatalf("models = %v", got)
 	}
 	if !slices.Equal(g.sessions[1].Findings, []string{"red 1"}) || !slices.Equal(g.sessions[2].Findings, []string{"red 2"}) {
@@ -682,7 +682,7 @@ func TestStagesForbiddenClass(t *testing.T) {
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(10*time.Hour, SignalPRClosed, TaskSignal{PR: 9})
 	g.run(t)
-	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{g.finalsReasonForbidden()}) || g.sessions[1].Model != "factory/coding-cheap" {
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{g.finalsReasonForbidden()}) || g.sessions[1].Model != "factory/small" {
 		t.Fatalf("second session = %+v", g.sessions[1])
 	}
 }
@@ -778,7 +778,7 @@ func TestStagesHealedRunKeepsTheStageMemory(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if len(g.sessions) != 1 || g.sessions[0].Model != "factory/coding-frontier" || !slices.Equal(g.sessions[0].Findings, second.Findings) {
+	if len(g.sessions) != 1 || g.sessions[0].Model != "factory/big" || !slices.Equal(g.sessions[0].Findings, second.Findings) {
 		t.Fatalf("sessions = %+v", g.sessions)
 	}
 	if len(g.earlier) != 2 || len(g.earlier[0]) != 1 || g.earlier[0][0].Summary != first.Summary ||
@@ -803,7 +803,7 @@ func TestStagesScreeningReportRunsOnTheStrongerRung(t *testing.T) {
 			models = append(models, model)
 			return ReportResult{}, nil
 		})
-	if final := g.run(t); final != "done" || !slices.Equal(models, []string{"factory/coding-frontier"}) {
+	if final := g.run(t); final != "done" || !slices.Equal(models, []string{"factory/big"}) {
 		t.Fatalf("final = %q, models %v", final, models)
 	}
 }
@@ -825,7 +825,7 @@ func TestStagesReviewConcernsLoop(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if got := models(g.sessions); !slices.Equal(got, []string{"coding-cheap", "coding-cheap", "coding-frontier"}) {
+	if got := models(g.sessions); !slices.Equal(got, []string{"small", "small", "big"}) {
 		t.Fatalf("models = %v", got)
 	}
 	if !slices.Equal(g.sessions[1].Findings, first.Findings) || !slices.Equal(g.sessions[2].Findings, second.Findings) {
@@ -1155,7 +1155,7 @@ func TestStagesReportTaskEndsDoneAtTheComment(t *testing.T) {
 	if final := g.run(t); final != "done" || len(g.sessions) != 0 || len(g.steps) != 0 {
 		t.Fatalf("final = %q, sessions %d, steps %v", final, len(g.sessions), g.steps)
 	}
-	if !slices.Equal(reports, []string{"factory/coding-cheap"}) || !slices.Equal(g.states, []string{"running"}) {
+	if !slices.Equal(reports, []string{"factory/small"}) || !slices.Equal(g.states, []string{"running"}) {
 		t.Fatalf("reports %v, states %v", reports, g.states)
 	}
 }
@@ -1248,7 +1248,7 @@ func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
 // one session, the card with the audit's section and why a human.
 func TestStagesAuditFindingsGoToTheCardWithTheReview(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) {
-		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding}, Model: "coding-frontier"}}
+		g.audits = []AuditResult{{Verdict: AuditFindings, Findings: []AuditFinding{plantedFinding}, Model: "big"}}
 	})
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})

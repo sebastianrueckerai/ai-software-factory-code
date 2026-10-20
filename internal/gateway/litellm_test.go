@@ -55,7 +55,7 @@ func TestLiteLLMMint(t *testing.T) {
 			defer srv.Close()
 
 			l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-			key, err := l.Mint(context.Background(), "42", "42", []string{"coding-cheap", "coding-frontier"})
+			key, err := l.Mint(context.Background(), "42", "42", []string{"small", "big"})
 
 			if tt.wantErr != "" {
 				if err == nil {
@@ -81,7 +81,7 @@ func TestLiteLLMMint(t *testing.T) {
 			if _, ok := gotPayload["max_budget"]; ok {
 				t.Fatalf("max_budget = %v, want none: the gateway's holds are the budget", gotPayload["max_budget"])
 			}
-			if models, _ := json.Marshal(gotPayload["models"]); string(models) != `["coding-cheap","coding-frontier"]` {
+			if models, _ := json.Marshal(gotPayload["models"]); string(models) != `["small","big"]` {
 				t.Fatalf("models = %s, want the task's aliases", models)
 			}
 			meta, _ := gotPayload["metadata"].(map[string]any)
@@ -106,7 +106,7 @@ func TestLiteLLMMintNamesTheFactorydSlot(t *testing.T) {
 	}))
 	defer srv.Close()
 	l := &LiteLLM{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()}
-	if _, err := l.Mint(context.Background(), "42/factoryd", "42", []string{"review-frontier"}); err != nil {
+	if _, err := l.Mint(context.Background(), "42/factoryd", "42", []string{"big"}); err != nil {
 		t.Fatal(err)
 	}
 	meta, _ := gotPayload["metadata"].(map[string]any)

@@ -336,7 +336,7 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 	last := "Fixed the slug check.\nnot_reproduced: the report's URL is gone; the check refused every dash"
 	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": last}}) + "\n" +
 		pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs)
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("RunSession = %+v, %v", res, err)
 	}
@@ -347,7 +347,7 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 	task.AgentSummary = last
 	runner, _, store = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	logs = pushedLine("c0ffee2") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee2")
-	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/coding-cheap"}, nil, logs); err != nil || res.Outcome != OutcomePushed {
+	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/small"}, nil, logs); err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("RunSession = %+v, %v", res, err)
 	}
 	if got := store.tasks["t1"].AgentSummary; got != last {
@@ -362,7 +362,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: refusal}}}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil {
 		t.Fatal(err)
@@ -375,7 +375,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	}
 	// a session the month cap did not refuse ends as before
 	runner, _, _ = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err = runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil || res.Outcome != OutcomeNoPush {
 		t.Fatalf("result without a month cap refusal = %+v, %v, want no_push", res, err)
@@ -392,7 +392,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
 	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal}, At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC), Allowed: true}
 	store.capRefusals = map[string]CapRefusal{"t1": capped}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 refused_day_cap"))
 	if err != nil {
 		t.Fatal(err)
@@ -439,7 +439,7 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 			if tc.audit != "" {
 				store.providerRefusals = map[string]string{"t1": tc.audit}
 			}
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(false, said))
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(false, said))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -452,7 +452,7 @@ func TestRunSessionNamesAProviderRefusal(t *testing.T) {
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	store.providerRefusals = map[string]string{"t1": "upstream 429"}
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}}
-	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, resultLine(false, said)); err != nil || res.Outcome != OutcomeEscalate {
+	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(false, said)); err != nil || res.Outcome != OutcomeEscalate {
 		t.Fatalf("month cap and a provider refusal = %+v, %v, want escalate", res, err)
 	}
 }
@@ -549,11 +549,11 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 		call *OverHoldCall
 		want string
 	}{
-		"the output at its limit": {&OverHoldCall{Alias: "coding-frontier", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
-			said + "; a model call on coding-frontier crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
+		"the output at its limit": {&OverHoldCall{Alias: "big", PromptTokens: 22680, CachedTokens: 8896, OutputTokens: 24576, OutputLimit: 24576, HoldEUR: 0.122078, CostEUR: 0.129745},
+			said + "; a model call on big crossed its cost hold: 22680 prompt tokens (8896 cached) and 24576 output tokens cost 0.129745 EUR against a hold of 0.122078 EUR; " +
 				"its output ran to the limit of 24576 tokens, so a shorter output fits: write the change in smaller pieces"},
-		"the prompt over its price": {&OverHoldCall{Alias: "coding-frontier", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
-			said + "; a model call on coding-frontier crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
+		"the prompt over its price": {&OverHoldCall{Alias: "big", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576, HoldEUR: 0.131, CostEUR: 0.1392},
+			said + "; a model call on big crossed its cost hold: 90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
 				"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"},
 		"no call crossed its hold": {nil, said},
 	} {
@@ -588,7 +588,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	refusal := "free headroom -0.000100 EUR (task 1.900000, day 19.000000, month 49.000000, project -0.000100) fits 0 output tokens after at most 4000 input tokens, below the minimum call of 1024; " +
 		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}}}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		resultLine(false, "the model call failed: 402 budget_exceeded"))
 	if err != nil {
 		t.Fatal(err)

@@ -174,7 +174,7 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 	before := t.weight(th.Summary, rows)
 	after := t.weight(summary, rows[start:])
 	if err := t.c.cfg.Chat.SaveSummary(ctx, t.p.Repository, t.owner, t.conv,
-		factoryd.ThreadSummary{Text: summary, Model: policy.PulseModel, Upto: rows[start-1].ID, Before: before, After: after}); err != nil {
+		factoryd.ThreadSummary{Text: summary, Model: policy.Small, Upto: rows[start-1].ID, Before: before, After: after}); err != nil {
 		return false, err
 	}
 	t.send("compacted", map[string]int{"messages": start, "before": before, "after": after})

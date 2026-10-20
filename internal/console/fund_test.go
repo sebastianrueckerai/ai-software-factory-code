@@ -27,7 +27,7 @@ const budgetRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the
 func cappedCard(r *rig, t *testing.T) {
 	t.Helper()
 	r.tasks.set(budgetRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
 	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
 }
 
@@ -62,8 +62,8 @@ func TestFundOpensWhereASessionCannotStart(t *testing.T) {
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.5 || asked != "t-e factory/coding-cheap" {
-		t.Fatalf("budget_eur = %v, the fund's floor read %q; want 2.5 on t-e factory/coding-cheap", task.BudgetEUR, asked)
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.5 || asked != "t-e factory/small" {
+		t.Fatalf("budget_eur = %v, the fund's floor read %q; want 2.5 on t-e factory/small", task.BudgetEUR, asked)
 	}
 }
 
@@ -103,7 +103,7 @@ func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
-	const unpriced = "the attempt's floor on factory/coding-cheap cannot be read: no price for coding-cheap"
+	const unpriced = "the attempt's floor on factory/small cannot be read: no price for small"
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return unpriced, nil }
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	if !strings.Contains(body, `action="/tasks/t-e/answer"`) || strings.Contains(body, `action="/tasks/t-e/fund"`) {
@@ -147,7 +147,7 @@ func TestFundRefusesACardThatIsNotCapped(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	r.tasks.set(budgetRefusal,
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
-			IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"},
+			IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"},
 		factoryd.Task{ID: "t-new", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 			IssueNumber: 15, Objective: "Start.", BudgetEUR: 2})
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
@@ -205,7 +205,7 @@ func TestFundRefusesACardThatIsNotWaiting(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("", factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Repository: "sf/code",
-		IssueNumber: 14, Objective: "Speed up the board.", BudgetEUR: 2, ModelAlias: "factory/coding-cheap"})
+		IssueNumber: 14, Objective: "Speed up the board.", BudgetEUR: 2, ModelAlias: "factory/small"})
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return budgetRefusal, nil }
 	rec := r.do(post("/tasks/t-r/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck)
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Card #14 runs an agent session, not a card waiting on a human") {
@@ -271,7 +271,7 @@ func TestFundTooSmallSaysWhatTheFloorStillRefuses(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	const short = "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.270 EUR of the 2.100 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+		"0.270 EUR of the 2.100 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, short), nil }
 	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.1"}, "reason": {"funded a little"}}), ck)
 	want := "Raised #13's budget by 0.10 EUR to 2.10 and posted your note as the answer, but a session still cannot start: " + short

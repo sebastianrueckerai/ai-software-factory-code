@@ -39,8 +39,8 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"budget too low": {
-			reason: budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR",
-			askHas: []string{"€0.100 of its €2.000 budget", "factory/coding-cheap needs €0.300000"},
+			reason: budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR",
+			askHas: []string{"€0.100 of its €2.000 budget", "factory/small needs €0.300000"},
 			values: []string{AnswerFund, AnswerClose},
 		},
 		"month cap": {
@@ -152,7 +152,7 @@ func TestChoiceValue(t *testing.T) {
 
 // BudgetNeed reads the shortfall the budget refusal states, and only it.
 func TestBudgetNeed(t *testing.T) {
-	reason := budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+	reason := budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 	if got := BudgetNeed(reason); got != 0.3 {
 		t.Errorf("BudgetNeed = %v, want 0.3", got)
 	}

@@ -826,7 +826,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
-			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
@@ -910,7 +910,7 @@ func newRig(t *testing.T) *rig {
 					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"],` +
 					`"verdicts":{"0018_x.sql: add a default":{"state":"dropped","evidence":"main already held the default","round":1}}}],` +
-					`"audit":{"verdict":"findings","model":"coding-frontier","deployment":"zai/glm-5.3","findings":[` +
+					`"audit":{"verdict":"findings","model":"big","deployment":"zai/glm-5.3","findings":[` +
 					`{"item":"secret in the diff: private key","file":"internal/x/x_test.go","line":14,"why":"an added line has the shape of a private key (pre-check)"},` +
 					`{"item":"the audit gave no verdict","why":"the answer is not one JSON object: EOF"}]}}`)},
 			{ID: 5, Kind: "merge", TaskID: "t-old", Project: "sf/code", PRNumber: 8, Status: "denied"},
@@ -1701,7 +1701,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", []factoryd.Task{
-		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
+		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	refusal := "the remaining budget cannot fund a call: 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and the cheapest call needs more. " +
 		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
@@ -1714,7 +1714,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), refusal) {
 		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
 	}
-	if asked != "t-e factory/coding-cheap" {
+	if asked != "t-e factory/small" {
 		t.Fatalf("the floor read %q", asked)
 	}
 	if len(r.fg.comments) != 0 {
@@ -1735,7 +1735,7 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", []factoryd.Task{
-		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/coding-cheap"},
+		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) {
 		return "the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit.\n" +
@@ -1836,7 +1836,7 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 			{Day: today, ByKind: map[string]float64{"model": 1.25, "settlement": 0.5, "resource": 2}, Total: 3.75},
 		},
 		Tasks: []policy.TaskCost{
-			{TaskID: "t-big", EUR: 3.25, Lines: []policy.CostLine{{Kind: "model", Ref: "coding-cheap", EUR: 3.125}, {Kind: "model", Ref: "review/review-frontier", EUR: 0.125}}},
+			{TaskID: "t-big", EUR: 3.25, Lines: []policy.CostLine{{Kind: "model", Ref: "small", EUR: 3.125}, {Kind: "model", Ref: "review/big", EUR: 0.125}}},
 			{TaskID: "t-small", EUR: 1}, {TaskID: "t-tiny", EUR: 0.000543}}}
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), ck)
 	if rec.Code != http.StatusOK {
@@ -1854,8 +1854,8 @@ func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
 		"<th scope=\"row\">" + today + "</th><td class=\"num\">1.2500</td><td class=\"num\">0.0000</td><td class=\"num\">2.0000</td><td class=\"num\">0.5000</td><td class=\"num\">3.7500</td>",
 		"<th scope=\"row\">2026-09-20</th><td class=\"num\">0.5000</td>",
 		`<a href="/tasks/t-big/timeline">t-big</a></th><td class="num">3.2500</td>`,
-		`<tr class="line"><td>model coding-cheap</td><td class="num">3.1250</td></tr>`,
-		`<tr class="line"><td>model review/review-frontier</td><td class="num">0.1250</td></tr>`,
+		`<tr class="line"><td>model small</td><td class="num">3.1250</td></tr>`,
+		`<tr class="line"><td>model review/big</td><td class="num">0.1250</td></tr>`,
 		`<a href="/tasks/t-tiny/timeline">t-tiny</a></th><td class="num">0.0005</td>`,
 	} {
 		if !strings.Contains(body, want) {

@@ -35,7 +35,7 @@ func TestCheckProjectReadsTheHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ladder := factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	file := files["projects/linkshort.yaml"]
 	delete(files, "projects/linkshort.yaml")
 	if refused, err := checkProject(context.Background(), treeSource(files), "linkshort", file, ladder); refused != nil || err != nil {
@@ -58,7 +58,7 @@ func TestCheckChangeReadsTheHead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ladder := factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	file := files["projects/linkshort.yaml"]
 	if refused, err := checkChange(context.Background(), treeSource(files), map[string][]byte{"projects/linkshort.yaml": file}, ladder); refused != nil || err != nil {
 		t.Fatalf("the file as it is: %q, %v", refused, err)

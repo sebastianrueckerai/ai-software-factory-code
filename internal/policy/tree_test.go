@@ -69,7 +69,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
 		t.Fatalf("code = %+v", code)
 	}
-	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "coding-frontier" || tree.Document.Bound("GateAudit") != 20*time.Minute {
+	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "big" || tree.Document.Bound("GateAudit") != 20*time.Minute {
 		t.Fatalf("demo-app audit %v, audit model %q, bound %s", demo.Audit, tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit), tree.Document.Bound("GateAudit"))
 	}
 	if demo.WorkInProgress != 2 || tree.WorkInProgressOf("demo-app/demo-app") != 2 || tree.WorkInProgressOf("no-such/repo") != DefaultWorkInProgress {
@@ -121,10 +121,10 @@ func TestParseTreeRejects(t *testing.T) {
 		"stage enabled missing": {edit("processes/spec.yaml", "{name: review, on_findings: agent, enabled: true}", "{name: review, on_findings: agent}"), "processes/spec.yaml: schema:"},
 		"no limits":             {edit("policy.yaml", "limits:\n  sessions: 3\n  agent_time: 20m\n  supervisor_calls: 3\n  supervisor_timeout: 6m\n  stronger_after: 1\n  steps: 200\n  nudge_after: 3\n  nudges: 1\n", ""), "limits.sessions must be positive"},
 		"limit missing":         {edit("policy.yaml", "  stronger_after: 1\n", ""), "policy.yaml: schema:"},
-		"an alias without an output limit": {edit("policy.yaml", "coding-frontier: 24576, review-frontier: 18432, ", "coding-frontier: 24576, "),
-			"policy.yaml: prices.max_output_tokens: review-frontier has no output limit; every alias a class or the chat calls needs one"},
-		"the pulse without an output limit": {edit("policy.yaml", ", pulse: 2048}", "}"),
-			"policy.yaml: prices.max_output_tokens: pulse has no output limit; every alias a class or the chat calls needs one"},
+		"an alias without an output limit": {edit("policy.yaml", "big: 24576, ", ""),
+			"policy.yaml: prices.max_output_tokens: big has no output limit; every alias a class or the chat calls needs one"},
+		"the small class without an output limit": {edit("policy.yaml", "small: 24576, ", ""),
+			"policy.yaml: prices.max_output_tokens: small has no output limit; every alias a class or the chat calls needs one"},
 		"limit not a duration":        {edit("policy.yaml", "agent_time: 20m", "agent_time: twenty"), "policy.yaml: yaml:"},
 		"supervisor timeout too long": {edit("policy.yaml", "supervisor_timeout: 6m", "supervisor_timeout: 20m"), "limits.supervisor_timeout must lie between 30s and 15m0s"},
 		"no header":                   {edit("policy.yaml", "# yaml-language-server: $schema=schema/policy.schema.json\n", ""), "policy.yaml: the first line must be # yaml-language-server: $schema=schema/policy.schema.json"},

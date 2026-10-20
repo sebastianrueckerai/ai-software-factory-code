@@ -104,8 +104,8 @@ func TestSpendRepairMigration(t *testing.T) {
 			('running', 1, 0, 'running', NULL, NULL, '2026-09-30 09:00:00Z')`,
 		`INSERT INTO ledger (task_id, kind, ref, eur) VALUES
 			('doubled', 'settlement', 'litellm-final', 0.01297536),
-			('noise', 'model', 'coding-cheap', 0.00277194799999999999), ('noise', 'settlement', 'litellm', 0.0283436),
-			('equal', 'model', 'coding-cheap', 0.5)`,
+			('noise', 'model', 'small', 0.00277194799999999999), ('noise', 'settlement', 'litellm', 0.0283436),
+			('equal', 'model', 'small', 0.5)`,
 		`INSERT INTO audit (task_id, ts, decision, reason) VALUES
 			('stage4-audit', '2026-09-26 20:22:23.816334Z', 'allowed', ''),
 			('stage4-audit', '2026-09-26 20:22:01Z', 'allowed', ''),

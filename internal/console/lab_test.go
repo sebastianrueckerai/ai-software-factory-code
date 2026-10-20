@@ -71,7 +71,7 @@ func TestLab(t *testing.T) {
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
 			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/coding-frontier needs 0.600000 EUR", nil
+				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/big needs 0.600000 EUR", nil
 		}
 		return "", nil
 	}
@@ -641,7 +641,7 @@ func labCosts(now time.Time, total float64, tasks []factoryd.BoardTask) policy.C
 		}
 		review := round(bt.SpentEUR * 0.12)
 		c.Tasks = append(c.Tasks, policy.TaskCost{TaskID: bt.ID, EUR: bt.SpentEUR, Lines: []policy.CostLine{
-			{Kind: policy.KindModel, Ref: cmp.Or(bt.ModelAlias, "coding-cheap"), EUR: bt.SpentEUR - review},
+			{Kind: policy.KindModel, Ref: cmp.Or(bt.ModelAlias, "small"), EUR: bt.SpentEUR - review},
 			{Kind: policy.KindModel, Ref: "review/review", EUR: review}}})
 	}
 	slices.SortFunc(c.Tasks, func(a, b policy.TaskCost) int { return cmp.Compare(b.EUR, a.EUR) })
@@ -656,9 +656,9 @@ func labID(issue int64) string {
 
 // labCard is issue's card of the code project, filed age before now with
 // its issue's title and body as factoryd builds the objective; one that
-// has had a session ran it on coding-cheap.
+// has had a session ran it on small.
 func labCard(now time.Time, issue int64, status, lane string, age time.Duration, title, body string) factoryd.Task {
-	alias := "coding-cheap"
+	alias := "small"
 	if slices.Contains([]string{"backlog", "queued", "waiting-deps", "closed"}, status) {
 		alias = ""
 	}
@@ -737,8 +737,8 @@ func busyScene(now time.Time) labScene {
 	merge := labCard(now, 607, "in-review", "ready", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table "+
 			"with their expiry and purge the old ones in the settlement pass.")
-	merge.PRNumber, merge.Gate, merge.GateSince, merge.SpentEUR, merge.ModelAlias = 612, factoryd.GateApproval, at(25*time.Minute), 1.31, "coding-frontier"
-	s.objects["sessions/"+merge.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(merge.CreatedAt, "coding-frontier", "")...)
+	merge.PRNumber, merge.Gate, merge.GateSince, merge.SpentEUR, merge.ModelAlias = 612, factoryd.GateApproval, at(25*time.Minute), 1.31, "big"
+	s.objects["sessions/"+merge.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(merge.CreatedAt, "big", "")...)
 
 	esc := factoryd.BoardTask{Task: labCard(now, 603, "waiting-human", "ready", 95*time.Minute, "Board export: keep the nightly snapshots",
 		"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."),
@@ -750,7 +750,7 @@ func busyScene(now time.Time) labScene {
 	plan := labCard(now, 558, "waiting-human", "plan", 64*time.Minute, "Console: a project's activity feed",
 		"Show each project's events as a feed beside the board: who did what, by which way, when.\nThe feed reads the events table; no new store.\n"+
 			"A writer filters it by card and by kind.\nIt pages back 500 rows at most.\nAcceptance: the feed shows a steer within a second of its row.")
-	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "coding-frontier"
+	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "big"
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Four cards: the feed's read model first, then the page and the filters side by side, then the live rows.",
 		Cards: []factoryd.PlanCard{
 			{Key: "feed-read", Role: factoryd.RoleFoundation, Title: "Events: a paged read of a project's feed", Size: "small"},
@@ -765,10 +765,10 @@ func busyScene(now time.Time) labScene {
 
 	drawer := labCard(now, 606, "running", "ready", 72*time.Minute, "Console polish: clamp board chip objectives, theme the scrollbar",
 		"Long objectives push the chips off the card; clamp them at three lines. Theme every scrollbar with the page's colours.")
-	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "coding-frontier"
-	tl := pushedTimeline(drawer.CreatedAt, "coding-cheap", "acceptance")
+	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "big"
+	tl := pushedTimeline(drawer.CreatedAt, "small", "acceptance")
 	s2 := ago(37 * time.Minute)
-	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "coding-frontier", "attempt": 2})
+	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "big", "attempt": 2})
 	s.objects["sessions/"+drawer.ID+"/timeline.jsonl"] = jsonl(tl...)
 	said := func(d time.Duration, text string) map[string]any {
 		return map[string]any{"time": stamp(s2.Add(d)), "kind": "model_call", "detail": map[string]any{"text": text, "cost": 0.02}}
@@ -803,17 +803,17 @@ func busyScene(now time.Time) labScene {
 	review := labCard(now, 601, "in-review", "ready", 4*time.Hour, "Pulse: recompute on a card's status change",
 		"The pulse recomputes every ten minutes; a card that fails waits that long to show. Recompute on each task_status row, at most once a minute.")
 	review.PRNumber, review.Gate, review.GateSince, review.SpentEUR = 605, factoryd.GateMergeQueue, at(8*time.Minute), 0.87
-	s.objects["sessions/"+review.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(review.CreatedAt, "coding-cheap", "")...)
+	s.objects["sessions/"+review.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(review.CreatedAt, "small", "")...)
 
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
-	planDone.BudgetEUR, planDone.ModelAlias = 5, "coding-frontier"
+	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
 	exported := finished(labCard(now, 596, "done", "ready", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
 	failed := finished(labCard(now, 597, "failed", "ready", 6*time.Hour, "Gateway: retry a 529 from the provider with backoff",
 		"An overloaded provider answers 529; retry it twice with backoff before the session ends."), now, 5*time.Hour, 2.00)
-	failed.ModelAlias = "coding-frontier"
+	failed.ModelAlias = "big"
 	closed := finished(labCard(now, 590, "closed", "backlog", 5*24*time.Hour, "Board: drag cards between lanes",
 		"Drag a card from the backlog into ready."), now, 20*time.Hour, 0)
 
@@ -838,7 +838,7 @@ func busyScene(now time.Time) labScene {
 		"head_sha": "b7e04c19d2a3", "recommendation": "Merge it: the migration only adds a table and an index, and the acceptance test restarts the console between a proposal and its Do it.",
 		"why_human": []string{"the project's merge rule is human", "risk class high is requires_approval",
 			"migration: schema migration, human review required: internal/factoryd/migrations/0031_chat_proposals.sql"},
-		"audit": map[string]any{"verdict": "findings", "model": "coding-frontier", "deployment": "zai/glm-5.3", "findings": []map[string]any{
+		"audit": map[string]any{"verdict": "findings", "model": "big", "deployment": "zai/glm-5.3", "findings": []map[string]any{
 			{"item": "token stored in clear", "file": "internal/factoryd/chat.go", "line": 268,
 				"why": "the proposal row keeps its token unhashed; a database reader could replay a Do it within its 30 minutes"}}},
 	})
@@ -975,7 +975,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		{Role: "user", Content: "What is #606 stuck on, and can it finish under its budget?", At: ago(14 * time.Minute)},
 		{Role: "assistant", At: ago(14*time.Minute - 4*time.Second), ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card",
 			Arguments: fmt.Sprintf(`{"task_id":%q}`, running.ID), ReadAt: ago(14*time.Minute - 4*time.Second),
-			Result: ref(running) + ": running, gate session for 23 min, session 2 on coding-frontier\nspent €1.72 of €2.00\n" +
+			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent €1.72 of €2.00\n" +
 				"PR #609: checks 3/4, acceptance failed (TestDrawerObjective)"}}},
 		{Role: "assistant", At: ago(14*time.Minute - 9*time.Second), Content: "#606 is in its second session. The first pushed PR #609, then the " +
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
@@ -1201,13 +1201,13 @@ func fireScene(now time.Time) labScene {
 		"Open 200 followers on one project's stream and measure the heartbeat's board reads.")
 	stale.Gate, stale.GateSince, stale.SpentEUR = factoryd.GateSession, at(41*time.Minute), 0.88
 	s.objects["sessions/"+stale.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(ago(41 * time.Minute)),
-		"session": "s-1", "model": "coding-cheap", "attempt": 1})
+		"session": "s-1", "model": "small", "attempt": 1})
 
 	near := labCard(now, 620, "running", "ready", 65*time.Minute, "Pulse: name the failed cards first",
 		"A pulse that lists a failure after the running cards hides it; name failed cards first.")
-	near.PRNumber, near.Gate, near.GateSince, near.SpentEUR, near.ModelAlias = 622, factoryd.GateSession, at(14*time.Minute), 1.95, "coding-frontier"
-	tl := pushedTimeline(near.CreatedAt, "coding-cheap", "test")
-	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(ago(14 * time.Minute)), "session": "s-2", "model": "coding-frontier", "attempt": 2})
+	near.PRNumber, near.Gate, near.GateSince, near.SpentEUR, near.ModelAlias = 622, factoryd.GateSession, at(14*time.Minute), 1.95, "big"
+	tl := pushedTimeline(near.CreatedAt, "small", "test")
+	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(ago(14 * time.Minute)), "session": "s-2", "model": "big", "attempt": 2})
 	s.objects["sessions/"+near.ID+"/timeline.jsonl"] = jsonl(tl...)
 	s.objects["sessions/"+near.ID+"/s-2.jsonl"] = jsonl(
 		map[string]any{"time": stamp(ago(13 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "The test job failed on TestPulseOrder: the failed card comes second. Sorting the bullets by state first."}},
@@ -1216,18 +1216,18 @@ func fireScene(now time.Time) labScene {
 
 	refused := func(d time.Duration) string {
 		return jsonl(
-			map[string]any{"step": "session_start", "time": stamp(ago(d + 2*time.Minute)), "session": "s-1", "model": "coding-frontier", "attempt": 1},
+			map[string]any{"step": "session_start", "time": stamp(ago(d + 2*time.Minute)), "session": "s-1", "model": "big", "attempt": 1},
 			map[string]any{"step": "session_end", "time": stamp(ago(d)), "session": "s-1", "attempt": 1, "outcome": "provider_refused"},
 			map[string]any{"step": factoryd.StepProviderRefused, "time": stamp(ago(d)), "status": 429, "reason": "budget exhausted", "backoff_s": 120},
 		)
 	}
 	wait1 := labCard(now, 615, "running", "ready", 25*time.Minute, "Gateway: count the provider's 429s per model",
 		"Count each refusal per model alias so the pulse can name a provider that is down.")
-	wait1.Gate, wait1.GateSince, wait1.SpentEUR, wait1.ModelAlias = factoryd.GateProvider, at(2*time.Minute), 0.06, "coding-frontier"
+	wait1.Gate, wait1.GateSince, wait1.SpentEUR, wait1.ModelAlias = factoryd.GateProvider, at(2*time.Minute), 0.06, "big"
 	s.objects["sessions/"+wait1.ID+"/timeline.jsonl"] = refused(2 * time.Minute)
 	wait2 := labCard(now, 621, "running", "ready", 18*time.Minute, "Review: retry the review on a provider refusal",
 		"A refused review call fails the gate; retry it after the provider's backoff.")
-	wait2.Gate, wait2.GateSince, wait2.SpentEUR, wait2.ModelAlias = factoryd.GateProvider, at(1*time.Minute), 0.02, "coding-frontier"
+	wait2.Gate, wait2.GateSince, wait2.SpentEUR, wait2.ModelAlias = factoryd.GateProvider, at(1*time.Minute), 0.02, "big"
 	s.objects["sessions/"+wait2.ID+"/timeline.jsonl"] = refused(time.Minute)
 
 	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "ready", 5*time.Hour, "Board export: import a snapshot back",
@@ -1235,13 +1235,13 @@ func fireScene(now time.Time) labScene {
 		Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\n\n" +
 			"- acceptance: TestExportRoundTrip fails on the second import\n- review: the importer drops a card's accent",
 		EscalatedAt: ago(12 * time.Minute), EscalationAlert: 66}
-	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "coding-frontier", 3
+	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "big", 3
 
 	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "ready", 50*time.Minute, "Board export: document the snapshot format",
 		"Describe the snapshot's JSON in docs/export.md."), WaitingOn: "#610"}
 	f1 := finished(labCard(now, 604, "failed", "ready", 4*time.Hour, "Export: GitHub pull requests for merged cards",
 		"Open a GitHub pull request for every card merged since the export's last run."), now, 70*time.Minute, 2.00)
-	f1.ModelAlias = "coding-frontier"
+	f1.ModelAlias = "big"
 	f2 := finished(labCard(now, 609, "failed", "ready", 3*time.Hour, "Fresh-context and aged-read acceptance tests",
 		"Add the acceptance tests for a fresh context and an aged read."), now, 35*time.Minute, 1.21)
 	done := finished(labCard(now, 602, "done", "ready", 7*time.Hour, "Costs: the day cap line under the table",
@@ -1282,7 +1282,7 @@ func quietScene(now time.Time) labScene {
 		"Say in the first paragraph what the factory is for and who runs it.")
 	run.Gate, run.GateSince, run.SpentEUR = factoryd.GateSession, &run.CreatedAt, 0.22
 	s.objects["sessions/"+run.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(now.Add(-15 * time.Minute)),
-		"session": "s-1", "model": "coding-cheap", "attempt": 1})
+		"session": "s-1", "model": "small", "attempt": 1})
 	s.objects["sessions/"+run.ID+"/s-1.jsonl"] = jsonl(map[string]any{"time": stamp(now.Add(-14 * time.Minute)), "kind": "model_call",
 		"detail": map[string]any{"text": "Reading README.md and docs/overview.md first."}})
 	s.tasks = []factoryd.BoardTask{{Task: run},
@@ -1370,8 +1370,8 @@ func TestLabMetricsScene(t *testing.T) {
 	if !m.RevertedRefiled.Has || m.RevertedRefiled.Reverted != 2 || m.RevertedRefiled.Refiled != 1 {
 		t.Errorf("reverted · refiled = %v · %v (has %v)", m.RevertedRefiled.Reverted, m.RevertedRefiled.Refiled, m.RevertedRefiled.Has)
 	}
-	if got := mMix(m.ModelMix); got != "coding-frontier 71 % · review-frontier 18 % · pulse 11 %" {
-		t.Errorf("model mix = %q", got)
+	if got := mMix(m.ModelSpend); got != "big 89 % · small 11 %" {
+		t.Fatalf("model spend = %q", got)
 	}
 	d := m.DiffSize
 	if !d.Has || d.Files != 9 || d.Insertions != 240 || d.Deletions != 95 {
@@ -1417,10 +1417,12 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Spend:         move(87.4, 82.6, [7]float64{61.2, 68.4, 74.9, 71.8, 79.2, 82.6, 87.4}),
 		PerCard:       move(2.6, 2.9, [7]float64{3.4, 3.3, 3.1, 3.0, 2.9, 2.7, 2.6}),
 		TokensPerCard: flat(84000),
-		ModelMix: []factoryd.MixShare{
-			{Alias: "coding-frontier", Share: 71},
-			{Alias: "review-frontier", Share: 18},
-			{Alias: "pulse", Share: 11},
+		ModelSpend:    []factoryd.MixShare{{Alias: "big", Share: 89}, {Alias: "small", Share: 11}},
+		ServedBy: []factoryd.MixShare{
+			{Alias: "zai/glm-5.3", Share: 71},
+			{Alias: "dashscope/qwen3.8-max", Share: 18},
+			{Alias: "zai/glm-5.3-flash", Share: 9},
+			{Alias: "other", Share: 2},
 		},
 		Interventions:  move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
 		Escalations:    flat(5),

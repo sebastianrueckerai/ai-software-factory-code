@@ -693,7 +693,7 @@ func (s *PGStore) CallTotals(ctx context.Context, tasks []string) (map[string]po
 var _ PolicyStore = (*PGStore)(nil)
 
 // Aliases are the ladder's models as the gateway sees them: without the
-// opencode provider prefix ("factory/coding-cheap" is "coding-cheap").
+// opencode provider prefix ("factory/small" is "small").
 func (l ModelLadder) Aliases() []string {
 	return []string{aliasOf(l.Start), aliasOf(l.Stronger)}
 }

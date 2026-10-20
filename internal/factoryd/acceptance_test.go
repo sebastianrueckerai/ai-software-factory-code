@@ -119,7 +119,7 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 			logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(),
 				Detail: map[string]any{"command": "bash check", "exit": tt.exit}}) + "\n" +
 				resultLine(false, "out of time")
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs)
 			if err != nil {
 				t.Fatalf("RunSession: %v", err)
 			}
@@ -176,7 +176,7 @@ func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %+v", events)
 	}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		envLine(events[0])+"\n"+resultLine(false, "out of time"))
 	if err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestRunSessionAcceptanceOnlyWhereTheExitIsTheCommands(t *testing.T) {
 			}
 			logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": tt.run, "exit": 0, "output": "ok"}}) + "\n" +
 				resultLine(false, "out of time")
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs)
 			if err != nil {
 				t.Fatal(err)
 			}

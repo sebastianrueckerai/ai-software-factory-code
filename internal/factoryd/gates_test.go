@@ -404,7 +404,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	if rv.Verdict != "concerns" || rv.Findings[0] != "Makefile: check does not run go vet" {
 		t.Fatalf("review = %+v", rv)
 	}
-	if len(ll.chats) != 1 || ll.chats[0]["model"] != "review-frontier" || ll.auth[0] != "Bearer gw-token" || ll.tasks[0] != "t1" || ll.purposes[0] != "review" {
+	if len(ll.chats) != 1 || ll.chats[0]["model"] != "big" || ll.auth[0] != "Bearer gw-token" || ll.tasks[0] != "t1" || ll.purposes[0] != "review" {
 		t.Fatalf("chats = %v, auth %v, tasks %v, purposes %v", ll.chats, ll.auth, ll.tasks, ll.purposes)
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
@@ -414,7 +414,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 			t.Fatalf("review input lacks %q: %s", want, user)
 		}
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "factoryd model review (review-frontier) of c1") || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "factoryd model review (big) of c1") || !strings.Contains(fj.comments[0], "Verdict: **concerns**") || !strings.Contains(fj.comments[0], "one of the conditions of the merge rule auto") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"model_review"`) {

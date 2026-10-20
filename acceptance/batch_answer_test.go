@@ -1125,10 +1125,10 @@ func batchPolicyTree(t *testing.T) policy.Tree {
 budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}
 classes:
-  coder: {session: code, models: [coding-cheap], tools: {}, review_model: review-frontier, supervisor_model: supervisor}
+  coder: {session: code, models: [small], tools: {}, review_model: big, supervisor_model: supervisor}
   planner: {session: plan, models: [plan-cheap], tools: {}, supervisor_model: supervisor}
 prices:
-  max_output_tokens: {coding-cheap: 24576, plan-cheap: 24576, review-frontier: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
+  max_output_tokens: {small: 24576, plan-cheap: 24576, big: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
 approvers: [sebastian]
 risk:
   classes: [{name: normal, outcome: requires_approval}]

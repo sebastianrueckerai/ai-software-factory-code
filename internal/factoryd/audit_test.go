@@ -12,12 +12,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// auditVersion is testPolicyVersion with coding-frontier as the coder
+// auditVersion is testPolicyVersion with big as the coder
 // class's audit model and sf/repo's project switching the audit on.
 func auditVersion(on bool) policy.Version {
 	v := testPolicyVersion()
 	coder := v.Document.Classes["coder"]
-	coder.AuditModel = "coding-frontier"
+	coder.AuditModel = "big"
 	v.Document.Classes["coder"] = coder
 	v.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", MergeRule: policy.MergeHuman, Objects: policy.ObjectsFactory, Agents: policy.AgentsCoder, Audit: on}
 	return v
@@ -113,10 +113,10 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 			Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"},
 		{Item: "secrets", File: "internal/x/x_test.go", Line: 4, Why: "a password literal and a token [redacted] in a test"},
 	}
-	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || res.Model != "coding-frontier" || res.Deployment != "zai/glm-5.3" {
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || res.Model != "big" || res.Deployment != "zai/glm-5.3" {
 		t.Fatalf("audit = %+v", res)
 	}
-	if len(ll.chats) != 1 || ll.chats[0]["model"] != "coding-frontier" || ll.purposes[0] != "audit" || ll.tasks[0] != "t1" {
+	if len(ll.chats) != 1 || ll.chats[0]["model"] != "big" || ll.purposes[0] != "audit" || ll.tasks[0] != "t1" {
 		t.Fatalf("chats %v, purposes %v", ll.chats, ll.purposes)
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
@@ -130,7 +130,7 @@ func TestGateAuditFindsAPlantedSecret(t *testing.T) {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	step := timelineStep(t, objects, "t1", "audit")
-	if step["verdict"] != AuditFindings || step["deployment"] != "zai/glm-5.3" || step["model"] != "coding-frontier" {
+	if step["verdict"] != AuditFindings || step["deployment"] != "zai/glm-5.3" || step["model"] != "big" {
 		t.Fatalf("audit step = %v", step)
 	}
 	if tl := timeline(t, objects); strings.Contains(tl, "hunter2") || strings.Contains(tl, "ghp_") {

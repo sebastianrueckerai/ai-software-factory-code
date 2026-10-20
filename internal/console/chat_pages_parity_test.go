@@ -124,9 +124,9 @@ func TestParityCatchesMissingRoute(t *testing.T) {
 
 // pageFixture gives r two alerts (one judged), two commissions (a server
 // with its firewall, a standing volume), two projects (one exported), a
-// policy with two projects' caps and five ledger rows: t-m's coding-cheap
-// 0.5 and search 0.1 on 2026-10-10, t-r's coding-frontier 1.2 and
-// review/review-frontier 0.3 and t-m's search 0.2 on 2026-10-11.
+// policy with two projects' caps and five ledger rows: t-m's small
+// 0.5 and search 0.1 on 2026-10-10, t-r's big 1.2 and
+// review/big 0.3 and t-m's search 0.2 on 2026-10-11.
 func pageFixture(r *rig) {
 	r.alerts.rows = []factoryd.Alert{
 		{ID: 7, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-r", RaisedAt: time.Date(2026, 10, 11, 9, 30, 0, 0, time.UTC)},
@@ -156,9 +156,9 @@ func pageFixture(r *rig) {
 			{Day: "2026-10-11", ByKind: map[string]float64{policy.KindModel: 1.5, policy.KindTool: 0.2}, Total: 1.7},
 		},
 		Tasks: []policy.TaskCost{
-			{TaskID: "t-r", EUR: 1.5, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-frontier", EUR: 1.2},
-				{Kind: policy.KindModel, Ref: "review/review-frontier", EUR: 0.3}}},
-			{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-cheap", EUR: 0.5},
+			{TaskID: "t-r", EUR: 1.5, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "big", EUR: 1.2},
+				{Kind: policy.KindModel, Ref: "review/big", EUR: 0.3}}},
+			{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "small", EUR: 0.5},
 				{Kind: policy.KindTool, Ref: "search", EUR: 0.3}}},
 		}}
 }
@@ -191,7 +191,7 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 			"Approvers:\n  factory: sebastian\n  linkshort: alice",
 		"By day 2026-10-01 to 2026-10-11, EUR:\n  2026-10-11 1.7000 (model 1.5000, tool 0.2000)\n  2026-10-10 0.6000 (model 0.5000, tool 0.1000)\ntotal: 2.3000 EUR",
 		"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR",
-		"By tier 2026-10-01 to 2026-10-11, EUR:\n  coding-cheap 0.5000\n  coding-frontier 1.2000\n  review-frontier 0.3000\n  tool 0.3000\ntotal: 2.3000 EUR",
+		"By tier 2026-10-01 to 2026-10-11, EUR:\n  big 1.5000\n  small 0.5000\n  tool 0.3000\ntotal: 2.3000 EUR",
 	})
 	equal(t, "the ledger's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
 		[]string{time.Now().UTC().Format("2006-01") + "-01", time.Now().UTC().Format(time.DateOnly)})
@@ -278,9 +278,9 @@ func TestPageWritesRefuseNonWriters(t *testing.T) {
 func TestCostsToolWithCustomDateWindow(t *testing.T) {
 	r, _, g := newChatRig(t)
 	pageFixture(r)
-	// fixture: t-r 1.5 (coding-frontier 1.2, review/review-frontier 0.3)
-	// and t-m 0.8 (coding-cheap 0.5, tool search 0.3) on 2026-10-11,
-	// t-m's coding-cheap 0.5 and search 0.1 on 2026-10-10: that day's
+	// fixture: t-r 1.5 (big 1.2, review/big 0.3)
+	// and t-m 0.8 (small 0.5, tool search 0.3) on 2026-10-11,
+	// t-m's small 0.5 and search 0.1 on 2026-10-10: that day's
 	// card sum by hand is 1.5 + 0.8 = 2.3 EUR.
 	equal(t, "the day's cards", reads(t, r, g, "costs", `{"by":"card","from_date":"2026-10-11","to_date":"2026-10-11"}`),
 		[]string{"By card 2026-10-01 to 2026-10-11, EUR:\n  t-r 1.5000\n  t-m 0.8000\ntotal: 2.3000 EUR"})

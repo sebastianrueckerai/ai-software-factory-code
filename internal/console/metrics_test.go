@@ -62,7 +62,7 @@ func TestProjectMetricsJSON(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	for _, key := range []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
-		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_mix", "tool_spend", "tool_mix",
+		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
 		"interventions", "escalations", "escalated_share", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 		"chat_tool_work", "ci_duration"} {
 		if _, ok := body[key]; !ok {
@@ -149,7 +149,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"Delivery", "Stability", "Cost", "Autonomy", "The factory itself",
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
-		"spend / week", "per card, median", "tokens / card", "model mix", "tools / week", "tool mix",
+		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
 		"interventions / card", "escalations", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work",
 		"How the project runs its work, over the window and against the one before.",
@@ -227,7 +227,7 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mEurMove down", mEurMove(-0.3), "−€0.30"},
 		{"mDec", mDec(1.4), "1.4"},
 		{"mDecMove", mDecMove(-0.3), "−0.3"},
-		{"mMix", mMix([]factoryd.MixShare{{Alias: "coding-frontier", Share: 71}, {Alias: "review-frontier", Share: 18}, {Alias: "pulse", Share: 11}}), "coding-frontier 71 % · review-frontier 18 % · pulse 11 %"},
+		{"mMix", mMix([]factoryd.MixShare{{Alias: "big", Share: 71}, {Alias: "big", Share: 18}, {Alias: "pulse", Share: 11}}), "big 71 % · big 18 % · pulse 11 %"},
 		{"mMix empty", mMix(nil), "—"},
 		{"mDiff", mDiff(factoryd.DiffSize{Files: 9, Insertions: 240, Deletions: 95, Has: true}), "9 files · +240 −95"},
 		{"mDiff one file", mDiff(factoryd.DiffSize{Files: 1, Insertions: 3, Deletions: 1, Has: true}), "1 file · +3 −1"},

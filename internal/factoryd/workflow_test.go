@@ -35,7 +35,7 @@ import (
 )
 
 var testWorkflowConfig = WorkflowConfig{
-	Models:        ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
+	Models:        ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 	MaxSessions:   3,
 	WallClockCap:  20 * time.Minute,
 	AnswerSlice:   10 * time.Minute,
@@ -410,7 +410,7 @@ func TestWorkflowHappyPathToMerged(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/coding-cheap" || h.sessions[0].StartRef != "" || h.sessions[0].Attempt != 1 {
+	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/small" || h.sessions[0].StartRef != "" || h.sessions[0].Attempt != 1 {
 		t.Fatalf("sessions = %+v, want one cheap attempt from the base", h.sessions)
 	}
 	if !slices.Equal(h.states, []string{"running", "in-review", "merged"}) {
@@ -431,8 +431,8 @@ func TestStrongerProjectStartsOnTheStrongerRung(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, want done", final)
 	}
-	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/coding-frontier" {
-		t.Fatalf("sessions = %+v, want the first session on the stronger rung factory/coding-frontier", h.sessions)
+	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/big" {
+		t.Fatalf("sessions = %+v, want the first session on the stronger rung factory/big", h.sessions)
 	}
 }
 
@@ -508,7 +508,7 @@ func TestWorkflowBeforeStagesRedChecksRetryStrongerFromBranchHead(t *testing.T) 
 		t.Fatalf("sessions = %d, want 2", len(h.sessions))
 	}
 	second := h.sessions[1]
-	if second.Model != "factory/coding-frontier" || second.StartRef != "c1" || second.ParentSessionID != "s1" ||
+	if second.Model != "factory/big" || second.StartRef != "c1" || second.ParentSessionID != "s1" ||
 		!slices.Equal(second.Findings, red) || second.Attempt != 2 {
 		t.Fatalf("second attempt = %+v, want frontier from c1, parent s1, the red checks as findings", second)
 	}
@@ -528,7 +528,7 @@ func TestWorkflowChangesRequestedStartsNewAttempt(t *testing.T) {
 		t.Fatalf("sessions = %d, want 2", len(h.sessions))
 	}
 	second := h.sessions[1]
-	if second.StartRef != "c1" || second.Model != "factory/coding-cheap" || len(second.Findings) != 1 ||
+	if second.StartRef != "c1" || second.Model != "factory/small" || len(second.Findings) != 1 ||
 		!strings.Contains(second.Findings[0], "rename the flag to --dry-run") || !strings.Contains(second.Findings[0], "sebastian") {
 		t.Fatalf("second attempt = %+v, want the review text as findings, from c1, same model", second)
 	}
@@ -553,7 +553,7 @@ func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 	if !slices.Equal(h.sessions[1].Findings, []string{"ran `go test`"}) || h.sessions[1].ParentSessionID != "s" {
 		t.Fatalf("second attempt = %+v, want the first session's findings and parent", h.sessions[1])
 	}
-	if h.sessions[2].Model != "factory/coding-cheap" || len(h.escalated) != 0 {
+	if h.sessions[2].Model != "factory/small" || len(h.escalated) != 0 {
 		t.Fatalf("third attempt on %s, escalations %q; want the start rung and no card", h.sessions[2].Model, h.escalated)
 	}
 }
@@ -587,7 +587,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 		t.Fatalf("sessions = %d, want 4: the answer bought one more than MaxSessions", len(h.sessions))
 	}
 	fourth := h.sessions[3]
-	if fourth.Attempt != 4 || fourth.Model != "factory/coding-frontier" || fourth.ParentSessionID != "s3" ||
+	if fourth.Attempt != 4 || fourth.Model != "factory/big" || fourth.ParentSessionID != "s3" ||
 		!slices.Equal(fourth.Findings, []string{"f3"}) ||
 		!slices.Equal(fourth.Answers, []string{`sebastian, to "` + capReached + `": the key is blocked, use the other one`}) {
 		t.Fatalf("fourth attempt = %+v", fourth)
@@ -846,7 +846,7 @@ func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
 	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "no_answer" {
 		t.Fatalf("escalations = %q, want %q from source no_answer", h.escalated, want)
 	}
-	if in := h.sessions[6]; in.Model != "factory/coding-frontier" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
+	if in := h.sessions[6]; in.Model != "factory/big" || len(in.Answers) != 1 || !strings.HasSuffix(in.Answers[0], ": the gateway is back") {
 		t.Fatalf("seventh session = %+v, want the stronger rung with the answer", in)
 	}
 	if u := h.usage[len(h.usage)-1]; u != (TaskUsage{Attempts: 2}) {
@@ -858,7 +858,7 @@ func TestWorkflowThreeUnansweredSessionsInARowAskAHuman(t *testing.T) {
 // climb inside the session is model_switched's record (roadmap 222, item 5).
 func TestWorkflowSessionAnsweredNamesTheStartModel(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Model: "factory/coding-frontier", Summary: "no changes to push"}, pushed("s2", "c2"))
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Model: "factory/big", Summary: "no changes to push"}, pushed("s2", "c2"))
 	var models []string
 	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionAnswerInput) (bool, error) {
@@ -871,7 +871,7 @@ func TestWorkflowSessionAnsweredNamesTheStartModel(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if want := []string{"factory/coding-cheap", "factory/coding-frontier"}; !slices.Equal(models, want) {
+	if want := []string{"factory/small", "factory/big"}; !slices.Equal(models, want) {
 		t.Fatalf("recorded models = %q, want %q: the first session started cheap and climbed, the second started where it ended", models, want)
 	}
 }
@@ -960,8 +960,8 @@ func TestWorkflowFundThatMissesTheFloorAsksAgain(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if len(h.escalated) != 2 || !strings.Contains(h.escalated[0], "0.100 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") ||
-		!strings.Contains(h.escalated[1], "0.200 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR") || reads[ActivitySessionFunded] != 3 {
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[0], "0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR") ||
+		!strings.Contains(h.escalated[1], "0.200 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR") || reads[ActivitySessionFunded] != 3 {
 		t.Fatalf("escalations %q after floor reads %v; want two questions, each naming its read's remainder and the amount, then the session", h.escalated, reads)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 || len(h.sessions[0].Answers) != 2 {
@@ -1135,9 +1135,9 @@ func TestWorkflowNewRunKeepsTheRung(t *testing.T) {
 		st   RunState
 		want string
 	}{
-		{"repeat trip", RunState{Returns: map[string]int{"supervisor:repetition": 2}}, "factory/coding-frontier"},
-		{"retry_stronger", RunState{Climbed: true}, "factory/coding-frontier"},
-		{"one return", RunState{Returns: map[string]int{"supervisor:repetition": 1, "checks": 1}}, "factory/coding-cheap"},
+		{"repeat trip", RunState{Returns: map[string]int{"supervisor:repetition": 2}}, "factory/big"},
+		{"retry_stronger", RunState{Climbed: true}, "factory/big"},
+		{"one return", RunState{Returns: map[string]int{"supervisor:repetition": 1, "checks": 1}}, "factory/small"},
 	} {
 		h := newWorkflowHarness(t)
 		h.state = c.st
@@ -1180,8 +1180,8 @@ func TestWorkflowRepeatTripTakesTheStrongerRung(t *testing.T) {
 		second TripKind
 		want   string
 	}{
-		{TripRepetition, "factory/coding-frontier"},
-		{TripNoProgress, "factory/coding-cheap"},
+		{TripRepetition, "factory/big"},
+		{TripNoProgress, "factory/small"},
 	} {
 		h := newWorkflowHarness(t)
 		h.onSessions(
@@ -1198,7 +1198,7 @@ func TestWorkflowRepeatTripTakesTheStrongerRung(t *testing.T) {
 		for _, in := range h.sessions {
 			models = append(models, in.Model)
 		}
-		if want := []string{"factory/coding-cheap", "factory/coding-cheap", c.want}; !slices.Equal(models, want) {
+		if want := []string{"factory/small", "factory/small", c.want}; !slices.Equal(models, want) {
 			t.Fatalf("second trip %s: models = %v, want %v", c.second, models, want)
 		}
 	}
@@ -1696,7 +1696,7 @@ func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing
 // gate bought an attempt with any answer.
 func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	const pod = "the pod could not start: image pull refused"
-	floor := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and a session on factory/coding-cheap needs 0.300000 EUR"
+	floor := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
 	type row struct {
 		pinned   bool
 		question string
@@ -1717,7 +1717,7 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	five := TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}
 	for kind, question := range map[string]string{
 		"the budget's floor":        floor,
-		"an unpriced model's floor": "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model",
+		"an unpriced model's floor": "the attempt's floor on small cannot be read: LiteLLM has no model",
 		"pods that never started": "No node started the session's pod: 3 sessions in a row waited for it, and no agent ran. Free what it waits on (a node's cpu, " +
 			"memory or ephemeral storage, or the registry of its image), then answer to start the next session. The last wait: Pending",
 		"the provider's refusals": "the model provider refused the first call of 6 sessions in a row (status 429): rate limited",
@@ -2056,7 +2056,7 @@ func TestWorkflowRepetitionTripClimbsTheLadder(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	if h.sessions[1].Model != "factory/coding-frontier" || h.sessions[1].StartRef != "" || !slices.Equal(h.sessions[1].Findings, []string{"changed a.go"}) {
+	if h.sessions[1].Model != "factory/big" || h.sessions[1].StartRef != "" || !slices.Equal(h.sessions[1].Findings, []string{"changed a.go"}) {
 		t.Fatalf("second attempt = %+v", h.sessions[1])
 	}
 }
@@ -2600,7 +2600,7 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 // as attempt 1.
 func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
-	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/coding-cheap needs 0.015360 EUR " +
+	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
 		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, model string) (string, error) {
@@ -3091,7 +3091,7 @@ func TestWorkflowRedirectResumesOnTheSameRungWithGuidance(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	second := h.sessions[1]
-	if second.Model != "factory/coding-cheap" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script", "the branch holds c-wip; the gates have not judged it"}) {
+	if second.Model != "factory/small" || second.ParentSessionID != "s1" || !slices.Equal(second.Findings, []string{"supervisor guidance: read the script", "the branch holds c-wip; the gates have not judged it"}) {
 		t.Fatalf("second attempt = %+v, want the same rung, parent s1, the guidance and the branch as findings", second)
 	}
 }
@@ -3113,7 +3113,7 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 	for _, in := range h.sessions {
 		models = append(models, in.Model)
 	}
-	if !slices.Equal(models, []string{"factory/coding-cheap", "factory/coding-frontier", "factory/coding-frontier"}) {
+	if !slices.Equal(models, []string{"factory/small", "factory/big", "factory/big"}) {
 		t.Fatalf("models = %v", models)
 	}
 }

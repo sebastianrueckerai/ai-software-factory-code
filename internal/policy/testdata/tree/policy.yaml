@@ -17,9 +17,9 @@ limits:
 classes:
   coder:
     session: code
-    models: [coding-cheap, coding-frontier]
-    review_model: review-frontier
-    audit_model: coding-frontier
+    models: [small, big]
+    review_model: big
+    audit_model: big
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
@@ -29,7 +29,7 @@ classes:
       delegate: {}
   analyzer:
     session: report
-    models: [coding-cheap, coding-frontier]
+    models: [small, big]
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
@@ -37,7 +37,7 @@ classes:
       manual: {}
   planner:
     session: plan
-    models: [coding-cheap, coding-frontier]
+    models: [small, big]
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
@@ -47,7 +47,7 @@ classes:
       file_plan: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}
-  max_output_tokens: {coding-cheap: 24576, coding-frontier: 24576, review-frontier: 18432, supervisor: 18432, operator: 4096, pulse: 2048}
+  max_output_tokens: {small: 24576, big: 24576, supervisor: 18432, operator: 4096, pulse: 2048}
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}

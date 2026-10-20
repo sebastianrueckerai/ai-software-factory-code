@@ -307,7 +307,7 @@ func label(options []option, value string) string {
 // the face says (the ref, the title, the state and stage words, the
 // activity line, the chips, an item's headline), a key:value term a fact
 // behind the face (plan:558, stage:verifying, status:failed, is:failed
-// and the other exceptional states, by:sebastian, model:coding-cheap,
+// and the other exceptional states, by:sebastian, model:small,
 // pr:612), and every term must match. Each column keeps its whole count;
 // the columns given stay as they were, for the column menus.
 func find(cols []column, q string) []column {

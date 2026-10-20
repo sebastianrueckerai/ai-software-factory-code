@@ -64,13 +64,13 @@ func TestLoadEnvReadsWhatWasLeftOut(t *testing.T) {
 // alias and every subagent falls back to the session's own model.
 func TestLoadEnvReadsTheCheapModel(t *testing.T) {
 	setRequiredEnv(t)
-	t.Setenv("STRONGER_MODEL", "factory/coding-frontier")
-	t.Setenv("CHEAP_MODEL", "factory/coding-cheap")
+	t.Setenv("STRONGER_MODEL", "factory/big")
+	t.Setenv("CHEAP_MODEL", "factory/small")
 	e, err := loadEnv()
 	if err != nil {
 		t.Fatalf("loadEnv: %v", err)
 	}
-	if e.strongerModel != "factory/coding-frontier" || e.cheapModel != "factory/coding-cheap" {
+	if e.strongerModel != "factory/big" || e.cheapModel != "factory/small" {
 		t.Fatalf("stronger = %q, cheap = %q; want the env values", e.strongerModel, e.cheapModel)
 	}
 }

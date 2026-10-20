@@ -45,7 +45,7 @@ func TestStringRemovesKeys(t *testing.T) {
 		"key -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACD=\n-----END OPENSSH PRIVATE KEY----- rejected": "key [pem redacted] rejected",
 		"the master key hunter2-master is in use": "the master key [redacted] is in use",
 		"a short secret stays short":              "a short secret stays short",
-		`model "coding-cheap" is not allowed for capability classes ["coder"] under policy version 3`: `model "coding-cheap" is not allowed for capability classes ["coder"] under policy version 3`,
+		`model "small" is not allowed for capability classes ["coder"] under policy version 3`: `model "small" is not allowed for capability classes ["coder"] under policy version 3`,
 	} {
 		if got := s.String(in); got != want {
 			t.Errorf("String(%q) = %q, want %q", in, got, want)

@@ -273,7 +273,7 @@ func newCardDeps(t *testing.T, rig *intakeRig) *cardDeps {
 		PullSecret: "forgejo-registry", FactoryNamespace: "factory",
 		GatewayURL:   "http://factory-gateway.factory.svc.cluster.local:8081",
 		GitBaseURL:   "http://forgejo-http.forgejo.svc.cluster.local:3000",
-		Models:       factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
+		Models:       factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
 		Supervisor: factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
@@ -305,7 +305,7 @@ func acceptancePolicyVersion() policy.Version {
 			Budget: acceptanceBudget(),
 			Limits: policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Classes: map[string]policy.Class{policy.ClassCoder: {Session: policy.SessionCode,
-				Models: []string{"factory/coding-cheap", "factory/coding-frontier"}}},
+				Models: []string{"factory/small", "factory/big"}}},
 		},
 		Processes: map[string]policy.Process{"maintenance": {
 			Lanes: []policy.Lane{{Name: policy.LaneBacklog, WriteUp: policy.ClassAnalyzer},

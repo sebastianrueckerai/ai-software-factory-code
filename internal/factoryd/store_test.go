@@ -1461,7 +1461,7 @@ func TestPGStore(t *testing.T) {
 		if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'model', 'coding-cheap', 0.5)`, row.id); err != nil {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ($1, 'model', 'small', 0.5)`, row.id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1485,7 +1485,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a finished task with a call still holding headroom is left to that call
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('s-failed', 'model', 'coding-cheap', 0.1, now() + interval '1 hour')`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('s-failed', 'model', 'small', 0.1, now() + interval '1 hour')`); err != nil {
 		t.Fatal(err)
 	}
 	if ids, err := s.RecentlyFinishedTasks(ctx, time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-done"}) {
@@ -1530,7 +1530,7 @@ func TestPGStore(t *testing.T) {
 	if err := s.CreateTask(ctx, Task{ID: "s-tool", BudgetEUR: 2, SpentEUR: 1, Status: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('s-tool', 'model', 'coding-cheap', 0.75), ('s-tool', 'tool', 'web_scrape', 0.25)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('s-tool', 'model', 'small', 0.75), ('s-tool', 'tool', 'web_scrape', 0.25)`); err != nil {
 		t.Fatal(err)
 	}
 	for _, step := range []struct {
@@ -1578,7 +1578,7 @@ func TestPGStore(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id = 's-cut'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('s-cut', current_date - 1, 'model', 'coding-cheap', 0.1873), ('s-cut', current_date - 1, 'model', 'review/review-frontier', 0.1447), ('s-cut', current_date - 1, 'model', 'review/review-frontier', 0.1447)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('s-cut', current_date - 1, 'model', 'small', 0.1873), ('s-cut', current_date - 1, 'model', 'review/big', 0.1447), ('s-cut', current_date - 1, 'model', 'review/big', 0.1447)`); err != nil {
 		t.Fatal(err)
 	}
 	if ids, err := s.UnsettledTasks(ctx, 2*time.Hour); err != nil || !reflect.DeepEqual(ids, []string{"s-cut", "s-old"}) {
@@ -2535,7 +2535,7 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 		}
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id IN ('pre-final', 'pre-window', 'same');
-		INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('same', 'model', 'coding-cheap', 0.25)`); err != nil {
+		INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('same', 'model', 'small', 0.25)`); err != nil {
 		t.Fatal(err)
 	}
 	spent := func(id string) float64 {

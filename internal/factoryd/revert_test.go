@@ -445,12 +445,12 @@ func TestPGStoreRevertMarks(t *testing.T) {
 	}
 
 	// a session keeps its model alias on the task
-	for _, sess := range []Session{{ID: "s1", TaskID: "t-a", Model: "coding-cheap"}, {ID: "s2", TaskID: "t-a", Model: "coding-frontier"}} {
+	for _, sess := range []Session{{ID: "s1", TaskID: "t-a", Model: "small"}, {ID: "s2", TaskID: "t-a", Model: "big"}} {
 		if err := s.InsertSession(ctx, sess); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got, _, _ := s.Task(ctx, "t-a"); got.ModelAlias != "coding-frontier" {
+	if got, _, _ := s.Task(ctx, "t-a"); got.ModelAlias != "big" {
 		t.Fatalf("model alias = %q, want the last session's", got.ModelAlias)
 	}
 }

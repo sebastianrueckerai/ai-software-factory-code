@@ -88,7 +88,7 @@ const compactTokens = 2048
 // taskID's account: the cheap alias summarises messages, its answer the
 // summary text.
 func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, messages []OperatorMessage) (string, error) {
-	answer, err := m.stream(ctx, policy.PurposeCompact, compactTokens, taskID, policy.PulseModel, thread, messages, nil, func(string) {})
+	answer, err := m.stream(ctx, policy.PurposeCompact, compactTokens, taskID, policy.Small, thread, messages, nil, func(string) {})
 	return answer.Content, err
 }
 

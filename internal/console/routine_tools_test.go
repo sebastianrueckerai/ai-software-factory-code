@@ -29,7 +29,7 @@ func routineRig(t *testing.T) (*rig, *chatGateway, *infraFake, map[string][]byte
 	}
 	infra := withInfra(t, r)
 	infra.files = map[string]string{"factory/projects/demo-app.yaml": string(files["projects/demo-app.yaml"])}
-	ladder := factoryd.ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	r.c.cfg.CheckChange = func(_ context.Context, changes map[string][]byte) ([]string, error) {
 		if err := factoryd.CheckChange(files, changes, ladder); err != nil {
 			return strings.Split(err.Error(), "\n"), nil
