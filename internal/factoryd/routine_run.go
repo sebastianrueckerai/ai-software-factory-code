@@ -102,7 +102,8 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
 		t, ref, err := fileHumanCard(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(),
-			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
+			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser},
+			routineDecider(in.Routine, run.Run, rt.Words()))
 		if err != nil {
 			return RoutineRunResult{}, err
 		}

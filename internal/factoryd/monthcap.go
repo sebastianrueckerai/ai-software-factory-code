@@ -242,7 +242,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
 	t := Task{ID: NewTaskID(), RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
 		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, ref, err := fileHumanCard(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, t)
+	t, ref, err := fileHumanCard(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, t, "")
 	if err != nil {
 		return err
 	}

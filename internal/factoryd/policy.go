@@ -768,7 +768,7 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 	t, ref, err := fileHumanCard(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, Task{
 		ID: NewTaskID(), RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
 		Source: SourceConfig, Author: a.Forgejo.BotUser,
-	})
+	}, "")
 	if err != nil {
 		return err
 	}

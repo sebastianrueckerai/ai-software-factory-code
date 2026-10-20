@@ -70,8 +70,9 @@ type PokeStore interface {
 	// member whose explicit level row (needs-you or all) joins them.
 	PokeRecipients(ctx context.Context, repository string, base []string) ([]string, error)
 	// ChainInform is the merged inform's words: the status of the task's
-	// own carry row, the repository's open repair card's issue (0 for
-	// none), and whether a green chain already covers the task.
+	// own carry row, the issue of the repository's repair card on the red
+	// (0 for none; a merged one's fix is in main), and whether a green
+	// chain already covers the task.
 	ChainInform(ctx context.Context, repository string, pr int64, taskID string) (state string, repair int64, covered bool, err error)
 	// Poke writes m into the inbox thread of each of logins on repository,
 	// queued where queued says so, one pending delivery row per connection
@@ -246,6 +247,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	case EventQuestionAsked:
 		m.Kind = MessageEscalation
 		m.Content = ref + " needs you: " + str("question")
+		m.Decider = str("decider_line")
 		if slices.Contains(budgetSources, str("source")) && t.Kind != "human" {
 			m.Content = ref + " is stopped by its budget: " + str("question")
 		}
@@ -318,7 +320,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			return m, false
 		}
 		m.Content = str("poke")
-		m.Decider = fmt.Sprintf("routine %s · run %d · %s", str("routine"), num("run"), str("schedule"))
+		m.Decider = routineDecider(str("routine"), int(num("run")), str("schedule"))
 	case EventAutonomyChanged:
 		m.TaskID = ""
 		from, to := str("from"), str("to")
@@ -361,6 +363,12 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	return m, true
 }
 
+// routineDecider is the decider line of a poke run n of routine makes,
+// schedule its schedule in words.
+func routineDecider(routine string, n int, schedule string) string {
+	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
+}
+
 // cardRef is how a poke names e's card: its issue, else its task id.
 func cardRef(e Event, t Task) string {
 	switch {
@@ -376,7 +384,7 @@ func (s *PGStore) ChainInform(ctx context.Context, repository string, pr int64, 
 	var state string
 	var repair int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT status FROM chain_runs WHERE repository = $1 AND pr_number = $2), ''),
-		COALESCE((SELECT min(issue_number) FROM tasks WHERE repository = $1 AND source = $3 AND status <> ALL($4) AND issue_number > 0), 0)`,
+		COALESCE((SELECT min(issue_number) FROM tasks WHERE repository = $1 AND source = $3 AND status <> ALL($4) AND status <> 'merged' AND issue_number > 0), 0)`,
 		repository, pr, SourceChainRepair, FinalStatuses).Scan(&state, &repair); err != nil {
 		return "", 0, false, err
 	}

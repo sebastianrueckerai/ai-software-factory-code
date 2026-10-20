@@ -327,6 +327,13 @@ func TestPGStorePokes(t *testing.T) {
 	if err := s.CreateTask(ctx, merged); err != nil {
 		t.Fatal(err)
 	}
+	// an earlier repair card, merged, stands beside the acting one: its fix
+	// is in main, so it is no longer on the red
+	old := merged
+	old.ID, old.Source, old.IssueNumber, old.PRNumber = "t-r0", SourceChainRepair, 1100, 0
+	if err := s.CreateTask(ctx, old); err != nil {
+		t.Fatal(err)
+	}
 	repair := merged
 	repair.ID, repair.Status, repair.Source, repair.IssueNumber, repair.PRNumber = "t-r", "queued", SourceChainRepair, 1139, 0
 	if err := s.CreateTask(ctx, repair); err != nil {

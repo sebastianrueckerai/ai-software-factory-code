@@ -1094,7 +1094,7 @@ func FileTask(ctx context.Context, store interface {
 // events.
 func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if p.Agents == policy.AgentsNone || t.Kind == "human" {
-		return fileHumanCard(ctx, store, forgejo, tl, p.Repo(), title, body, labels, t)
+		return fileHumanCard(ctx, store, forgejo, tl, p.Repo(), title, body, labels, t, "")
 	}
 	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {
@@ -1120,8 +1120,8 @@ func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 // there — an issue a filing whose task row then failed left behind is
 // taken on, not filed again. An issue a task holds is that card's, such as
 // an earlier routine run's still open. The card records card_created and
-// its needs-you row (recordNeedsYou).
-func fileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+// its needs-you row (recordNeedsYou), decider the poke's decider line.
+func fileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task, decider string) (Task, IssueRef, error) {
 	t.Kind = "human"
 	labels = append(slices.DeleteFunc(slices.Clone(labels), func(n string) bool { return n == LabelAgent }), "human")
 	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
@@ -1153,7 +1153,7 @@ func fileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 		}
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number})
-	recordNeedsYou(ctx, tl, t, title)
+	recordNeedsYou(ctx, tl, t, title, decider)
 	return t, ref, nil
 }
 
@@ -1166,11 +1166,15 @@ type humanCardStore interface {
 
 // recordNeedsYou records factoryd's human card t's needs-you row, the one
 // an escalation records: the Poker carries it to the inbox and the
-// messengers as "#N needs you: <title>", and the waker wakes the project
-// agent on it at autonomous, a month cap's excepted (wakesNobody).
-func recordNeedsYou(ctx context.Context, tl *Timeline, t Task, title string) {
-	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
-		"question": textutil.Truncate(title, 300), "source": t.Source, "by": cmp.Or(t.Author, FactoryDecider)})
+// messengers as "#N needs you: <title>" under decider, its decider line
+// ("" for none), and the waker wakes the project agent on it at
+// autonomous, a month cap's excepted (wakesNobody).
+func recordNeedsYou(ctx context.Context, tl *Timeline, t Task, title, decider string) {
+	detail := map[string]any{"question": textutil.Truncate(title, 300), "source": t.Source, "by": cmp.Or(t.Author, FactoryDecider)}
+	if decider != "" {
+		detail["decider_line"] = decider
+	}
+	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, detail)
 }
 
 // FileFactoryPRTask files a card for pull request prNumber, which factoryd

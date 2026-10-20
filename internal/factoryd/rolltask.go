@@ -941,7 +941,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	_, ref, err := fileHumanCard(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, title, body, nil, Task{
 		ID: req.TaskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA,
 		Source: SourceRollRefused, Author: r.Forgejo.BotUser,
-	})
+	}, "")
 	if err != nil {
 		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
 	}
