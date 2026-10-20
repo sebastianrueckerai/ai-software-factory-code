@@ -934,3 +934,123 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 		t.Fatalf("episodes %+v, want the concluded head's ended", p.episodes)
 	}
 }
+
+// goneWorkflows plays the Temporal half for cards whose workflow cannot
+// take a signal: Alive answers for the cards it names, as Temporal does
+// — missing, completed, failed and terminated are not alive.
+type goneWorkflows struct {
+	*fakeWorkflows
+	alive map[string]bool
+}
+
+func (w *goneWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	return w.alive[taskID], nil
+}
+
+// MigrateChainLimbo mirrors PGStore's migration read: every done card
+// whose carry row no green run covers, moved to merged.
+func (s *fakeStore) MigrateChainLimbo(ctx context.Context, repository string) ([]string, error) {
+	green := int64(0)
+	for _, c := range s.chain {
+		if c.repo == repository && c.status == "success" && c.run > green {
+			green = c.run
+		}
+	}
+	var moved []string
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Status != "done" || t.PRNumber <= 0 {
+			continue
+		}
+		mine := int64(0)
+		for _, c := range s.chain {
+			if c.repo == repository && c.pr == t.PRNumber && (mine == 0 || c.run < mine) {
+				mine = c.run
+			}
+		}
+		if mine == 0 || green >= mine {
+			continue
+		}
+		if err := s.TransitionTask(ctx, t.ID, []string{"done"}, "merged"); err != nil {
+			return nil, err
+		}
+		moved = append(moved, t.ID)
+	}
+	return moved, nil
+}
+
+// The startup pass moves the limbo (Task 9): a served repository's done
+// cards the chain never confirmed live move to merged; a repository
+// whose chain is none moves nothing, its cards held by the grandfather
+// clause.
+func TestStartupMigrationMovesTheLimbo(t *testing.T) {
+	f := &chainForgejo{}
+	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo},
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Mode: chainModeNone}},
+		}}}
+	}
+	store.tasks = map[string]Task{
+		"t-limbo": {ID: "t-limbo", Status: "done", Repository: codeRepo, PRNumber: 12},
+		"t-none":  {ID: "t-none", Status: "done", Repository: demoRepo, PRNumber: 5},
+	}
+	// each repository's carry row past its green run: limbo where served
+	store.chain = []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: "c2", run: 12, status: "success"},
+		{repo: codeRepo, pr: 12, sha: "c4", run: 14, status: "failure"},
+		{repo: demoRepo, pr: 5, sha: "d3", run: 3, status: "failure"},
+	}
+	p.migrate(context.Background())
+	if got := store.tasks["t-limbo"].Status; got != "merged" {
+		t.Fatalf("t-limbo = %s, want merged", got)
+	}
+	if got := store.tasks["t-none"].Status; got != "done" {
+		t.Fatalf("t-none = %s, want done: the repository's chain is none", got)
+	}
+	// the pass is idempotent: a second one finds nothing to move
+	p.migrate(context.Background())
+	if got := store.tasks["t-limbo"].Status; got != "merged" {
+		t.Fatalf("t-limbo = %s after the second pass, want merged", got)
+	}
+}
+
+// A covered card whose workflow is gone — completed done long before, a
+// signal it drops and no restart that could take it (Task 9) — finishes
+// in the store, naming the run that covers it; a card whose workflow
+// stands takes the signal and decides itself.
+func TestCoveredCardWithoutAWorkflowFinishesInTheStore(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(61, commitC2, "success")},
+		},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+	}
+	wf := &goneWorkflows{fakeWorkflows: &fakeWorkflows{}, alive: map[string]bool{"t-live": true}}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Workflows = wf
+	store.tasks = map[string]Task{
+		"t-gone": {ID: "t-gone", Status: "merged", Repository: codeRepo, PRNumber: 12},
+		"t-live": {ID: "t-live", Status: "merged", Repository: codeRepo, PRNumber: 12},
+	}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks["t-gone"].Status; got != "done" {
+		t.Fatalf("t-gone = %s, want done in the store", got)
+	}
+	if !store.finished["t-gone"].After(time.Time{}) {
+		t.Fatal("t-gone finished at nothing")
+	}
+	if got := store.tasks["t-live"].Status; got != "merged" {
+		t.Fatalf("t-live = %s, want merged: its workflow decides", got)
+	}
+	if len(wf.signals) != 2 {
+		t.Fatalf("signals = %v, want both cards told", wf.signals)
+	}
+}
