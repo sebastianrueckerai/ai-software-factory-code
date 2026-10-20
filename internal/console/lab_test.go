@@ -13,6 +13,7 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -47,7 +48,9 @@ func TestLab(t *testing.T) {
 	r := newRig(t)
 	r.c.cfg.Timelines = lockedObjects{r.objects}
 	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		files, ok := labPRFiles[req.URL.Path]
+		labObjects.RLock()
+		files, ok := labFiles[req.URL.Path]
+		labObjects.RUnlock()
 		if !ok {
 			r.fg.serve(w, req)
 			return
@@ -75,11 +78,6 @@ func TestLab(t *testing.T) {
 		}
 		return "", nil
 	}
-	r.projects.rows = slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
-	r.projects.rows[0].Process, r.projects.rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
-	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
-	demo := &r.projects.rows[slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
-	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
 	r.c.cfg.Kustomization = func(_ context.Context, namespace, _ string) (factoryd.FluxState, error) {
 		if namespace == "demo-prod" {
 			return factoryd.FluxState{Ready: "False",
@@ -88,9 +86,6 @@ func TestLab(t *testing.T) {
 		return factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
 			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil
 	}
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
-		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}
-	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 120}
 	// the messenger panel (roadmap 145): telegram connected, discord offered,
 	// two levels the writer set and one left to its derived default
 	r.c.cfg.Messengers = &Messengers{
@@ -252,7 +247,19 @@ func (o lockedObjects) Delete(ctx context.Context, k string) error {
 	return o.m.Delete(ctx, k)
 }
 
+// labProject names the project a scene shows, its repository and the
+// member who views it.
+type labProject struct{ Name, Repository, Login string }
+
 type labScene struct {
+	project labProject
+	// projects, config, monthCap and prFiles replace the Go-coded scenes'
+	// project rows, ai-software-factory-code's configuration, its month cap
+	// and the lab's pull request files
+	projects  []factoryd.Project
+	config    *policy.ProjectConfig
+	monthCap  float64
+	prFiles   map[string]string
 	tasks     []factoryd.BoardTask
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
@@ -480,8 +487,50 @@ func (r *rig) labSeed(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake or metrics", name)
 	}
+	return r.seedScene(scene(time.Now())), nil
+}
+
+// labCodeProject is the project every Go-coded scene shows.
+var labCodeProject = labProject{"ai-software-factory-code", "sf/code", "sebastian"}
+
+// labFiles are the changed files of the pull requests the lab's Forgejo
+// answers, by path; a seed replaces them.
+var labFiles = labPRFiles
+
+// labProjects are the project rows of the Go-coded scenes.
+func labProjects() []factoryd.Project {
+	rows := slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
+	rows[0].Process, rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
+	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
+	demo := &rows[slices.IndexFunc(rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
+	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
+	return rows
+}
+
+// seedScene replaces what every fake answers with scene s's data and
+// answers the card its drawer shots open.
+func (r *rig) seedScene(s labScene) string {
 	now := time.Now()
-	s := scene(now)
+	project := cmp.Or(s.project, labCodeProject)
+	repository, login := project.Repository, project.Login
+	r.projects.rows = s.projects
+	if r.projects.rows == nil {
+		r.projects.rows = labProjects()
+	}
+	config := s.config
+	if config == nil {
+		config = &policy.ProjectConfig{Repository: repository, MergeRule: "human", Objects: "seed",
+			Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}
+	}
+	r.ledger.files = map[string]policy.ProjectConfig{project.Name: *config}
+	r.ledger.monthCaps = map[string]float64{project.Name: cmp.Or(s.monthCap, 120)}
+	r.repoWriters[repository] = []string{login}
+	labObjects.Lock()
+	labFiles = s.prFiles
+	if labFiles == nil {
+		labFiles = labPRFiles
+	}
+	labObjects.Unlock()
 	r.tasks.mu.Lock()
 	r.tasks.tasks, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.deps, s.plans, s.questions
 	r.tasks.mu.Unlock()
@@ -499,7 +548,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.events.mu.Lock()
 	r.events.rows = nil
 	for i, e := range s.events {
-		e.ID, e.Repository = int64(i+1), "sf/code"
+		e.ID, e.Repository = int64(i+1), repository
 		r.events.rows = append(r.events.rows, e)
 	}
 	r.events.next = int64(len(s.events))
@@ -510,25 +559,25 @@ func (r *rig) labSeed(name string) (string, error) {
 		nil, map[string]int64{}, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
 	r.chat.inboxes, r.chat.archived = nil, map[string]bool{}
 	for _, n := range s.archived {
-		r.chat.archived[fmt.Sprint("sf/code sebastian ", n)] = true
+		r.chat.archived[fmt.Sprint(repository, " ", login, " ", n)] = true
 	}
 	if s.inbox > 0 {
-		r.chat.inboxes = map[string]factoryd.ChatConversation{"sf/code sebastian": {Number: s.inbox, Title: factoryd.InboxTitle,
+		r.chat.inboxes = map[string]factoryd.ChatConversation{repository + " " + login: {Number: s.inbox, Title: factoryd.InboxTitle,
 			State: factoryd.ThreadActive, Inbox: true, FirstAt: now.Add(-time.Hour), LastAt: now.Add(-time.Hour)}}
 	}
 	for i, m := range s.chat {
 		m.ID, m.Conversation = int64(i+1), cmp.Or(m.Conversation, 1)
-		r.chat.msgs["sf/code sebastian"] = append(r.chat.msgs["sf/code sebastian"], m)
+		r.chat.msgs[repository+" "+login] = append(r.chat.msgs[repository+" "+login], m)
 	}
 	for n, upto := range s.seen {
-		r.chat.seen[fmt.Sprint("sf/code sebastian ", n)] = upto
+		r.chat.seen[fmt.Sprint(repository, " ", login, " ", n)] = upto
 	}
 	for n, sum := range s.summaries {
-		r.chat.summaries[fmt.Sprint("sf/code sebastian ", n)] = sum
-		r.chat.compacts[fmt.Sprint("sf/code sebastian ", n)] = 1
+		r.chat.summaries[fmt.Sprint(repository, " ", login, " ", n)] = sum
+		r.chat.compacts[fmt.Sprint(repository, " ", login, " ", n)] = 1
 	}
 	if len(s.chat) > 0 {
-		r.chat.started = map[string]int64{"sf/code sebastian": cmp.Or(s.open, s.chat[len(s.chat)-1].Conversation)}
+		r.chat.started = map[string]int64{repository + " " + login: cmp.Or(s.open, s.chat[len(s.chat)-1].Conversation)}
 	}
 	for _, p := range s.proposals {
 		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p})
@@ -540,14 +589,14 @@ func (r *rig) labSeed(name string) (string, error) {
 	}
 	r.chat.atts = nil
 	for _, a := range s.attachments {
-		r.chat.atts = append(r.chat.atts, storedAttachment{repository: "sf/code", login: "sebastian", a: a})
+		r.chat.atts = append(r.chat.atts, storedAttachment{repository: repository, login: login, a: a})
 	}
-	r.chat.spend = []spendRow{{"sf/code", now, s.spend - s.chatSpend, false}, {"sf/code", now, s.chatSpend, true}}
+	r.chat.spend = []spendRow{{repository, now, s.spend - s.chatSpend, false}, {repository, now, s.chatSpend, true}}
 	r.chat.mu.Unlock()
 	r.mirrors.mu.Lock()
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {
-		r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport] = factoryd.Mirror{Project: "ai-software-factory-code",
+		r.mirrors.rows[project.Name+" "+factoryd.MirrorExport] = factoryd.Mirror{Project: project.Name,
 			Direction: factoryd.MirrorExport, Remote: "sebastianrueckerai/ai-software-factory-code", State: s.github,
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
@@ -556,7 +605,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.figures.SetMetrics(s.metrics)
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
-	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
+	r.resources.use = map[string]cloudres.EnvelopeUse{repository: {OpenServers: 1, MonthEUR: 0.43}}
 	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
 	// the cluster's nightly backup and dump, last run at their latest
 	// 02:00 and 02:30 UTC; the dump's last run failed
@@ -575,7 +624,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.routines.mu.Lock()
 	r.routines.views, r.routines.runs, r.routines.skips, r.routines.ran = slices.Clone(s.routines), map[string][]factoryd.RoutineRun{}, nil, nil
 	for name, runs := range s.runs {
-		r.routines.runs[labProject+"/"+name] = runs
+		r.routines.runs[project.Name+"/"+name] = runs
 	}
 	// a Skip once moves the routine's next run on, as factoryd's views do,
 	// and its undo puts the scene's view back
@@ -589,7 +638,7 @@ func (r *rig) labSeed(name string) (string, error) {
 			*v = s.routines[i]
 			return
 		}
-		v.State.SkipNext, v.State.SkipBy = true, "sebastian"
+		v.State.SkipNext, v.State.SkipBy = true, login
 		if every := v.Routine.MergesEvery(); every > 0 {
 			v.MergesLeft += every
 			v.NextWords = fmt.Sprintf("after %d more merges", v.MergesLeft)
@@ -600,16 +649,16 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.routines.mu.Unlock()
 	r.c.turns = newTurnGate()
 	for _, n := range s.working {
-		r.c.turns.enter(threadKey("sf/code", "sebastian", n))
+		r.c.turns.enter(threadKey(repository, login, n))
 	}
-	if p, ok := r.ledger.files["ai-software-factory-code"]; ok {
+	if p, ok := r.ledger.files[project.Name]; ok {
 		p.Autonomy = cmp.Or(s.autonomy, policy.AutonomyManual)
-		r.ledger.files["ai-software-factory-code"] = p
+		r.ledger.files[project.Name] = p
 	}
 	r.c.mu.Lock()
 	r.c.checks = nil
 	r.c.mu.Unlock()
-	return s.drawer, nil
+	return s.drawer
 }
 
 // labCosts is the ledger of the 14 days to now: total spread over them by
@@ -1002,8 +1051,6 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 // runs read as the round's dates, and every age counts back from now.
 var labMonday = time.Date(2026, 10, 12, 6, 0, 0, 0, time.UTC)
 
-const labProject = "ai-software-factory-code"
-
 // labBumpBrief is the weekly bump's brief, routines/weekly-bump.md.
 const labBumpBrief = "The factory pins every outside input of its builds and its cluster: nothing moves until this card moves it. " +
 	"Bump each to the newest release of its line in one pull request: the outside images and charts in upstream-images.txt, " +
@@ -1052,7 +1099,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	}
 	s.routinesAt = at
 	run := func(rt policy.Routine, n int, trigger string, due time.Time, took time.Duration, outcome, note string, issue int64) factoryd.RoutineRun {
-		r := factoryd.RoutineRun{Project: labProject, Routine: rt.Name, Run: n, Due: due, Started: due, Ended: due.Add(took), Trigger: trigger,
+		r := factoryd.RoutineRun{Project: labCodeProject.Name, Routine: rt.Name, Run: n, Due: due, Started: due, Ended: due.Add(took), Trigger: trigger,
 			Outcome: outcome, Note: note, Issue: issue}
 		if issue > 0 {
 			r.TaskID = labID(issue)
@@ -1112,7 +1159,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	}
 
 	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
-		v := factoryd.RoutineView{Project: labProject, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
+		v := factoryd.RoutineView{Project: labCodeProject.Name, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
 		labNext(&v, now, at, at)
 		if every := rt.MergesEvery(); every > 0 {
 			v.MergesLeft = every - st.Merges
@@ -1120,12 +1167,12 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 		}
 		return v
 	}
-	b := view(labBump, factoryd.RoutineState{Project: labProject, Routine: labBump.Name, Runs: s.runs[labBump.Name][0].Run})
+	b := view(labBump, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labBump.Name, Runs: s.runs[labBump.Name][0].Run})
 	b.Open, b.Held = open, held
 	s.routines = []factoryd.RoutineView{b,
 		view(labTemplatePass, factoryd.RoutineState{Routine: labTemplatePass.Name, Runs: 1312}),
-		view(labDeps, factoryd.RoutineState{Project: labProject, Routine: labDeps.Name, Runs: 9}),
-		view(labAudit, factoryd.RoutineState{Project: labProject, Routine: labAudit.Name, Merges: 14, Runs: 4}),
+		view(labDeps, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labDeps.Name, Runs: 9}),
+		view(labAudit, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labAudit.Name, Merges: 14, Runs: 4}),
 	}
 }
 
@@ -1440,5 +1487,23 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 			Weeks: [7]float64{9, 9, 9, 9, 9, 9, 9}},
 		ChatWork: factoryd.ChatWork{Calls: 312, Minutes: 41, PrevCalls: 274, PrevMinutes: 36,
 			Weeks: [7]float64{238, 251, 262, 274, 288, 299, 312}},
+	}
+}
+
+func TestSeedSceneProject(t *testing.T) {
+	r := newRig(t)
+	now := time.Now()
+	s := labScene{project: labProject{"nord-booking", "nord/booking", "sebastian"},
+		events: []factoryd.Event{labEvent(1, factoryd.EventTaskStatus, "factory", factoryd.ViaFactoryd, now.Add(-time.Minute), nil)},
+		chat:   []factoryd.ChatMessage{{Role: "user", Content: "hello", At: now.Add(-time.Minute)}}}
+	r.seedScene(s)
+	if got := r.events.rows[0].Repository; got != "nord/booking" {
+		t.Fatalf("event repository %q, want nord/booking", got)
+	}
+	if _, ok := r.chat.msgs["nord/booking sebastian"]; !ok {
+		t.Fatalf("chat keyed %v, want nord/booking sebastian", slices.Collect(maps.Keys(r.chat.msgs)))
+	}
+	if _, ok := r.ledger.files["nord-booking"]; !ok {
+		t.Fatalf("ledger files %v, want nord-booking", slices.Collect(maps.Keys(r.ledger.files)))
 	}
 }
