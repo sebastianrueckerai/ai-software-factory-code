@@ -1323,9 +1323,6 @@ func (r *Runner) AwaitRollout(ctx context.Context, taskID string, pr int64, boun
 	if err != nil {
 		return RolloutResult{}, err
 	}
-	if r.rollouts == nil {
-		return RolloutResult{}, terminalError("no deployment reader for the rollout wait")
-	}
 	until := r.clock().Add(bound)
 	for {
 		confirmed, names, err := r.rolloutConfirmed(ctx, repo, pr)
@@ -1387,7 +1384,7 @@ func (r *Runner) rolloutConfirmed(ctx context.Context, repo Repo, pr int64) (con
 	}
 	live := []string{}
 	for dep, changes := range pending {
-		d, err := r.rollouts.Deployment(ctx, r.cfg.FactoryNamespace, dep)
+		d, err := r.kube.Deployment(ctx, r.cfg.FactoryNamespace, dep)
 		if err != nil {
 			return false, nil, err
 		}

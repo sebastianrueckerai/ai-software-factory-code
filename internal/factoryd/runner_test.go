@@ -69,6 +69,7 @@ type fakeKube struct {
 	pvs         []PersistentVolume
 	deletedPVs  []string
 	cronJobs    map[string][]CronJobState // namespace → its CronJobs and ScheduledBackups
+	deployments map[string]string         // ns/name → Deployment JSON
 	cronJobsErr map[string]error          // "<kind> <namespace>" → injected failure of its read
 	tokenTaken  chan struct{}             // closed when a worker endpoint took a push token
 	takeToken   sync.Once
@@ -495,6 +496,17 @@ func (k *fakeKube) CronJobs(ctx context.Context, namespace string) ([]CronJobSta
 
 func (k *fakeKube) ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error) {
 	return k.jobsOf(KindScheduledBackup, namespace)
+}
+
+func (k *fakeKube) Deployment(ctx context.Context, namespace, name string) (Deployment, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	body, ok := k.deployments[namespace+"/"+name]
+	if !ok {
+		return Deployment{}, fmt.Errorf("deployment %s/%s: %w", namespace, name, ErrNotFound)
+	}
+	var d Deployment
+	return d, json.Unmarshal([]byte(body), &d)
 }
 
 func (k *fakeKube) jobsOf(kind, namespace string) ([]CronJobState, error) {

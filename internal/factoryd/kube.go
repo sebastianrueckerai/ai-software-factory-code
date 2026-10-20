@@ -110,6 +110,9 @@ type Kube interface {
 	DeletePersistentVolume(ctx context.Context, name string) error
 	CronJobs(ctx context.Context, namespace string) ([]CronJobState, error)
 	ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error)
+	// Deployment reads a Deployment: a roll's rollout wait reads the
+	// factory's own.
+	Deployment(ctx context.Context, namespace, name string) (Deployment, error)
 }
 
 // PodDiagnosis is what the gate supervisor and a pod's start read of a

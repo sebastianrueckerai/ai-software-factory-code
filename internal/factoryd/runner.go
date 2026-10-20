@@ -116,12 +116,9 @@ type LeaseReader interface {
 // credentials, worker pod, supervision and session records. Its exported
 // methods are the Temporal activities TaskWorkflow calls.
 type Runner struct {
-	cfg   RunnerConfig
-	store Store
-	kube  Kube
-	// rollouts reads the factory's own Deployments: a roll's rollout
-	// wait (AwaitRollout) reads them; the in-cluster client is it
-	rollouts   DeploymentReader
+	cfg        RunnerConfig
+	store      Store
+	kube       Kube
 	forgejo    *Forgejo
 	completion *Completion
 	objects    ObjectStore
@@ -345,11 +342,6 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
 			Events: store, Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}
-	// the in-cluster client reads the factory's own Deployments too; a
-	// kube without the read leaves a roll's rollout wait to its retries
-	if dr, ok := kube.(DeploymentReader); ok {
-		runner.rollouts = dr
-	}
 	return runner, nil
 }
 

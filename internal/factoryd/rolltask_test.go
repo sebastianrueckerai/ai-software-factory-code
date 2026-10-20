@@ -1960,3 +1960,56 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 		t.Fatalf("third poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
 	}
 }
+
+// A roll's rollout wait reads the factory's Deployments through the Kube
+// the runner takes: the merge moved factoryd's gateway image, and the
+// factoryd Deployment carrying it, available after Flux applied it,
+// confirms the rollout.
+func TestAwaitRolloutReadsTheDeploymentThroughTheKube(t *testing.T) {
+	kube := newFakeKube()
+	r, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Kind: "agent", Repository: "sf/repo", PRNumber: 9, Source: SourceRoll}, kube, &fakeObjectStore{})
+	pinned := func(image, digest string) string { return registryHost + image + "@" + digest }
+	factorydAt := func(gateway string) string {
+		return "image: " + pinned("factory-gateway", gateway) + "\nworker: " + pinned("opencode-worker", digestOld) + "\nci: " + pinned("ci-runner", digestOld) + "\n"
+	}
+	files := map[string]string{
+		"k8s/factoryd.yaml m9":   factorydAt(digestNew),
+		"k8s/factoryd.yaml p9":   factorydAt(digestOld),
+		"k8s/deployment.yaml m9": "image: " + pinned("factory-gateway", digestOld) + "\n",
+		"k8s/deployment.yaml p9": "image: " + pinned("factory-gateway", digestOld) + "\n",
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		switch p := req.URL.Path; {
+		case p == "/api/v1/repos/sf/repo/pulls/9":
+			io.WriteString(w, mergedAt(9, "m9"))
+		case p == "/api/v1/repos/sf/repo/git/commits/m9":
+			io.WriteString(w, `{"parents":[{"sha":"p9"}]}`)
+		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/raw/"):
+			body, ok := files[strings.TrimPrefix(p, "/api/v1/repos/sf/repo/raw/")+" "+req.URL.Query().Get("ref")]
+			if !ok {
+				http.NotFound(w, req)
+				return
+			}
+			io.WriteString(w, body)
+		default:
+			t.Errorf("unexpected call %s %s", req.Method, req.URL)
+			http.NotFound(w, req)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	r.forgejo = &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	kube.deployments = map[string]string{
+		"factory/factoryd": deploymentJSON("2026-10-20T10:00:00Z", "2026-10-20T10:01:00Z", pinned("factory-gateway", digestNew)),
+	}
+	val, err := execActivity(t, r, ActivityAwaitRollout, "t1", int64(9), time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res RolloutResult
+	if err := val.Get(&res); err != nil {
+		t.Fatal(err)
+	}
+	if !res.Confirmed || !slices.Equal(res.Live, []string{"factoryd"}) {
+		t.Fatalf("rollout = %+v, want confirmed with factoryd live", res)
+	}
+}
