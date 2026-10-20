@@ -100,7 +100,7 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	switch files {
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), HumanQuestion{Ask: rt.Title, Info: body}, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
 			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
 		if err != nil {
 			return RoutineRunResult{}, err

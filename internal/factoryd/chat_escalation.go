@@ -24,8 +24,36 @@ func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 }, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task) (Task, error) {
-	ask := strings.Join(strings.Fields(q.Ask), " ")
-	title := "needs you: " + textutil.Truncate(ask, 80)
+	via, asker := ViaChat, "agent"
+	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
+	if card.Source != SourceChat {
+		via, asker = ViaFactoryd, card.Source
+		footer = fmt.Sprintf("factoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.", by)
+	}
+	title, body := askTitle(q), questionBody(q, footer)
+	t := card
+	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = NewTaskID(), "human", "standard", title+"\n\n"+body, forgejo.BotUser
+	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, []string{"human"}, t)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := recordAsk(ctx, store, tl, t, q, by, asker, via); err != nil {
+		return Task{}, err
+	}
+	return t, nil
+}
+
+// MaxAsk bounds a card's title, the ask itself, in bytes.
+const MaxAsk = 200
+
+// askTitle is the ask on one line, cut at MaxAsk only as a guard.
+func askTitle(q HumanQuestion) string {
+	return textutil.Truncate(strings.Join(strings.Fields(q.Ask), " "), MaxAsk-len("…"))
+}
+
+// questionBody is a human card's issue body: the question's five parts in
+// order, then footer.
+func questionBody(q HumanQuestion, footer string) string {
 	var b strings.Builder
 	b.WriteString(fenced(q.Ask))
 	b.WriteString("\n\nWhy: " + q.Why)
@@ -39,27 +67,21 @@ func EscalateToHuman(ctx context.Context, store interface {
 			fmt.Fprintf(&b, "- %s\n", c.Label)
 		}
 	}
-	via, asker := ViaChat, "agent"
-	if card.Source == SourceChat {
-		fmt.Fprintf(&b, "\nThe project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd", by)
-	} else {
-		via, asker = ViaFactoryd, card.Source
-		fmt.Fprintf(&b, "\nfactoryd asks (%s). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd", by)
-	}
-	t := card
-	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = NewTaskID(), "human", "standard", title+"\n\n"+b.String(), forgejo.BotUser
-	t, _, err := FileTask(ctx, store, forgejo, repo, title, b.String(), []string{"human"}, t)
-	if err != nil {
-		return Task{}, err
-	}
-	// the ask's durable anchor, the same row the runner's escalations
-	// write: without it the card waits with its question on the chat alone
+	return b.String() + "\n" + footer + "\n\nfiled by factoryd"
+}
+
+// recordAsk is the ask's durable anchor: the intake row the board and
+// drawer read, and the question_asked row the inbox's poke carries. by is
+// who asks, asker the source the wake reads.
+func recordAsk(ctx context.Context, store interface {
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+}, tl *Timeline, t Task, q HumanQuestion, by, asker, via string) error {
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd",
-		Body: q.Ask, Question: &q}); err != nil {
-		return Task{}, fmt.Errorf("task %s: record the chat escalation: %w", t.ID, err)
+		Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
+		return fmt.Errorf("task %s: record the ask: %w", t.ID, err)
 	}
 	asked := map[string]any{
-		"question": textutil.Truncate(ask, 300),
+		"question": textutil.Truncate(strings.Join(strings.Fields(q.Ask), " "), 300),
 		"ask":      q.Ask,
 		"why":      q.Why,
 		"info":     q.Info,
@@ -73,5 +95,5 @@ func EscalateToHuman(ctx context.Context, store interface {
 		asked["choices"] = q.Labels()
 	}
 	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
-	return t, nil
+	return nil
 }

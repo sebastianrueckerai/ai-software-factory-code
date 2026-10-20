@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -161,5 +162,48 @@ func TestMonthAlarmZeroCap(t *testing.T) {
 	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: proxyRefusal}
 	if err := alarm.Check(context.Background()); err != nil || len(store.alertRows()) != 0 || len(fj.issues) != 0 {
 		t.Fatalf("check under a cap of 0 = %v, alerts %+v, issues %q", err, store.alertRows(), fj.issues)
+	}
+}
+
+// A human card filed from a question anchors the ask by its intake row
+// and its question_asked row, filed fresh or adopted from the open issue
+// a failed task row left behind.
+func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
+	ctx := context.Background()
+	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit",
+		Choices: []QuestionChoice{{Value: AnswerGrant, Label: "Raise it"}, {Value: AnswerPark, Label: "Park"}}}
+	for _, adopt := range []bool{false, true} {
+		store, rows := newFakeStore(), &fakeEventRecorder{}
+		alarm, fj := monthAlarm(t, store, 50)
+		book := &failingTasks{fakeStore: store}
+		if adopt {
+			book.failNext = 1
+			if _, _, err := fileHumanTask(ctx, book, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-0", Kind: "human", Source: SourceMonthCap}); err == nil {
+				t.Fatal("a failed task row raised nothing")
+			}
+		}
+		tl := &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+		task, number, err := fileHumanTask(ctx, book, alarm.Forgejo, tl, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(fj.issues) != 1 || !strings.HasPrefix(fj.issues[0], "Raise the cap?\n\n```\nRaise the cap?\n```\n\nWhy: the cap is reached\n\nInfo: a raise is a commit\n\nChoices:\n- Raise it\n- Park\n\nfactoryd asks (month_cap). ") {
+			t.Fatalf("adopt=%v issues = %q", adopt, fj.issues)
+		}
+		events, err := store.IntakeEvents(ctx, task.ID)
+		if err != nil || len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Question == nil ||
+			!reflect.DeepEqual(*events[0].Question, q) || !slices.Equal(events[0].Choices, []string{"Raise it", "Park"}) {
+			t.Fatalf("adopt=%v intake events = %+v, %v", adopt, events, err)
+		}
+		var asked []Event
+		for _, e := range rows.rows {
+			if e.Kind == EventQuestionAsked {
+				asked = append(asked, e)
+			}
+		}
+		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Raise the cap?" || asked[0].Detail["by"] != "factoryd" ||
+			asked[0].Detail["source"] != SourceMonthCap || number != 41 {
+			t.Fatalf("adopt=%v question_asked rows = %+v, issue %d", adopt, asked, number)
+		}
 	}
 }

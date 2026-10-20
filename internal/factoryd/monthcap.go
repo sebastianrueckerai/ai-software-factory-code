@@ -135,6 +135,7 @@ type MonthSpend struct {
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -242,23 +243,28 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
 		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, t)
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, HumanQuestion{Ask: title, Info: body}, nil, t)
 	if err != nil {
 		return err
 	}
 	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
 }
 
-// fileHumanTask files human task t on repo through FileTask, labelled
+// fileHumanTask files human task t on repo from question q through
+// FileTask, the ask its title, labelled
 // human and labels, unless the bot's open issue of the same title that no
 // task row holds is there: an issue filed by a check whose task row then
 // failed is taken on, not filed again. An issue a task holds is that
 // card's, such as an earlier routine run's still open. number is the
-// issue's. Either way the card records card_created on tl.
+// issue's. Either way the card records card_created and its ask on tl.
 func fileHumanTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task) (Task, int64, error) {
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task) (Task, int64, error) {
+	title := askTitle(q)
+	body := questionBody(q, "factoryd asks ("+t.Source+"). Answer on the card in the console or in the chat's inbox, or close this issue once decided.")
+	t.Objective = title + "\n\n" + body
 	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		return Task{}, 0, err
@@ -291,5 +297,8 @@ func fileHumanTask(ctx context.Context, store interface {
 		}
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number})
+	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd); err != nil {
+		return Task{}, 0, err
+	}
 	return t, number, nil
 }

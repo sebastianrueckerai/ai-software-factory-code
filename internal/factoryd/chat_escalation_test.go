@@ -17,6 +17,13 @@ func TestEscalateToHuman(t *testing.T) {
 	f, labels := fileStub(t)
 	store, rows := newFakeStore(), &fakeEventRecorder{}
 	tl := &Timeline{Store: store, Events: rows}
+	const askText = "Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?"
+	wantBody := "```\nNothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?\n```\n\n" +
+		"Why: the plan needs its acceptance criteria before the build can start\n\n" +
+		"Info: item 12's section stops at the goal sentence; the options below both satisfy it\n\n" +
+		"Recommendation: Write the criteria, read off the roadmap's section\n\n" +
+		"Choices:\n- Write the criteria\n- Park\n\n" +
+		"The project agent asked in sebastian's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
 		Ask:            "Nothing on the roadmap is ready.\nItem 12: no acceptance criteria. Write them?",
 		Why:            "the plan needs its acceptance criteria before the build can start",
@@ -31,11 +38,7 @@ func TestEscalateToHuman(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Kind != "human" || got.Status != "waiting-human" || got.Source != SourceChat || got.IssueNumber != 40 || got.Repository != "sf/r" ||
-		!strings.HasPrefix(got.Objective, "needs you: Nothing on the roadmap is ready. Item 12: no acceptance criteria. Write them?\n\n") ||
-		!strings.Contains(got.Objective, "Why: the plan needs its acceptance criteria before the build can start\n\n") ||
-		!strings.Contains(got.Objective, "Info: item 12's section stops at the goal sentence; the options below both satisfy it\n\n") ||
-		!strings.Contains(got.Objective, "Recommendation: Write the criteria, read off the roadmap's section\n\n") ||
-		!strings.Contains(got.Objective, "Choices:\n- Write the criteria\n- Park\n") || !strings.Contains(got.Objective, "asked in sebastian's chat") {
+		got.Objective != askText+"\n\n"+wantBody {
 		t.Fatalf("the card = %+v", got)
 	}
 	if !slices.Equal(*labels, []string{"human", "state/waiting-human"}) {
@@ -81,7 +84,7 @@ func TestEscalateToHuman(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Kind != IntakeEscalation || events[0].Author != "factoryd" ||
 		events[0].Body != question.Ask || events[0].CommentID != 0 || events[0].Question == nil ||
-		!reflect.DeepEqual(*events[0].Question, question) {
+		!reflect.DeepEqual(*events[0].Question, question) || !slices.Equal(events[0].Choices, []string{"Write the criteria", "Park"}) {
 		t.Fatalf("intake events = %+v, want one escalation row carrying the question", events)
 	}
 }
@@ -108,5 +111,22 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	}
 	if len(rows.rows) != 1 || rows.rows[0].Via != ViaFactoryd || rows.rows[0].Detail["source"] != SourceChainStall || rows.rows[0].Detail["by"] != "the chain poller" {
 		t.Fatalf("rows = %+v, want factoryd's question_asked row", rows.rows)
+	}
+}
+
+// A caller's long ask is cut as a guard: the title stays within MaxAsk
+// bytes and says it was cut.
+func TestEscalateToHumanGuardsTheAsk(t *testing.T) {
+	f, _ := fileStub(t)
+	store := newFakeStore()
+	tl := &Timeline{Store: store, Events: &fakeEventRecorder{}}
+	got, err := EscalateToHuman(context.Background(), store, f, tl, Repo{Owner: "sf", Name: "r"},
+		HumanQuestion{Ask: strings.Repeat("a", 300), Why: "w", Info: "i"}, "sebastian", Task{Source: SourceChat})
+	if err != nil {
+		t.Fatal(err)
+	}
+	title, _, _ := strings.Cut(got.Objective, "\n\n")
+	if want := strings.Repeat("a", 197) + "…"; title != want || len(title) != 200 {
+		t.Fatalf("title = %q (%d bytes), want 197 a's and …", title, len(title))
 	}
 }

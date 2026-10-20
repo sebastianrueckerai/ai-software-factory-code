@@ -201,8 +201,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if title != "Weekly bump of the pinned outside inputs" || card.Objective != title+"\n\n"+body {
 		t.Errorf("title %q, objective %q", title, card.Objective)
 	}
-	if !strings.HasPrefix(body, "The factory pins every outside input of its builds and its cluster") ||
-		!strings.HasSuffix(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1") {
+	if !strings.Contains(body, "\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
+		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\nfactoryd asks (routine). ") {
 		t.Errorf("body:\n%s", body)
 	}
 	for _, want := range []string{"upstream-images.txt", "DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION",
@@ -665,7 +665,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
-	if body := issues.issues[0]; !strings.HasSuffix(body, "Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1") {
+	if body := issues.issues[0]; !strings.Contains(body, "Info: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\nfactoryd asks (routine). ") {
 		t.Errorf("the issue:\n%s", body)
 	}
 	if len(wf.started) != 0 {
