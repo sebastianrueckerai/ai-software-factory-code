@@ -189,6 +189,12 @@ type Config struct {
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error
+	// RerunStall and DismissStall are a chain stall card's answers
+	// (factoryd's ChainPoller.RerunStall, PGStore.DismissChainStall): the
+	// stuck runs of the repository's head re-run now, or the stall
+	// dismissed for by until the head changes.
+	RerunStall   func(ctx context.Context, repository string) error
+	DismissStall func(ctx context.Context, repository, by string) error
 	// CloseCardDone ends card taskID done for by on evidence (factoryd's
 	// Runner.CloseCardDone): a card whose sessions ran one of its plan's
 	// acceptance commands green (roadmap 208) closes on the fact, no

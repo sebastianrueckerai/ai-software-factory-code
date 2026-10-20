@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The question's shape (the question-format concept): every question a
@@ -314,6 +315,42 @@ func quietQuestion(reason string) *HumanQuestion {
 		q.Source = "the stale sweep's"
 	}
 	return q
+}
+
+// The stall card's answers: re-run again re-runs the head's stuck runs
+// and keeps the card, check again closes it and lets the watch run on,
+// dismiss resolves the stall alert and closes it until the head changes.
+const (
+	AnswerRerunAgain = "rerun_again"
+	AnswerCheckAgain = "check_again"
+	AnswerDismiss    = "dismiss"
+)
+
+// stallQuestion is the stall card's question: what of repository's head
+// at sha has been pending since when, the cards the stall holds, and the
+// three answers.
+func stallQuestion(repository, sha string, since time.Time, pending []string, cards []int64) HumanQuestion {
+	held := "No card's change rides this head."
+	if len(cards) > 0 {
+		nums := make([]string, len(cards))
+		for i, n := range cards {
+			nums[i] = "#" + strconv.FormatInt(n, 10)
+		}
+		held = "The stall holds " + strings.Join(nums, ", ") + ": merged, they wait for a green chain to cover them."
+	}
+	return HumanQuestion{
+		Ask: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC. Re-run it, check again or dismiss?",
+			repository, sha[:min(7, len(sha))], since.UTC().Format("2006-01-02 15:04")),
+		Why: "Pending past the stall bound: " + strings.Join(pending, "; ") + ".",
+		Info: held + "\n\nRe-run again re-runs the pending run and keeps this card. Check again closes it and lets the watch run on: " +
+			"a head still pending a stall bound later asks again. Dismiss resolves the stall alert and asks nothing more until the head changes. " +
+			"A head that concludes, green or red, closes this card by itself.",
+		Choices: []QuestionChoice{
+			{AnswerRerunAgain, "Re-run again"},
+			{AnswerCheckAgain, "Check again"},
+			{AnswerDismiss, "Dismiss"},
+		},
+	}
 }
 
 // questionFacts reads the numbers the spend templates fill from: the

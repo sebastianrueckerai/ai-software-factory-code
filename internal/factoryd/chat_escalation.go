@@ -12,14 +12,16 @@ import (
 // as its escalation (roadmap 239).
 const SourceChat = "chat"
 
-// EscalateToHuman files the chat agent's escalation on repo as the bot:
-// a human-lane card in Needs you whose question carries its five parts
-// (the question format), and the question_asked row the inbox's poke
-// carries to the project's members. by is the member whose chat asked.
+// EscalateToHuman files an escalation on repo as the bot: a human-lane
+// card of source in Needs you whose question carries its five parts (the
+// question format), and the question_asked row the inbox's poke carries
+// to the project's members. A SourceChat card is the chat agent's ask, by
+// the member whose chat asked; any other source is factoryd's own, by
+// the part of it that asks.
 func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string) (Task, error) {
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by, source string) (Task, error) {
 	ask := strings.Join(strings.Fields(q.Ask), " ")
 	title := "needs you: " + textutil.Truncate(ask, 80)
 	var b strings.Builder
@@ -35,8 +37,14 @@ func EscalateToHuman(ctx context.Context, store interface {
 			fmt.Fprintf(&b, "- %s\n", c.Label)
 		}
 	}
-	fmt.Fprintf(&b, "\nThe project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd", by)
-	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + b.String(), Source: SourceChat, Author: forgejo.BotUser}
+	via, asker := ViaChat, "agent"
+	if source == SourceChat {
+		fmt.Fprintf(&b, "\nThe project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd", by)
+	} else {
+		via, asker = ViaFactoryd, source
+		fmt.Fprintf(&b, "\nAsked by %s. Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd", by)
+	}
+	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + b.String(), Source: source, Author: forgejo.BotUser}
 	t, _, err := FileTask(ctx, store, forgejo, repo, title, b.String(), []string{"human"}, t)
 	if err != nil {
 		return Task{}, err
@@ -52,7 +60,7 @@ func EscalateToHuman(ctx context.Context, store interface {
 		"ask":      q.Ask,
 		"why":      q.Why,
 		"info":     q.Info,
-		"source":   "agent",
+		"source":   asker,
 		"by":       by,
 	}
 	if q.Recommendation != "" {
@@ -61,6 +69,6 @@ func EscalateToHuman(ctx context.Context, store interface {
 	if len(q.Choices) > 0 {
 		asked["choices"] = q.Labels()
 	}
-	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaChat, asked)
+	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
 	return t, nil
 }

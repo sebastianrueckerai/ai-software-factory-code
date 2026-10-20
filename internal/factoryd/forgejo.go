@@ -543,6 +543,20 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 	return res.Entries, nil
 }
 
+// ErrNoRerun is Forgejo's 404 on an action run's re-run: a Forgejo before
+// 17 has no rerun route.
+var ErrNoRerun = errors.New("forgejo offers no re-run of an action run")
+
+// RerunActionRun re-runs owner/repo's action run runID through Forgejo
+// 17's rerun API; a 404 answers ErrNoRerun.
+func (f *Forgejo) RerunActionRun(ctx context.Context, token, owner, repo string, runID int64) error {
+	_, err := f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs/%d/rerun", owner, repo, runID), nil, anySuccess)
+	if errors.Is(err, ErrNotFound) {
+		return fmt.Errorf("run %d of %s/%s: %w", runID, owner, repo, ErrNoRerun)
+	}
+	return err
+}
+
 // LatestCommit is the newest commit on branch that touched path, and its
 // first parent ("" for a root commit).
 func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path string) (sha, parent string, err error) {

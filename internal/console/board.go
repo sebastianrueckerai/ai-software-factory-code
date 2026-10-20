@@ -1854,6 +1854,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
+		if t.Source == factoryd.SourceChainStall {
+			k.Question = bt.Question // its choices act (doStallAnswer)
+		}
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {

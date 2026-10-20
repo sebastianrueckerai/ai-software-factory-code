@@ -37,6 +37,9 @@ type fakeChainRun struct {
 	// updated is the row's last change, as the store's now() stamps it;
 	// a test wires s.chainNow to the poller's clock where it matters
 	updated time.Time
+	// the head row's stall ladder, kept while its commit stays
+	rerunAt   time.Time
+	dismissed bool
 }
 
 // stamp is the time the fake's chain writes carry: zero, the clock a
@@ -82,7 +85,11 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 			(c.status == "stalled" && status == "pending" && c.run == run && c.sha == sha) {
 			return nil
 		}
-		s.chain[i] = fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()}
+		row := fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()}
+		if c.sha == sha {
+			row.rerunAt, row.dismissed = c.rerunAt, c.dismissed
+		}
+		s.chain[i] = row
 		return nil
 	}
 	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()})
@@ -133,14 +140,58 @@ func (s *fakeStore) ChainHeadSince(ctx context.Context, repository, sha string) 
 	return time.Time{}, false, nil
 }
 
-// OpenRepairCard reports whether repository has a repair card open.
-func (s *fakeStore) OpenRepairCard(ctx context.Context, repository string) (bool, error) {
+// ChainCard is repository's newest card of source.
+func (s *fakeStore) ChainCard(ctx context.Context, repository, source string) (Task, bool, error) {
+	var newest Task
+	ok := false
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Source == SourceChainRepair && !slices.Contains(FinalStatuses, t.Status) {
-			return true, nil
+		if t.Repository == repository && t.Source == source && (!ok || t.CreatedAt.After(newest.CreatedAt)) {
+			newest, ok = t, true
 		}
 	}
-	return false, nil
+	return newest, ok, nil
+}
+
+// ChainLadder is the head row of sha's stall ladder.
+func (s *fakeStore) ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error) {
+	for _, c := range s.chain {
+		if c.repo == repository && c.pr == 0 && c.sha == sha {
+			return ChainLadder{RerunAt: c.rerunAt, Dismissed: c.dismissed}, nil
+		}
+	}
+	return ChainLadder{}, nil
+}
+
+// MarkChainRerun stamps the head row of sha re-run at the fake's clock,
+// which a test that re-runs wires.
+func (s *fakeStore) MarkChainRerun(ctx context.Context, repository, sha string) error {
+	if s.chainNow == nil {
+		panic("fixture: a re-run stamps the head row; wire chainNow")
+	}
+	for i, c := range s.chain {
+		if c.repo == repository && c.pr == 0 && c.sha == sha {
+			s.chain[i].rerunAt = s.stamp()
+		}
+	}
+	return nil
+}
+
+// DismissChainStall mirrors PGStore's: the head row dismissed, the open
+// chain_stalled row resolved noise by the member.
+func (s *fakeStore) DismissChainStall(ctx context.Context, repository, by string) error {
+	for i, c := range s.chain {
+		if c.repo == repository && c.pr == 0 {
+			s.chain[i].dismissed = true
+		}
+	}
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.Kind == AlertChainStalled && a.Fingerprint == repository && a.Verdict == "" {
+			s.alerts[i].Verdict, s.alerts[i].ResolvedBy = VerdictNoise, by
+		}
+	}
+	return nil
 }
 
 // ChainCarriedIssues are the issue numbers of the cards whose change
@@ -293,6 +344,10 @@ type chainForgejo struct {
 	reads     []string                                  // "repository dir" of every workflow-list read
 	failing   map[string]bool                           // "base...head" compares that answer 500
 	compares  int                                       // the compare calls served
+	rerun     int                                       // the status a re-run answers; 0 is 204
+	reruns    []string                                  // "repository run" of every re-run asked
+	comments  []string                                  // "repository#issue body" of every comment posted
+	closed    []string                                  // "repository#issue" of every issue closed
 }
 
 func (f *chainForgejo) srv(t *testing.T) *Forgejo {
@@ -347,6 +402,23 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			reply(map[string]any{"number": 30 + len(f.issues)})
 		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
+		case r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
+			f.reruns = append(f.reruns, repo+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
+			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
+		case r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			f.comments = append(f.comments, repo+"#"+strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")+" "+in["body"])
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{"id": len(f.comments)})
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
+			var in map[string]string
+			json.NewDecoder(r.Body).Decode(&in)
+			if in["state"] == "closed" {
+				f.closed = append(f.closed, repo+"#"+strings.TrimPrefix(p, "/issues/"))
+			}
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{})
 		case p == "/contents/.forgejo/workflows" || p == "/contents/.gitea/workflows":
 			if f.invisible[repo] {
 				http.NotFound(w, r)
@@ -1172,12 +1244,13 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 	}
 }
 
-// A stalled head records the stall on its row and files the repair card.
-// The stall clock is the head row's own stamp — frozen while its verdict
-// stands still — so a head pending since before this factoryd started
-// stalls on the first poll back, not after a fresh bound; a head
-// superseded while pending leaves its episode behind.
-func TestStalledHeadRecordsAndRepairs(t *testing.T) {
+// A stalled head records the stall on its row and, its pending part a
+// required status, asks a human at once: no repair card. The stall clock
+// is the head row's own stamp — frozen while its verdict stands still —
+// so a head pending since before this factoryd started stalls on the
+// first poll back, not after a fresh bound; a head superseded while
+// pending leaves its episode behind.
+func TestStalledHeadRecordsAndAsks(t *testing.T) {
 	f := &chainForgejo{
 		runs: map[string][]map[string]any{demoRepo: {pushRun(21, demoCommit, "success")}},
 	}
@@ -1199,9 +1272,11 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	if got := chainOf(store, demoRepo); got[0].status != "stalled" {
 		t.Fatalf("head row %+v, want the stall recorded", got[0])
 	}
-	cards := repairCards(store)
-	if len(cards[demoRepo]) != 1 || !strings.Contains(cards[demoRepo][0].Objective, "stalled past 1m0s at "+demoCommit) {
-		t.Fatalf("repair cards %+v, want one naming the stall and its bound", cards[demoRepo])
+	if cards := repairCards(store); len(cards) != 0 {
+		t.Fatalf("repair cards %+v, want none: a stall is no code work", cards)
+	}
+	if cards := stallCards(store); len(cards) != 1 || !strings.Contains(cards[0].Objective, "since 2026-10-20 08:58 UTC") {
+		t.Fatalf("stall cards %+v, want one naming the stall's start", cards)
 	}
 	// a newer head arrives still pending: the superseded episode ends, the
 	// new one's clock is its own row's
@@ -1224,6 +1299,411 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	}
 	if len(p.episodes) != 0 {
 		t.Fatalf("episodes %+v, want the concluded head's ended", p.episodes)
+	}
+}
+
+// stallCards are the store's stall cards, oldest first.
+func stallCards(s *fakeStore) []Task {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Source == SourceChainStall {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return a.CreatedAt.Compare(b.CreatedAt) })
+	return out
+}
+
+// stallRig is demo's chain at one-minute stall bound: run 21 on its
+// head, status as given, carrying card #77, and requires as the file's
+// required contexts; the poller, its store, its Forgejo and its clock.
+func stallRig(t *testing.T, status string, requires ...string) (*ChainPoller, *fakeStore, *chainForgejo, *time.Time) {
+	t.Helper()
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{demoRepo: {chainRun(21, demoCommit, status)}},
+		carries: map[string]map[string][]map[string]any{
+			demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Requires: requires, Stall: time.Minute}},
+		}}}
+	}
+	p.Workflows = &fakeWorkflows{}
+	p.End = func(context.Context, string, string, string) error { return nil } // a green head covers #77
+	p.Forgejo.PublicURL = "https://git.example"
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
+	clock := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	store.chainNow = p.Now
+	return p, store, f, &clock
+}
+
+// tickAt advances the clock by d and polls once.
+func tickAt(t *testing.T, p *ChainPoller, clock *time.Time, d time.Duration) {
+	t.Helper()
+	*clock = clock.Add(d)
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stallChoices are the stall card's three answers.
+var stallChoices = []QuestionChoice{
+	{Value: AnswerRerunAgain, Label: "Re-run again"},
+	{Value: AnswerCheckAgain, Label: "Check again"},
+	{Value: AnswerDismiss, Label: "Dismiss"},
+}
+
+// askedQuestion is the question the escalation of card id carries.
+func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
+	t.Helper()
+	for _, e := range s.intakeEvents {
+		if e.TaskID == id && e.Kind == IntakeEscalation && e.Question != nil {
+			return *e.Question
+		}
+	}
+	t.Fatalf("card %s asks nothing: %+v", id, s.intakeEvents)
+	return HumanQuestion{}
+}
+
+// The stall ladder: a run stalled past its bound is re-run once, with no
+// card; a bound later, the head still pending, one human card asks with
+// three choices, naming what is pending since when, the run's link and
+// the cards it holds; a later tick adds nothing. No repair card files.
+func TestAStallRerunsOnceThenAsks(t *testing.T) {
+	p, store, f, clock := stallRig(t, "running")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	if !slices.Equal(f.reruns, []string{demoRepo + " 21"}) || len(stallCards(store)) != 0 {
+		t.Fatalf("first stall tick: reruns %q, stall cards %+v; want run 21 re-run and no card", f.reruns, stallCards(store))
+	}
+	if head := chainOf(store, demoRepo)[0]; head.status != "stalled" || len(store.alerts) != 1 || store.alerts[0].Kind != AlertChainStalled {
+		t.Fatalf("head %+v, alerts %+v; want the stall recorded and alerted", head, store.alerts)
+	}
+	// within the bound since the re-run: the ladder waits
+	tickAt(t, p, clock, 30*time.Second)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 0 {
+		t.Fatalf("a tick after the re-run: reruns %q, stall cards %+v; want nothing new", f.reruns, stallCards(store))
+	}
+	// the bound passed again since the re-run, the head still pending
+	tickAt(t, p, clock, time.Minute)
+	cards := stallCards(store)
+	if len(f.reruns) != 1 || len(cards) != 1 {
+		t.Fatalf("a bound after the re-run: reruns %q, stall cards %+v; want one card, no second re-run", f.reruns, cards)
+	}
+	card := cards[0]
+	if card.Kind != "human" || card.Status != "waiting-human" || card.Repository != demoRepo {
+		t.Fatalf("stall card %+v, want a human card of %s waiting on a person", card, demoRepo)
+	}
+	q := askedQuestion(t, store, card.ID)
+	if !slices.Equal(q.Choices, stallChoices) {
+		t.Fatalf("choices %+v, want %+v", q.Choices, stallChoices)
+	}
+	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 21 running", "https://git.example/" + demoRepo + "/actions/runs/21", "#77"} {
+		if !strings.Contains(card.Objective, want) {
+			t.Fatalf("the card misses %q:\n%s", want, card.Objective)
+		}
+	}
+	if cards := repairCards(store); len(cards) != 0 {
+		t.Fatalf("repair cards %+v, want none for a stall", cards)
+	}
+	tickAt(t, p, clock, 5*time.Minute)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 1 || len(f.issues) != 1 {
+		t.Fatalf("a later tick: reruns %q, issues %d; want nothing new", f.reruns, len(f.issues))
+	}
+}
+
+// A Forgejo without the rerun API (15 answers 404) moves the ladder to
+// the card at once, and the re-run is asked once only.
+func TestAStallWithNoRerunAsksAtOnce(t *testing.T) {
+	p, store, f, clock := stallRig(t, "running")
+	f.rerun = http.StatusNotFound
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
+		t.Fatalf("reruns %q, stall cards %+v; want the re-run asked and the card at once", f.reruns, stallCards(store))
+	}
+	tickAt(t, p, clock, 2*time.Minute)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
+		t.Fatalf("a later tick: reruns %q, stall cards %+v; want nothing new", f.reruns, stallCards(store))
+	}
+}
+
+// A re-run Forgejo refuses otherwise is logged, and the next bound moves
+// the ladder to the card: a failed re-run never holds it.
+func TestAFailedRerunAsksABoundLater(t *testing.T) {
+	p, store, f, clock := stallRig(t, "running")
+	f.rerun = http.StatusForbidden
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	tickAt(t, p, clock, 30*time.Second)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 0 {
+		t.Fatalf("reruns %q, stall cards %+v; want one refused re-run and no card yet", f.reruns, stallCards(store))
+	}
+	tickAt(t, p, clock, time.Minute)
+	if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
+		t.Fatalf("a bound later: reruns %q, stall cards %+v; want the card", f.reruns, stallCards(store))
+	}
+}
+
+// A stall whose pending part is a required status is its deployer's: no
+// re-run, the card at once, naming the status.
+func TestAStalledRequiredStatusIsNotRerun(t *testing.T) {
+	p, store, f, clock := stallRig(t, "success", "factory/roll")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	cards := stallCards(store)
+	if len(f.reruns) != 0 || len(cards) != 1 {
+		t.Fatalf("reruns %q, stall cards %+v; want no re-run and the card at once", f.reruns, cards)
+	}
+	if !strings.Contains(cards[0].Objective, "required context factory/roll: not reported") {
+		t.Fatalf("the card misses the pending status:\n%s", cards[0].Objective)
+	}
+}
+
+// A green head resolves the alert and closes the open stall card as the
+// bot, its close recorded as factoryd's own first, once.
+func TestAGreenHeadClosesTheStallCard(t *testing.T) {
+	p, store, f, clock := stallRig(t, "success", "factory/roll")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	cards := stallCards(store)
+	if len(cards) != 1 {
+		t.Fatalf("stall cards %+v, want one", cards)
+	}
+	f.statuses = map[string]map[string][]map[string]string{
+		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
+	}
+	tickAt(t, p, clock, time.Minute)
+	issue := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber)
+	if !slices.Equal(f.closed, []string{issue}) || len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], issue+" ") {
+		t.Fatalf("closed %q, comments %q; want the card's issue closed with one comment", f.closed, f.comments)
+	}
+	if !botCloseRecorded(store.intakeEvents, cards[0]) {
+		t.Fatalf("intake events %+v, want the close recorded as factoryd's own", store.intakeEvents)
+	}
+	if store.alerts[0].Verdict != VerdictReal {
+		t.Fatalf("alerts %+v, want the stall resolved", store.alerts)
+	}
+	// the close's webhook not in yet: a second green tick posts nothing new
+	tickAt(t, p, clock, time.Minute)
+	if len(f.comments) != 1 {
+		t.Fatalf("comments %q, want the one", f.comments)
+	}
+}
+
+// A head that concludes red ends the stall too: the stall card closes,
+// and the red files its repair card as built.
+func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
+	p, store, f, clock := stallRig(t, "running")
+	f.rerun = http.StatusNotFound
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	cards := stallCards(store)
+	if len(cards) != 1 {
+		t.Fatalf("stall cards %+v, want one", cards)
+	}
+	f.runs[demoRepo] = []map[string]any{chainRun(21, demoCommit, "failure")}
+	tickAt(t, p, clock, time.Minute)
+	if want := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber); !slices.Equal(f.closed, []string{want}) {
+		t.Fatalf("closed %q, want the stall card's issue %s", f.closed, want)
+	}
+	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "run 21 failure") {
+		t.Fatalf("repair cards %+v, want the red head's", repairs)
+	}
+}
+
+// The factory's own repository gets its stall card too; a red there
+// stays mainfix's, so no repair card files.
+func TestTheOwnRepositoryGetsAStallCard(t *testing.T) {
+	p, store, _, clock := stallRig(t, "success", "factory/roll")
+	p.Own, _ = SplitRepo(demoRepo)
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	if cards := stallCards(store); len(cards) != 1 {
+		t.Fatalf("stall cards %+v, want the own repository's", cards)
+	}
+	if cards := repairCards(store); len(cards) != 0 {
+		t.Fatalf("repair cards %+v, want none", cards)
+	}
+}
+
+// A card closed by "check again" lets the watch run on: the head still
+// pending, the next card comes a stall bound after the close.
+func TestACheckedStallAsksAgainABoundLater(t *testing.T) {
+	p, store, _, clock := stallRig(t, "success", "factory/roll")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	first := stallCards(store)[0]
+	closed := *clock
+	first.Status, first.FinishedAt = "done", &closed
+	store.tasks[first.ID] = first
+	tickAt(t, p, clock, 30*time.Second)
+	if n := len(stallCards(store)); n != 1 {
+		t.Fatalf("%d stall cards within the bound after the check, want the one", n)
+	}
+	tickAt(t, p, clock, time.Minute)
+	if n := len(stallCards(store)); n != 2 {
+		t.Fatalf("%d stall cards a bound after the check, want a second", n)
+	}
+}
+
+// "Dismiss" holds the ladder until the head changes: no card, no alert,
+// across a restart too; the next head climbs afresh.
+func TestADismissedStallAsksNothingUntilTheHeadChanges(t *testing.T) {
+	p, store, f, clock := stallRig(t, "running")
+	f.rerun = http.StatusNotFound
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	first := stallCards(store)[0]
+	if err := store.DismissChainStall(context.Background(), demoRepo, "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	closed := *clock
+	first.Status, first.FinishedAt = "done", &closed
+	store.tasks[first.ID] = first
+	tickAt(t, p, clock, 5*time.Minute)
+	restarted := &ChainPoller{Forgejo: p.Forgejo, Store: store, Projects: store, Policy: p.Policy, Workflows: p.Workflows, Now: p.Now}
+	tickAt(t, restarted, clock, 5*time.Minute)
+	open := 0
+	for _, a := range store.alerts {
+		if a.Verdict == "" {
+			open++
+		}
+	}
+	if len(stallCards(store)) != 1 || open != 0 || len(f.reruns) != 1 {
+		t.Fatalf("after the dismissal: stall cards %+v, alerts %+v, reruns %q; want nothing new", stallCards(store), store.alerts, f.reruns)
+	}
+	// a new head, pending past its bound, starts its own ladder
+	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "running"), chainRun(21, demoCommit, "running")}
+	tickAt(t, restarted, clock, 0)
+	tickAt(t, restarted, clock, 2*time.Minute)
+	if len(f.reruns) != 2 || f.reruns[1] != demoRepo+" 22" || len(stallCards(store)) != 2 {
+		t.Fatalf("the new head: reruns %q, stall cards %d; want run 22 re-run and its card", f.reruns, len(stallCards(store)))
+	}
+}
+
+// "Re-run again" re-runs the pending runs of the repository's head and
+// stamps the head row; a head whose pending part is a required status
+// has nothing to re-run, and a Forgejo without the API says so.
+func TestRerunStallRerunsTheHeadsPendingRun(t *testing.T) {
+	ctx := context.Background()
+	p, store, f, clock := stallRig(t, "running")
+	tickAt(t, p, clock, 0)
+	if err := p.RerunStall(ctx, demoRepo); err != nil {
+		t.Fatal(err)
+	}
+	if l, _ := store.ChainLadder(ctx, demoRepo, demoCommit); !slices.Equal(f.reruns, []string{demoRepo + " 21"}) || !l.RerunAt.Equal(*clock) {
+		t.Fatalf("reruns %q, ladder %+v; want run 21 re-run and stamped", f.reruns, l)
+	}
+	f.rerun = http.StatusNotFound
+	if err := p.RerunStall(ctx, demoRepo); !errors.Is(err, ErrNoRerun) {
+		t.Fatalf("RerunStall on a 404 = %v, want ErrNoRerun", err)
+	}
+	p, _, _, clock = stallRig(t, "success", "factory/roll")
+	tickAt(t, p, clock, 0)
+	if err := p.RerunStall(ctx, demoRepo); !errors.Is(err, ErrNothingToRerun) {
+		t.Fatalf("RerunStall on a pending required status = %v, want ErrNothingToRerun", err)
+	}
+}
+
+// The head row keeps its stall ladder while its commit stays: the re-run
+// stamp and the dismissal, which resolves the repository's open
+// chain_stalled row noise by the member and leaves chain_red and other
+// repositories' rows open; a new commit taking the row clears both.
+// ChainCard reads a repository's newest card of a source. Requires a
+// disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestChainLadderRows(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	ladder := func(sha string) ChainLadder {
+		t.Helper()
+		l, err := pg.ChainLadder(ctx, demoRepo, sha)
+		if err != nil {
+			t.Fatalf("ChainLadder: %v", err)
+		}
+		return l
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 21, "pending"))
+	if l := ladder(demoCommit); !l.RerunAt.IsZero() || l.Dismissed {
+		t.Fatalf("a fresh head's ladder = %+v, want none", l)
+	}
+	must(pg.MarkChainRerun(ctx, demoRepo, demoNext)) // no row of that commit: nothing moves
+	if l := ladder(demoCommit); !l.RerunAt.IsZero() {
+		t.Fatalf("ladder %+v after another commit's re-run, want none", l)
+	}
+	must(pg.MarkChainRerun(ctx, demoRepo, demoCommit))
+	if l := ladder(demoCommit); l.RerunAt.IsZero() || time.Since(l.RerunAt) > time.Minute {
+		t.Fatalf("ladder %+v after the re-run, want it stamped now", l)
+	}
+	for _, a := range []Alert{
+		{Kind: AlertChainStalled, Source: demoRepo, Fingerprint: demoRepo},
+		{Kind: AlertChainRed, Source: demoRepo, Fingerprint: demoRepo},
+		{Kind: AlertChainStalled, Source: webRepo, Fingerprint: webRepo},
+	} {
+		if _, err := pg.InsertAlert(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pg.DismissChainStall(ctx, demoRepo, "sebastian"))
+	if l := ladder(demoCommit); !l.Dismissed || l.RerunAt.IsZero() {
+		t.Fatalf("ladder %+v after the dismissal, want dismissed, the re-run kept", l)
+	}
+	alerts, err := pg.Alerts(ctx, 10)
+	must(err)
+	got := map[string]string{}
+	for _, a := range alerts {
+		got[a.Kind+" "+a.Fingerprint] = a.Verdict + " " + a.ResolvedBy
+	}
+	if want := map[string]string{
+		AlertChainStalled + " " + demoRepo: VerdictNoise + " sebastian",
+		AlertChainRed + " " + demoRepo:     " ",
+		AlertChainStalled + " " + webRepo:  " ",
+	}; !maps.Equal(got, want) {
+		t.Fatalf("alerts %v, want %v", got, want)
+	}
+	// a newer run on the same commit keeps the ladder, a new commit clears it
+	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 22, "pending"))
+	if l := ladder(demoCommit); !l.Dismissed || l.RerunAt.IsZero() {
+		t.Fatalf("ladder %+v after the commit's newer run, want it kept", l)
+	}
+	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, "pending"))
+	if l := ladder(demoNext); l.Dismissed || !l.RerunAt.IsZero() {
+		t.Fatalf("ladder %+v of the new commit, want none", l)
+	}
+
+	old := time.Now().Add(-time.Hour)
+	for _, c := range []Task{
+		{ID: "t-old", Kind: "human", Status: "done", FinishedAt: &old, CreatedAt: old, Repository: demoRepo, Source: SourceChainStall, IssueNumber: 5},
+		{ID: "t-new", Kind: "human", Status: "waiting-human", Repository: demoRepo, Source: SourceChainStall, IssueNumber: 6},
+		{ID: "t-repair", Kind: "agent", Status: "queued", Repository: demoRepo, Source: SourceChainRepair, IssueNumber: 7, BudgetEUR: 1},
+		{ID: "t-web", Kind: "human", Status: "waiting-human", Repository: webRepo, Source: SourceChainStall, IssueNumber: 8},
+	} {
+		must(pg.CreateTask(ctx, c))
+	}
+	for source, want := range map[string]string{SourceChainStall: "t-new", SourceChainRepair: "t-repair"} {
+		if c, ok, err := pg.ChainCard(ctx, demoRepo, source); err != nil || !ok || c.ID != want {
+			t.Fatalf("ChainCard %s = %s, %v, %v; want %s", source, c.ID, ok, err, want)
+		}
+	}
+	if c, ok, err := pg.ChainCard(ctx, codeRepo, SourceChainStall); err != nil || ok {
+		t.Fatalf("ChainCard of a repository without one = %s, %v, %v; want none", c.ID, ok, err)
 	}
 }
 

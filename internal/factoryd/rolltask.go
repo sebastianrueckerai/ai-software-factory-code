@@ -569,7 +569,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 			{Value: AnswerClose, Label: "Close"},
 		},
 	}
-	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller"); err != nil {
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller", SourceChat); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
 }

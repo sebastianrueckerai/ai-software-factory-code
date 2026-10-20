@@ -26,7 +26,7 @@ func TestEscalateToHuman(t *testing.T) {
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},
 		},
-	}, "sebastian")
+	}, "sebastian", SourceChat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,5 +83,28 @@ func TestEscalateToHuman(t *testing.T) {
 		events[0].Body != question.Ask || events[0].CommentID != 0 || events[0].Question == nil ||
 		!reflect.DeepEqual(*events[0].Question, question) {
 		t.Fatalf("intake events = %+v, want one escalation row carrying the question", events)
+	}
+}
+
+// An escalation factoryd files itself, as the stall card: the card wears
+// its source, the issue names who asked, and its question_asked row is
+// factoryd's, so the wake reads it as no agent's own doing.
+func TestEscalateToHumanOfFactoryd(t *testing.T) {
+	ctx := context.Background()
+	f, _ := fileStub(t)
+	store, rows := newFakeStore(), &fakeEventRecorder{}
+	tl := &Timeline{Store: store, Events: rows}
+	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
+		Ask: "The chain is pending. Re-run it?", Why: "pending past the bound", Info: "a re-run moves it",
+		Choices: []QuestionChoice{{Value: AnswerRerunAgain, Label: "Re-run again"}, {Value: AnswerDismiss, Label: "Dismiss"}},
+	}, "the chain poller", SourceChainStall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != SourceChainStall || !strings.Contains(got.Objective, "\nAsked by the chain poller. ") || strings.Contains(got.Objective, "chat. Answer") {
+		t.Fatalf("the card = %+v", got)
+	}
+	if len(rows.rows) != 1 || rows.rows[0].Via != ViaFactoryd || rows.rows[0].Detail["source"] != SourceChainStall || rows.rows[0].Detail["by"] != "the chain poller" {
+		t.Fatalf("rows = %+v, want factoryd's question_asked row", rows.rows)
 	}
 }

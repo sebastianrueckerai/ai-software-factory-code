@@ -96,7 +96,7 @@
 <form method="post" action="/tasks/{{$.Card.ID}}/answer" class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
 <input type="hidden" name="value" value="{{.Value}}">
-<button type="submit" aria-label="{{.Label}}{{if or (eq .Value "park") (eq .Value "keep_waiting")}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
+<button type="submit" aria-label="{{.Label}}{{if or (eq .Value "park") (eq .Value "keep_waiting") (eq .Value "rerun_again")}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>
 {{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>
 <div class="info">{{markup .Info}}</div>

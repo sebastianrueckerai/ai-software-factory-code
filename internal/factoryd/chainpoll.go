@@ -21,10 +21,14 @@ import (
 )
 
 // SourceChainRepair is the source of the repair card the chain poller
-// files: a red or stalled head of a project's repository is work, not a
+// files: a red head of a project's repository is code work, not a
 // verdict, and the repair runs the escalation ladder as its own agent
 // card.
 const SourceChainRepair = "chain-repair"
+
+// SourceChainStall is the source of the stall card, the stall ladder's
+// human step: a stall is operational, a person's call.
+const SourceChainStall = "chain-stall"
 
 // ChainHead is the newest main run whose pull requests chain_runs records.
 func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, error) {
@@ -96,14 +100,11 @@ func (s *PGStore) commitCards(ctx context.Context, query string, args ...any) (m
 	return commits, rows.Err()
 }
 
-// OpenRepairCard reports whether repository has a repair card open: one
-// card per repository while its head stays red or stalled.
-func (s *PGStore) OpenRepairCard(ctx context.Context, repository string) (bool, error) {
-	var open bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks
-		WHERE repository = $1 AND source = $2 AND status <> ALL($3))`,
-		repository, SourceChainRepair, FinalStatuses).Scan(&open)
-	return open, err
+// ChainCard is repository's newest card of source, a repair or a stall
+// card: one stands per repository at a time, so it is the only one that
+// can be open.
+func (s *PGStore) ChainCard(ctx context.Context, repository, source string) (Task, bool, error) {
+	return s.oneTask(ctx, `repository = $1 AND source = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, repository, source)
 }
 
 // ChainCarriedIssues are the issue numbers of the cards whose change
@@ -145,11 +146,14 @@ func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int6
 // the AND of every run on the commit and every required context — at
 // run, the newest: an older run never unseats it, and a verdict the row
 // already carries leaves it untouched. A pending never unseats a stall
-// the row records; a newer run or a real verdict still rewrites.
+// the row records; a newer run or a real verdict still rewrites. The
+// stall ladder stays with its commit: a new commit clears it.
 func (s *PGStore) RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, status, updated_at)
 		VALUES ($1, 0, $2, $3, $4, now())
-		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $2, run_id = $3, status = $4, updated_at = now()
+		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $2, run_id = $3, status = $4, updated_at = now(),
+			rerun_at = CASE WHEN chain_runs.sha = $2 THEN chain_runs.rerun_at END,
+			dismissed_at = CASE WHEN chain_runs.sha = $2 THEN chain_runs.dismissed_at END
 		WHERE chain_runs.run_id <= $3 AND (chain_runs.sha <> $2 OR chain_runs.run_id <> $3 OR chain_runs.status <> $4)
 		AND NOT (chain_runs.status = 'stalled' AND $4 = 'pending' AND chain_runs.run_id = $3 AND chain_runs.sha = $2)`,
 		repository, sha, run, status)
@@ -176,6 +180,47 @@ func (s *PGStore) ChainHeadSince(ctx context.Context, repository, sha string) (t
 		return time.Time{}, false, nil
 	}
 	return since, err == nil, err
+}
+
+// ChainLadder is the stall ladder on a head row: when its commit's one
+// re-run was made, zero before it, and whether a member dismissed the
+// stall.
+type ChainLadder struct {
+	RerunAt   time.Time
+	Dismissed bool
+}
+
+// ChainLadder reads the stall ladder of repository's head row of sha;
+// none without the row.
+func (s *PGStore) ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error) {
+	var rerun sql.NullTime
+	var l ChainLadder
+	err := s.db.QueryRowContext(ctx, `SELECT rerun_at, dismissed_at IS NOT NULL FROM chain_runs
+		WHERE repository = $1 AND sha = $2 AND pr_number = 0`, repository, sha).Scan(&rerun, &l.Dismissed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChainLadder{}, nil
+	}
+	l.RerunAt = rerun.Time
+	return l, err
+}
+
+// MarkChainRerun stamps repository's head row of sha re-run now.
+func (s *PGStore) MarkChainRerun(ctx context.Context, repository, sha string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET rerun_at = now()
+		WHERE repository = $1 AND sha = $2 AND pr_number = 0`, repository, sha)
+	return err
+}
+
+// DismissChainStall is a member's dismissal of repository's stall: the
+// head row dismissed until a new commit takes it, and the open
+// chain_stalled alert resolved noise by by.
+func (s *PGStore) DismissChainStall(ctx context.Context, repository, by string) error {
+	_, err := s.db.ExecContext(ctx, `WITH head AS (UPDATE chain_runs SET dismissed_at = now()
+			WHERE repository = $1 AND pr_number = 0)
+		UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
+		WHERE kind = $4 AND fingerprint = $1 AND verdict IS NULL`,
+		repository, VerdictNoise, by, AlertChainStalled)
+	return err
 }
 
 // RefreshChainStatus moves the rows of sha's pull requests to a status
@@ -219,8 +264,8 @@ func (f *Forgejo) WorkflowList(ctx context.Context, repo Repo) ([]string, error)
 }
 
 // ChainStore is the chain's rows — what the poller reads and writes of
-// chain_runs, the covered merged cards among them — and the repair card
-// its red or stalled head files.
+// chain_runs, the covered merged cards among them, the head row's stall
+// ladder — and the repair and stall cards its head files.
 type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
@@ -232,7 +277,10 @@ type ChainStore interface {
 	RecordChainStall(ctx context.Context, repository, sha string) error
 	ChainHeadSince(ctx context.Context, repository, sha string) (time.Time, bool, error)
 	CreateTask(ctx context.Context, t Task) error
-	OpenRepairCard(ctx context.Context, repository string) (bool, error)
+	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
+	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
+	MarkChainRerun(ctx context.Context, repository, sha string) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	ResolveChainAlerts(ctx context.Context, repository string) error
@@ -283,13 +331,14 @@ type chainEpisode struct {
 // context of the repository's file, so a fast green run never greens a
 // red one and a required context the commit does not carry holds the
 // head pending; then every merged card a green run covers ends through
-// End. A head pending past the project's stall bound or concluded red
-// is work, not a verdict: stalled and repair are its
-// seams, and each files the one repair card per repository the ladder
-// starts with — never for the factory's own, whose red is mainfix's and
-// the roll task's. A repository without a workflow degrades to none for
-// itself; a chain block the poller cannot read leaves its repository
-// unrecorded.
+// End. A head concluded red is code work: repair files the one repair
+// card per repository the escalation ladder starts with — never for the
+// factory's own, whose red is mainfix's and the roll task's. A head
+// pending past the project's stall bound is operational: the stall
+// ladder re-runs its pending runs once, then asks a person on one stall
+// card per repository, the factory's own included. A repository without
+// a workflow degrades to none for itself; a chain block the poller
+// cannot read leaves its repository unrecorded.
 type ChainPoller struct {
 	Forgejo  *Forgejo
 	Store    ChainStore
@@ -298,17 +347,16 @@ type ChainPoller struct {
 	// carries its chain block; a repository no file names runs the
 	// default.
 	Policy func() policy.Version
-	// Workflows starts the repair card a red or stalled head files.
+	// Workflows starts the repair card a red head files.
 	Workflows Workflows
 	// End ends a covered merged card: the runner's Finish, the one
 	// function that ends a task.
 	End func(ctx context.Context, taskID, final, reason string) error
-	// Timeline records the events of the repair cards the poller files;
-	// nil records none.
+	// Timeline records the events of the cards the poller files; nil
+	// records none.
 	Timeline *Timeline
-	// Own is the factory's own repository: a red or stalled head there
-	// files no repair card — mainfix owns a red push run, the roll task a
-	// red roll.
+	// Own is the factory's own repository: a red head there files no
+	// repair card — mainfix owns a red push run, the roll task a red roll.
 	Own Repo
 	// Now reads the clock the stall watchdog arms itself on.
 	Now  func() time.Time
@@ -588,19 +636,9 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 // at.
 func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.ChainConfig, uncarried *uncarriedCards) error {
 	repo := proj.Repo()
-	runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
-		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
-	if err != nil {
+	seen, err := p.mainRuns(ctx, proj)
+	if err != nil || len(seen) == 0 {
 		return err
-	}
-	var seen []ActionRun // main's runs, oldest first: each carry reads the run before it
-	for i := len(runs) - 1; i >= 0; i-- {
-		if runs[i].PrettyRef == prBase && len(runs[i].CommitSHA) >= 7 {
-			seen = append(seen, runs[i])
-		}
-	}
-	if len(seen) == 0 {
-		return nil
 	}
 	head, err := p.Store.ChainHead(ctx, proj.Repository)
 	if err != nil {
@@ -613,7 +651,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		if v, ok := verdicts[sha]; ok {
 			return v, nil
 		}
-		v, _, err := p.headVerdict(ctx, repo, cfg, seen, sha)
+		v, _, _, err := p.headVerdict(ctx, repo, cfg, seen, sha)
 		if err != nil {
 			return "", err
 		}
@@ -657,14 +695,14 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		prev = run.CommitSHA
 	}
 	newest := seen[len(seen)-1]
-	verdict, findings, err := p.headVerdict(ctx, repo, cfg, seen, newest.CommitSHA)
+	verdict, findings, stuck, err := p.headVerdict(ctx, repo, cfg, seen, newest.CommitSHA)
 	if err != nil {
 		return err
 	}
 	if err := p.Store.RecordChainHead(ctx, proj.Repository, newest.CommitSHA, newest.ID, verdict); err != nil {
 		return err
 	}
-	p.watch(ctx, proj.Repository, newest.CommitSHA, verdict, cfg.Stall, newest, findings)
+	p.watch(ctx, proj, verdict, cfg.Stall, newest, findings, stuck)
 	// the late path never gates the head, the watch or the reconciler
 	key := proj.Repository + " late"
 	if err := p.recordLate(ctx, proj, seen, verdictOf, uncarried); err != nil {
@@ -676,6 +714,24 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		delete(p.failed, key)
 	}
 	return nil
+}
+
+// mainRuns are proj's newest push runs on main, oldest first: each carry
+// reads the run before it.
+func (p *ChainPoller) mainRuns(ctx context.Context, proj Project) ([]ActionRun, error) {
+	repo := proj.Repo()
+	runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
+		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
+	if err != nil {
+		return nil, err
+	}
+	var seen []ActionRun
+	for i := len(runs) - 1; i >= 0; i-- {
+		if runs[i].PrettyRef == prBase && len(runs[i].CommitSHA) >= 7 {
+			seen = append(seen, runs[i])
+		}
+	}
+	return seen, nil
 }
 
 // chainCarried lists the pull requests of the cards whose own merge
@@ -784,21 +840,27 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 // next push's superseding run (the common transient: it advances the
 // head), a required context missing from the commit or still pending —
 // holds it pending; only all green is success. The cancelled and skipped
-// cases are the stall watchdog's, not repair's. findings name each red
-// run and context.
-func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun, sha string) (verdict string, findings []string, err error) {
-	verdict = "success"
+// cases are the stall ladder's, not repair's. findings name each red run
+// and context of a red head, each pending one of a pending head, a
+// pending run with its link; stuck are the runs on the commit neither
+// green nor red, what a re-run moves.
+func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun, sha string) (verdict string, findings []string, stuck []ActionRun, err error) {
+	var red, pending []string
 	for _, run := range seen {
 		if run.CommitSHA != sha {
 			continue
 		}
-		switch {
-		case run.Status == "success":
-		case run.Status == "failure":
-			verdict = "failure"
-			findings = append(findings, fmt.Sprintf("run %d %s", run.ID, run.Status))
-		case verdict != "failure": // running, skipped, cancelled
-			verdict = "pending"
+		switch run.Status {
+		case "success":
+		case "failure":
+			red = append(red, fmt.Sprintf("run %d %s", run.ID, run.Status))
+		default: // running, skipped, cancelled
+			stuck = append(stuck, run)
+			part := fmt.Sprintf("run %d %s", run.ID, run.Status)
+			if run.Index > 0 {
+				part += fmt.Sprintf(" (%s/%s/actions/runs/%d)", p.Forgejo.PublicURL, repo, run.Index)
+			}
+			pending = append(pending, part)
 		}
 	}
 	if len(cfg.Requires) > 0 {
@@ -807,7 +869,7 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 			combined, err = CombinedStatus{}, nil // a commit nothing reported on yet
 		}
 		if err != nil {
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		reported := make(map[string]string, len(combined.Statuses))
 		for _, s := range combined.Statuses {
@@ -817,27 +879,36 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 			switch reported[want] {
 			case "success":
 			case "failure", "error":
-				verdict = "failure"
-				findings = append(findings, "required context "+want+": "+reported[want])
-			default: // missing from the commit, or pending
-				if verdict != "failure" {
-					verdict = "pending"
-				}
+				red = append(red, "required context "+want+": "+reported[want])
+			case "":
+				pending = append(pending, "required context "+want+": not reported")
+			default:
+				pending = append(pending, "required context "+want+": "+reported[want])
 			}
 		}
 	}
-	return verdict, findings, nil
+	switch {
+	case len(red) > 0:
+		return "failure", red, stuck, nil
+	case len(pending) > 0:
+		return "pending", pending, stuck, nil
+	}
+	return "success", nil, stuck, nil
 }
 
-// watch follows the head row's verdict: pending past the project's stall
-// bound calls stalled, concluded failure calls repair, and a green head
-// ends the episode. A head superseded while pending leaves its episode
+// watch follows proj's head row's verdict: pending past the project's
+// stall bound records the stall once (stalled) and climbs the stall
+// ladder every tick (climb) until a member dismisses it; concluded
+// failure calls repair; a green head ends the episode and resolves the
+// alerts. A concluded head closes the open stall card: the stall no
+// longer stands. A head superseded while pending leaves its episode
 // behind, and a red head's episode ends with its repair card filed: the
 // open card, not the episode, holds the next red tick back. The clock
 // arms from the head row's own updated_at — frozen while its verdict
 // stands still — so a factoryd restart reads the time the pending was
 // first recorded instead of re-arming the stall.
-func (p *ChainPoller) watch(ctx context.Context, repository, sha, verdict string, stall time.Duration, run ActionRun, findings []string) {
+func (p *ChainPoller) watch(ctx context.Context, proj Project, verdict string, stall time.Duration, run ActionRun, findings []string, stuck []ActionRun) {
+	repository, sha := proj.Repository, run.CommitSHA
 	for k := range p.episodes {
 		if k.repository == repository && k.sha != sha {
 			delete(p.episodes, k)
@@ -855,19 +926,29 @@ func (p *ChainPoller) watch(ctx context.Context, repository, sha, verdict string
 				e.since = since
 			}
 		}
-		if p.now().Sub(e.since) > stall && !e.stalled {
-			e.stalled = true
-			p.stalled(ctx, repository, sha)
+		if p.now().Sub(e.since) > stall {
+			switch l, err := p.Store.ChainLadder(ctx, repository, sha); {
+			case err != nil:
+				log.Printf("chain poller: %s: read the stall ladder of %s: %v", repository, sha, err)
+			case !l.Dismissed:
+				if !e.stalled {
+					e.stalled = true
+					p.stalled(ctx, repository, sha)
+				}
+				p.climb(ctx, proj, sha, stall, e.since, l, findings, stuck)
+			}
 		}
 		p.episodes[key] = e
 	case "failure":
 		delete(p.episodes, key)
+		p.closeStallCard(ctx, repository, sha, "red")
 		p.repair(ctx, repository, run, findings)
 	default: // success: the head concluded green, its episode ended
 		delete(p.episodes, key)
 		if err := p.Store.ResolveChainAlerts(ctx, repository); err != nil {
 			log.Printf("chain poller: %s: resolve the chain alerts: %v", repository, err)
 		}
+		p.closeStallCard(ctx, repository, sha, "green")
 	}
 }
 
@@ -882,7 +963,7 @@ func (p *ChainPoller) now() time.Time {
 // sha has been pending past the project's stall bound. The stall is
 // recorded on the head row — what a restarted factoryd reads — and on
 // the carried rows of the sha, so a merged card the chain holds reads
-// it on the board; the repair card is the work it files.
+// it on the board, and alerted.
 func (p *ChainPoller) stalled(ctx context.Context, repository, sha string) {
 	log.Printf("chain poller: %s head %s stalled: pending past the stall bound", repository, sha)
 	if err := p.Store.RecordChainStall(ctx, repository, sha); err != nil {
@@ -892,10 +973,172 @@ func (p *ChainPoller) stalled(ctx context.Context, repository, sha string) {
 		log.Printf("chain poller: %s: carry the stall of %s to its cards: %v", repository, sha, err)
 	}
 	_, cfg, _ := p.Policy().ProjectOf(repository)
-	bound := cfg.Chain.Resolved().Stall
-	p.raiseChainAlert(ctx, repository, AlertChainStalled, map[string]any{"sha": sha, "bound": bound.String()})
-	p.fileRepair(ctx, repository, ActionRun{CommitSHA: sha},
-		[]string{fmt.Sprintf("the chain stalled past %s at %s", bound, sha)})
+	p.raiseChainAlert(ctx, repository, AlertChainStalled, map[string]any{"sha": sha, "bound": cfg.Chain.Resolved().Stall.String()})
+}
+
+// climb is the stall ladder's next step on proj's head at sha, pending
+// since since past bound. First move, no human: the one re-run of its
+// stuck runs, stamped on the head row before Forgejo is asked, so a head
+// gets it once whatever Forgejo answers. Then the stall card: a bound
+// after the re-run with the head still pending, at once when Forgejo
+// offers no re-run or only a required status is pending (its deployer's,
+// never re-run). One stall card stands per repository; a closed one
+// ("check again") holds the next a bound after its close.
+func (p *ChainPoller) climb(ctx context.Context, proj Project, sha string, bound time.Duration, since time.Time, l ChainLadder, pending []string, stuck []ActionRun) {
+	repository := proj.Repository
+	atOnce := false
+	if l.RerunAt.IsZero() && len(stuck) > 0 {
+		if err := p.Store.MarkChainRerun(ctx, repository, sha); err != nil {
+			log.Printf("chain poller: %s: stamp the re-run of %s: %v", repository, sha, err)
+			return
+		}
+		err := p.rerun(ctx, proj, stuck)
+		if !errors.Is(err, ErrNoRerun) {
+			if err != nil {
+				log.Printf("chain poller: %s: re-run at %s: %v: the stall card follows a bound later", repository, sha, err)
+			} else {
+				log.Printf("chain poller: %s: re-ran the pending runs at %s", repository, sha)
+			}
+			return
+		}
+		atOnce = true
+	}
+	card, ok, err := p.Store.ChainCard(ctx, repository, SourceChainStall)
+	if err != nil {
+		log.Printf("chain poller: %s: read the stall card: %v", repository, err)
+		return
+	}
+	if ok && !Final(card.Status) {
+		return
+	}
+	last := l.RerunAt
+	if ok && card.FinishedAt != nil && card.FinishedAt.After(last) {
+		last = *card.FinishedAt
+	}
+	if !atOnce && !last.IsZero() && p.now().Sub(last) <= bound {
+		return
+	}
+	p.askStall(ctx, proj, sha, since, pending)
+}
+
+// askStall files the stall card in proj's human lane: what of the head
+// at sha is pending since when, with the run's link, the cards the stall
+// holds, and the three answers.
+func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, since time.Time, pending []string) {
+	repository := proj.Repository
+	cards, err := p.Store.ChainCarriedIssues(ctx, repository, sha)
+	if err != nil {
+		log.Printf("chain poller: %s: read the carried cards: %v", repository, err)
+		return
+	}
+	t, err := EscalateToHuman(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), stallQuestion(repository, sha, since, pending, cards),
+		"the chain poller", SourceChainStall)
+	if err != nil {
+		log.Printf("chain poller: %s: file the stall card: %v", repository, err)
+		return
+	}
+	log.Printf("chain poller: %s: head %s pending since %s: stall card %s, issue #%d", repository, sha, since.UTC().Format(time.RFC3339), t.ID, t.IssueNumber)
+}
+
+// closeStallCard closes repository's open stall card once its head at
+// sha concluded verdict: the stall it asks about stands no more. The
+// close is recorded as factoryd's own before the issue closes, so intake
+// ends the card; a close already recorded is repeated, its comment not.
+func (p *ChainPoller) closeStallCard(ctx context.Context, repository, sha, verdict string) {
+	card, ok, err := p.Store.ChainCard(ctx, repository, SourceChainStall)
+	if err != nil {
+		log.Printf("chain poller: %s: read the stall card: %v", repository, err)
+		return
+	}
+	if !ok || Final(card.Status) || card.IssueNumber == 0 {
+		return
+	}
+	repo, err := SplitRepo(repository)
+	if err != nil {
+		log.Printf("chain poller: %s: %v", repository, err)
+		return
+	}
+	first, err := p.Store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: card.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: card.IssueNumber})
+	if err != nil {
+		log.Printf("chain poller: %s: record the stall card's close: %v", repository, err)
+		return
+	}
+	if first > 0 {
+		msg := fmt.Sprintf("factoryd: the chain of %s concluded %s at %s; the stall is over. Closing this issue.", repository, verdict, sha)
+		if _, err := p.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, card.IssueNumber, msg); err != nil {
+			log.Printf("chain poller: %s: comment on stall card #%d: %v", repository, card.IssueNumber, err)
+		}
+	}
+	if err := p.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, card.IssueNumber); err != nil {
+		log.Printf("chain poller: %s: close stall card #%d: %v", repository, card.IssueNumber, err)
+	}
+}
+
+// rerun re-runs proj's runs through Forgejo's rerun API: ErrNoRerun when
+// Forgejo has none, the other failures joined.
+func (p *ChainPoller) rerun(ctx context.Context, proj Project, runs []ActionRun) error {
+	repo := proj.Repo()
+	var errs []error
+	for _, run := range runs {
+		err := p.Forgejo.RerunActionRun(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name, run.ID)
+		if errors.Is(err, ErrNoRerun) {
+			return err
+		}
+		errs = append(errs, err)
+	}
+	return errors.Join(errs...)
+}
+
+// ErrNothingToRerun refuses a re-run of a head whose pending part is a
+// required status alone.
+var ErrNothingToRerun = errors.New("no run of the head is pending: a pending required status is its deployer's and is never re-run")
+
+// RerunStall is the stall card's "re-run again": the stuck runs of
+// repository's head re-run now, the head row's re-run stamped anew.
+// ErrNothingToRerun when no run of the head is stuck, ErrNoRerun on a
+// Forgejo without the rerun API.
+func (p *ChainPoller) RerunStall(ctx context.Context, repository string) error {
+	proj, ok, err := p.projectOf(ctx, repository)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("no active project serves %s", repository)
+	}
+	seen, err := p.mainRuns(ctx, proj)
+	if err != nil {
+		return err
+	}
+	if len(seen) == 0 {
+		return ErrNothingToRerun
+	}
+	head := seen[len(seen)-1]
+	_, cfg, _ := p.Policy().ProjectOf(repository)
+	_, _, stuck, err := p.headVerdict(ctx, proj.Repo(), cfg.Chain.Resolved(), seen, head.CommitSHA)
+	if err != nil {
+		return err
+	}
+	if len(stuck) == 0 {
+		return ErrNothingToRerun
+	}
+	if err := p.rerun(ctx, proj, stuck); err != nil {
+		return err
+	}
+	return p.Store.MarkChainRerun(ctx, repository, head.CommitSHA)
+}
+
+// projectOf is repository's active project.
+func (p *ChainPoller) projectOf(ctx context.Context, repository string) (Project, bool, error) {
+	projects, err := p.Projects.Projects(ctx)
+	if err != nil {
+		return Project{}, false, err
+	}
+	for _, cand := range projects {
+		if cand.Repository == repository && cand.Active() {
+			return cand, true, nil
+		}
+	}
+	return Project{}, false, nil
 }
 
 // repair is the red head's seam: the head row of repository that run
@@ -908,17 +1151,17 @@ func (p *ChainPoller) repair(ctx context.Context, repository string, run ActionR
 }
 
 // raiseChainAlert files the repository's open alert of kind — one row per
-// project while it stands — before the repair card, so a repository whose
-// own repair machinery files no card alerts all the same.
+// project while it stands — before any card, so a repository whose own
+// repair machinery files no card alerts all the same.
 func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind string, detail map[string]any) {
 	if _, err := p.Store.InsertAlert(ctx, Alert{Kind: kind, Source: repository, Fingerprint: repository, Detail: detail}); err != nil {
 		log.Printf("chain poller: %s: raise %s: %v", repository, kind, err)
 	}
 }
 
-// fileRepair files the repair card of repository's red or stalled head:
-// one per repository while one stands (a second red tick joins the open
-// card's work), an agent card in the project's lane ready whose
+// fileRepair files the repair card of repository's red head: one per
+// repository while one stands (a second red tick joins the open card's
+// work), an agent card in the project's lane ready whose
 // objective carries the findings, the failing run's link and the issue
 // numbers of the cards the head carried. The factory's own repository
 // files none: mainfix owns a red push run there and the roll task a red
@@ -927,26 +1170,20 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	if p.Own.Name != "" && repository == p.Own.String() {
 		return
 	}
-	open, err := p.Store.OpenRepairCard(ctx, repository)
+	card, ok, err := p.Store.ChainCard(ctx, repository, SourceChainRepair)
 	if err != nil {
 		log.Printf("chain poller: %s: read the open repair card: %v", repository, err)
 		return
 	}
-	if open {
+	if ok && !Final(card.Status) {
 		return
 	}
-	var proj Project
-	projects, err := p.Projects.Projects(ctx)
+	proj, ok, err := p.projectOf(ctx, repository)
 	if err != nil {
 		log.Printf("chain poller: %s: read the projects: %v", repository, err)
 		return
 	}
-	for _, cand := range projects {
-		if cand.Repository == repository && cand.Active() {
-			proj = cand
-		}
-	}
-	if proj.Repository == "" {
+	if !ok {
 		return
 	}
 	issues, err := p.Store.ChainCarriedIssues(ctx, repository, run.CommitSHA)
@@ -957,7 +1194,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
 	title := fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0])
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("The chain of %s is red or stalled at %s:\n", repository, run.CommitSHA))
+	b.WriteString(fmt.Sprintf("The chain of %s is red at %s:\n", repository, run.CommitSHA))
 	for _, f := range findings {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}

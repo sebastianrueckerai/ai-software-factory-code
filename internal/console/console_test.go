@@ -895,6 +895,9 @@ type rig struct {
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
 	closed      []string // "task by user" per CloseCard
+	reran       []string // the repository per RerunStall
+	rerunErr    error
+	dismissed   []string // "repository by user" per DismissStall
 	synced      []string // "project by user" per GitHubSync
 	syncErr     error
 	syncGate    chan struct{} // GitHubSync waits on it, when set
@@ -1039,6 +1042,14 @@ func newRig(t *testing.T) *rig {
 		},
 		CloseCard: func(_ context.Context, taskID, by string) error {
 			r.closed = append(r.closed, taskID+" by "+by)
+			return nil
+		},
+		RerunStall: func(_ context.Context, repository string) error {
+			r.reran = append(r.reran, repository)
+			return r.rerunErr
+		},
+		DismissStall: func(_ context.Context, repository, by string) error {
+			r.dismissed = append(r.dismissed, repository+" by "+by)
 			return nil
 		},
 		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {

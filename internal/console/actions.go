@@ -957,6 +957,9 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	if t.Kind == "agent" && t.Status == "running" && text != "" && c.cfg.Steer != nil {
 		return c.doSteer(ctx, a, id, text)
 	}
+	if t.Source == factoryd.SourceChainStall && t.Status == "waiting-human" && t.IssueNumber != 0 {
+		return c.doStallAnswer(ctx, a, t, text, value)
+	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
 	}
@@ -1001,6 +1004,51 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		return "", err
 	}
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+}
+
+// doStallAnswer answers chain stall card t, the stall ladder's human
+// step, with the choice value or text names: re-run again re-runs the
+// head's stuck runs and keeps the card waiting, nothing posted; check
+// again closes the card and lets the watch run on; dismiss dismisses the
+// stall until the head changes and closes the card. Words that name no
+// choice are refused with the choices.
+func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
+	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	q := bt.Question
+	if q == nil {
+		q = &factoryd.HumanQuestion{}
+	}
+	if value == "" {
+		value = q.ChoiceValue(text)
+	}
+	label := q.ChoiceLabel(value)
+	switch value {
+	case factoryd.AnswerRerunAgain:
+		switch err := c.cfg.RerunStall(ctx, t.Repository); {
+		case errors.Is(err, factoryd.ErrNoRerun):
+			return "", refuse(http.StatusConflict, "This Forgejo offers no re-run of an action run (the rerun API came with Forgejo 17): check again or dismiss.")
+		case errors.Is(err, factoryd.ErrNothingToRerun):
+			return "", refuse(http.StatusConflict, "No run of the head is pending: a pending required status is its deployer's and is never re-run. Check again or dismiss.")
+		case err != nil:
+			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
+			return "", refuse(http.StatusInternalServerError, "The re-run failed; see the factoryd log.")
+		}
+		log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, map[string]any{"answer": label, "value": value})
+		return fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), nil
+	case factoryd.AnswerDismiss:
+		if err := c.cfg.DismissStall(ctx, t.Repository, a.s.user); err != nil {
+			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
+			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed; see the factoryd log.")
+		}
+		return c.doClose(ctx, a, t.ID, label)
+	case factoryd.AnswerCheckAgain:
+		return c.doClose(ctx, a, t.ID, label)
+	}
+	return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 }
 
 // answerInChatNote is doAnswerValue's note when the member's own words

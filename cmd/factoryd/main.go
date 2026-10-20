@@ -590,7 +590,7 @@ func main() {
 			if err != nil {
 				return 0, err
 			}
-			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by)
+			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by, factoryd.SourceChat)
 			return t.IssueNumber, err
 		},
 		AttachAnalysis: store.AttachAnalysis,
@@ -605,6 +605,8 @@ func main() {
 		// may add a collaborator where the approver's own token may not
 		AddCollaborator:    forgejo.AddProjectCollaborator,
 		SetIssueDependency: forgejo.SetIssueDependency,
+		RerunStall:         chainPoller.RerunStall,
+		DismissStall:       store.DismissChainStall,
 	})
 	if err != nil {
 		log.Fatalf("console: %v", err)
