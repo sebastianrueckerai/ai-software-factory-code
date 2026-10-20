@@ -1492,6 +1492,25 @@ func TestAStalledRequiredStatusIsNotRerun(t *testing.T) {
 	}
 }
 
+// A skipped run concluded: no re-run moves it. A head it holds pending
+// past the bound asks on the card at once, naming the run, and the card's
+// re-run again finds nothing to re-run.
+func TestAStalledSkippedRunIsNotRerun(t *testing.T) {
+	p, store, f, clock := stallRig(t, "skipped")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	cards := stallCards(store)
+	if len(f.reruns) != 0 || len(cards) != 1 {
+		t.Fatalf("reruns %q, stall cards %+v; want no re-run and the card at once", f.reruns, cards)
+	}
+	if !strings.Contains(cards[0].Objective, "run 21 skipped") {
+		t.Fatalf("the card misses the skipped run:\n%s", cards[0].Objective)
+	}
+	if err := p.RerunStall(context.Background(), demoRepo, demoCommit); !errors.Is(err, ErrNothingToRerun) || len(f.reruns) != 0 {
+		t.Fatalf("RerunStall on a skipped run = %v, reruns %q; want ErrNothingToRerun and none", err, f.reruns)
+	}
+}
+
 // A green head resolves the alert and closes the open stall card as the
 // bot, its close recorded as factoryd's own first, once.
 func TestAGreenHeadClosesTheStallCard(t *testing.T) {

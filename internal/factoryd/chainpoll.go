@@ -890,8 +890,8 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 // holds it pending; only all green is success. The cancelled and skipped
 // cases are the stall ladder's, not repair's. findings name each red run
 // and context of a red head, each pending one of a pending head, a
-// pending run with its link; stuck are the runs on the commit neither
-// green nor red, what a re-run moves.
+// pending run with its link; stuck are the runs on the commit still
+// running or cancelled, what a re-run moves: a skipped run concluded.
 func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun, sha string) (verdict string, findings []string, stuck []ActionRun, err error) {
 	var red, pending []string
 	for _, run := range seen {
@@ -903,7 +903,9 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		case "failure":
 			red = append(red, fmt.Sprintf("run %d %s", run.ID, run.Status))
 		default: // running, skipped, cancelled
-			stuck = append(stuck, run)
+			if run.Status != "skipped" {
+				stuck = append(stuck, run)
+			}
 			part := fmt.Sprintf("run %d %s", run.ID, run.Status)
 			if run.Index > 0 {
 				part += fmt.Sprintf(" (%s/%s/actions/runs/%d)", p.Forgejo.PublicURL, repo, run.Index)
@@ -1028,8 +1030,8 @@ func (p *ChainPoller) stalled(ctx context.Context, repository, sha string) {
 // stuck runs, stamped on the head row before Forgejo is asked, so a head
 // gets it once whatever Forgejo answers. Then the stall card: a bound
 // after the re-run with the head still pending, at once when Forgejo
-// offers no re-run or only a required status is pending (its deployer's,
-// never re-run). One stall card stands per repository; a closed one of
+// offers no re-run or nothing stuck holds the head (a skipped run, a
+// required status: never re-run). One stall card stands per repository; a closed one of
 // this commit ("check again") holds the next a bound after its close.
 func (p *ChainPoller) climb(ctx context.Context, proj Project, sha string, bound time.Duration, since time.Time, l ChainLadder, pending []string, stuck []ActionRun) {
 	repository := proj.Repository
@@ -1147,8 +1149,8 @@ func (p *ChainPoller) rerun(ctx context.Context, proj Project, runs []ActionRun)
 }
 
 // ErrNothingToRerun refuses a re-run of a head whose pending part is a
-// required status alone.
-var ErrNothingToRerun = errors.New("no run of the head is pending: a pending required status is its deployer's and is never re-run")
+// skipped run or a required status alone.
+var ErrNothingToRerun = errors.New("no run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run")
 
 // RerunStall is the stall card's "re-run again" on the stall of
 // repository's head at sha: its stuck runs re-run now, the head row's

@@ -1037,7 +1037,7 @@ func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		case errors.Is(err, factoryd.ErrNoRerun):
 			return "", refuse(http.StatusConflict, "This Forgejo offers no re-run of an action run (the rerun API came with Forgejo 17): check again or dismiss.")
 		case errors.Is(err, factoryd.ErrNothingToRerun):
-			return "", refuse(http.StatusConflict, "No run of the head is pending: a pending required status is its deployer's and is never re-run. Check again or dismiss.")
+			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
 		case err != nil:
 			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
 			return "", refuse(http.StatusInternalServerError, "The re-run failed; see the factoryd log.")
