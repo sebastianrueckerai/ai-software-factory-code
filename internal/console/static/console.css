@@ -1270,7 +1270,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 
 /* C24: the secondary pages follow one readout grammar — a small-caps
    section label, one line of figures, then rows on the page ground */
-.project > h3, .ro > h3 { margin: 18px 0 4px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.project > h3, .ro > h3 { margin: 18px 0 6px; color: var(--text); font-size: 15px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .pagehead { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .pagehead h2 { margin: 16px 0 8px; }
 .figs { margin: 0 0 3px; color: var(--text-faint); font: 11.5px/1.6 var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -1302,7 +1302,7 @@ tr.closed td a { color: inherit; }
 .mwin a[aria-pressed="true"] { color: var(--text); }
 .msec { margin-top: 36px; }
 .msec:first-of-type { margin-top: 26px; }
-.msec > h3 { margin: 0 0 2px; color: var(--text-muted); font-size: 13px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
+.msec > h3 { margin: 0 0 4px; color: var(--text); font-size: 15px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .mrows { list-style: none; margin: 0; padding: 0; }
 .mrow { display: grid; grid-template-columns: 16rem minmax(0, max-content) minmax(0, max-content) minmax(24px, 1fr) 24rem; align-items: center; padding: 10px 0; }
 .mrow + .mrow { border-top: 1px solid var(--line); }
