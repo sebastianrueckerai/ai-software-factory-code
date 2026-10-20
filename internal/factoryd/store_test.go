@@ -2254,11 +2254,6 @@ func TestPGStoreHoldouts(t *testing.T) {
 	}
 }
 
-// The withdraws column on a real Postgres: a withdrawal's intake event
-// keeps the escalation it withdraws beside its own comment, once however
-// often it is recorded, and every other event withdraws nothing; read
-// back, it ends the escalation's answers at its comment: 650 answers 601,
-// 750 nothing.
 func TestTouchedByPerson(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -2294,6 +2289,11 @@ func TestTouchedByPerson(t *testing.T) {
 	}
 }
 
+// The withdraws column on a real Postgres: a withdrawal's intake event
+// keeps the escalation it withdraws beside its own comment, once however
+// often it is recorded, and every other event withdraws nothing; read
+// back, it ends the escalation's answers at its comment: 650 answers 601,
+// 750 nothing.
 func TestPGStoreIntakeWithdraws(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))

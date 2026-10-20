@@ -29,9 +29,10 @@ type alertForgejo struct {
 	issues   []string // "title\n\nbody"
 	repos    []string // each issue's repository
 	labels   map[int64][]string
-	comments []string // "#n body"
-	closed   []int64  // issues closed
-	failNext int      // issue creations to answer 500
+	comments []string           // "#n body"
+	closed   []int64            // issues closed
+	people   map[int64][]string // comments by a person other than the bot, by issue
+	failNext int                // issue creations to answer 500
 	// failComments is how many comment posts still answer 500: Forgejo's
 	// blip on the one call a delivery makes
 	failComments int
@@ -39,7 +40,7 @@ type alertForgejo struct {
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 	t.Helper()
-	fj := &alertForgejo{labels: map[int64][]string{}}
+	fj := &alertForgejo{labels: map[int64][]string{}, people: map[int64][]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fj.mu.Lock()
 		defer fj.mu.Unlock()
@@ -66,6 +67,15 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.repos = append(fj.repos, parts[4]+"/"+parts[5])
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/%s/%s/issues/%d"}`, len(fj.issues), parts[4], parts[5], len(fj.issues))
+		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			out := []map[string]any{}
+			for range fj.comments {
+				out = append(out, map[string]any{"body": "bot", "user": map[string]string{"login": "factory-agent"}})
+			}
+			for _, body := range fj.people[n] {
+				out = append(out, map[string]any{"body": body, "user": map[string]string{"login": "sebastian"}})
+			}
+			json.NewEncoder(w).Encode(out) // #nosec G104 -- test stub
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/labels", &n):
 			out := []map[string]string{}
 			for _, l := range fj.labels[n] {
@@ -1559,6 +1569,11 @@ func TestAClearedAlertClosesItsUntouchedHumanCard(t *testing.T) {
 	if !slices.Equal(r.fj.comments, want) || !slices.Equal(r.fj.closed, []int64{1}) {
 		t.Fatalf("comments %q, closed %v, want %q and [1]", r.fj.comments, r.fj.closed, want)
 	}
+	if !slices.ContainsFunc(r.store.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == task.ID && e.Kind == IntakeFactoryClosed && e.CommentID == 1
+	}) {
+		t.Fatalf("intake events %+v: the bot's close of issue 1 is not recorded", r.store.intakeEvents)
+	}
 	var ends []Event
 	for _, e := range r.store.events {
 		if e.Kind == EventTaskEnded {
@@ -1575,9 +1590,11 @@ func TestAClearedAlertClosesItsUntouchedHumanCard(t *testing.T) {
 
 func TestAClearedAlertKeepsATouchedCard(t *testing.T) {
 	for name, touch := range map[string]func(*alertRig, Task){
-		"a member's comment": func(r *alertRig, task Task) {
+		"a member's comment": func(r *alertRig, task Task) { r.fj.people[task.IssueNumber] = []string{"on it"} },
+		"an intake row": func(r *alertRig, task Task) {
 			r.store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: task.ID, Kind: "issue_comment", Author: "sebastian", CommentID: 5})
 		},
+		"the noise label": func(r *alertRig, task Task) { r.fj.labels[task.IssueNumber] = []string{"human", LabelNoise} },
 		"a park": func(r *alertRig, task Task) {
 			r.store.Record(context.Background(), Event{TaskID: task.ID, Kind: EventQuestionAnswered})
 		},
@@ -1624,5 +1641,42 @@ func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 		len(r.fj.comments) != 1 || len(r.fj.closed) != 0 || len(r.store.events) != before {
 		t.Fatalf("row %+v, task %s, comments %q, closed %v, %d new events: nothing should change",
 			row, r.store.tasks[task.ID].Status, r.fj.comments, r.fj.closed, len(r.store.events)-before)
+	}
+}
+
+func TestAClearedAlertLeavesARowWithoutResolvedAt(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	assertCardKept(t, r, task)
+}
+
+func TestAClearedAlertLeavesAFiredAgainCard(t *testing.T) {
+	r, task := clearedRig(t)
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	assertCardKept(t, r, task)
+}
+
+func assertCardKept(t *testing.T, r *alertRig, task Task) {
+	t.Helper()
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != "waiting-human" || len(r.fj.closed) != 0 {
+		t.Fatalf("row %+v, task %s, closed %v: the card should keep waiting", row, r.store.tasks[task.ID].Status, r.fj.closed)
+	}
+}
+
+func TestAClearedAlertSkipsARowWhoseTaskIsMissing(t *testing.T) {
+	r, task := clearedRig(t)
+	delete(r.store.tasks, task.ID)
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatalf("CloseCleared = %v, want nil", err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || len(r.fj.closed) != 0 {
+		t.Fatalf("row %+v, closed %v: nothing should change", row, r.fj.closed)
 	}
 }

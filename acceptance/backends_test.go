@@ -194,7 +194,7 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok || !slices.Contains(from, t.Status) {
-		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
+		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, factoryd.ErrNotFound, from, to)
 	}
 	t.Status = to
 	if factoryd.Final(to) {

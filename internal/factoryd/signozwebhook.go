@@ -511,16 +511,16 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 // that left waiting-human, and a card a person commented on, answered or
 // parked are left as they are.
 func (in *AlertIntake) CloseCleared(ctx context.Context) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
 	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
 	if err != nil {
 		return err
 	}
-	in.mu.Lock()
-	defer in.mu.Unlock()
 	var errs []error
 	for _, row := range rows {
 		at, _ := row.Detail["resolved_at"].(string)
-		if row.Verdict != "" || at == "" {
+		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing {
 			continue
 		}
 		if err := in.closeCleared(ctx, row, at); err != nil {
@@ -530,20 +530,40 @@ func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// touched reports whether a person acted on human card t: an intake row, an
+// answer or park, a comment on its issue by anyone but the bot, or the
+// noise label, a verdict that waits on the person's close.
+func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, error) {
+	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched {
+		return touched, err
+	}
+	comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(comments, func(c IssueComment) bool { return c.Author != in.Forgejo.BotUser }) {
+		return true, nil
+	}
+	labels, err := in.Forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	return slices.Contains(labels, LabelNoise), err
+}
+
 func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) error {
 	t, ok, err := in.Store.Task(ctx, row.TaskID)
 	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
-		return err
-	}
-	touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser)
-	if err != nil || touched {
 		return err
 	}
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
 	}
+	if touched, err := in.touched(ctx, t, repo); err != nil || touched {
+		return err
+	}
 	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
 		return err
 	}
 	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "closed"); err != nil {
@@ -555,6 +575,9 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
 	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
+	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
+		return err
+	}
 	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
 		"factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes."); err != nil {
 		return err
