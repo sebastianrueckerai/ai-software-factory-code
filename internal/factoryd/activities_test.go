@@ -1992,7 +1992,7 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
 	r.timeline.Events = rows
-	for _, reason := range []string{"The agent asks: Which file?\nWhy: open", healedReason} {
+	for _, reason := range []string{"The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first", healedReason} {
 		if _, err := execActivity(t, r, ActivityEscalate, "t1", reason, []string{"a.txt", "b.txt", "ask @mallory"}); err != nil {
 			t.Fatal(err)
 		}
@@ -2016,14 +2016,15 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	}
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(701), "source": "agent",
-				"ask": "Which file?", "why": "Which file?", "info": plainInfo}},
+			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent",
+				"ask": "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first"}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor"}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor",
 				"ask": "This card stopped and needs your decision: how should it go on?",
-				"why": "supervisor escalated: the check cannot pass", "info": plainInfo}},
+				"why": "supervisor escalated: the check cannot pass", "info": plainInfo,
+				"choices": []string{"Go on", "Leave it waiting", "End the card"}}},
 	}
 	if !reflect.DeepEqual(rows.rows, want) {
 		t.Fatalf("rows = %+v, want %+v", rows.rows, want)

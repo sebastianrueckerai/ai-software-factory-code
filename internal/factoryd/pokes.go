@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Pokes (roadmap 239): factoryd's own turns in the inbox thread of each
@@ -243,6 +244,9 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		m.Content = ref + " needs you: " + str("question")
 		if slices.Contains(budgetSources, str("source")) {
 			m.Content = ref + " is stopped by its budget: " + str("question")
+		}
+		if why := str("why"); why != "" {
+			m.Content += "\nWhy: " + textutil.Truncate(why, 300)
 		}
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {

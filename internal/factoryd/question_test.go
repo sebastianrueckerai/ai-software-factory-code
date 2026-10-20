@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -72,7 +73,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			q := ShapedQuestion(tt.reason, tt.facts)
+			q := ShapedQuestion(tt.reason, tt.facts, nil)
 			if q == nil {
 				t.Fatalf("ShapedQuestion(%q) = nil, want a shaped question", tt.reason)
 			}
@@ -122,21 +123,21 @@ func TestShapedQuestionShapesTheUntemplatedTail(t *testing.T) {
 		providerRefused + "session 3's first call",
 		"The card was moved out of the merge queue: is its place gone?",
 	} {
-		q := ShapedQuestion(reason, QuestionFacts{})
+		q := ShapedQuestion(reason, QuestionFacts{}, nil)
 		if q == nil {
 			t.Fatalf("ShapedQuestion(%q) = nil, want the plain question", reason)
 		}
 		if q.Ask != "This card stopped and needs your decision: how should it go on?" {
 			t.Errorf("ShapedQuestion(%q).Ask = %q, want the plain headline", reason, q.Ask)
 		}
-		if q.Why != escalationQuestion(reason) {
+		if q.Why != escalationQuestion(reason) || q.Recommendation != "" {
 			t.Errorf("ShapedQuestion(%q).Why = %q, want the reason's first line %q", reason, q.Why, escalationQuestion(reason))
 		}
 		if q.Info != plainInfo || len(q.Choices) != 3 {
 			t.Errorf("ShapedQuestion(%q) = %+v, want the plain info and three choices", reason, q)
 		}
 	}
-	if q := ShapedQuestion(AgentAsks+"Which file?\nWhy: open", QuestionFacts{}); q.Ask != "Which file?" {
+	if q := ShapedQuestion(AgentAsks+"Which file?\nWhy: open", QuestionFacts{}, nil); q.Ask != "Which file?" {
 		t.Errorf("an agent's ask keeps its question as the headline, got %q", q.Ask)
 	}
 }
@@ -254,6 +255,35 @@ func TestAsksFitTheTitle(t *testing.T) {
 	} {
 		if len(tt.ask) > MaxAsk || strings.Contains(tt.ask, "\n") || !strings.HasSuffix(tt.ask, tt.tail) || !strings.Contains(tt.ask, "…") {
 			t.Errorf("%s: ask %q (%d bytes), want one line within %d, cut with the tail %q", name, tt.ask, len(tt.ask), MaxAsk, tt.tail)
+		}
+	}
+}
+
+func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
+	q := plainQuestion(AgentAsks+"Ship A or B?\nWhy: both pass.\nRecommendation: A, it is smaller.", []string{"A", "B", "End the card"})
+	if q.Ask != "Ship A or B?" || q.Why != "both pass." || q.Recommendation != "A, it is smaller." || q.Source != "the agent's" {
+		t.Errorf("parts = %+v", q)
+	}
+	if want := []string{"A", "B", "Leave it waiting", "End the card"}; !slices.Equal(q.Labels(), want) {
+		t.Errorf("labels = %q, want %q", q.Labels(), want)
+	}
+	if q.Choices[0].Value != "say:A" || q.Choices[1].Value != "say:B" || q.Choices[2].Value != AnswerPark || q.Choices[3].Value != AnswerClose {
+		t.Errorf("values = %+v", q.Choices)
+	}
+	if q := plainQuestion(AgentAsks+"Which?", []string{"park"}); q.Choices[0].Value != "say:park" {
+		t.Errorf("an agent's park label must not carry the park value: %+v", q.Choices)
+	}
+}
+
+func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
+	for _, tt := range []struct{ reason, source string }{
+		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor's"},
+		{"check-in: the work is done.\nRecommendation: go on.", "the check-in's"},
+		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory's"},
+	} {
+		q := plainQuestion(tt.reason, nil)
+		if q.Recommendation == "" || q.Source != tt.source || !slices.Equal(q.Labels(), (&HumanQuestion{Choices: continueChoices()}).Labels()) {
+			t.Errorf("%q: %+v, want source %q", tt.reason, q, tt.source)
 		}
 	}
 }

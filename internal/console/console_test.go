@@ -1691,6 +1691,21 @@ func TestAnswerPostsTheCommentAsTheHuman(t *testing.T) {
 	}
 }
 
+func TestAnswerPostsAnAgentChoiceAsTheMembersWords(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("The agent asks: Ship which?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
+	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "Ship which?", Choices: []factoryd.QuestionChoice{
+		{Value: "say:Ship A", Label: "Ship A"}, {Value: factoryd.AnswerPark, Label: "Leave it waiting"}}}
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {"say:Ship A"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "Ship A" {
+		t.Fatalf("comment = %q, want the choice's label", got)
+	}
+}
+
 // Roadmap 237: the answer box posts one comment, a whole answer, and
 // names it to the card's workflow (AnswerWhole), which resumes without
 // the quiet window an answer in parts waits out. A failed signal still

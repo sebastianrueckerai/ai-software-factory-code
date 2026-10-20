@@ -106,7 +106,7 @@ type QuestionFacts struct {
 // template for the deterministic stops, and from the reason itself for
 // every other ask (plainQuestion), so no question reaches a card without
 // its five parts.
-func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
+func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
 	case strings.HasPrefix(reason, checkinSpendAsk+"check-in call cap reached"),
 		reason == "check-in call cap reached":
@@ -125,26 +125,60 @@ func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	case strings.HasPrefix(reason, "The card was quiet for "):
 		return quietQuestion(reason)
 	}
-	return plainQuestion(reason)
+	return plainQuestion(reason, choices)
 }
 
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question
-// as the headline, every other stop gets one that names the decision;
-// the reason's first line is the summary, and the answers a stopped
-// card always takes are the choices.
-func plainQuestion(reason string) *HumanQuestion {
+// as the headline, every other stop gets one that names the decision.
+// The reason's Why: line is the why (else its first line) and its
+// Recommendation: line the recommendation, sourced by the reason's
+// prefix. An agent's own choices lead the answers, as "say:" values so
+// none can pass for a factory control; park and close follow.
+func plainQuestion(reason string, choices []string) *HumanQuestion {
 	first := escalationQuestion(reason)
-	ask := "This card stopped and needs your decision: how should it go on?"
-	if strings.HasPrefix(reason, AgentAsks) {
-		ask = first
-	}
-	return &HumanQuestion{
-		Ask:     ask,
+	q := &HumanQuestion{
+		Ask:     "This card stopped and needs your decision: how should it go on?",
 		Why:     first,
 		Info:    plainInfo,
 		Choices: continueChoices(),
 	}
+	agent := strings.HasPrefix(reason, AgentAsks)
+	if agent {
+		q.Ask = first
+	}
+	for line := range strings.Lines(reason) {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "Why: "); ok {
+			q.Why = v
+		} else if v, ok := strings.CutPrefix(line, "Recommendation: "); ok {
+			q.Recommendation = v
+		}
+	}
+	if q.Recommendation != "" {
+		switch {
+		case agent:
+			q.Source = "the agent's"
+		case strings.HasPrefix(reason, gateStopped):
+			q.Source = "the gate supervisor's"
+		case strings.HasPrefix(reason, "check-in: "):
+			q.Source = "the check-in's"
+		default:
+			q.Source = "the factory's"
+		}
+	}
+	if agent && len(choices) > 0 {
+		q.Choices = nil
+		seen := map[string]bool{"Leave it waiting": true, "End the card": true}
+		for _, c := range choices {
+			if !seen[c] {
+				seen[c] = true
+				q.Choices = append(q.Choices, QuestionChoice{"say:" + c, c})
+			}
+		}
+		q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Leave it waiting"}, QuestionChoice{AnswerClose, "End the card"})
+	}
+	return q
 }
 
 // plainInfo is what an answer does at a stop no template covers.

@@ -380,7 +380,7 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 			log.Printf("task %s: timeline escalated: %v", t.ID, err)
 		}
 	}
-	shaped := ShapedQuestion(reason, QuestionFacts{})
+	shaped := ShapedQuestion(reason, QuestionFacts{}, nil)
 	// the intake row is the ask's durable anchor, written before the wait:
 	// a card in waiting-human without its row has no ask
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment,
@@ -394,6 +394,10 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
 	if shaped != nil {
 		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info
+		asked["choices"] = shaped.Labels()
+		if shaped.Recommendation != "" {
+			asked["recommendation"] = shaped.Recommendation
+		}
 	}
 	if timeline != nil {
 		timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
