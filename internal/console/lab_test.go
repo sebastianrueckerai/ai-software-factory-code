@@ -1559,7 +1559,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Interventions:      move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
 		Escalations:        flat(5),
 		EscalatedShare:     move(0.16, 0.19, [7]float64{0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.16}),
-		EscalationsHandled: factoryd.EscalationsHandled{Human: 1, AI: 3, Prev: [2]float64{2, 2}, Weeks: [7]float64{2, 1, 2, 1, 1, 2, 1}},
+		EscalationsHandled: factoryd.EscalationsHandled{Human: 1, AI: 3, Unjudged: 1, Prev: [3]float64{2, 2, 2}, Weeks: [7]float64{2, 1, 2, 1, 1, 2, 1}},
 		ToolSpend:          move(0.42, 0.37, [7]float64{0.28, 0.31, 0.35, 0.33, 0.36, 0.37, 0.42}),
 		ToolMix: []factoryd.MixShare{
 			{Alias: "web_scrape", Share: 61},

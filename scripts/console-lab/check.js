@@ -1294,8 +1294,8 @@ async function text(page) {
     }
     if (sc === "assisted") {
       // the level control under Send (C14, C32): the four states with their words, no
-      // confirm; a pick closes the menu and sets the control at once, the write lands and
-      // leaves the control unlocked, the lamp's blue follows the level, Escape closes the menu
+      // confirm; a pick closes the menu and sets the control at once with no pending look,
+      // the write lands behind it, the lamp's blue follows the level, Escape closes the menu
       const btn = p.page.locator("#level-btn"), pop = p.page.locator(".lvlpop");
       const lamp = () => btn.locator("i").evaluate((e) => getComputedStyle(e).backgroundColor);
       if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: the control does not show assisted");
@@ -1310,8 +1310,8 @@ async function text(page) {
       await pop.locator('[data-lvl="full auto"]').click();
       if (await pop.isVisible()) fails.push("level: a pick leaves the menu open");
       if ((await btn.getAttribute("data-level")) !== "full auto") fails.push("level: a pick does not set the control at once");
+      if (await btn.isDisabled()) fails.push("level: the control greys while the write runs");
       await p.page.waitForTimeout(700);
-      if (await btn.isDisabled()) fails.push("level: the control stays locked after the write");
       if ((await btn.getAttribute("data-level")) !== "full auto") fails.push("level: the write did not land, the control reads " + (await btn.getAttribute("data-level")));
       if ((await lamp()) === lampBefore) fails.push("level: the lamp's blue does not follow the level");
       // the agent's own start carries its decider line in the inbox (C14)

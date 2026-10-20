@@ -577,6 +577,7 @@ func main() {
 		CheckChange: func(ctx context.Context, changes map[string][]byte) ([]string, error) {
 			return checkChange(ctx, configSource, changes, ladder.Aliases())
 		},
+		PolicyReload: policyLoader.Load,
 		MainExists: func(ctx context.Context, repo factoryd.Repo) (bool, error) {
 			return forgejo.ProjectBranchExists(ctx, repo, "main")
 		},

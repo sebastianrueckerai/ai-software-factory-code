@@ -1193,11 +1193,13 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }
 #level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--lamp); box-shadow: var(--lamp-glow); }
-/* the lamp's blue follows the level (C32): manual subdued, full auto the whole accent with the widest glow */
-#level-btn, .lvlpop [data-lvl] { --lamp: color-mix(in srgb, var(--accent) 85%, var(--bg-raised)); --lamp-glow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
-#level-btn[data-level="manual"], .lvlpop [data-lvl="manual"] { --lamp: color-mix(in srgb, var(--accent) 35%, var(--bg-raised)); --lamp-glow: none; }
-#level-btn[data-level="assisted"], .lvlpop [data-lvl="assisted"] { --lamp: color-mix(in srgb, var(--accent) 60%, var(--bg-raised)); --lamp-glow: 0 0 3px color-mix(in srgb, var(--accent) 35%, transparent); }
-#level-btn[data-level="full auto"], .lvlpop [data-lvl="full auto"] { --lamp: var(--accent); --lamp-glow: 0 0 8px color-mix(in srgb, var(--accent) 90%, transparent); }
+/* the lamp follows the level (C32): manual all but unlit, assisted dim, autonomous lit, full auto white-hot in a wide halo */
+#level-btn, .lvlpop [data-lvl] { --lamp: color-mix(in srgb, var(--accent) 70%, var(--bg-raised)); --lamp-glow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); }
+#level-btn[data-level="manual"], .lvlpop [data-lvl="manual"] { --lamp: color-mix(in srgb, var(--accent) 15%, var(--bg-raised)); --lamp-glow: none; }
+#level-btn[data-level="assisted"], .lvlpop [data-lvl="assisted"] { --lamp: color-mix(in srgb, var(--accent) 38%, var(--bg-raised)); --lamp-glow: none; }
+#level-btn[data-level="full auto"], .lvlpop [data-lvl="full auto"] { --lamp: color-mix(in srgb, var(--accent) 40%, #fff); --lamp-glow: 0 0 3px var(--accent), 0 0 9px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent); }
+[data-theme=light] :is(#level-btn[data-level="manual"], .lvlpop [data-lvl="manual"]) { --lamp-glow: inset 0 0 0 1px var(--line-strong); }
+[data-theme=light] :is(#level-btn[data-level="full auto"], .lvlpop [data-lvl="full auto"]) { --lamp: #00b8e0; --lamp-glow: 0 0 3px #00b8e0, 0 0 9px #00b8e0, 0 0 16px color-mix(in srgb, #00b8e0 55%, transparent); }
 #level-btn:hover, #level-btn[aria-expanded="true"] { color: var(--text); border-color: var(--text-faint); }
 #level-btn:disabled { cursor: default; }
 .lvlpop { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; width: 330px; padding: 6px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }

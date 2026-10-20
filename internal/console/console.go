@@ -258,6 +258,10 @@ type Config struct {
 	// refusal's lines, none when it passes; err when the tree could not
 	// be read.
 	CheckChange func(ctx context.Context, changes map[string][]byte) (refused []string, err error)
+	// PolicyReload loads the policy at infra's head now, after a project
+	// file's merge, so the change is in force when the write answers
+	// instead of at the loader's next pass; nil skips it.
+	PolicyReload func(ctx context.Context) error
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
 	// ReconcileError is Registrar.ReconcileError: why the project's last
