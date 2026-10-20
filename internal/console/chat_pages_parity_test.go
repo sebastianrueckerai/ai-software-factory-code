@@ -203,6 +203,25 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 	equal(t, "a writer's resources", reads(t, r, g, "resources", `{}`)[0], strings.Replace(resources, ", promotable", "", 1))
 }
 
+// The open alerts as the agent reads them: a row that cleared on its own
+// and waits for its verdict says when it cleared, a row whose resolved_at
+// does not parse reads as open.
+func TestAlertsTextNamesAClearedAlert(t *testing.T) {
+	r, _, g := newChatRig(t)
+	raised := time.Date(2026, 10, 20, 14, 0, 0, 0, time.UTC)
+	r.alerts.rows = []factoryd.Alert{
+		{ID: 9, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-c", RaisedAt: raised, Detail: map[string]any{"resolved_at": "2026-10-20T15:12:30Z"}},
+		{ID: 8, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-o", RaisedAt: raised},
+		{ID: 7, Kind: factoryd.AlertEscalation, Source: "cap", TaskID: "t-b", RaisedAt: raised, Detail: map[string]any{"resolved_at": "not a time"}},
+	}
+	equal(t, "the open alerts", reads(t, r, g, "alerts", `{}`), []string{
+		"Open alerts:\n" +
+			"9 escalation cap \"t-c\" since 2026-10-20 14:00 UTC, cleared at 2026-10-20 15:12 UTC, verdict pending\n" +
+			"8 escalation cap \"t-o\" since 2026-10-20 14:00 UTC, open\n" +
+			"7 escalation cap \"t-b\" since 2026-10-20 14:00 UTC, open",
+	})
+}
+
 // Each page write is a proposal naming what it does; its Do it calls the
 // function the page's button calls, which the fake records, and leaves
 // the button's event row, via chat.

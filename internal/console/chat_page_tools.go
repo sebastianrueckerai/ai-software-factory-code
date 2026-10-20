@@ -80,7 +80,12 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 				b.WriteString(", " + s.Action + ": " + s.Diagnosis)
 			}
 		} else {
-			b.WriteString(", open")
+			cleared, _ := al.Detail["resolved_at"].(string)
+			if at, err := time.Parse(time.RFC3339, cleared); err == nil {
+				b.WriteString(", cleared at " + at.UTC().Format(chatTimeLayout) + " UTC, verdict pending")
+			} else {
+				b.WriteString(", open")
+			}
 		}
 		b.WriteString("\n")
 	}
