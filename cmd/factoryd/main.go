@@ -276,7 +276,7 @@ func main() {
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
-		Timeline: runner.Timeline(),
+		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged,
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
 	// runs and its rolls are watched, its writers reach the console's

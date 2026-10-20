@@ -2091,6 +2091,35 @@ func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
 	}
 }
 
+// A merged card's workflow ended at its merge: a trusted close of its
+// issue, and the console's Close of one without an issue, end it through
+// the runner's CloseMerged with the closer, nothing signalled.
+func TestClosingAMergedCardEndsItClosed(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	var closed []string
+	in.CloseMerged = func(ctx context.Context, id, closer string) error {
+		closed = append(closed, id+" by "+closer)
+		return nil
+	}
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "merged", Kind: "agent", IssueNumber: 4, PRNumber: 7, FinishedAt: justNow()}
+	store.tasks["t2"] = Task{ID: "t2", Repository: "sf/ai-software-factory-code", Status: "merged", Kind: "agent", PRNumber: 8, FinishedAt: justNow()}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "closed",
+		"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "sebastian"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":     map[string]string{"login": "sebastian"},
+	})
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if err := in.CloseCard(context.Background(), "t2", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"t1 by sebastian", "t2 by alice"}; !slices.Equal(closed, want) || len(workflowsOf(in).signals) != 0 {
+		t.Fatalf("closed %q, signals %q; want %q and no signal", closed, workflowsOf(in).signals, want)
+	}
+}
+
 // A card's rung comes from its body's Rung line, else from its size and
 // its text: large, or factoryd's own package, start on frontier; the rest
 // on cheap (roadmap 222, item 5). The size is kept on the row.

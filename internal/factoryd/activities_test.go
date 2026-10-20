@@ -1394,6 +1394,32 @@ func TestEndCoveredEndsAMergedCardDone(t *testing.T) {
 	}
 }
 
+// A human's close of a merged card ends it closed, not done: done claims
+// live, and no chain ran its change live. task_ended names the closer, a
+// second close changes nothing, and a card not merged is not CloseMerged's.
+func TestCloseMergedEndsAMergedCardClosed(t *testing.T) {
+	r, _, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
+	ctx := context.Background()
+	for range 2 {
+		if err := r.CloseMerged(ctx, "t1", "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.Status != "closed" {
+		t.Fatalf("status = %q, want closed", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"closed: closed by sebastian: ended without a live chain"}) {
+		t.Fatalf("task_ended = %q, want one naming the closer", got)
+	}
+	r, _, store, objects = chainRunner(t, mergedCard, policy.ChainModeRun)
+	if err := r.CloseMerged(ctx, "t1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.Status != "running" || len(taskEnds(t, objects, "t1")) != 0 {
+		t.Fatalf("a running card closed as merged: status %q, task_ended %q", got.Status, taskEnds(t, objects, "t1"))
+	}
+}
+
 // A retried Finish of the merge — its first attempt moved the card to
 // merged, the worker died before it reported — finds the card merged and
 // changes nothing: no done, no task_ended, no cleanup again. Only the

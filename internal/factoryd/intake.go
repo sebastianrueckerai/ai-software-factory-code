@@ -53,6 +53,9 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
+	// CloseMerged ends a merged card closed on closer's close: the
+	// runner's CloseMerged, its workflow having ended at the merge.
+	CloseMerged func(ctx context.Context, taskID, closer string) error
 
 	trustMu sync.Mutex
 	trust   map[string]time.Time // repo + user → trusted until
@@ -1100,7 +1103,8 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// task's branch is deleted. An issue's author can close it without any
+// task's branch is deleted, a merged card, whose workflow ended at its
+// merge, ends closed. An issue's author can close it without any
 // repository access, so only a user trusted to steer counts, and the bot
 // account only where factoryd recorded the close as its own
 // (IntakeFactoryClosed): a leaked bot login ends no task.
@@ -1126,6 +1130,8 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		return in.closeBacklogCard(ctx, t)
 	case t.Status == "failed":
 		return in.deleteFailedBranch(ctx, t)
+	case t.Status == "merged":
+		return in.CloseMerged(ctx, t.ID, closer)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
@@ -1144,8 +1150,9 @@ func (in *Intake) deleteFailedBranch(ctx context.Context, t Task) error {
 }
 
 // CloseCard is the console's Close of card id, which has no issue, for
-// by: a backlog or failed card ends closed in the store; any other through
-// its workflow, signalled as by its issue's close.
+// by: a backlog or failed card ends closed in the store, a merged one
+// through CloseMerged; any other through its workflow, signalled as by
+// its issue's close.
 func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 	t, _, err := in.Store.Task(ctx, id)
 	switch {
@@ -1155,6 +1162,8 @@ func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 		return in.closeBacklogCard(ctx, t)
 	case t.Status == "failed":
 		return in.Store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+	case t.Status == "merged":
+		return in.CloseMerged(ctx, id, by)
 	}
 	return in.Workflows.Signal(ctx, id, SignalIssueClosed, TaskSignal{Author: by})
 }
