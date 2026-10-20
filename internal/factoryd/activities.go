@@ -2167,21 +2167,21 @@ func (r *Runner) CloseMerged(ctx context.Context, taskID, closer string) error {
 	return r.finish(ctx, taskID, "closed", "closed by "+closer+": ended without a live chain", true)
 }
 
-// finish is the one end of a task. merged picks the cards it ends: a
+// finish is the one end of a task. afterMerge picks the cards it ends: a
 // merged card for the ends after the merge, else one neither merged nor
 // final.
-func (r *Runner) finish(ctx context.Context, taskID, final, reason string, merged bool) error {
+func (r *Runner) finish(ctx context.Context, taskID, final, reason string, afterMerge bool) error {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if !ok || Final(t.Status) || (t.Status == "merged") != merged {
+	if !ok || Final(t.Status) || (t.Status == "merged") != afterMerge {
 		return nil // nothing to finish here: gone, already final, or not this entry's
 	}
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if final == "done" && !merged && repoErr == nil && t.PRNumber > 0 {
+	if final == "done" && !afterMerge && repoErr == nil && t.PRNumber > 0 {
 		merged, err := r.cardMerged(ctx, repo, t)
 		if err != nil {
 			return err
