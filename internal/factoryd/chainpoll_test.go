@@ -96,6 +96,19 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 	return nil
 }
 
+// UnsettledChainCommits mirrors PGStore's read: the commits of shas with
+// a carry row not yet success.
+func (s *fakeStore) UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error) {
+	s.unsettledReads++
+	out := map[string]bool{}
+	for _, c := range s.chain {
+		if c.repo == repository && c.pr > 0 && c.status != "success" && slices.Contains(shas, c.sha) {
+			out[c.sha] = true
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
 	for i, c := range s.chain {
 		if c.repo == repository && c.pr > 0 && c.sha == sha && c.status != status {
@@ -363,6 +376,7 @@ type chainForgejo struct {
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
+	status    []string                                  // the sha of every combined status read
 	reads     []string                                  // "repository dir" of every workflow-list read
 	failing   map[string]bool                           // "base...head" compares that answer 500
 	compares  int                                       // the compare calls served
@@ -409,6 +423,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			reply(map[string]any{"commits": f.carries[repo][base+"..."+head]})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
+			f.status = append(f.status, sha)
 			state := "success"
 			for _, s := range f.statuses[repo][sha] {
 				if s["status"] == "failure" {
@@ -824,6 +839,87 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	}
 	if !slices.Equal(ended, []string{"t-wait run 61"}) {
 		t.Fatalf("ended %q, want t-wait once, on the tick its context concluded", ended)
+	}
+}
+
+// The refresh re-reads only the finished runs whose carry rows are not
+// yet green: a green row is final, a red one can still turn green by a
+// manual re-run. One store read of the window's rows a tick; with a
+// required context, one combined status read per refreshed commit and the
+// head's own.
+func TestTheRefreshReadsOnlyRunsNotYetGreen(t *testing.T) {
+	const c60, c61, c62, c63 = "6060606060", "6161616161", "6262626262", "6363636363"
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {
+			pushRun(63, c63, "success"), pushRun(62, c62, "failure"), pushRun(61, c61, "success"), pushRun(60, c60, "success"),
+		}},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {
+			c60: {{"status": "success", "context": "factory/roll"}},
+			c61: {{"status": "success", "context": "factory/roll"}},
+			c62: {{"status": "success", "context": "factory/roll"}},
+			c63: {{"status": "pending", "context": "factory/roll"}},
+		}},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}},
+		}}}
+	}
+	p.End = func(context.Context, string, int64) error { return nil }
+	store.chain = []fakeChainRun{
+		{repo: codeRepo, pr: 4, sha: c60, run: 60, status: "success"},
+		{repo: codeRepo, pr: 1, sha: c61, run: 61, status: "success"},
+		{repo: codeRepo, pr: 2, sha: c62, run: 62, status: "failure"},
+		{repo: codeRepo, pr: 3, sha: c63, run: 63, status: "pending"},
+		{repo: codeRepo, pr: 0, sha: c63, run: 63, status: "pending"},
+	}
+	for tick := 1; tick <= 2; tick++ {
+		f.status, store.unsettledReads = nil, 0
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if want := []string{c62, c63, c63}; !slices.Equal(f.status, want) || store.unsettledReads != 1 {
+			t.Fatalf("tick %d: status reads %q, store reads %d; want %q and one", tick, f.status, store.unsettledReads, want)
+		}
+	}
+}
+
+// UnsettledChainCommits names the asked commits with a carry row not yet
+// green, of the repository asked: a green row, a head row alone and a
+// commit not asked name none. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestUnsettledChainCommitsOverPostgres(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE chain_runs`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, row := range []struct {
+		repo   string
+		pr     int64
+		sha    string
+		run    int64
+		status string
+	}{
+		{"sf/r", 1, "a1", 1, "success"},
+		{"sf/r", 2, "b2", 2, "failure"},
+		{"sf/r", 3, "c3", 3, "pending"},
+		{"sf/r", 0, "e5", 5, "pending"},
+		{"sf/r", 4, "d4", 4, "pending"},
+		{"sf/o", 5, "a1", 5, "pending"},
+	} {
+		if err := pg.RecordChainRun(ctx, row.repo, row.pr, row.sha, row.run, row.status); err != nil {
+			t.Fatalf("RecordChainRun %+v: %v", row, err)
+		}
+	}
+	got, err := pg.UnsettledChainCommits(ctx, "sf/r", []string{"a1", "b2", "c3", "e5"})
+	if want := map[string]bool{"b2": true, "c3": true}; err != nil || !maps.Equal(got, want) {
+		t.Fatalf("UnsettledChainCommits = %v, %v; want %v", got, err, want)
 	}
 }
 

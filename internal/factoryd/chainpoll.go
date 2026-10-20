@@ -270,6 +270,27 @@ func verdictWord(verdict string) string {
 	return "red"
 }
 
+// UnsettledChainCommits lists the commits of shas with a carry row in
+// repository not yet success: the runs the refresh reads again. A green
+// row is final; a red one can still turn green by a manual re-run.
+func (s *PGStore) UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT sha FROM chain_runs
+		WHERE repository = $1 AND pr_number > 0 AND status <> 'success' AND sha = ANY($2)`, repository, shas)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]bool{}
+	for rows.Next() {
+		var sha string
+		if err := rows.Scan(&sha); err != nil {
+			return nil, err
+		}
+		out[sha] = true
+	}
+	return out, rows.Err()
+}
+
 // RefreshChainStatus moves the rows of sha's pull requests to a status
 // the run reached — or to the stall their head records, so a merged
 // card the chain holds reads it. The head row is never a run's to move:
@@ -320,6 +341,7 @@ type ChainStore interface {
 	UncarriedMerged(ctx context.Context, repository string) ([]Task, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
+	UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error)
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
 	RecordChainStall(ctx context.Context, repository, sha string) error
 	ChainHeadSince(ctx context.Context, repository, sha string) (time.Time, bool, error)
@@ -681,7 +703,9 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 // against the run before it; the first recording takes the newest run
 // only, the runs before it belong to the era before the chain was
 // recorded. A run already recorded only moves to a status it finished
-// at.
+// at, and only while a carry row of its commit is not yet green: one
+// store read a tick names those, so a window of green runs costs no
+// Forgejo read.
 func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.ChainConfig, uncarried *uncarriedCards) error {
 	repo := proj.Repo()
 	seen, err := p.mainRuns(ctx, proj)
@@ -710,10 +734,22 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	if head == 0 {
 		main = main[len(main)-1:] // the first recording: the newest only
 	}
+	var finished []string
+	for _, run := range main {
+		if run.ID <= head && run.Finished() {
+			finished = append(finished, run.CommitSHA)
+		}
+	}
+	unsettled := map[string]bool{}
+	if len(finished) > 0 {
+		if unsettled, err = p.Store.UnsettledChainCommits(ctx, proj.Repository, finished); err != nil {
+			return err
+		}
+	}
 	prev := ""
 	for _, run := range main {
 		if run.ID <= head {
-			if run.Finished() {
+			if run.Finished() && unsettled[run.CommitSHA] {
 				v, err := verdictOf(run.CommitSHA)
 				if err != nil {
 					return err

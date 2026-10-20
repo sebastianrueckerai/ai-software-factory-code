@@ -61,6 +61,7 @@ type fakeStore struct {
 	rolls           []RollRequest
 	chain           []fakeChainRun
 	chainNow        func() time.Time // stamps the fake's chain writes; zero where nil
+	unsettledReads  int              // the UnsettledChainCommits calls served
 	liveSessions    map[string]LiveSession
 	pauses          map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
