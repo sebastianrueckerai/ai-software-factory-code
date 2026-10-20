@@ -177,6 +177,23 @@ func TestLab(t *testing.T) {
 		w.Header().Set("X-Lab-Drawer", drawer)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /lab/scene", func(w http.ResponseWriter, req *http.Request) {
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<20))
+		dec.DisallowUnknownFields()
+		var j labSceneJSON
+		if err := dec.Decode(&j); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if err := j.check(time.Now()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("X-Lab-Drawer", r.seedScene(j.scene()))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		// the event stream stays open as long as its page; a seed must not wait for it
 		if !strings.HasSuffix(req.URL.Path, "/events/stream") {
@@ -256,10 +273,12 @@ type labScene struct {
 	// projects, config, monthCap and prFiles replace the Go-coded scenes'
 	// project rows, ai-software-factory-code's configuration, its month cap
 	// and the lab's pull request files
-	projects  []factoryd.Project
-	config    *policy.ProjectConfig
-	monthCap  float64
-	prFiles   map[string]string
+	projects []factoryd.Project
+	config   *policy.ProjectConfig
+	monthCap float64
+	prFiles  map[string]string
+	// remote is the mirror's remote, "" for the code project's
+	remote    string
 	tasks     []factoryd.BoardTask
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
@@ -522,8 +541,10 @@ func (r *rig) seedScene(s labScene) string {
 		config = &policy.ProjectConfig{Repository: repository, MergeRule: "human", Objects: "seed",
 			Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}
 	}
+	r.ledger.mu.Lock()
 	r.ledger.files = map[string]policy.ProjectConfig{project.Name: *config}
 	r.ledger.monthCaps = map[string]float64{project.Name: cmp.Or(s.monthCap, 120)}
+	r.ledger.mu.Unlock()
 	r.repoWriters[repository] = []string{login}
 	labObjects.Lock()
 	labFiles = s.prFiles
@@ -597,7 +618,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {
 		r.mirrors.rows[project.Name+" "+factoryd.MirrorExport] = factoryd.Mirror{Project: project.Name,
-			Direction: factoryd.MirrorExport, Remote: "sebastianrueckerai/ai-software-factory-code", State: s.github,
+			Direction: factoryd.MirrorExport, Remote: cmp.Or(s.remote, "sebastianrueckerai/ai-software-factory-code"), State: s.github,
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
 	r.mirrors.mu.Unlock()
@@ -606,7 +627,11 @@ func (r *rig) seedScene(s labScene) string {
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
 	r.resources.use = map[string]cloudres.EnvelopeUse{repository: {OpenServers: 1, MonthEUR: 0.43}}
-	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
+	standing := "demo-app/demo-app"
+	if project != labCodeProject {
+		standing = repository
+	}
+	r.resources.standing = map[string]cloudres.StandingUse{standing: {Count: 1, MonthlyEUR: 5.99}}
 	// the cluster's nightly backup and dump, last run at their latest
 	// 02:00 and 02:30 UTC; the dump's last run failed
 	nightly := func(minute int) time.Time {
@@ -1492,18 +1517,60 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 
 func TestSeedSceneProject(t *testing.T) {
 	r := newRig(t)
+	t.Cleanup(func() { labFiles = labPRFiles })
 	now := time.Now()
-	s := labScene{project: labProject{"nord-booking", "nord/booking", "sebastian"},
-		events: []factoryd.Event{labEvent(1, factoryd.EventTaskStatus, "factory", factoryd.ViaFactoryd, now.Add(-time.Minute), nil)},
-		chat:   []factoryd.ChatMessage{{Role: "user", Content: "hello", At: now.Add(-time.Minute)}}}
+	cfg := policy.ProjectConfig{Repository: "nord/booking", MergeRule: "auto"}
+	s := labScene{project: labProject{"nord-booking", "nord/booking", "maria"}, remote: "nord/booking-mirror", github: "in sync",
+		projects: []factoryd.Project{{Name: "nord-booking", Repository: "nord/booking"}}, config: &cfg, monthCap: 40,
+		prFiles: map[string]string{"/p": "x"},
+		events:  []factoryd.Event{labEvent(1, factoryd.EventTaskStatus, "factory", factoryd.ViaFactoryd, now.Add(-time.Minute), nil)},
+		chat:    []factoryd.ChatMessage{{Role: "user", Content: "hello", At: now.Add(-time.Minute)}}}
 	r.seedScene(s)
 	if got := r.events.rows[0].Repository; got != "nord/booking" {
 		t.Fatalf("event repository %q, want nord/booking", got)
 	}
-	if _, ok := r.chat.msgs["nord/booking sebastian"]; !ok {
-		t.Fatalf("chat keyed %v, want nord/booking sebastian", slices.Collect(maps.Keys(r.chat.msgs)))
+	if _, ok := r.chat.msgs["nord/booking maria"]; !ok {
+		t.Fatalf("chat keyed %v, want nord/booking maria", slices.Collect(maps.Keys(r.chat.msgs)))
 	}
-	if _, ok := r.ledger.files["nord-booking"]; !ok {
-		t.Fatalf("ledger files %v, want nord-booking", slices.Collect(maps.Keys(r.ledger.files)))
+	if got := r.ledger.files["nord-booking"]; got.MergeRule != "auto" || len(r.ledger.files) != 1 {
+		t.Fatalf("ledger files %v, want only nord-booking with merge rule auto", r.ledger.files)
+	}
+	if len(r.projects.rows) != 1 || r.projects.rows[0].Name != "nord-booking" {
+		t.Fatalf("projects %v, want the scene's one", r.projects.rows)
+	}
+	if got := r.ledger.monthCaps["nord-booking"]; got != 40 {
+		t.Fatalf("month cap %v, want 40", got)
+	}
+	if got := labFiles["/p"]; got != "x" || len(labFiles) != 1 {
+		t.Fatalf("pull request files %v, want only /p", labFiles)
+	}
+	if got := r.repoWriters["nord/booking"]; !slices.Equal(got, []string{"maria"}) {
+		t.Fatalf("writers %v, want maria", got)
+	}
+	if got := r.mirrors.rows["nord-booking "+factoryd.MirrorExport].Remote; got != "nord/booking-mirror" {
+		t.Fatalf("mirror remote %q, want nord/booking-mirror", got)
+	}
+	if _, ok := r.resources.standing["nord/booking"]; !ok {
+		t.Fatalf("standing keyed %v, want nord/booking", slices.Collect(maps.Keys(r.resources.standing)))
+	}
+
+	r.seedScene(labScene{github: "in sync"})
+	if len(r.projects.rows) != len(labProjects()) {
+		t.Fatalf("empty scene: %d projects, want %d", len(r.projects.rows), len(labProjects()))
+	}
+	if got := r.ledger.monthCaps["ai-software-factory-code"]; got != 120 {
+		t.Fatalf("empty scene: month cap %v, want 120", got)
+	}
+	if len(labFiles) != len(labPRFiles) {
+		t.Fatalf("empty scene: %d pull request files, want %d", len(labFiles), len(labPRFiles))
+	}
+	if got := r.repoWriters["sf/code"]; !slices.Equal(got, []string{"sebastian"}) {
+		t.Fatalf("empty scene: writers %v, want sebastian", got)
+	}
+	if got := r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport].Remote; got != "sebastianrueckerai/ai-software-factory-code" {
+		t.Fatalf("empty scene: mirror remote %q", got)
+	}
+	if _, ok := r.resources.standing["demo-app/demo-app"]; !ok {
+		t.Fatalf("empty scene: standing keyed %v", slices.Collect(maps.Keys(r.resources.standing)))
 	}
 }
