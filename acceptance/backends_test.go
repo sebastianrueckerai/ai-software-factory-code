@@ -398,6 +398,17 @@ func (s *acceptanceStore) ReleaseHandover(_ context.Context, taskID string) erro
 	return nil
 }
 
+func (s *acceptanceStore) TouchedByPerson(_ context.Context, taskID string, bots ...string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.events {
+		if e.TaskID == taskID && e.Author != factoryd.FactoryDecider && !slices.Contains(bots, e.Author) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *acceptanceStore) IntakeEvents(_ context.Context, taskID string) ([]factoryd.IntakeEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -332,6 +332,10 @@ type Store interface {
 	ReleaseHandover(ctx context.Context, taskID string) error
 	// IntakeEvents lists a task's events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	// TouchedByPerson reports whether a person acted on the task: an intake
+	// event whose author is neither factoryd nor one of bots, or an answer
+	// or park recorded as question_answered.
+	TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error)
 	// SetSignalled sets whether event id reached the task's workflow and
 	// reports whether that changed it: setting true is the claim to signal
 	// it, exclusive between the webhook path and the heal pass; setting
@@ -945,6 +949,15 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = 'handover'`, taskID)
 	return err
+}
+
+func (s *PGStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
+	var touched bool
+	err := s.db.QueryRowContext(ctx,
+		`SELECT EXISTS (SELECT 1 FROM intake_events WHERE task_id = $1 AND author <> ALL($2))
+		     OR EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = $3)`,
+		taskID, append([]string{FactoryDecider}, bots...), EventQuestionAnswered).Scan(&touched)
+	return touched, err
 }
 
 // intakeColumns are the intake_events columns the reads select, in scan

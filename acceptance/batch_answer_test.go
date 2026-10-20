@@ -549,6 +549,9 @@ func (s *accBatchStore) ReleaseHandover(ctx context.Context, taskID string) erro
 func (s *accBatchStore) IntakeEvents(ctx context.Context, taskID string) ([]factoryd.IntakeEvent, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {
 	panic("unused")
 }

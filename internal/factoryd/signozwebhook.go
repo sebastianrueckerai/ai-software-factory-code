@@ -20,6 +20,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // SourceAlert is the source of a task filed from a SigNoz alert.
@@ -141,13 +142,8 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 // AlertBook is what the alert intake keeps: the task rows it files and one
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
-	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-	Task(ctx context.Context, id string) (Task, bool, error)
-	InsertAlert(ctx context.Context, a Alert) (int64, error)
-	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	Store
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
-	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
 
@@ -196,6 +192,8 @@ type AlertIntake struct {
 	Flux FluxReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
+	// Metrics counts the cards CloseCleared ends; nil counts none.
+	Metrics *telemetry.Metrics
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
@@ -504,6 +502,64 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// CloseCleared closes each human card of a cleared SigNoz alert that no
+// person touched: the row's verdict is unjudged, the task closed before
+// its issue, so the issue-closed webhook finds it final and judges
+// nothing. A card an agent works, a row still firing or judged, a card
+// that left waiting-human, and a card a person commented on, answered or
+// parked are left as they are.
+func (in *AlertIntake) CloseCleared(ctx context.Context) error {
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		return err
+	}
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	var errs []error
+	for _, row := range rows {
+		at, _ := row.Detail["resolved_at"].(string)
+		if row.Verdict != "" || at == "" {
+			continue
+		}
+		if err := in.closeCleared(ctx, row, at); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+		return err
+	}
+	touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser)
+	if err != nil || touched {
+		return err
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		return err
+	}
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "closed"); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
+	mirrorTaskState(ctx, in.Forgejo, t, "closed")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
+	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
+		"factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes."); err != nil {
+		return err
+	}
+	return in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 }
 
 // RolloutPass raises an alert, through take as a SigNoz alert would, on

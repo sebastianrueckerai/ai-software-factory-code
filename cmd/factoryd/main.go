@@ -326,7 +326,7 @@ func main() {
 		// records of its own Deployments
 		Rolls:     store,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Flux:      kube, SigNoz: signoz}
+		Flux:      kube, SigNoz: signoz, Metrics: metrics}
 	registrar.FluxAlerts = alertIntake.FluxPass
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
@@ -345,6 +345,9 @@ func main() {
 			// first model call or a promotion's check reads the row
 			if err := alertIntake.SweepSigNoz(ctx, time.Now()); err != nil {
 				log.Printf("signoz sweep: %v", err)
+			}
+			if err := alertIntake.CloseCleared(ctx); err != nil {
+				log.Printf("cleared alerts: %v", err)
 			}
 			// a rollout not settled at its window's cap raises its own alert
 			if err := alertIntake.RolloutPass(ctx, time.Now()); err != nil {
