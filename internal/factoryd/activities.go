@@ -2144,10 +2144,11 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // issue label) and, for a failure, the reason as an issue comment.
 // Finishing an already-finished task, or a merged one, is a no-op, so a
 // retried Finish never double-completes and never ends a merged card
-// without its chain. A done end of a card whose pull request merged and
-// waits for its chain (endsMerged) runs every step of done and lands in
-// merged, not final and without task_ended: EndCovered ends it at live,
-// CloseMerged at a human's close.
+// without its chain. A done end of a card whose pull request merged
+// records its merge commit (cardMerged); one that waits for its chain
+// (endsMerged) runs every step of done and lands in merged, not final and
+// without task_ended: EndCovered ends it at live, CloseMerged at a
+// human's close.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
 	return r.finish(ctx, taskID, final, reason, false)
 }
@@ -2180,12 +2181,12 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, merge
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if final == "done" && !merged && repoErr == nil && endsMerged(t, r.cfg.Policy().Tree) {
+	if final == "done" && !merged && repoErr == nil && t.PRNumber > 0 {
 		merged, err := r.cardMerged(ctx, repo, t)
 		if err != nil {
 			return err
 		}
-		if merged {
+		if merged && endsMerged(t, r.cfg.Policy().Tree) {
 			state = "merged"
 		}
 	}
@@ -2275,7 +2276,8 @@ func endsMerged(t Task, tree policy.Tree) bool {
 
 // cardMerged tells whether card t's pull request merged: a recorded merge
 // commit says so without a read, else Forgejo answers and its merge
-// commit is recorded, whatever path merged the card. An answer no retry
+// commit is recorded, whatever path merged the card, a roll a human
+// merged included. An answer no retry
 // changes (a refusal, a pull request Forgejo no longer has) is logged and
 // reads as no merge: the card ends done, its credentials revoked, rather
 // than failing its end every minute.

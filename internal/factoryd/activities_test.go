@@ -1348,6 +1348,23 @@ func TestEndCoveredKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
 	}
 }
 
+// A roll a human merged in Forgejo ends done as every roll does, its
+// merge commit read and recorded: the factory merge's own record never
+// ran, and without it the roll has no carry row and leaves Finished.
+func TestFinishRecordsAHandMergedRollsMergeCommit(t *testing.T) {
+	r, hub, store, objects := chainRunner(t, withSource(mergedCard, SourceRoll), policy.ChainModeRun)
+	hub.pulls = map[int64]string{7: mergedAt(7, "m7")}
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged; rollout live: factoryd"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" || got.MergeCommit != "m7" {
+		t.Fatalf("status = %q, merge commit %q; want done at m7", got.Status, got.MergeCommit)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged; rollout live: factoryd"}) {
+		t.Fatalf("task_ended = %q", got)
+	}
+}
+
 // A roll measures its own live (its rollout) before it finishes: it ends
 // done at once.
 func TestFinishEndsARollDone(t *testing.T) {
@@ -1363,8 +1380,9 @@ func TestFinishEndsARollDone(t *testing.T) {
 	}
 }
 
-// A project whose chain is none is live at the merge: done at once. So is
-// a repository no project file names: it runs no chain.
+// A project whose chain is none is live at the merge: done at once, its
+// merge commit recorded. So is a repository no project file names: it
+// runs no chain.
 func TestFinishEndsANoneModeProjectDone(t *testing.T) {
 	gone := mergedCard
 	gone.Repository = "sf/gone"
@@ -1377,8 +1395,8 @@ func TestFinishEndsANoneModeProjectDone(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 			t.Fatal(err)
 		}
-		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
-			t.Fatalf("%s: status = %q, want done", tc.card.Repository, got.Status)
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" || got.MergeCommit != "m7" {
+			t.Fatalf("%s: status = %q, merge commit %q; want done at m7", tc.card.Repository, got.Status, got.MergeCommit)
 		}
 		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged"}) {
 			t.Fatalf("%s: task_ended = %q", tc.card.Repository, got)
