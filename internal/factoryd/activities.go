@@ -2158,13 +2158,38 @@ func (r *Runner) ChainFacts(ctx context.Context, taskID string) (ChainFacts, err
 	return f, nil
 }
 
+// chainHeadReader is what ChainStalled reads of the store: the
+// repository's head row. PGStore has it; a store without it raises the
+// alert without the sha.
+type chainHeadReader interface {
+	ChainHeadRow(ctx context.Context, repository string) (sha string, run int64, ok bool, err error)
+}
+
 // ChainStalled is a merged card's wait past the project's stall bound
 // with no covering run: a poller down or crash-looping cannot silence a
-// card, the workflow decides the stall itself. The repair it starts is
+// card, the workflow decides the stall itself. The stall it decides
+// raises the chain_stalled alert — the same row the poller's watchdog
+// writes, deduped against it — so the timer's verdict is durable even
+// when the poller is the thing that is down. The repair it starts is
 // the chain poller's work (Task 5).
 func (r *Runner) ChainStalled(ctx context.Context, taskID string) error {
-	log.Printf("task %s: its chain stalled: no covering run inside the stall bound", taskID)
-	return nil
+	t, ok, err := r.store.Task(ctx, taskID)
+	if err != nil || !ok {
+		return err
+	}
+	_, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository)
+	detail := map[string]any{"task": taskID, "bound": cfg.Chain.Resolved().Stall.String()}
+	if reader, can := r.store.(chainHeadReader); can {
+		sha, _, found, err := reader.ChainHeadRow(ctx, t.Repository)
+		if err != nil {
+			return err
+		}
+		if found {
+			detail["sha"] = sha
+		}
+	}
+	_, err = r.store.InsertAlert(ctx, Alert{Kind: AlertChainStalled, Source: t.Repository, Fingerprint: t.Repository, Detail: detail})
+	return err
 }
 
 // alertStoreReader is what an alert card's pre-check reads of the alert

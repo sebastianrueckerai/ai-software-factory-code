@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 // The chain rows, as PGStore keeps them: one per pull request the newest
@@ -49,6 +50,18 @@ func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, er
 		}
 	}
 	return head, nil
+}
+
+// ChainHeadRow mirrors PGStore's read: the repository's head row, its
+// sha and run.
+func (s *fakeStore) ChainHeadRow(ctx context.Context, repository string) (string, int64, bool, error) {
+	var row fakeChainRun
+	for _, c := range s.chain {
+		if c.repo == repository && c.pr == 0 && c.run >= row.run {
+			row = c
+		}
+	}
+	return row.sha, row.run, row.sha != "", nil
 }
 
 func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
@@ -372,7 +385,7 @@ func TestChainPollerAndsTheRuns(t *testing.T) {
 	}
 }
 
-// A run the chain skipped never ran the change: it holds the head row
+// A run the chain skipped never ran the change: it holds its rows
 // pending — the stall watchdog's case, not repair's.
 func TestChainPollerHoldsASkippedRunPending(t *testing.T) {
 	f := &chainForgejo{
@@ -393,9 +406,9 @@ func TestChainPollerHoldsASkippedRunPending(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
-		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "skipped"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "pending"},
 	}) {
-		t.Fatalf("chain of a skipped run %+v, want the head row pending", got)
+		t.Fatalf("chain of a skipped run %+v, want the rows pending", got)
 	}
 	if strings.Contains(logs.String(), "red:") {
 		t.Fatalf("repair of a skipped run: %s", logs.String())
@@ -424,9 +437,9 @@ func TestChainPollerHoldsACancelledRunPending(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
-		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "cancelled"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "pending"},
 	}) {
-		t.Fatalf("chain of a cancelled run %+v, want the head row pending", got)
+		t.Fatalf("chain of a cancelled run %+v, want the rows pending", got)
 	}
 	if strings.Contains(logs.String(), "red:") {
 		t.Fatalf("repair of a cancelled run: %s", logs.String())
@@ -477,7 +490,7 @@ func TestChainPollerDegradesNoWorkflowRepos(t *testing.T) {
 	}
 }
 
-// A required context missing on the commit holds the head row pending;
+// A required context missing on the commit holds its rows pending;
 // pending past the project's stall bound calls the stalled hook, and the
 // context reporting success concludes the head.
 func TestChainPollerStallsAPendingHead(t *testing.T) {
@@ -509,9 +522,9 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
-		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "pending"},
 	}) {
-		t.Fatalf("chain under a missing context %+v, want the head row pending", got)
+		t.Fatalf("chain under a missing context %+v, want the rows pending", got)
 	}
 	if strings.Contains(logs.String(), "stalled") {
 		t.Fatalf("stall called within the bound: %s", logs.String())
@@ -533,6 +546,112 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); got[0].status != "success" {
 		t.Fatalf("chain after the context concluded %+v, want the head row green", got)
+	}
+}
+
+// A carry row carries its commit's verdict, not its run's own status:
+// a run concluding success while a required context is still pending
+// writes its carry row pending, so the coverage read holds the card and
+// the workflow's entry read agrees — re-read after a chain-wait
+// restart, it still holds — and the context concluding green is what
+// covers the card. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	chainPolicy := func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: time.Hour}},
+		}}}
+	}
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+		statuses: map[string]map[string][]map[string]string{
+			codeRepo: {commitC2: {{"status": "pending", "context": "factory/roll"}}},
+		},
+	}
+	tk := Task{ID: "t-wait", Status: "merged", Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent"}
+	if err := pg.CreateTask(ctx, tk); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	projects := newFakeStore()
+	projects.projects = []Project{seedProject(codeRepo)}
+	fj := f.srv(t)
+	poll := func() { // a fresh poller: the restart a chain wait re-reads under
+		t.Helper()
+		p := &ChainPoller{Forgejo: fj, Store: pg, Projects: projects, Policy: chainPolicy}
+		if err := p.poll(ctx); err != nil {
+			t.Fatalf("poll: %v", err)
+		}
+	}
+	row := func() string {
+		var status string
+		if err := pg.db.QueryRowContext(ctx, `SELECT status FROM chain_runs WHERE repository = $1 AND pr_number = 12`, codeRepo).Scan(&status); err != nil {
+			t.Fatalf("carry row: %v", err)
+		}
+		return status
+	}
+	facts := func() ChainFacts {
+		t.Helper()
+		r := &Runner{store: pg, cfg: RunnerConfig{Policy: chainPolicy}}
+		out, err := r.ChainFacts(ctx, "t-wait")
+		if err != nil {
+			t.Fatalf("ChainFacts: %v", err)
+		}
+		return out
+	}
+	covered := func() bool {
+		t.Helper()
+		m, err := pg.ChainCovered(ctx, codeRepo)
+		if err != nil {
+			t.Fatalf("ChainCovered: %v", err)
+		}
+		_, ok := m["t-wait"]
+		return ok
+	}
+	// the run concluded success, the context has not: the carry row holds
+	// the commit's verdict, the card stays uncovered
+	poll()
+	if got := row(); got != "pending" {
+		t.Fatalf("carry row = %s, want pending: the pending context holds the commit", got)
+	}
+	if covered() {
+		t.Fatal("t-wait covered by a chain whose required context is pending")
+	}
+	if got := facts(); got.Live {
+		t.Fatalf("facts %+v, want the card not live", got)
+	}
+	// the restart's entry read re-checks the recorded facts: they hold
+	poll()
+	if got := row(); got != "pending" {
+		t.Fatalf("carry row = %s after the restart, want pending", got)
+	}
+	if covered() || facts().Live {
+		t.Fatalf("after the restart: covered %v, facts %+v, want the card still held", covered(), facts())
+	}
+	// the context concludes success: the same row concludes, the card is
+	// covered and live at the run that carried it
+	f.statuses[codeRepo][commitC2] = []map[string]string{{"status": "success", "context": "factory/roll"}}
+	poll()
+	if got := row(); got != "success" {
+		t.Fatalf("carry row = %s after the context concluded, want success", got)
+	}
+	if !covered() || !facts().Live || facts().RunID != 61 {
+		t.Fatalf("after the context concluded: covered %v, facts %+v, want live at run 61", covered(), facts())
 	}
 }
 
@@ -611,9 +730,9 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "pending"},
-		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "running"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "pending"},
 	}) {
-		t.Fatalf("chain after the first recording %+v, want pr 12 running under run 61", got)
+		t.Fatalf("chain after the first recording %+v, want pr 12 pending under run 61", got)
 	}
 	// the run finished, and a newer one arrived carrying another pull
 	// request: the old row moves to the final status, the new run's pull
@@ -978,11 +1097,12 @@ func (s *fakeStore) MigrateChainLimbo(ctx context.Context, repository string) ([
 	return moved, nil
 }
 
-// The startup pass moves the limbo (Task 9): a served repository's done
-// cards the chain never confirmed live move to merged; a repository
-// whose chain is none moves nothing, its cards held by the grandfather
-// clause.
-func TestStartupMigrationMovesTheLimbo(t *testing.T) {
+// The migration runs every tick after the record (Task 9, the final
+// review's cadence): a served repository's done cards the chain never
+// confirmed live move to merged on each tick that finds them; a
+// repository whose chain is none the poller does not serve, so its
+// cards stay done by the grandfather clause.
+func TestEveryTickMovesTheLimbo(t *testing.T) {
 	f := &chainForgejo{}
 	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
 	p.Policy = func() policy.Version {
@@ -1001,17 +1121,50 @@ func TestStartupMigrationMovesTheLimbo(t *testing.T) {
 		{repo: codeRepo, pr: 12, sha: "c4", run: 14, status: "failure"},
 		{repo: demoRepo, pr: 5, sha: "d3", run: 3, status: "failure"},
 	}
-	p.migrate(context.Background())
+	for range 2 {
+		if err := p.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if got := store.tasks["t-limbo"].Status; got != "merged" {
 		t.Fatalf("t-limbo = %s, want merged", got)
 	}
 	if got := store.tasks["t-none"].Status; got != "done" {
-		t.Fatalf("t-none = %s, want done: the repository's chain is none", got)
+		t.Fatalf("t-none = %s, want done: the poller does not serve the repository", got)
 	}
-	// the pass is idempotent: a second one finds nothing to move
-	p.migrate(context.Background())
-	if got := store.tasks["t-limbo"].Status; got != "merged" {
-		t.Fatalf("t-limbo = %s after the second pass, want merged", got)
+}
+
+// The tick that records also migrates (the final review's factoryd-down
+// gap): a card that finished done while factoryd was down hears nothing
+// at any startup pass — the carry row that spans the outage appears
+// only when the poller records the run that made it, and the same
+// tick's migration moves the limbo card that row holds.
+func TestTheTickThatRecordsAlsoMigrates(t *testing.T) {
+	d3 := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(62, d3, "failure"), pushRun(61, commitC2, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + d3 + "..." + d3: {{"sha": mergePR14}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 14, "merged": true, "merge_commit_sha": mergePR14}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Workflows = &fakeWorkflows{}
+	store.tasks["t-gap"] = Task{ID: "t-gap", Status: "done", Repository: codeRepo, PRNumber: 14}
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks["t-gap"].Status; got != "merged" {
+		t.Fatalf("t-gap = %s after the recording tick, want merged: the tick that records its carry row moves it", got)
+	}
+	// the next tick moves nothing more
+	if err := p.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks["t-gap"].Status; got != "merged" {
+		t.Fatalf("t-gap = %s after the second tick, want merged", got)
 	}
 }
 
@@ -1052,5 +1205,38 @@ func TestCoveredCardWithoutAWorkflowFinishesInTheStore(t *testing.T) {
 	}
 	if len(wf.signals) != 2 {
 		t.Fatalf("signals = %v, want both cards told", wf.signals)
+	}
+}
+
+// The workflow's own stall timer raises the same chain_stalled alert
+// the poller's watchdog writes (the final review): a poller down or
+// crash-looping cannot be the one to record, so the timer's verdict is
+// durable — one open row per repository however often it fires, the
+// repository in the fingerprint, the head sha in the detail.
+func TestChainStalledRaisesTheAlert(t *testing.T) {
+	store := newFakeStore()
+	store.tasks["t-wait"] = Task{ID: "t-wait", Status: "merged", Repository: demoRepo, PRNumber: 3}
+	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: demoCommit, run: 21, status: "pending"}}
+	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Stall: time.Minute}},
+		}}}
+	}}}
+	for range 2 { // two firings of the timer
+		if err := r.ChainStalled(context.Background(), "t-wait"); err != nil {
+			t.Fatalf("ChainStalled: %v", err)
+		}
+	}
+	var raised []Alert
+	for _, a := range store.alerts {
+		if a.Kind == AlertChainStalled {
+			raised = append(raised, a)
+		}
+	}
+	if len(raised) != 1 {
+		t.Fatalf("chain_stalled alerts %+v, want one open row however often the timer fires", raised)
+	}
+	if a := raised[0]; a.Fingerprint != demoRepo || a.Source != demoRepo || a.Detail["sha"] != demoCommit {
+		t.Fatalf("alert %+v, want the repository's fingerprint and the head sha named", a)
 	}
 }

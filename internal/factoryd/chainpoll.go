@@ -31,6 +31,22 @@ func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, erro
 	return head, err
 }
 
+// ChainHeadRow is the repository's head row: the sha and run its chain
+// last recorded — what a stall the poller cannot record names.
+func (s *PGStore) ChainHeadRow(ctx context.Context, repository string) (string, int64, bool, error) {
+	var sha string
+	var run int64
+	err := s.db.QueryRowContext(ctx, `SELECT sha, run_id FROM chain_runs
+		WHERE repository = $1 AND pr_number = 0 ORDER BY run_id DESC LIMIT 1`, repository).Scan(&sha, &run)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", 0, false, nil
+	}
+	if err != nil {
+		return "", 0, false, err
+	}
+	return sha, run, true, nil
+}
+
 // ChainCovered lists repository's merged cards a green chain covers, each
 // with the newest green run that covers it: a card whose carry row is
 // recorded and that the newest green run on main sits at or after — so a
@@ -69,6 +85,13 @@ func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[stri
 // coverage read's complement, the done-but-not-live limbo. A card a
 // green run covers and one the chain names at no run stay done; the
 // moved ids answer, the transition's own event recording each move.
+//
+// The pass runs every poll tick, so the one class it cannot catch is a
+// card that finished done, never gained a carry row before the poller
+// stopped seeing runs, and stayed done past every tick — accepted: it
+// needs the poller dead across the whole window and the chain never
+// carrying the change again, and the repository's chain_stalled alert
+// surfaces the silence.
 func (s *PGStore) MigrateChainLimbo(ctx context.Context, repository string) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks
 		WHERE repository = $1 AND status = 'done' AND pr_number > 0
@@ -322,11 +345,9 @@ type ChainPoller struct {
 	covered  map[string]int64         // repository -> the head run its covered signal last named
 }
 
-// Run migrates the chain's limbo once, then polls until ctx ends. A
-// failed poll logs once until it recovers.
+// Run polls until ctx ends. A failed poll logs once until it recovers.
 func (p *ChainPoller) Run(ctx context.Context) {
 	p.once()
-	p.migrate(ctx)
 	var last string
 	for {
 		if err := p.poll(ctx); err != nil && err.Error() != last {
@@ -348,50 +369,6 @@ func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
 		p.covered = map[string]int64{}
-	}
-}
-
-// migrate is the chain-done migration's one pass, before the first
-// poll: every served repository's done cards the chain never confirmed
-// live move to merged, where the chain's facts drive them from then on
-// — their workflows completed done long before and past waking, so the
-// store is where they wait and end. Per-repository failures log and
-// leave the rest; a failed pass retries at the next restart.
-func (p *ChainPoller) migrate(ctx context.Context) {
-	p.once()
-	projects, err := p.Projects.Projects(ctx)
-	if err != nil {
-		log.Printf("chain poller: migration: the projects: %v", err)
-		return
-	}
-	for _, proj := range projects {
-		if !proj.Active() {
-			continue
-		}
-		serving, _, err := p.serves(ctx, proj)
-		if err != nil {
-			log.Printf("chain poller: migration: %s: %v", proj.Repository, err)
-			continue
-		}
-		if !serving {
-			continue
-		}
-		moved, err := p.Store.MigrateChainLimbo(ctx, proj.Repository)
-		if err != nil {
-			log.Printf("chain poller: migration: %s: %v", proj.Repository, err)
-			continue
-		}
-		for _, id := range moved {
-			if p.Timeline != nil {
-				if err := p.Timeline.Append(ctx, id, "chain", map[string]any{"state": "merged",
-					"reason": "moved to merged: the chain had not confirmed it live"}); err != nil {
-					log.Printf("chain poller: migration: %s: record %s: %v", proj.Repository, id, err)
-				}
-			}
-		}
-		if len(moved) > 0 {
-			log.Printf("chain poller: migration: %s: %d card(s) moved from the done limbo to merged", proj.Repository, len(moved))
-		}
 	}
 }
 
@@ -420,13 +397,45 @@ func (p *ChainPoller) poll(ctx context.Context) error {
 }
 
 // project serves one repository: its file's chain block read, its
-// workflow list watched, its chain recorded.
+// workflow list watched, its chain recorded and the done limbo that
+// recording answers moved — the migration runs after the record so the
+// very tick that writes a carry row spanning a factoryd-down gap also
+// moves the limbo cards it holds.
 func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 	serving, chain, err := p.serves(ctx, proj)
 	if err != nil || !serving {
 		return err
 	}
-	return p.record(ctx, proj, chain)
+	if err := p.record(ctx, proj, chain); err != nil {
+		return err
+	}
+	p.moveLimbo(ctx, proj.Repository)
+	return nil
+}
+
+// moveLimbo is the chain-done migration's pass over one repository:
+// its done cards the chain never confirmed live move to merged, where
+// the chain's facts drive them from then on — their workflows
+// completed done long before and past waking, so the store is where
+// they wait and end. Idempotent and near-free, it runs every tick; a
+// failure logs and leaves the rest to the next tick.
+func (p *ChainPoller) moveLimbo(ctx context.Context, repository string) {
+	moved, err := p.Store.MigrateChainLimbo(ctx, repository)
+	if err != nil {
+		log.Printf("chain poller: migration: %s: %v", repository, err)
+		return
+	}
+	for _, id := range moved {
+		if p.Timeline != nil {
+			if err := p.Timeline.Append(ctx, id, "chain", map[string]any{"state": "merged",
+				"reason": "moved to merged: the chain had not confirmed it live"}); err != nil {
+				log.Printf("chain poller: migration: %s: record %s: %v", repository, id, err)
+			}
+		}
+	}
+	if len(moved) > 0 {
+		log.Printf("chain poller: migration: %s: %d card(s) moved from the done limbo to merged", repository, len(moved))
+	}
 }
 
 // serves reads whether the poller serves proj's repository — its file's
@@ -473,14 +482,16 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 }
 
 // record writes the repository's chain: one row per pull request whose
-// change a new run carries, the run's status the row's, and the head row
-// of the newest run's commit. A run newer than the recorded head is
-// mapped once, its carry read from the compare against the run before
-// it; the first recording takes the newest run only, the runs before it
-// belong to the era before the chain was recorded. A run already
-// recorded only moves to a status it finished at; the head row is
-// written last, so the refresh of a concluded sibling cannot leave a
-// single run's status standing for the commit's verdict.
+// change a new run carries, and the head row of the newest run's
+// commit. Every row's status is its commit's verdict — the AND of the
+// runs and required contexts on that commit, the same value the head
+// row gets — so every reader of the rows (the coverage read, the
+// inform, the facts) inherits the required contexts. A run newer than
+// the recorded head is mapped once, its carry read from the compare
+// against the run before it; the first recording takes the newest run
+// only, the runs before it belong to the era before the chain was
+// recorded. A run already recorded only moves to a status it finished
+// at.
 func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.ChainConfig) error {
 	repo := proj.Repo()
 	runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
@@ -501,6 +512,20 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	if err != nil {
 		return err
 	}
+	verdicts := map[string]string{}
+	// verdictOf is sha's head verdict — the AND the head row writes —
+	// computed once per commit the pass writes a row of.
+	verdictOf := func(sha string) (string, error) {
+		if v, ok := verdicts[sha]; ok {
+			return v, nil
+		}
+		v, _, err := p.headVerdict(ctx, repo, cfg, seen, sha)
+		if err != nil {
+			return "", err
+		}
+		verdicts[sha] = v
+		return v, nil
+	}
 	main := seen
 	if head == 0 {
 		main = main[len(main)-1:] // the first recording: the newest only
@@ -509,7 +534,11 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	for _, run := range main {
 		if run.ID <= head {
 			if run.Finished() {
-				if err := p.Store.RefreshChainStatus(ctx, proj.Repository, run.CommitSHA, run.Status); err != nil {
+				v, err := verdictOf(run.CommitSHA)
+				if err != nil {
+					return err
+				}
+				if err := p.Store.RefreshChainStatus(ctx, proj.Repository, run.CommitSHA, v); err != nil {
 					return err
 				}
 			}
@@ -520,9 +549,15 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		if err != nil {
 			return err
 		}
-		for _, pr := range prs {
-			if err := p.Store.RecordChainRun(ctx, proj.Repository, pr.Number, run.CommitSHA, run.ID, run.Status); err != nil {
+		if len(prs) > 0 {
+			v, err := verdictOf(run.CommitSHA)
+			if err != nil {
 				return err
+			}
+			for _, pr := range prs {
+				if err := p.Store.RecordChainRun(ctx, proj.Repository, pr.Number, run.CommitSHA, run.ID, v); err != nil {
+					return err
+				}
 			}
 		}
 		prev = run.CommitSHA

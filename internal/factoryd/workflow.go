@@ -1428,6 +1428,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if st.Roll {
 				t.pr, t.rolling = st.PR, true
 			}
+			// the finish choke reads this prefix: the merge waits its chain
 			return t.finish("done", "pull request merged")
 		case st.Status == "closing":
 			return t.finish("failed", "completion resumed after an interrupted run")
@@ -2432,8 +2433,10 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict,
 	case err != nil:
 		return verdict{}, false, "the auto merge failed: " + errMessage(err)
 	case res.Merged && res.By != "":
+		// the finish choke reads this prefix: the merge waits its chain
 		return verdict{final: "done", reason: "pull request merged by " + res.By}, true, ""
 	case res.Merged:
+		// the finish choke reads this prefix: the merge waits its chain
 		return verdict{final: "done", reason: "pull request merged by factory-merge on the merge rule auto"}, true, ""
 	case res.Conflict && t.v23 >= versionMergeConflict:
 		return conflictVerdict(res.Refusal), true, ""
@@ -2559,8 +2562,10 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		switch {
 		case res.Merged && res.By != "":
+			// the finish choke reads this prefix: the merge waits its chain
 			return verdict{final: "done", reason: "pull request merged by " + res.By}
 		case res.Merged:
+			// the finish choke reads this prefix: the merge waits its chain
 			return verdict{final: "done", reason: "pull request merged by factory-merge after " + approver + "'s approval"}
 		case res.Failed != "" && t.v10 >= versionMergeRetryCap && failures >= maxMergeRetries:
 			if err := workflow.ExecuteActivity(t.short, ActivityReportMergeRetriesExhausted, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
@@ -3252,6 +3257,7 @@ func (t *taskRun) decide(name string, sig TaskSignal) (final, reason string, ok 
 	switch name {
 	case SignalPRMerged:
 		if t.counted(name, sig) {
+			// the finish choke reads this prefix: the merge waits its chain
 			return "done", "pull request merged", true
 		}
 	case SignalPRClosed:
@@ -3666,6 +3672,7 @@ func (t *taskRun) issueClosed() (final, reason string, findings []string) {
 		return "failed", ReasonIssueClosed + ReasonMergeUnknown + errMessage(err), nil
 	}
 	if merged {
+		// the finish choke reads this prefix: the merge waits its chain
 		return "done", "pull request merged", nil
 	}
 	return t.closedWithoutMerge(), ReasonIssueClosed + " without merge", nil
@@ -3699,6 +3706,7 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 	}
 	switch name {
 	case SignalPRMerged:
+		// the finish choke reads this prefix: the merge waits its chain
 		return "done", "pull request merged", nil
 	case SignalPRClosed:
 		return "failed", "pull request closed without merge", nil

@@ -21,9 +21,10 @@ import (
 // shaped it (nil on the older and unshaped rows); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
-// liveness warning. ChainState is the status of the newest main run that
-// carries the card's pull request ("" for none): a merged card reads it
-// as its chain word (roadmap 297), the chain's own fact, no roll in it.
+// liveness warning. ChainState is the verdict of the newest run that
+// carries the card's pull request ("" for none) — its commit's AND of
+// runs and required contexts: a merged card reads it as its chain word
+// (roadmap 297), the chain's own fact, no roll in it.
 // ChainLive is deployLive read as a column: whether the card's change runs
 // on the cluster — a green run covers it, it never opened a pull request,
 // or it finished before the chain began recording — the fact a finished
@@ -51,8 +52,8 @@ type BoardTask struct {
 // deploys it — or that no chain names at all and that finished before the
 // chain began recording runs (none recorded yet: every card, while none
 // is). A carry run with no green run at or after it keeps the card
-// waiting; the head row's status is the run's own AND every required
-// context, so coverage demands them too.
+// waiting; every row's status is its commit's verdict — the runs AND
+// the required contexts — so coverage demands them too.
 const deployLive = `(tasks.pr_number = 0
 	OR EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)
@@ -260,11 +261,11 @@ func byFinish(a, b Task) int {
 }
 
 // DeployLive is deployLive for the fakes: a card without a pull request,
-// or whose chain run went green or skipped — nothing to deploy — or that
-// no chain names and that arrived before the first chain the set records.
-// A chain that names it as not green keeps it waiting.
+// or whose chain verdict went green, or that no chain names and that
+// arrived before the first chain the set records. A chain that names it
+// as not green keeps it waiting.
 func DeployLive(tasks []BoardTask, t BoardTask) bool {
-	if t.PRNumber == 0 || t.ChainState == "success" || t.ChainState == "skipped" {
+	if t.PRNumber == 0 || t.ChainState == "success" {
 		return true
 	}
 	if t.ChainState != "" {
