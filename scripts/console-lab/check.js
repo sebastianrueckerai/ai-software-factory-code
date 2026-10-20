@@ -79,7 +79,7 @@ const mustHave = {
   quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
 
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
-    "model mix", "7 days", "28 days", "90 days"],
+    "spend by model", "served by", "7 days", "28 days", "90 days"],
 };
 
 async function seed(s) {
