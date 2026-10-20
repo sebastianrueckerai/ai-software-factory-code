@@ -384,6 +384,7 @@ type chainForgejo struct {
 	reruns    []string                                  // "repository run" of every re-run asked
 	comments  []string                                  // "repository#issue body" of every comment posted
 	closed    []string                                  // "repository#issue" of every issue closed
+	runReads  []string                                  // the repository of every run list read
 }
 
 func (f *chainForgejo) srv(t *testing.T) *Forgejo {
@@ -410,6 +411,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			if r.URL.Query().Get("event") != "push" {
 				t.Errorf("runs query %v", r.URL.Query())
 			}
+			f.runReads = append(f.runReads, repo)
 			reply(map[string]any{"workflow_runs": f.runs[repo]})
 		case strings.HasPrefix(p, "/git/commits/"):
 			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
@@ -2530,5 +2532,95 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 	slices.Sort(ended)
 	if want := []string{"t-12 run 61", "t-14 run 61"}; !slices.Equal(ended, want) {
 		t.Fatalf("ended %q, want %q", ended, want)
+	}
+}
+
+func (f *chainForgejo) readsOf(repo string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, r := range f.runReads {
+		if r == repo {
+			n++
+		}
+	}
+	return n
+}
+
+func waitReads(t *testing.T, f *chainForgejo, repo string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.readsOf(repo) < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: %d run reads, want %d", repo, f.readsOf(repo), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A nudge ticks the one repository it names at once, whatever the poll
+// interval; a repository no project names is ignored; nudges that pile
+// up while one is pending drop, and never block the sender.
+func TestANudgeTicksOneRepositoryNow(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}, demoRepo: {pushRun(21, demoCommit, "success")}}}
+	p, _ := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
+	p.Poll = time.Hour
+	for range 100 {
+		p.Nudge(demoRepo)
+	}
+	p.Nudge("sf/unknown")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { p.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	waitReads(t, f, codeRepo, 1)
+	waitReads(t, f, demoRepo, 2)
+	p.Nudge(codeRepo)
+	waitReads(t, f, codeRepo, 2)
+	if got := f.readsOf(demoRepo); got != 2 {
+		t.Fatalf("%s read %d times, want 2: 100 nudges while one is pending are one tick", demoRepo, got)
+	}
+	p.Nudge(demoRepo)
+	waitReads(t, f, demoRepo, 3)
+	if got := f.readsOf(codeRepo); got != 2 {
+		t.Fatalf("%s read %d times, want 2: a nudge ticks only its own repository", codeRepo, got)
+	}
+}
+
+type slowProjects struct {
+	ChainProjects
+	mu        sync.Mutex
+	in, depth int
+}
+
+func (s *slowProjects) Projects(ctx context.Context) ([]Project, error) {
+	s.mu.Lock()
+	s.in++
+	s.depth = max(s.depth, s.in)
+	s.mu.Unlock()
+	time.Sleep(time.Millisecond)
+	defer func() { s.mu.Lock(); s.in--; s.mu.Unlock() }()
+	return s.ChainProjects.Projects(ctx)
+}
+
+// The poller's caches assume one goroutine: a nudged tick and the
+// ticker's never overlap.
+func TestANudgedTickAndTheTickerNeverOverlap(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}}}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	slow := &slowProjects{ChainProjects: store}
+	p.Projects, p.Poll = slow, time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { p.Run(ctx); close(done) }()
+	for range 200 {
+		p.Nudge(codeRepo)
+		time.Sleep(100 * time.Microsecond)
+	}
+	cancel()
+	<-done
+	if slow.depth != 1 {
+		t.Fatalf("%d ticks ran at once, want 1", slow.depth)
 	}
 }

@@ -48,6 +48,9 @@ type Intake struct {
 	}
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
+	// Nudge is told of every workflow-run event with the run's
+	// repository: the chain poller's Nudge.
+	Nudge func(repository string)
 	// Metrics counts the answers among the comments; nil counts none.
 	Metrics *telemetry.Metrics
 	// Timeline records the events of the cards intake creates and moves;
@@ -147,6 +150,9 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		procErr = in.handlePullRequest(ctx, body)
 	case "push":
 		procErr = in.handlePush(ctx, body)
+	case "workflow_run_blocked", "workflow_run_cancelled", "workflow_run_failure", "workflow_run_running",
+		"workflow_run_skipped", "workflow_run_success", "workflow_run_waiting":
+		procErr = in.handleWorkflowRun(body)
 	default:
 		// an event type this factory does not act on yet: accepted so
 		// Forgejo's delivery list reads all 2xx, nothing to process
@@ -630,6 +636,23 @@ func (a pushAuthor) who() string { return cmp.Or(a.UserName, a.Name) }
 // handlePush hands a push to a repository's main to MainPushed, and one
 // to a document repository's master to the doc_written rows of its
 // outside changes.
+// handleWorkflowRun nudges the chain poller to tick the run's repository.
+// The poll stays the source of facts: the payload's status is not read.
+func (in *Intake) handleWorkflowRun(body []byte) error {
+	var p struct {
+		Run struct {
+			Repository webhookRepository `json:"repository"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(body, &p); err != nil {
+		return fmt.Errorf("decode workflow run: %w", err)
+	}
+	if in.Nudge != nil && p.Run.Repository.FullName != "" {
+		in.Nudge(p.Run.Repository.FullName)
+	}
+	return nil
+}
+
 func (in *Intake) handlePush(ctx context.Context, body []byte) error {
 	var p pushPayload
 	if err := json.Unmarshal(body, &p); err != nil {

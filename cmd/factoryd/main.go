@@ -378,6 +378,7 @@ func main() {
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
+	webhookIntake.Nudge = chainPoller.Nudge
 	go chainPoller.Run(ctx)
 	// the factory's own dependency health (roadmap 299): the provider seam
 	// is the control-plane probe alone, so a cloud switch stays one value

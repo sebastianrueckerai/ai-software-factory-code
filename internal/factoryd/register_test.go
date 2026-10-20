@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -39,6 +40,8 @@ type forgejoState struct {
 	team          []string // ci team members; nil: no team
 	fork          map[string]any
 	hooks         []map[string]any
+	lastEvents    []string // the events of the last hook edit
+	version       string   // the server's answer to /version; "": 15.0.9, "error": a 500
 	hookSecret    string
 	collabs       map[string]string
 	protection    map[string]map[string]any // branch -> its protection
@@ -131,6 +134,12 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		const repo = "/api/v1/repos/demo-app/demo-app"
 		p := r.URL.Path
 		switch {
+		case p == "/api/v1/version":
+			if s.version == "error" {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			fmt.Fprintf(w, `{"version":%q}`, cmp.Or(s.version, "15.0.9+gitea-1.22.0"))
 		case p == "/api/v1/repos/other/other": // a second project, not made yet
 			http.NotFound(w, r)
 		// the site admin's
@@ -295,6 +304,10 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			s.hooks = append(s.hooks, body)
 			w.WriteHeader(http.StatusCreated)
 		case p == repo+"/hooks/1" && r.Method == http.MethodPatch:
+			s.lastEvents = nil
+			for _, e := range body["events"].([]any) {
+				s.lastEvents = append(s.lastEvents, e.(string))
+			}
 			s.hookSecret = body["config"].(map[string]any)["secret"].(string)
 			w.WriteHeader(http.StatusOK)
 			io.WriteString(w, `{}`)
@@ -1905,4 +1918,66 @@ func TestReconcileAllMakesTheRows(t *testing.T) {
 	if strings.Contains(rig.logs.String(), "row: created") {
 		t.Fatalf("a second pass created a row again:\n%s", rig.logs)
 	}
+}
+
+func TestTheHookSubscribesToRunEventsOnlyOnForgejo17(t *testing.T) {
+	hookEvents := func(rig *registerRig) []string {
+		var out []string
+		for _, e := range rig.fj.hooks[0]["events"].([]any) {
+			out = append(out, e.(string))
+		}
+		return out
+	}
+	ctx := context.Background()
+	p := demoProject()
+
+	rig := newRegisterRig(t)
+	if _, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(hookEvents(rig), ProjectHookEvents) {
+		t.Fatalf("15 server: events %v, want today's list", hookEvents(rig))
+	}
+
+	rig.fj.version = "17.0.1+gitea-1.22.0"
+	rig.fj.hooks[0]["active"] = true
+	rig.fj.hooks[0]["config"].(map[string]any)["content_type"] = "json"
+	rig.fj.hooks[0]["events"] = anyStrings(ProjectHookEvents)
+	p.HookSecretHash = HashToken("hook-secret")
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Updated {
+		t.Fatalf("17 server: %v, %v; want the existing hook updated", c, err)
+	}
+	want := slices.Concat(ProjectHookEvents, RunHookEvents)
+	if got := rig.fj.lastEvents; !slices.Equal(got, want) {
+		t.Fatalf("17 server: patched events %v, want %v", got, want)
+	}
+
+	rig.fj.hooks[0]["events"] = anyStrings(want)
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged {
+		t.Fatalf("17 server, subscribed: %v, %v; want unchanged", c, err)
+	}
+
+	// a version read error leaves the subscription as it is, logged once
+	rig.fj.version = "error"
+	rig.logs.Reset()
+	for range 2 {
+		if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged {
+			t.Fatalf("version error: %v, %v; want unchanged", c, err)
+		}
+	}
+	if n := strings.Count(rig.logs.String(), "forgejo version"); n != 1 {
+		t.Fatalf("version error logged %d times, want once:\n%s", n, rig.logs.String())
+	}
+	rig.fj.hooks[0]["events"] = anyStrings(ProjectHookEvents)
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged {
+		t.Fatalf("version error, hook on 15's list: %v, %v; want unchanged", c, err)
+	}
+}
+
+func anyStrings(s []string) []any {
+	out := make([]any, len(s))
+	for i, v := range s {
+		out[i] = v
+	}
+	return out
 }

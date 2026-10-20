@@ -441,25 +441,77 @@ type ChainPoller struct {
 
 	pollMu sync.Mutex
 	polled map[string]time.Time // repository -> its last successful tick, read by the poll age gauge
+
+	nudgeMu sync.Mutex
+	nudged  map[string]bool // the repositories with a nudge pending
+	wake    chan struct{}
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
+// A nudge ticks its repository at once, in this same goroutine: the
+// caches below never see two ticks.
 func (p *ChainPoller) Run(ctx context.Context) {
 	p.once()
+	wake := p.wakeChan()
+	ticker := time.NewTicker(p.Poll)
+	defer ticker.Stop()
 	var last string
-	for {
-		if err := p.Tick(ctx); err != nil && err.Error() != last {
+	report := func(err error) {
+		if err != nil && err.Error() != last {
 			log.Printf("chain poller: %v", err)
 			last = err.Error()
 		} else if err == nil {
 			last = ""
 		}
+	}
+	report(p.Tick(ctx))
+	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(p.Poll):
+		case <-ticker.C:
+			report(p.Tick(ctx))
+		case <-wake:
+			for _, repository := range p.takeNudges() {
+				report(p.tickRepository(ctx, repository))
+			}
 		}
 	}
+}
+
+// Nudge asks the poller to tick repository now: the run webhook's
+// message that a run changed. The poll stays the source of facts; a nudge
+// only advances the next tick. It never blocks, and a nudge while one is
+// pending for the repository is dropped.
+func (p *ChainPoller) Nudge(repository string) {
+	wake := p.wakeChan()
+	p.nudgeMu.Lock()
+	if p.nudged == nil {
+		p.nudged = map[string]bool{}
+	}
+	p.nudged[repository] = true
+	p.nudgeMu.Unlock()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (p *ChainPoller) wakeChan() chan struct{} {
+	p.nudgeMu.Lock()
+	defer p.nudgeMu.Unlock()
+	if p.wake == nil {
+		p.wake = make(chan struct{}, 1)
+	}
+	return p.wake
+}
+
+func (p *ChainPoller) takeNudges() []string {
+	p.nudgeMu.Lock()
+	defer p.nudgeMu.Unlock()
+	out := slices.Sorted(maps.Keys(p.nudged))
+	clear(p.nudged)
+	return out
 }
 
 // once initialises the maps a pass keeps between polls.
@@ -488,23 +540,41 @@ func (p *ChainPoller) Tick(ctx context.Context) error {
 			continue
 		}
 		seen[proj.Repository] = true
-		p.polledSince(proj.Repository)
-		if err := p.project(ctx, proj); err != nil {
-			// one repository's failure stops no other's poll, and logs
-			// once until it recovers
-			if p.failed[proj.Repository] != err.Error() {
-				log.Printf("chain poller: %s: %v", proj.Repository, err)
-			}
-			p.failed[proj.Repository] = err.Error()
-			continue
-		}
-		delete(p.failed, proj.Repository)
-		p.polledNow(proj.Repository)
+		p.tickProject(ctx, proj)
 	}
 	p.pollMu.Lock()
 	maps.DeleteFunc(p.polled, func(repository string, _ time.Time) bool { return !seen[repository] })
 	p.pollMu.Unlock()
 	return nil
+}
+
+// tickRepository polls repository's chain once, the way Tick does; a
+// repository no active project names is ignored.
+func (p *ChainPoller) tickRepository(ctx context.Context, repository string) error {
+	p.once()
+	projects, err := p.Projects.Projects(ctx)
+	if err != nil {
+		return err
+	}
+	if i := slices.IndexFunc(projects, func(proj Project) bool { return proj.Active() && proj.Repository == repository }); i >= 0 {
+		p.tickProject(ctx, projects[i])
+	}
+	return nil
+}
+
+func (p *ChainPoller) tickProject(ctx context.Context, proj Project) {
+	p.polledSince(proj.Repository)
+	if err := p.project(ctx, proj); err != nil {
+		// one repository's failure stops no other's poll, and logs
+		// once until it recovers
+		if p.failed[proj.Repository] != err.Error() {
+			log.Printf("chain poller: %s: %v", proj.Repository, err)
+		}
+		p.failed[proj.Repository] = err.Error()
+		return
+	}
+	delete(p.failed, proj.Repository)
+	p.polledNow(proj.Repository)
 }
 
 // polledSince starts a repository's poll age at its first sight, so a

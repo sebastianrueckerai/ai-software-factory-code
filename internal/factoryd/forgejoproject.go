@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
+	"strings"
 	"time"
 )
 
@@ -616,4 +618,25 @@ func (f *Forgejo) DeletePushMirror(ctx context.Context, repo Repo, name string) 
 		return nil
 	}
 	return err
+}
+
+// MajorVersion is the Forgejo server's major version, from the version
+// endpoint, which needs no login.
+func (f *Forgejo) MajorVersion(ctx context.Context) (int, error) {
+	body, err := f.do(ctx, http.MethodGet, "/api/v1/version", nil, http.StatusOK, func(*http.Request) {})
+	if err != nil {
+		return 0, err
+	}
+	var res struct {
+		Version string `json:"version"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return 0, fmt.Errorf("forgejo version: %w", err)
+	}
+	major, _, _ := strings.Cut(strings.TrimPrefix(res.Version, "v"), ".")
+	n, err := strconv.Atoi(major)
+	if err != nil {
+		return 0, fmt.Errorf("forgejo version %q: no major number", res.Version)
+	}
+	return n, nil
 }

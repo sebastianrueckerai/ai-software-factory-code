@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -55,10 +56,11 @@ type ProjectKube interface {
 // environment (ruling 157). Every run logs one line per object: created,
 // updated, no change, or what it waits for.
 type Registrar struct {
-	Forgejo *Forgejo
-	Kube    ProjectKube
-	Store   ProjectStore
-	Policy  func() policy.Tree
+	versionFailed atomic.Bool
+	Forgejo       *Forgejo
+	Kube          ProjectKube
+	Store         ProjectStore
+	Policy        func() policy.Tree
 	// WebhookURL is factoryd's intake as Forgejo reaches it;
 	// WebhookSecret signs the deliveries.
 	WebhookURL, WebhookSecret string
@@ -163,6 +165,12 @@ var ProjectHookEvents = []string{"push", "issues", "issue_assign", "issue_label"
 	"pull_request", "pull_request_assign", "pull_request_label", "pull_request_milestone", "pull_request_comment",
 	"pull_request_review_approved", "pull_request_review_rejected", "pull_request_review_comment", "pull_request_sync",
 	"pull_request_review_request"}
+
+// RunHookEvents are the workflow-run events of Forgejo 17: a concluded
+// run nudges the chain poller. A running, waiting or blocked run changes
+// nothing the poller records as concluded, and the stall clock runs on
+// the poll, so they would only add deliveries and ticks.
+var RunHookEvents = []string{"workflow_run_success", "workflow_run_failure", "workflow_run_cancelled", "workflow_run_skipped"}
 
 // A project's Actions secrets: the registry login of its CI user, the
 // factory read token, the deploy key its main workflow pushes its roll
@@ -698,16 +706,17 @@ func (run *reconcileRun) webhook(ctx context.Context) (Change, error) {
 	}
 	secretHash := HashToken(run.r.WebhookSecret)
 	i := slices.IndexFunc(hooks, func(h Hook) bool { return h.Config.URL == run.r.WebhookURL })
+	events := run.r.hookEvents(ctx, hooks, i)
 	c, id := Created, int64(0)
 	if i >= 0 {
 		h := hooks[i]
 		if h.Active && h.Config.ContentType == "json" && run.p.HookSecretHash == secretHash &&
-			slices.Equal(slices.Sorted(slices.Values(h.Events)), slices.Sorted(slices.Values(ProjectHookEvents))) {
+			slices.Equal(slices.Sorted(slices.Values(h.Events)), slices.Sorted(slices.Values(events))) {
 			return Unchanged, nil
 		}
 		c, id = Updated, h.ID
 	}
-	if err := run.r.Forgejo.SaveProjectHook(ctx, repo, id, run.r.WebhookURL, run.r.WebhookSecret, ProjectHookEvents); err != nil {
+	if err := run.r.Forgejo.SaveProjectHook(ctx, repo, id, run.r.WebhookURL, run.r.WebhookSecret, events); err != nil {
 		return "", err
 	}
 	return c, run.r.Store.SetProjectTokens(ctx, run.p.Name, ProjectTokens{HookSecretHash: secretHash})
@@ -1570,4 +1579,27 @@ func (r *Registrar) stored(ctx context.Context, name string) (Project, error) {
 		err = fmt.Errorf("project %s: %w", name, ErrNotFound)
 	}
 	return p, err
+}
+
+// hookEvents are the events a project hook subscribes to: today's list,
+// and the workflow-run events once the server is Forgejo 17 or later. A
+// server whose version cannot be read leaves the subscription as it is:
+// the hook at hooks[i] keeps its events, a new hook gets today's list.
+func (r *Registrar) hookEvents(ctx context.Context, hooks []Hook, i int) []string {
+	major, err := r.Forgejo.MajorVersion(ctx)
+	switch {
+	case err != nil:
+		if !r.versionFailed.Swap(true) {
+			log.Printf("forgejo version: %v: hook events stay as they are", err)
+		}
+		if i >= 0 {
+			return hooks[i].Events
+		}
+		return ProjectHookEvents
+	case major >= 17:
+		r.versionFailed.Store(false)
+		return slices.Concat(ProjectHookEvents, RunHookEvents)
+	}
+	r.versionFailed.Store(false)
+	return ProjectHookEvents
 }

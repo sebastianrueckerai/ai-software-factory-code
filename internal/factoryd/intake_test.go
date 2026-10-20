@@ -2168,3 +2168,26 @@ func TestIntakeReadsAndDerivesTheRung(t *testing.T) {
 		}
 	}
 }
+
+// A finished run's webhook nudges the poller with the run's repository,
+// whichever workflow-run event it is; a bad signature nudges nothing.
+func TestAWorkflowRunEventNudgesThePoller(t *testing.T) {
+	in, _, _ := newTestIntake(t)
+	var got []string
+	in.Nudge = func(repository string) { got = append(got, repository) }
+	body := []byte(`{"action":"success","run":{"status":"success","repository":{"full_name":"sf/demo-app"}}}`)
+	if rr := postWebhook(in, "workflow_run_success", body, "bad"); rr.Code != http.StatusUnauthorized {
+		t.Fatalf("bad signature: %d", rr.Code)
+	}
+	if len(got) != 0 {
+		t.Fatalf("nudged by an unsigned delivery: %v", got)
+	}
+	for _, event := range []string{"workflow_run_success", "workflow_run_failure", "workflow_run_running"} {
+		if rr := postWebhook(in, event, body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: %d", event, rr.Code)
+		}
+	}
+	if !slices.Equal(got, []string{"sf/demo-app", "sf/demo-app", "sf/demo-app"}) {
+		t.Fatalf("nudges = %v", got)
+	}
+}
