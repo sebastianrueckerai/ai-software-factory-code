@@ -227,6 +227,9 @@ type webhookPullRequest struct {
 	Index  int64        `json:"number"`
 	Head   prBranchInfo `json:"head"`
 	Merged bool         `json:"merged"`
+	// MergeSHA is the commit the merge made on the base, when Merged: a
+	// human's merge records it here, as the queue's own merge does.
+	MergeSHA string `json:"merge_commit_sha"`
 }
 
 type reviewPayload struct {
@@ -1239,6 +1242,11 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	kind := "pull_request_closed"
 	if p.PullRequest.Merged {
 		kind = "pull_request_merged"
+		if p.PullRequest.MergeSHA != "" {
+			if err := in.Store.SetTaskMergeCommit(ctx, taskID, p.PullRequest.MergeSHA); err != nil {
+				log.Printf("task %s: record the merge commit: %v", taskID, err)
+			}
+		}
 	}
 	fresh, err := in.decide(ctx, taskID, kind, p.Sender.UserName, p.PullRequest.Index)
 	switch {

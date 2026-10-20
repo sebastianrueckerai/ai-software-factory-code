@@ -1286,7 +1286,7 @@ func prClosedBodyFrom(ref, headRepo string, merged bool) []byte {
 func prClosedBodyBy(ref, headRepo, sender string, merged bool) []byte {
 	b, _ := json.Marshal(map[string]any{
 		"action":       "closed",
-		"pull_request": map[string]any{"number": 5, "merged": merged, "head": prHead(ref, headRepo)},
+		"pull_request": map[string]any{"number": 5, "merged": merged, "merge_commit_sha": map[bool]string{true: "m-5", false: ""}[merged], "head": prHead(ref, headRepo)},
 		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
 		"sender":       map[string]string{"login": sender},
 	})
@@ -1308,6 +1308,11 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	}
 	if got := workflowsOf(in).signals; len(got) != 2 || got[0] != "t1 pr_merged sebastian #5: " || got[1] != "t1 pr_closed sebastian #5: " {
 		t.Fatalf("signals = %q, want pr_merged and pr_closed for the factory PR only", got)
+	}
+	// a human's merge records the merge commit the webhook carries, so the
+	// card's lead time reads like a queue merge's
+	if got := store.tasks["t1"].MergeCommit; got != "m-5" {
+		t.Fatalf("merge commit = %q, want m-5 from the merged webhook", got)
 	}
 }
 
