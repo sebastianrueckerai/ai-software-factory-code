@@ -735,6 +735,8 @@ type ConfigAlarm struct {
 	Dir  string
 	// Metrics counts the outcome of the tasks Resolve ends; nil counts none.
 	Metrics *telemetry.Metrics
+	// Timeline records the card's card_created and its ask; nil records none.
+	Timeline *Timeline
 }
 
 // Raise is PolicyLoader.Rejected. The alerts row, the dedupe key, is
@@ -757,18 +759,13 @@ func (a *ConfigAlarm) Raise(ctx context.Context, commit string, reason error, cu
 		stays = fmt.Sprintf("Version %d (commit %s) stays current.", current.ID, current.Commit)
 	}
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s", a.Forgejo.PublicURL, a.Repo, commit, a.Dir)
-	title := fmt.Sprintf("config: %s/ at %s rejected", a.Dir, short)
-	body := fmt.Sprintf("factoryd refused the configuration tree %s/ at commit %s (%s). %s\n\nReasons (`factoryd config check %s` shows the same):\n\n%s\n\n"+
-		"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue.\n\nfiled by factoryd",
-		a.Dir, commit, link, stays, a.Dir, fenced(reason.Error()))
-	t, ref, err := FileTask(ctx, a.Store, a.Forgejo, a.Repo, title, body, []string{"human"}, Task{
-		ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: commit,
-		Source: SourceConfig, Author: a.Forgejo.BotUser,
+	t, err := EscalateToHuman(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, configRejectedQuestion(a.Dir, short, link, stays, reason.Error()), "factoryd", Task{
+		SHA: commit, Source: SourceConfig,
 	})
 	if err != nil {
 		return err
 	}
-	return a.Store.SetAlertTask(ctx, row.ID, t.ID, map[string]any{"issue": ref.Number})
+	return a.Store.SetAlertTask(ctx, row.ID, t.ID, map[string]any{"issue": t.IssueNumber})
 }
 
 // ReadFailing is PolicyLoader.ReadFailing: an alerts row, judged real,

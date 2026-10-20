@@ -99,14 +99,13 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	}
 	switch files {
 	case policy.FilesHuman:
-		body := strings.TrimSpace(brief + "\n\n" + provenance)
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), HumanQuestion{Ask: rt.Title, Info: body}, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
-			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
+		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), routineQuestion(rt, brief, provenance), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser})
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		// a card that needs a person pokes under tell quiet too
-		return filed(t.ID, issue, fmt.Sprintf("#%d needs you: %s.", issue, rt.Title))
+		// the card's question_asked row pokes the inbox, tell quiet or not
+		return filed(t.ID, issue, "")
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)

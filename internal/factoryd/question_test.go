@@ -2,8 +2,10 @@ package factoryd
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -183,5 +185,52 @@ func TestQuestionFactsReportTheRaisedCapAndShare(t *testing.T) {
 	}
 	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
 		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
+	}
+}
+
+// Each human-card template asks one line under MaxAsk, fills its why and
+// info, and offers exactly its answers in order.
+func TestHumanCardQuestions(t *testing.T) {
+	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+	for name, tt := range map[string]struct {
+		q       HumanQuestion
+		ask     string
+		choices []QuestionChoice
+	}{
+		"alert": {alertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
+			"SigNoz fires the alert disk full on service db in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
+			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
+		"flux alert": {alertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
+			"Flux fires the alert stuck in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
+			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
+		"roll refused": {rollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
+			"roll abc1234 refused: gateway, worker not signed with the factory's key. Fix the signing, then close.",
+			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
+		"rerun": {rerunQuestion("abc1234", "ci / test", []string{"ci / test: lost"}),
+			"main is red at abc1234: re-run ci / test, its runner was lost.",
+			[]QuestionChoice{{AnswerClose, "Re-ran it, close"}}},
+		"config": {configRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
+			"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.",
+			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
+		"month cap": {monthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
+			"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?",
+			[]QuestionChoice{{AnswerPark, "Let it stand"}, {AnswerClose, "Decided, close"}}},
+		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov"),
+			"Bump the pins", []QuestionChoice{{AnswerClose, "Done"}}},
+		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian"),
+			"Two lines here", []QuestionChoice{{AnswerClose, "Done"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := tt.q
+			if q.Ask != tt.ask || len(q.Ask) > MaxAsk || strings.Contains(q.Ask, "\n") {
+				t.Errorf("ask = %q, want %q on one line under %d bytes", q.Ask, tt.ask, MaxAsk)
+			}
+			if q.Why == "" || q.Info == "" {
+				t.Errorf("why %q, info %q: want both filled", q.Why, q.Info)
+			}
+			if !reflect.DeepEqual(q.Choices, tt.choices) {
+				t.Errorf("choices = %+v, want %+v", q.Choices, tt.choices)
+			}
+		})
 	}
 }

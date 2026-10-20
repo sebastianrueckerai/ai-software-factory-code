@@ -230,20 +230,9 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		return fmt.Errorf("%s at %s has no month_eur line", policy.FilePolicy, v.Commit)
 	}
 	limit := v.Document.Budget.MonthEUR
-	refusal := ""
-	if m.Refusal != "" {
-		refusal = "\n\nThe first refusal:\n\n" + fenced(m.Refusal)
-	}
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s/%s#L%d", a.Forgejo.PublicURL, a.Repo, v.Commit, a.Dir, policy.FilePolicy, line)
-	title := fmt.Sprintf("budget: the month cap of %.2f EUR is reached (%s)", limit, m.Month)
-	body := fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) "+
-		"is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`, %s).\n\n"+
-		"The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; "+
-		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, "+
-		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
-	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
-		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, HumanQuestion{Ask: title, Info: body}, nil, t)
+	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: v.Commit, Source: SourceMonthCap, Author: a.Forgejo.BotUser}
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t)
 	if err != nil {
 		return err
 	}

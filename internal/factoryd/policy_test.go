@@ -702,7 +702,7 @@ func TestConfigAlarm(t *testing.T) {
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
-	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected\n\n", "commit c9c9c9c9c9c9c9c9 (https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory)",
+	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.\n\n", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
 		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])

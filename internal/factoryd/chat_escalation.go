@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"strings"
@@ -23,7 +24,7 @@ const SourceChat = "chat"
 func EscalateToHuman(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task) (Task, error) {
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, by string, card Task, labels ...string) (Task, error) {
 	via, asker := ViaChat, "agent"
 	footer := fmt.Sprintf("The project agent asked in %s's chat. Answer in the chat's inbox, or close this issue once decided.", by)
 	if card.Source != SourceChat {
@@ -32,8 +33,8 @@ func EscalateToHuman(ctx context.Context, store interface {
 	}
 	title, body := askTitle(q), questionBody(q, footer)
 	t := card
-	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = NewTaskID(), "human", "standard", title+"\n\n"+body, forgejo.BotUser
-	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, []string{"human"}, t)
+	t.ID, t.Kind, t.RiskClass, t.Objective, t.Author = cmp.Or(card.ID, NewTaskID()), "human", "standard", title+"\n\n"+body, forgejo.BotUser
+	t, _, err := FileTask(ctx, store, forgejo, repo, title, body, append([]string{"human"}, labels...), t)
 	if err != nil {
 		return Task{}, err
 	}

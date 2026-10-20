@@ -877,6 +877,11 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	} else if task.Lane != "" && task.Lane != policy.LaneBacklog {
 		in.keepLaneLabel(ctx, via, repo, issue.Index, names, task.Lane)
 	}
+	if task.Kind == "human" {
+		if err := recordAsk(ctx, in.Store, in.Timeline, task, issueQuestion(issue.Title, issue.Body, poster), "factoryd", "webhook", ViaFactoryd); err != nil {
+			return err
+		}
+	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index})
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)

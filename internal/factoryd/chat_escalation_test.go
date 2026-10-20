@@ -9,6 +9,21 @@ import (
 	"testing"
 )
 
+// A card with an ID files under it, and its labels follow human.
+func TestEscalateToHumanKeepsTheCardsIDAndLabels(t *testing.T) {
+	ctx := context.Background()
+	f, labels := fileStub(t)
+	store, rows := newFakeStore(), &fakeEventRecorder{}
+	got, err := EscalateToHuman(ctx, store, f, &Timeline{Store: store, Events: rows}, Repo{Owner: "sf", Name: "r"},
+		HumanQuestion{Ask: "Handle it?", Why: "w", Info: "i"}, "factoryd", Task{ID: "t-given", Source: SourceAlert}, "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "t-given" || store.tasks["t-given"].IssueNumber != 40 || !slices.Equal(*labels, []string{"human", "bug", "state/waiting-human"}) {
+		t.Fatalf("card %+v, tasks %v, labels %v", got, store.tasks, *labels)
+	}
+}
+
 // The chat's escalation: a human-lane card in Needs you as the bot, its
 // question fenced and its choices listed in the body, and the
 // question_asked row the inbox's poke reads (roadmap 239).

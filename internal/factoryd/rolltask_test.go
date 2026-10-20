@@ -871,17 +871,18 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	gw, worker := "sf/factory-gateway@"+sha256Of(gwNewIdx), "sf/opencode-worker@"+sha256Of(workerNewIdx)
-	title := "roll c1c1c1c refused: factoryd, gateway, worker not signed with the factory's key"
-	want := title + "\n\nMain CI's push run 412 of " + commitC1 + " (https://git.example/sf/ai-software-factory-code/actions/runs/412) is green, " +
-		"and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), " +
-		"and these do not:\n\n" +
+	ask := "roll c1c1c1c refused: factoryd, gateway, worker not signed with the factory's key. Fix the signing, then close."
+	want := ask + "\n\n```\n" + ask + "\n```\n\n" +
+		"Why: Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
+		"Info: The run: https://git.example/sf/ai-software-factory-code/actions/runs/412\n\n" +
 		"- factoryd: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
 		"- gateway: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
 		"- worker: " + worker + " carries no signature\n\n" +
 		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
 		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
-		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one." +
-		"\n\nfiled by factoryd"
+		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.\n\n" +
+		"Choices:\n- Fixed, close\n\n" +
+		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	if len(f.issues) != 1 || f.issues[0] != want {
 		t.Fatalf("issues %q, want one:\n%s", f.issues, want)
 	}
@@ -890,7 +891,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	}
 	req := store.rolls[0]
 	card := store.tasks[req.TaskID]
-	if req.SHA != commitC1 || req.RunID != 57 || req.State != RollRefused || req.Summary != title || !reflect.DeepEqual(req.Changes,
+	if req.SHA != commitC1 || req.RunID != 57 || req.State != RollRefused || req.Summary != ask || !reflect.DeepEqual(req.Changes,
 		map[string]string{"factoryd": sha256Of(gwNewIdx), "gateway": sha256Of(gwNewIdx), "worker": sha256Of(workerNewIdx)}) {
 		t.Fatalf("roll request %+v", req)
 	}
@@ -901,7 +902,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	if len(wf.started) != 0 || len(f.pulls) != 0 {
 		t.Fatalf("a roll ran: starts %v, pull requests %v", wf.started, f.pulls)
 	}
-	if !strings.Contains(logs.String(), "refused, human card "+card.ID+", issue #31: "+title) {
+	if !strings.Contains(logs.String(), "refused, human card "+card.ID+", issue #31: "+ask) {
 		t.Fatalf("log %q", logs.String())
 	}
 	if n := slices.Index(f.calls, "GET /v2/token"); n < 0 || slices.Contains(f.calls[n+1:], "GET /v2/token") {

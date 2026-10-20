@@ -73,7 +73,7 @@ func TestMonthAlarm(t *testing.T) {
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
-	for _, want := range []string{"budget: the month cap of 50.00 EUR is reached (2026-09)\n\n",
+	for _, want := range []string{"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
 		"refused_month_cap", "The first refusal:\n\n```\n" + proxyRefusal + "\n```"} {

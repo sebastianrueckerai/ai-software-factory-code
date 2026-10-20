@@ -142,6 +142,7 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -697,22 +698,26 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		AlertFingerprint: a.Fingerprint,
 		// factoryd files as the bot; the brief marks the text as telemetry
 		Author: in.Forgejo.BotUser}
-	var ref IssueRef
 	// A capacity alert goes to a human card even on a project with agents:
 	// a coding agent can only raise a limit, the decision needs evidence.
 	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
-		t.Kind = "human"
-		t, ref, err = FileTask(ctx, in.Store, in.Forgejo, repo, title, body, []string{"bug", "human"}, t)
+		why := "the project runs no agents"
+		if p.Agents != policy.AgentsNone {
+			why = "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
+		}
+		q := alertQuestion(a, p.Name, ns, why, body)
+		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
+		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, in.Timeline, repo, q, "factoryd", t, "bug")
 	} else {
-		t, ref, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
+		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
 	}
 	if err != nil {
 		return err
 	}
-	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": ref.Number, "repro_base": t.ReproBase}); err != nil {
-		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, ref.Number, err)
+	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": t.IssueNumber, "repro_base": t.ReproBase}); err != nil {
+		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, t.IssueNumber, err)
 	}
-	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
+	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, t.IssueNumber, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
 }
 
@@ -796,18 +801,27 @@ func alertService(labels map[string]string) string {
 	return oneLine(cmp.Or(labels["service"], labels["service.name"], labels["k8s.deployment.name"], labels["deployment"]))
 }
 
+// alertParts is what alert a is called: its name, " on service <s>" (empty
+// without a service) and its source, SigNoz or Flux.
+func alertParts(a SigNozAlert) (name, on, source string) {
+	name, source = oneLine(a.Labels["alertname"]), "SigNoz"
+	if fromFlux(a.Fingerprint) {
+		source = "Flux"
+	}
+	if s := alertService(a.Labels); s != "" {
+		on = " on service " + s
+	}
+	return name, on, source
+}
+
 // alertIssue is the bug issue of alert a: title "alert: <name> on
 // <service> in <ns>" (no "on" without a service) and a body with the
 // firing time, the SigNoz link, the value and annotations and the labels,
 // the values one line each inside fences. The text goes to Forgejo, so it
 // is sanitised Outbound: hosts is the links left unmangled.
 func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
-	name, on, source := oneLine(a.Labels["alertname"]), "", "SigNoz"
-	if fromFlux(a.Fingerprint) {
-		source = "Flux"
-	}
+	name, on, source := alertParts(a)
 	if s := alertService(a.Labels); s != "" {
-		on = " on service " + s
 		title = "alert: " + name + " on " + s + " in " + ns
 	} else {
 		title = "alert: " + name + " in " + ns

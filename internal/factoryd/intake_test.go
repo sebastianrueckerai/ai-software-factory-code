@@ -352,6 +352,14 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
 		t.Fatalf("labels = %v, want state/waiting-human", labels)
 	}
+	if len(store.intakeEvents) != 1 {
+		t.Fatalf("intake events = %+v, want the ask's one", store.intakeEvents)
+	}
+	if e, q := store.intakeEvents[0], store.intakeEvents[0].Question; e.TaskID != task.ID || e.Kind != IntakeEscalation || q == nil ||
+		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
+		!slices.Equal(q.Labels(), []string{"Done"}) {
+		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
+	}
 }
 
 // TestIntakeIssueOpenedLabelMirrorFailureIsLogOnly asserts a Forgejo hiccup

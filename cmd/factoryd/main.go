@@ -198,6 +198,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
+	configAlarm.Timeline = runner.Timeline()
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
 	hetznerCI := hcloud.New(mustSecret("HETZNER_CI_KEY"))

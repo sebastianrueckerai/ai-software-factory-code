@@ -660,7 +660,7 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	for _, task = range r.store.tasks {
 	}
 	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 ||
-		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
+		!slices.Equal(r.fj.labels[1], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
 	}
 }
@@ -698,11 +698,11 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	if gwTitle != "alert: 5xx rate above 5 % on factory-gateway in factory" ||
 		!strings.HasPrefix(gwBody, "factoryd: SigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
 			"Firing since 2026-09-28T20:01:29Z. SigNoz: hxxps://signoz[.]example/alerts/overview?ruleId=r-1\n\n") ||
-		chTitle != "alert: ClickHouse disk above 80 % on clickhouse in platform" ||
-		!strings.HasPrefix(chBody, "factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
+		chTitle != "SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in platform of ai-software-factory-infra since 2026-09-28T20:01:29Z: handle it, or wait for it to clear?" ||
+		!strings.Contains(chBody, "\n\nWhy: the project runs no agents\n\nInfo: factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
 		t.Fatalf("issues\n%s\n---\n%s", r.fj.issues[0], r.fj.issues[1])
 	}
-	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("labels %v", r.fj.labels)
 	}
 	byRepo := map[string]Task{}
@@ -1109,7 +1109,7 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	for _, a := range r.store.alertRows() {
 		rows[a.Fingerprint] = a
 	}
-	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "alert: ClickHouse disk above 80 % on clickhouse in platform\n\n") ||
+	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in platform of ai-software-factory-infra since ") ||
 		len(r.flows.started) != 0 || len(r.store.tasks) != 1 {
 		t.Fatalf("the push's first minutes: issues %q, started %v, %d tasks; want ClickHouse's alone, from before the push, no agent card",
 			r.fj.issues, r.flows.started, len(r.store.tasks))
@@ -1151,11 +1151,11 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T11:07:46Z")); err != nil {
 		t.Fatal(err)
 	}
-	want := "alert: Forgejo 5xx rate above 5 % on forgejo in forgejo\n\n" +
-		"factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
+	ask := "SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in forgejo of ai-software-factory-infra since 2026-10-15T10:48:00Z: handle it, or wait for it to clear?"
+	want := "Info: factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
 		"factoryd: SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in namespace forgejo of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T10:48:00Z."
-	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
+	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], ask+"\n\n") || !strings.Contains(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
 		len(r.store.tasks) != 2 || len(r.flows.started) != 0 {
 		t.Fatalf("the last window closed: issues %q on %v, %d tasks, started %v; want Forgejo's filed second on the infra repository:\n%s",
 			r.fj.issues, r.fj.repos, len(r.store.tasks), r.flows.started, want)
@@ -1208,17 +1208,21 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	want := "alert: HelmRelease signoz not settled in platform\n\n" +
-		"factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
+	ask := "Flux fires the alert HelmRelease signoz not settled in platform of ai-software-factory-infra since 2026-10-15T12:30:00Z: handle it, or wait for it to clear?"
+	want := ask + "\n\n```\n" + ask + "\n```\n\n" +
+		"Why: the project runs no agents\n\n" +
+		"Info: factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T12:30:00Z.\n\n" +
 		"Value and annotations:\n\n```\nvalue=Running 'upgrade' action with timeout of 5m0s\n" +
 		"action=find why Flux has not settled HelmRelease platform/signoz 30m0s after applying it, from its status and events; " +
 		"its window holds no alert any more. A cause outside the repository is a question for a human.\n" +
 		"applied=2026-10-15T12:00:00Z\n```\n\n" +
 		"Labels:\n\n```\nalertname=HelmRelease signoz not settled\nkind=HelmRelease\nname=signoz\nnamespace=platform\n```\n\n" +
-		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz"
+		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz\n\n" +
+		"Choices:\n- Wait for it to clear\n- Handled, close\n\n" +
+		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	if len(r.fj.issues) != 2 || r.fj.issues[1] != want || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
-		!slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+		!slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("the stuck rollout's alert: issues %q on %v, labels %v; want one human card on the infra repository:\n%s",
 			r.fj.issues, r.fj.repos, r.fj.labels[2], want)
 	}

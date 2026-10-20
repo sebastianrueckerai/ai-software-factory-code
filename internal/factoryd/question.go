@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The question's shape (the question-format concept): every question a
@@ -350,6 +353,105 @@ func stallQuestion(repository, sha string, since time.Time, pending []string, ca
 			{AnswerCheckAgain, "Check again"},
 			{AnswerDismiss, "Dismiss"},
 		},
+	}
+}
+
+// alertQuestion is the human card of alert a on project in namespace ns:
+// why says why no agent takes it, body is the alert's write-up.
+func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
+	name, on, source := alertParts(a)
+	return HumanQuestion{
+		Ask: fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s: handle it, or wait for it to clear?",
+			source, name, on, ns, project, stamp(a.StartsAt)),
+		Why:  why,
+		Info: body,
+		Choices: []QuestionChoice{
+			{AnswerPark, "Wait for it to clear"},
+			{AnswerClose, "Handled, close"},
+		},
+	}
+}
+
+// rollRefusedQuestion is the card of a green main CI run whose images the
+// roller will not roll: lines name each unsigned image and why.
+func rollRefusedQuestion(short string, names, lines []string, runURL string) HumanQuestion {
+	return HumanQuestion{
+		Ask: fmt.Sprintf("roll %s refused: %s not signed with the factory's key. Fix the signing, then close.", short, strings.Join(names, ", ")),
+		Why: "Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.",
+		Info: "The run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
+			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
+			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
+			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
+		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
+	}
+}
+
+// rerunQuestion is the card of a red main whose failed jobs lost their
+// runner: lost holds the jobs' records.
+func rerunQuestion(short, failed string, lost []string) HumanQuestion {
+	return HumanQuestion{
+		Ask: fmt.Sprintf("main is red at %s: re-run %s, its runner was lost.", short, failed),
+		Why: "Main CI's push run failed, but none of its steps did: each failed job lost its runner while it ran " +
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.",
+		Info: strings.Join(lost, "\n\n") + "\n\n" +
+			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
+			"result ends the pause, and factoryd closes this issue.",
+		Choices: []QuestionChoice{{AnswerClose, "Re-ran it, close"}},
+	}
+}
+
+// configRejectedQuestion is the card of a configuration tree dir factoryd
+// refused at commit short: stays says which version holds, link is the
+// tree, reasons the loader's refusal.
+func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuestion {
+	return HumanQuestion{
+		Ask: fmt.Sprintf("config: %s/ at %s rejected: fix the files and push.", dir, short),
+		Why: stays,
+		Info: "Reasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
+			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
+		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
+	}
+}
+
+// monthCapCardQuestion is the board card of the month cap reached at eur
+// of limit in month; refusal is the gateway's first refusal, if any.
+func monthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
+	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
+		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, " +
+		"like any setting: " + link + "\n\nClose this issue once decided."
+	if refusal != "" {
+		info += "\n\nThe first refusal:\n\n" + fenced(refusal)
+	}
+	return HumanQuestion{
+		Ask:  fmt.Sprintf("The month cap of %.2f EUR is reached (%s): raise it, or let the factory stand until the month ends?", limit, month),
+		Why:  fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`).", eur, limit),
+		Info: info,
+		Choices: []QuestionChoice{
+			{AnswerPark, "Let it stand"},
+			{AnswerClose, "Decided, close"},
+		},
+	}
+}
+
+// routineQuestion is the card a routine that files to a person puts: its
+// title the ask, its brief and provenance the info.
+func routineQuestion(rt policy.Routine, brief, provenance string) HumanQuestion {
+	return HumanQuestion{
+		Ask:     rt.Title,
+		Why:     "the routine " + rt.Name + " fired and files to a person",
+		Info:    brief + "\n\n" + provenance,
+		Choices: []QuestionChoice{{AnswerClose, "Done"}},
+	}
+}
+
+// issueQuestion is the card of an issue a person filed into the human
+// lane: the issue's title is the ask.
+func issueQuestion(title, body, poster string) HumanQuestion {
+	return HumanQuestion{
+		Ask:     textutil.Truncate(oneLine(title), MaxAsk),
+		Why:     "filed by " + poster + " into the human lane",
+		Info:    body,
+		Choices: []QuestionChoice{{AnswerClose, "Done"}},
 	}
 }
 
