@@ -9,9 +9,14 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+// labGates are the gates a task row names.
+var labGates = []string{factoryd.GateIntake, factoryd.GateSession, factoryd.GateChecks, factoryd.GatePolicy, factoryd.GateMigration,
+	factoryd.GateReproduction, factoryd.GateCriteria, factoryd.GateReview, factoryd.GateApproval, factoryd.GateMerge, factoryd.GateHuman,
+	factoryd.GateCommissioning, factoryd.GateScreening, factoryd.GateAudit, factoryd.GateProvider, factoryd.GateDependencies,
+	factoryd.GateMergeQueue}
 
 // labReply is one scripted answer of the model.
 type labReply []labChunk
@@ -77,8 +82,8 @@ func (j labSceneJSON) check(now time.Time) error {
 		if !slices.Contains(factoryd.Statuses, t.Status) {
 			return fmt.Errorf("task %s: status %q is none of %v", t.ID, t.Status, factoryd.Statuses)
 		}
-		if t.Gate != "" && !slices.Contains(manual.Gates, t.Gate) {
-			return fmt.Errorf("task %s: gate %q is none of %v", t.ID, t.Gate, manual.Gates)
+		if t.Gate != "" && !slices.Contains(labGates, t.Gate) {
+			return fmt.Errorf("task %s: gate %q is none of %v", t.ID, t.Gate, labGates)
 		}
 		if !slices.Contains(policy.LaneNames, t.Lane) {
 			return fmt.Errorf("task %s: lane %q is none of %v", t.ID, t.Lane, policy.LaneNames)
@@ -163,10 +168,22 @@ func TestLabSceneJSON(t *testing.T) {
 	}
 }
 
+func TestLabSceneJSONWaitingDeps(t *testing.T) {
+	var j labSceneJSON
+	body := `{"Tasks":[{"ID":"t-1","Status":"waiting-deps","Lane":"ready","Gate":"dependencies","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`
+	if err := json.Unmarshal([]byte(body), &j); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.check(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestLabSceneJSONRefuses(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct{ name, body, want string }{
 		{"status", `{"Tasks":[{"ID":"t-1","Status":"flying","Lane":"ready","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `status "flying"`},
+		{"gate", `{"Tasks":[{"ID":"t-1","Status":"running","Lane":"ready","Gate":"flying","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `gate "flying"`},
 		{"timeline", `{"Tasks":[{"ID":"t-1","Status":"running","Lane":"ready","CreatedAt":"2026-01-01T00:00:00Z"}]}`, `sessions/t-1/timeline.jsonl`},
 		{"future", fmt.Sprintf(`{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","CreatedAt":%q}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(time.Hour).Format(time.RFC3339)), "CreatedAt"},
 		{"parent", `{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","Parent":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `parent "t-9"`},
