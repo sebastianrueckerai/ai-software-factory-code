@@ -328,4 +328,7 @@ func TestMergedCardCommitsListsMergedCards(t *testing.T) {
 	if un, err = s.UncarriedMergedCards(ctx, "sf/r"); err != nil || len(un) != 0 {
 		t.Fatalf("UncarriedMergedCards = %v, %v, want none once t-a has a row", un, err)
 	}
+	if un, err = s.UncarriedMergedCards(ctx, "sf/other"); err != nil || !maps.Equal(un, map[string]int64{"m-e": 7}) {
+		t.Fatalf("UncarriedMergedCards of sf/other = %v, %v, want t-other: the row of pr 7 in sf/r is not its", un, err)
+	}
 }

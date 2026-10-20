@@ -567,9 +567,6 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		}
 		prev = run.CommitSHA
 	}
-	if err := p.recordLate(ctx, proj, seen, verdictOf); err != nil {
-		return err
-	}
 	newest := seen[len(seen)-1]
 	verdict, findings, err := p.headVerdict(ctx, repo, cfg, seen, newest.CommitSHA)
 	if err != nil {
@@ -579,6 +576,16 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		return err
 	}
 	p.watch(ctx, proj.Repository, newest.CommitSHA, verdict, cfg.Stall, newest, findings)
+	// the late path never gates the head, the watch or the reconciler
+	key := proj.Repository + " late"
+	if err := p.recordLate(ctx, proj, seen, verdictOf); err != nil {
+		if p.failed[key] != err.Error() {
+			log.Printf("chain poller: %s: late carry rows: %v", proj.Repository, err)
+		}
+		p.failed[key] = err.Error()
+	} else {
+		delete(p.failed, key)
+	}
 	return nil
 }
 
@@ -662,6 +669,9 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 				return err
 			}
 			delete(late, sha)
+			if len(late) == 0 {
+				return nil
+			}
 		}
 		prev = run.CommitSHA
 	}

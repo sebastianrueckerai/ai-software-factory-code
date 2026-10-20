@@ -265,12 +265,13 @@ type chainForgejo struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any               // repository -> its push runs, newest first
 	carries   map[string]map[string][]map[string]any    // repository -> compare base...head -> its commits
-	merged    map[string][]map[string]any               // repository -> its closed pull requests
+	merged    map[string][]map[string]any               // repository -> its merged pull requests, seeded as cards
 	statuses  map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
 	reads     []string                                  // "repository dir" of every workflow-list read
+	failing   map[string]bool                           // "base...head" compares that answer 500
 	compares  int                                       // the compare calls served
 }
 
@@ -304,6 +305,10 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case strings.HasPrefix(p, "/compare/"):
 			f.compares++
 			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
+			if f.failing[base+"..."+head] {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			reply(map[string]any{"commits": f.carries[repo][base+"..."+head]})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
@@ -1112,9 +1117,6 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 		carries: map[string]map[string][]map[string]any{
 			demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
 		},
-		merged: map[string][]map[string]any{
-			demoRepo: {{"number": 3, "merged": true, "merge_commit_sha": demoMerge}},
-		},
 		statuses: map[string]map[string][]map[string]string{
 			demoRepo: {demoCommit: {{"status": "failure", "context": "factory/roll"}}},
 		},
@@ -1126,7 +1128,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 		}}}
 	}
 	p.Workflows = &fakeWorkflows{}
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged"}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", MergeCommit: demoMerge}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1336,7 +1338,10 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", MergeCommit: "0c0c"}
 	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", MergeCommit: mergePR14}
 	ctx := context.Background()
-	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC2, 62, "success"); err != nil {
+	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC1, 61, "success"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Tick(ctx); err != nil {
@@ -1356,9 +1361,9 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
 		{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: "success"},
-		{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 14, sha: commitC1, run: 61, status: "success"},
 	}) {
-		t.Fatalf("chain %+v, want pr 12 at run 62, the head and pr 14 as they were", got)
+		t.Fatalf("chain %+v, want pr 12 at run 62, the head and pr 14 (its commit lies in run 62's range) as they were", got)
 	}
 	before := f.compares
 	if err := p.Tick(ctx); err != nil {
@@ -1366,5 +1371,85 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	}
 	if f.compares != before {
 		t.Fatalf("a third tick made %d compare calls for the pairs already compared (t-never stays uncarried)", f.compares-before)
+	}
+}
+
+// The late path never gates the main one: a compare it cannot make logs
+// once, and the head row is written and the covered card ended all the
+// same.
+func TestALateCompareFailureStopsNothingElse(t *testing.T) {
+	f := &chainForgejo{
+		runs:    map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
+		failing: map[string]bool{"parent-of-" + commitC1 + "..." + commitC1: true},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	var ended []string
+	p.End = func(ctx context.Context, taskID, final, reason string) error {
+		ended = append(ended, taskID)
+		return nil
+	}
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", MergeCommit: mergePR12}
+	store.tasks["t-cov"] = Task{ID: "t-cov", Repository: codeRepo, PRNumber: 20, Status: "merged", MergeCommit: "0c0c"}
+	ctx := context.Background()
+	for _, row := range []struct {
+		pr  int64
+		sha string
+		run int64
+	}{{20, commitC1, 61}, {0, commitC1, 61}} {
+		if err := store.RecordChainRun(ctx, codeRepo, row.pr, row.sha, row.run, "success"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	logs := captureLog(t)
+	f.carries = map[string]map[string][]map[string]any{codeRepo: {commitC1 + "..." + commitC2: {}}}
+	for range 2 {
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var head fakeChainRun
+	for _, c := range chainOf(store, codeRepo) {
+		if c.pr == 0 {
+			head = c
+		}
+	}
+	if head.run != 62 || head.sha != commitC2 {
+		t.Fatalf("head row %+v, want run 62", head)
+	}
+	if !slices.Equal(slices.Compact(ended), []string{"t-cov"}) {
+		t.Fatalf("ended %v, want t-cov covered by the green head", ended)
+	}
+	if n := strings.Count(logs.String(), "late carry rows"); n != 1 {
+		t.Fatalf("the late failure logged %d times over two ticks, want once: %s", n, logs.String())
+	}
+}
+
+// A restart empties the compare cache: the sweep stops at the run whose
+// range holds the last uncarried commit, comparing nothing after it.
+func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC1 + "..." + commitC1: {{"sha": "b0b0"}}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
+	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", MergeCommit: "b0b0"}
+	ctx := context.Background()
+	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.compares != 1 {
+		t.Fatalf("%d compare calls, want only the run 61's", f.compares)
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 20, sha: commitC1, run: 61, status: "success"},
+	}) {
+		t.Fatalf("chain %+v, want pr 20 at run 61", got)
 	}
 }

@@ -224,8 +224,8 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 
 // SettleRollRequests follows the roll tasks that ended: a done or merged
 // task's committed requests merged, and the ones folded in after its last
-// commit forgotten, so the next poll judges their images again; a task that ended
-// otherwise fails its requests; a request whose task or card never got
+// commit forgotten, so the next poll judges their images again; a task
+// that ended otherwise fails its requests; a request whose task or card never got
 // filed is forgotten. It returns the requests it settled, whose verdicts
 // the caller reports as commit statuses (roadmap 297).
 func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
@@ -828,7 +828,13 @@ func (r *Roller) summary(ctx context.Context, run ActionRun, changes, refs map[s
 	if len(merged) > 0 {
 		b.WriteString("\n\nMerged pull requests it carries:\n")
 		for _, p := range merged {
-			fmt.Fprintf(&b, "\n- #%d %s", p.Number, sanitize.Outbound(p.Title, hosts))
+			fmt.Fprintf(&b, "\n- #%d", p.Number)
+			pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, p.Number)
+			if err != nil {
+				log.Printf("roller: pull request #%d: title: %v", p.Number, err)
+				continue
+			}
+			fmt.Fprintf(&b, " %s", sanitize.Outbound(pr.Title, hosts))
 		}
 	}
 	return b.String(), nil
@@ -879,13 +885,9 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 		}
 	}
 	slices.Sort(numbers)
-	var prs []MergedPullRequest
-	for _, n := range numbers {
-		pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, n)
-		if err != nil {
-			return nil, nil, err
-		}
-		prs = append(prs, MergedPullRequest{Number: n, Title: pr.Title})
+	prs := make([]MergedPullRequest, len(numbers))
+	for i, n := range numbers {
+		prs[i].Number = n
 	}
 	return commits, prs, nil
 }
