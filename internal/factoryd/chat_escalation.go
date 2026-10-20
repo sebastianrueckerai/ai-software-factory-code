@@ -49,7 +49,7 @@ const MaxAsk = 200
 
 // askTitle is the ask on one line, cut at MaxAsk only as a guard.
 func askTitle(q HumanQuestion) string {
-	return textutil.Truncate(strings.Join(strings.Fields(q.Ask), " "), MaxAsk-len("…"))
+	return askOf(q.Ask, "")
 }
 
 // questionBody is a human card's issue body: the question's five parts in

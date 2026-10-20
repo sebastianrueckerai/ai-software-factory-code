@@ -96,7 +96,15 @@ func main() {
 	if err := metrics.Tasks(otelProviders.Analytics.Meter("factoryd")); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
-	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics}
+	objects := &factoryd.S3{
+		Endpoint:  mustEnv("S3_ENDPOINT"),
+		Region:    env("S3_REGION", "fsn1"),
+		Bucket:    mustEnv("S3_BUCKET"),
+		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
+		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
+	}
+	timeline := &factoryd.Timeline{Objects: objects, Metrics: metrics, Events: store, Store: store}
+	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics, Timeline: timeline}
 	// a ladder model outside the coder class would be refused mid-task
 	configSource := &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir}
 	policyLoader := &factoryd.PolicyLoader{
@@ -118,13 +126,6 @@ func main() {
 	ciQueue := factoryd.NewCIQueue(metrics)
 
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")}
-	objects := &factoryd.S3{
-		Endpoint:  mustEnv("S3_ENDPOINT"),
-		Region:    env("S3_REGION", "fsn1"),
-		Bucket:    mustEnv("S3_BUCKET"),
-		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
-		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
-	}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm, Metrics: metrics}
 	// the gateway-factoryd token: the gateway's escalation hand-over to
 	// factoryd, and factoryd's model calls on a task's account
@@ -180,6 +181,7 @@ func main() {
 		Leases:       cloudres.AgentStore(store.CloudResources()),
 		CIQueue:      ciQueue,
 		Metrics:      metrics,
+		Timeline:     timeline,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		// the worker's egress probe passes when these do not answer, so no
 		// session start needs them up
@@ -198,7 +200,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("runner: %v", err)
 	}
-	configAlarm.Timeline = runner.Timeline()
 	// build VMs live in the Hetzner CI project, which holds nothing else:
 	// the collector deletes whatever there the registry does not know
 	hetznerCI := hcloud.New(mustSecret("HETZNER_CI_KEY"))

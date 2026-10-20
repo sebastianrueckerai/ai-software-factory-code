@@ -356,13 +356,23 @@ func stallQuestion(repository, sha string, since time.Time, pending []string, ca
 	}
 }
 
+// askOf is an ask of head on one line and the fixed question tail: the
+// head is cut so the whole fits MaxAsk, the tail kept whole.
+func askOf(head, tail string) string {
+	head = strings.Join(strings.Fields(head), " ")
+	if len(head)+len(tail) <= MaxAsk {
+		return head + tail
+	}
+	return textutil.Truncate(head, max(MaxAsk-len(tail)-len("…"), 0)) + tail
+}
+
 // alertQuestion is the human card of alert a on project in namespace ns:
 // why says why no agent takes it, body is the alert's write-up.
 func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 	name, on, source := alertParts(a)
 	return HumanQuestion{
-		Ask: fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s: handle it, or wait for it to clear?",
-			source, name, on, ns, project, stamp(a.StartsAt)),
+		Ask: askOf(fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s",
+			source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, or wait for it to clear?"),
 		Why:  why,
 		Info: body,
 		Choices: []QuestionChoice{
@@ -376,7 +386,7 @@ func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 // roller will not roll: lines name each unsigned image and why.
 func rollRefusedQuestion(short string, names, lines []string, runURL string) HumanQuestion {
 	return HumanQuestion{
-		Ask: fmt.Sprintf("roll %s refused: %s not signed with the factory's key. Fix the signing, then close.", short, strings.Join(names, ", ")),
+		Ask: askOf(fmt.Sprintf("roll %s refused: %s", short, strings.Join(names, ", ")), " not signed with the factory's key. Fix the signing, then close."),
 		Why: "Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.",
 		Info: "The run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
 			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
@@ -390,7 +400,7 @@ func rollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 // runner: lost holds the jobs' records.
 func rerunQuestion(short, failed string, lost []string) HumanQuestion {
 	return HumanQuestion{
-		Ask: fmt.Sprintf("main is red at %s: re-run %s, its runner was lost.", short, failed),
+		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", short, failed), ", its runner was lost."),
 		Why: "Main CI's push run failed, but none of its steps did: each failed job lost its runner while it ran " +
 			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.",
 		Info: strings.Join(lost, "\n\n") + "\n\n" +
@@ -405,7 +415,7 @@ func rerunQuestion(short, failed string, lost []string) HumanQuestion {
 // tree, reasons the loader's refusal.
 func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuestion {
 	return HumanQuestion{
-		Ask: fmt.Sprintf("config: %s/ at %s rejected: fix the files and push.", dir, short),
+		Ask: askOf(fmt.Sprintf("config: %s/ at %s", dir, short), " rejected: fix the files and push."),
 		Why: stays,
 		Info: "Reasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
 			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
@@ -437,7 +447,7 @@ func monthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 // title the ask, its brief and provenance the info.
 func routineQuestion(rt policy.Routine, brief, provenance string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     rt.Title,
+		Ask:     askOf(rt.Title, ""),
 		Why:     "the routine " + rt.Name + " fired and files to a person",
 		Info:    brief + "\n\n" + provenance,
 		Choices: []QuestionChoice{{AnswerClose, "Done"}},
@@ -448,7 +458,7 @@ func routineQuestion(rt policy.Routine, brief, provenance string) HumanQuestion 
 // lane: the issue's title is the ask.
 func issueQuestion(title, body, poster string) HumanQuestion {
 	return HumanQuestion{
-		Ask:     textutil.Truncate(oneLine(title), MaxAsk),
+		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + " into the human lane",
 		Info:    body,
 		Choices: []QuestionChoice{{AnswerClose, "Done"}},

@@ -234,3 +234,22 @@ func TestHumanCardQuestions(t *testing.T) {
 		})
 	}
 }
+
+// A variable part of 300 bytes cuts the head, never the question tail,
+// and every ask is one line within the title's bound.
+func TestAsksFitTheTitle(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": long}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+	for name, tt := range map[string]struct{ ask, tail string }{
+		"alert":        {alertQuestion(alert, "shop", "prod", "w", "b").Ask, ": handle it, or wait for it to clear?"},
+		"roll refused": {rollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
+		"rerun":        {rerunQuestion("abc1234", long, []string{"l"}).Ask, ", its runner was lost."},
+		"config":       {configRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
+		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p").Ask, ""},
+		"issue":        {issueQuestion(long, "b", "p").Ask, ""},
+	} {
+		if len(tt.ask) > MaxAsk || strings.Contains(tt.ask, "\n") || !strings.HasSuffix(tt.ask, tt.tail) || !strings.Contains(tt.ask, "…") {
+			t.Errorf("%s: ask %q (%d bytes), want one line within %d, cut with the tail %q", name, tt.ask, len(tt.ask), MaxAsk, tt.tail)
+		}
+	}
+}
