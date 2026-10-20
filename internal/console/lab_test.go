@@ -332,6 +332,8 @@ type labScene struct {
 	// metrics is the figures the project's metrics page answers (round
 	// 13, C30); zero: every figure absent
 	metrics factoryd.MetricsReport
+	// costs is the costs page's ledger; nil gets labCosts of spend
+	costs *policy.Costs
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
@@ -675,7 +677,11 @@ func (r *rig) seedScene(s labScene) string {
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
 	r.mirrors.mu.Unlock()
-	r.ledger.costs = labCosts(now, s.spend, s.tasks)
+	if s.costs != nil {
+		r.ledger.costs = *s.costs
+	} else {
+		r.ledger.costs = labCosts(now, s.spend, s.tasks)
+	}
 	r.figures.SetMetrics(s.metrics)
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
