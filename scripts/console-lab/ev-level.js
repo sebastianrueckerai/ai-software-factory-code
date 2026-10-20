@@ -26,7 +26,10 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
       if (level === "manual") await pop.screenshot({ path: out + "/level-menu-" + theme + ".png" });
       await pop.locator('[data-lvl="' + level + '"]').click();
       await p.waitForTimeout(700);
-      await p.locator(".lvlctl").screenshot({ path: out + "/level-" + level.replace(" ", "-") + "-" + theme + ".png" });
+      // the lamp's halo reaches past the control's box: the shot takes a margin
+      const box = await p.locator(".lvlctl").boundingBox();
+      await p.screenshot({ path: out + "/level-" + level.replace(" ", "-") + "-" + theme + ".png",
+        clip: { x: box.x - 16, y: box.y - 16, width: box.width + 32, height: box.height + 32 } });
     }
     await ctx.close();
   }
