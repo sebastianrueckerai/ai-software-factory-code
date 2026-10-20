@@ -865,11 +865,11 @@ type rig struct {
 	events    *fakeEvents
 	chat      *fakeChat
 	// gateway is the lab's scripted model, nil in the tests
-	gateway *chatGateway
-	mirrors   *fakeMirrors
-	routines  *fakeRoutines
-	deps      *fakeDeps
-	figures   *fakeFigures
+	gateway  *chatGateway
+	mirrors  *fakeMirrors
+	routines *fakeRoutines
+	deps     *fakeDeps
+	figures  *fakeFigures
 	// repoWriters are the writers of each project's repository, which
 	// MayMove reads for a lane moved by writers
 	repoWriters map[string][]string

@@ -818,7 +818,7 @@ func (g *chatGateway) script(project string, replies []labReply) {
 				for _, c := range chunk.Call {
 					nameArgs = append(nameArgs, c[0], c[1])
 				}
-				lines = append(lines, call(calls, nameArgs...))
+				lines = append(lines, call(calls+1, nameArgs...))
 				calls += len(chunk.Call)
 			}
 		}
@@ -839,12 +839,12 @@ func say(s string) string {
 	return string(b)
 }
 
-// call is a chunk of tool calls, each name and arguments, at indexes 0, 1,
-// …, with ids call_<n>, n counting from first.
+// call is a chunk of tool calls, each name and arguments, with ids
+// call_<n>, n counting from first, at indexes n-1.
 func call(first int, nameArgs ...string) string {
 	var calls []any
 	for i := 0; i < len(nameArgs); i += 2 {
-		calls = append(calls, map[string]any{"index": i / 2, "id": fmt.Sprintf("call_%d", first+i/2), "type": "function",
+		calls = append(calls, map[string]any{"index": first - 1 + i/2, "id": fmt.Sprintf("call_%d", first+i/2), "type": "function",
 			"function": map[string]any{"name": nameArgs[i], "arguments": nameArgs[i+1]}})
 	}
 	b, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": map[string]any{"tool_calls": calls}}}})

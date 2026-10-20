@@ -203,14 +203,37 @@ func TestLabSceneJSONRefuses(t *testing.T) {
 func TestLabSceneChatReplies(t *testing.T) {
 	r, _, g := newChatRig(t)
 	g.lenient = true
-	g.script("nord-booking", []labReply{{{Say: "A waitlist, "}, {Say: "noted."}}})
+	g.script("nord-booking", []labReply{
+		{{Say: "A waitlist, "}, {Say: "noted."}},
+		{{Call: [][2]string{{"board", `{}`}}}, {Call: [][2]string{{"new_card", `{"title":"Waitlist"}`}}}},
+		{},
+	})
 	ck, s := r.loggedIn(t)
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"add a waitlist"}})
 	equal(t, "stream", []any{code, events}, []any{200, []string{`text {"text":"A waitlist, "}`, `text {"text":"noted."}`, `done {}`}})
-	rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 20)
 	if last := rows[len(rows)-1]; last.Role != "assistant" || last.Content != "A waitlist, noted." {
 		t.Fatalf("last row %+v, want the scripted answer", last)
 	}
+
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and a card?"}})
+	rows, _ = r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 20)
+	var names, args []string
+	for _, row := range rows {
+		if row.Role != "assistant" {
+			continue
+		}
+		for _, c := range row.ToolCalls {
+			names, args = append(names, c.Name), append(args, c.Arguments)
+		}
+	}
+	equal(t, "tool calls of the two chunks", []any{names[:2], args[:2]}, []any{[]string{"board", "new_card"}, []string{`{}`, `{"title":"Waitlist"}`}})
+
+	before := len(g.calls())
 	code, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
-	t.Logf("unscripted: %d %v", code, events)
+	equal(t, "unscripted stream", []any{code, events, len(g.calls()) - before}, []any{200, []string{`error {"message":"The model could not be reached; try again."}`}, 1})
+	rows, _ = r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 20)
+	if last := rows[len(rows)-1]; last.Role == "assistant" && last.Content != "" {
+		t.Fatalf("the unscripted turn left an assistant row %+v", last)
+	}
 }
