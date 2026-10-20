@@ -42,9 +42,9 @@ type BoardTask struct {
 	AnswersPending  int
 	ChainState      string
 	ChainLive       bool
-	// RollIssue is the issue of the roll task that carries the card's pull
-	// request in an opened request, or a merged one while the card is
-	// merged; 0 for none.
+	// RollID and RollIssue name the roll task that carries a merged card's
+	// pull request in an opened or merged request; "" and 0 for none.
+	RollID    string
 	RollIssue int64
 }
 
@@ -75,6 +75,9 @@ const chainCovers = `(EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.reposit
 	AND ` + chainGreen + `
 	   >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number))`
 
+// rollCarries is the SQL test that request rr lists the card's pull request.
+const rollCarries = `tasks.pr_number > 0 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[]`
+
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
 // kind and $2 the escalation alert's kind; the caller adds the WHERE.
 const boardTaskQuery = `SELECT ` + boardTaskColumns + boardTaskFrom
@@ -96,13 +99,13 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
 		        ORDER BY cr.run_id DESC LIMIT 1), ''),
 		        (` + deployLive + `),
-		        COALESCE((SELECT roll.issue_number FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
-		        WHERE tasks.pr_number > 0 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[]
-		        AND (rr.state = 'opened' OR rr.state = 'merged' AND tasks.status = 'merged')
-		        ORDER BY rr.created_at DESC LIMIT 1), 0)`
+		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
 
 const boardTaskFrom = `
-		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
+		 FROM tasks LEFT JOIN LATERAL (SELECT roll.id AS roll_id, roll.issue_number AS roll_issue FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
+		        WHERE tasks.status = 'merged' AND ` + rollCarries + ` AND rr.state IN ('opened', 'merged')
+		        ORDER BY rr.created_at DESC LIMIT 1) rl ON true
+		 LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
 		        WHERE e.task_id = tasks.id AND e.kind = $1 ORDER BY e.id DESC LIMIT 1) esc ON true`
 
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
@@ -110,7 +113,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive, &b.RollIssue)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive, &b.RollID, &b.RollIssue)...)
 	})
 	if err != nil {
 		return b, err
@@ -153,8 +156,7 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 // whose pull request one of them lists, by issue.
 func (s *PGStore) RollCarries(ctx context.Context, id string) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE EXISTS (SELECT 1 FROM roll_requests rr
-		WHERE rr.task_id = $1 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[])
-		AND tasks.pr_number > 0 ORDER BY tasks.issue_number, tasks.id`, id)
+		WHERE rr.task_id = $1 AND `+rollCarries+`) ORDER BY tasks.issue_number, tasks.id`, id)
 	if err != nil {
 		return nil, err
 	}

@@ -474,8 +474,8 @@ type card struct {
 	factoryd.Task
 	IssueURL string
 	PRURL    string
-	// RollURL is the issue of the roll a merged card waits for.
-	RollURL string
+	// RollID is the roll task a merged card waits for.
+	RollID  string
 	Reason  string   // an escalation's reason
 	Choices []string // the answers its agent offered, a button each
 	Capped  bool     // an escalated card at its session cap, which an answer grants a session
@@ -1840,9 +1840,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		fiveColumn(t, v.user))
 	if bt.Status == "merged" {
 		k.Stage = deployStage(bt.ChainState, bt.RollIssue)
-		if bt.RollIssue > 0 {
-			k.RollURL = fmt.Sprintf("%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/")+"/"+t.Repository, bt.RollIssue)
-		}
+		k.RollID = bt.RollID
 	}
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
@@ -3409,8 +3407,8 @@ func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k car
 		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
 	}
 	var out []related
-	if bt.RollIssue > 0 {
-		if roll, ok, err := c.cfg.Tasks.TaskByIssue(ctx, t.Repository, bt.RollIssue); err != nil {
+	if bt.RollID != "" {
+		if roll, ok, err := c.cfg.Tasks.Task(ctx, bt.RollID); err != nil {
 			return nil, err
 		} else if ok {
 			out = append(out, related{"blocked by", c.card(roll)})

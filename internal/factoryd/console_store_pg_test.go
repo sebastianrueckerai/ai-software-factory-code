@@ -447,11 +447,17 @@ func TestRollIssueOfAMergedCard(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("BoardTask %s = %v, %v", id, ok, err)
 		}
+		if (b.RollID != "") != (b.RollIssue > 0) {
+			t.Fatalf("RollID %q and RollIssue %d disagree", b.RollID, b.RollIssue)
+		}
 		return b.RollIssue
 	}
 	req("s1", "merged", "roll-old", 7)
 	if got := issue("t-a"); got != 1100 {
 		t.Fatalf("a merged card under a merged roll: RollIssue = %d, want 1100", got)
+	}
+	if b, _, _ := s.BoardTask(ctx, "t-a"); b.RollID != "roll-old" {
+		t.Fatalf("RollID = %q, want roll-old", b.RollID)
 	}
 	req("s2", "opened", "roll-new", 7, 9)
 	if got := issue("t-a"); got != 1162 {
@@ -475,8 +481,11 @@ func TestRollIssueOfAMergedCard(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'opened' WHERE sha = 's2'`); err != nil {
 		t.Fatal(err)
 	}
-	if got := issue("t-a"); got != 1162 {
-		t.Fatalf("an opened roll names even a done card: RollIssue = %d, want 1162", got)
+	if got := issue("t-a"); got != 0 {
+		t.Fatalf("an opened roll must not name a done card: RollIssue = %d, want 0", got)
+	}
+	if b, _, _ := s.BoardTask(ctx, "t-c"); b.RollID != "" {
+		t.Fatalf("t-c is in review, not merged: RollID = %q, want none", b.RollID)
 	}
 	carried, err := s.RollCarries(ctx, "roll-new")
 	if err != nil || len(carried) != 2 || carried[0].ID != "t-a" || carried[1].ID != "t-c" {

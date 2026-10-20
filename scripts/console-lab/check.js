@@ -320,7 +320,12 @@ async function text(page) {
       const merged = p.page.locator('#board [data-card="' + labID(623) + '"]');
       const word = merged.locator(".line2 .st a");
       if ((await word.count()) !== 1 || (await word.innerText()).trim() !== "blocked by roll #626") fails.push("quiet: the merged card's face does not read the linked word blocked by roll #626");
-      else if (!(await word.getAttribute("href")).endsWith("/issues/626")) fails.push("quiet: the roll word links " + (await word.getAttribute("href")) + ", not the roll's issue");
+      else if ((await word.getAttribute("href")) !== "#card=" + labID(626)) fails.push("quiet: the roll word links " + (await word.getAttribute("href")) + ", not the roll card's drawer");
+      else {
+        await word.click();
+        await p.page.waitForTimeout(600);
+        if (!(await p.page.locator("#drawer").innerText()).includes("roll 5e1f0a2")) fails.push("quiet: a click on the roll word does not open the roll card's drawer");
+      }
       const rollCol = await p.page.locator('#board section:has(h3:has-text("In progress")) [data-card="' + labID(626) + '"]').count();
       if (!rollCol) fails.push("quiet: the roll card is not in the In progress column");
     }

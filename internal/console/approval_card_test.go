@@ -123,13 +123,17 @@ func TestAMergedCardNamesItsRoll(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	card := func(id string, roll int64, state string) factoryd.BoardTask {
-		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "merged", Repository: "sf/code",
+		b := factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "merged", Repository: "sf/code",
 			PRNumber: 9, Objective: id + " change"}, ChainState: state, RollIssue: roll}
+		if roll > 0 {
+			b.RollID = "t-r"
+		}
+		return b
 	}
 	r.tasks.tasks = []factoryd.BoardTask{card("t-roll", 1162, "failure"), card("t-none", 0, "failure")}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	progress := col(t, body, "In progress")
-	want := `<span class="pill st-merged">merged</span> <span class="st st-merged"><a href="https://git.example/sf/code/issues/1162" target="_blank" rel="noopener">blocked by roll #1162</a></span>`
+	want := `<span class="pill st-merged">merged</span> <span class="st st-merged"><a href="#card=t-r">blocked by roll #1162</a></span>`
 	if !strings.Contains(progress, want) {
 		t.Errorf("In progress lacks %s:\n%s", want, progress)
 	}
@@ -162,7 +166,7 @@ func TestARollCardShowsOnTheBoard(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-roll", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Repository: "sf/code",
 			IssueNumber: 1162, Objective: "roll abc1234: factoryd, gateway, worker, ci-runner"}},
-		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "merged", Repository: "sf/code", IssueNumber: 7, PRNumber: 9, Objective: "feed page"}, RollIssue: 1162},
+		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "merged", Repository: "sf/code", IssueNumber: 7, PRNumber: 9, Objective: "feed page"}, RollID: "t-roll", RollIssue: 1162},
 	}
 	r.tasks.carries = map[string][]string{"t-roll": {"t-m"}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -176,5 +180,17 @@ func TestARollCardShowsOnTheBoard(t *testing.T) {
 	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
 	if !strings.Contains(drawer, `<span class="why">blocked by</span>`) || !strings.Contains(drawer, `hx-get="/cards/t-roll/drawer"`) {
 		t.Errorf("the merged card's drawer does not name its roll:\n%s", drawer)
+	}
+}
+
+// A filed roll task waits in Queued like any card.
+func TestAFiledRollCardIsQueued(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-roll", Kind: "agent", Source: factoryd.SourceRoll, Status: "queued",
+		Repository: "sf/code", IssueNumber: 1162, Objective: "roll abc1234: factoryd, gateway, worker, ci-runner"}}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if q := col(t, body, "Queued"); !strings.Contains(q, `data-card="t-roll"`) {
+		t.Fatalf("Queued lacks the filed roll card:\n%s", q)
 	}
 }

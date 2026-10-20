@@ -1289,7 +1289,7 @@ func quietScene(now time.Time) labScene {
 	roll.Source = factoryd.SourceRoll
 	merged := finished(labCard(now, 623, "merged", "ready", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
 	merged.PRNumber = 623
-	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollIssue: 626},
+	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollID: roll.ID, RollIssue: 626},
 		{Task: finished(labCard(now, 622, "done", "ready", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
 			"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)},
 		{Task: finished(labCard(now, 621, "done", "ready", 6*time.Hour, "Costs: the day cap line under the table",
