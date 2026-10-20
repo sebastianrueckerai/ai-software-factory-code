@@ -18,7 +18,7 @@ func TestChatDefaults(t *testing.T) {
 	}
 	want := ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 		Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
-			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
+			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 			"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 	if got := tree.Document.ChatOf(tree.Projects["linkshort"]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChatOf(linkshort) = %+v, want %+v", got, want)
@@ -57,9 +57,9 @@ func TestChatProjectBlockReplacesThePolicys(t *testing.T) {
 	}
 	for name, want := range map[string]ChatConfig{
 		"linkshort": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource",
-			"release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}},
-		"demo-app":                 {Model: Big, VisionModel: "vision", MonthlyEUR: 2.5, Confirm: AlwaysConfirm},
-		"ai-software-factory-code": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: append([]string{"new_card"}, AlwaysConfirm...)},
+			"release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "fund"}},
+		"demo-app":                 {Model: Big, VisionModel: "vision", MonthlyEUR: 2.5, Confirm: append(slices.Clone(AlwaysConfirm), "fund")},
+		"ai-software-factory-code": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: append(append([]string{"new_card"}, AlwaysConfirm...), "fund")},
 	} {
 		if got := tree.Document.ChatOf(tree.Projects[name]); !reflect.DeepEqual(got, want) {
 			t.Errorf("ChatOf(%s) = %#v, want %#v", name, got, want)
@@ -109,10 +109,10 @@ func TestChatConfirmSurvivesTheStoresJSON(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatal(err)
 	}
-	if got := back.Document.ChatOf(back.Projects["empty"]).Confirm; !reflect.DeepEqual(got, AlwaysConfirm) {
-		t.Fatalf("an empty confirm after the round trip = %#v, want the always-confirm set", got)
+	if got := back.Document.ChatOf(back.Projects["empty"]).Confirm; !reflect.DeepEqual(got, append(slices.Clone(AlwaysConfirm), "fund")) {
+		t.Fatalf("an empty confirm after the round trip = %#v, want the always-confirm set and fund", got)
 	}
-	if got := back.Document.ChatOf(back.Projects["absent"]).Confirm; !reflect.DeepEqual(got, append([]string{"new_card"}, AlwaysConfirm...)) {
+	if got := back.Document.ChatOf(back.Projects["absent"]).Confirm; !reflect.DeepEqual(got, append(append([]string{"new_card"}, AlwaysConfirm...), "fund")) {
 		t.Fatalf("an absent confirm after the round trip = %#v, want the policy's [new_card] and the always-confirm set", got)
 	}
 }

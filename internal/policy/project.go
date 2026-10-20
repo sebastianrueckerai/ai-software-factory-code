@@ -359,6 +359,11 @@ type ProjectBudget struct {
 	// TaskMaxEUR is the project's own maximum for one card, up to the
 	// policy's task_max_eur; absent: a large card's budget.
 	TaskMaxEUR float64 `yaml:"task_max_eur,omitempty" json:"task_max_eur,omitempty"`
+	// DiscretionaryEUR is the monthly pool the project agent funds cards
+	// from at autonomous and full auto; absent: no pool.
+	DiscretionaryEUR float64 `yaml:"discretionary_eur,omitempty" json:"discretionary_eur,omitempty"`
+	// RaiseMaxEUR is the most one fund call raises a card; absent: none.
+	RaiseMaxEUR float64 `yaml:"raise_max_eur,omitempty" json:"raise_max_eur,omitempty"`
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
@@ -538,6 +543,12 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.Budget != nil && p.Budget.MonthEUR < 0 {
 		bad("budget.month_eur must not be negative (0 stops the project's spend)")
+	}
+	if p.Budget != nil && (p.Budget.DiscretionaryEUR < 0 || p.Budget.RaiseMaxEUR < 0) {
+		bad("budget.discretionary_eur and budget.raise_max_eur must not be negative")
+	}
+	if b := p.Budget; b != nil && b.DiscretionaryEUR > 0 && b.RaiseMaxEUR <= 0 {
+		bad("budget.discretionary_eur %g needs budget.raise_max_eur above 0: every raise would refuse", b.DiscretionaryEUR)
 	}
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)

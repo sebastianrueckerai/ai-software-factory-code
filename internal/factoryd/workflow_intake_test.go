@@ -44,9 +44,9 @@ func TestAutoMerge(t *testing.T) {
 		"merge rule human":         {func(g *GateResults, _ *Review) { g.Policy.MergeRule = policy.MergeHuman }, false, "the project's merge rule is human"},
 		"no project row":           {func(g *GateResults, _ *Review) { g.Policy.MergeRule = "" }, false, "the project's merge rule is human"},
 		"normal requires approval": {func(g *GateResults, _ *Review) { g.Policy.Outcome = policy.OutcomeRequiresApproval }, false, "risk class normal is requires_approval"},
-		"class high": {func(g *GateResults, _ *Review) {
+		"class high, no audit": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "high", policy.OutcomeRequiresApproval
-		}, false, "risk class high is requires_approval"},
+		}, false, "risk class high: the audit must pass for a merge without a human"},
 		"class large": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome, g.Policy.Lines, g.Policy.LargeLines = policy.ClassLarge, policy.OutcomeRequiresApproval, 1200, 1000
 		}, false, "large change: 1200 lines over 1000; split it or accept it"},
@@ -82,7 +82,8 @@ func TestAutoMerge(t *testing.T) {
 		}, false, "did not find the change a strict improvement"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			ok, unmet := AutoMerge(with(tc.f))
+			g, rv := with(tc.f)
+			ok, unmet := AutoMerge(g, rv, "api")
 			if ok != tc.ok || (tc.ok && len(unmet) != 0) || (!tc.ok && (len(unmet) != 1 || !strings.Contains(unmet[0], tc.unmet))) {
 				t.Fatalf("AutoMerge = %v %q, want %v with one unmet condition containing %q", ok, unmet, tc.ok, tc.unmet)
 			}
@@ -91,7 +92,7 @@ func TestAutoMerge(t *testing.T) {
 	g, rv := with(func(g *GateResults, rv *Review) {
 		g.Policy.MergeRule, g.Reproduction, rv.Verdict = policy.MergeHuman, ReproResult{}, "concerns"
 	})
-	if ok, unmet := AutoMerge(g, rv); ok || len(unmet) != 3 {
+	if ok, unmet := AutoMerge(g, rv, "api"); ok || len(unmet) != 3 {
 		t.Fatalf("three unmet = %v %q, want all three named", ok, unmet)
 	}
 }

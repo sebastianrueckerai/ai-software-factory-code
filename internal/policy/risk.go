@@ -62,6 +62,9 @@ const (
 // ClassNormal is the one class outcome auto is allowed on.
 const ClassNormal = "normal"
 
+// ClassHigh is the class the policy names for protected files; at full auto it merges when the audit passes.
+const ClassHigh = "high"
+
 // ClassLarge is the built-in class of a pull request over LargeLines.
 const ClassLarge = "large"
 

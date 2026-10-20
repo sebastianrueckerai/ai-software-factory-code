@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
+	"math"
 	"slices"
 	"sync/atomic"
 	"time"
@@ -1148,6 +1150,106 @@ func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (
 		return 0, 0, ErrNotFound
 	}
 	return from, to, err
+}
+
+// Cents is eur in whole cents, the unit money compares in.
+func Cents(eur float64) int64 { return int64(math.Round(eur * 100)) }
+
+// FundBounds are the limits of a raise the agent decides: PoolEUR is the
+// month's pool and CardCapEUR the most the card's budget may reach.
+type FundBounds struct{ PoolEUR, CardCapEUR float64 }
+
+// PoolSpentError is FundCard's refusal of a raise the pool cannot cover:
+// Funded is what the month's pool has funded already.
+type PoolSpentError struct{ Funded float64 }
+
+func (e *PoolSpentError) Error() string {
+	return fmt.Sprintf("the month's pool has funded %.2f EUR already", e.Funded)
+}
+
+// CardCapError is FundCard's refusal of a raise past the card's cap: Budget
+// is what the card held when the raise met it.
+type CardCapError struct{ Budget float64 }
+
+func (e *CardCapError) Error() string {
+	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
+}
+
+// FundCard raises task id's budget by eur and writes e, the raise's
+// card_funded row with from_eur, to_eur and amount_eur added to its
+// detail, in one transaction. Non-nil bounds mark a raise the agent
+// decided: the row is stamped decider agent, which the pool counts, and
+// under a lock on e's repository the month's agent funding plus eur must
+// fit the pool (PoolSpentError) and the card's budget plus eur the cap
+// (CardCapError), so parallel turns overspend neither. ErrNotFound when
+// there is no such task.
+func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	limit := sql.NullInt64{}
+	if bounds != nil {
+		e.Detail["decider"] = "agent"
+		limit = sql.NullInt64{Int64: Cents(bounds.CardCapEUR), Valid: true}
+		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "agent-fund:"+e.Repository); err != nil {
+			return 0, 0, err
+		}
+		funded, err := agentFundedEUR(ctx, tx, e.Repository, time.Now())
+		if err != nil {
+			return 0, 0, err
+		}
+		if Cents(funded)+Cents(eur) > Cents(bounds.PoolEUR) {
+			return 0, 0, &PoolSpentError{Funded: funded}
+		}
+	}
+	err = tx.QueryRowContext(ctx,
+		`UPDATE tasks SET budget_eur = budget_eur + $2 WHERE id = $1
+		   AND ($3::bigint IS NULL OR round(budget_eur * 100) + $4::bigint <= $3::bigint)
+		 RETURNING (budget_eur - $2::numeric)::float8, budget_eur::float8`,
+		id, eur, limit, Cents(eur)).Scan(&from, &to)
+	if errors.Is(err, sql.ErrNoRows) {
+		var held float64
+		if err := tx.QueryRowContext(ctx, `SELECT budget_eur::float8 FROM tasks WHERE id = $1`, id).Scan(&held); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return 0, 0, ErrNotFound
+			}
+			return 0, 0, err
+		}
+		return 0, 0, &CardCapError{Budget: held}
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e, _, err = insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	s.publish(e)
+	return from, to, nil
+}
+
+// agentFundedEUR is the EUR the agent funded cards with in repository: the
+// card_funded events via chat decided by the agent, in the UTC calendar
+// month of month. A member's raise, confirmed or clicked, is not the pool's.
+func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month time.Time) (float64, error) {
+	var eur float64
+	err := q.QueryRowContext(ctx,
+		`SELECT COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8 FROM events
+		 WHERE repository = $1 AND kind = $2 AND via = $3 AND detail->>'decider' = 'agent'
+		   AND at >= date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		   AND at < (date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`,
+		repository, EventCardFunded, ViaChat, month).Scan(&eur)
+	return eur, err
 }
 
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL).

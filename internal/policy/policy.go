@@ -129,7 +129,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
+	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "ask", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}
@@ -143,7 +143,7 @@ var ChatVisionModels = []string{"vision"}
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
-		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
+		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
@@ -162,9 +162,9 @@ const (
 // level control and the inbox's poke on a change show it (C14).
 var AutonomyMeaning = map[string]string{
 	AutonomyManual:     "every action of the agent confirms, as today",
-	AutonomyAssisted:   "the agent starts and files ready work by itself; direction, money and merges still ask",
-	AutonomyAutonomous: "the chat's remaining confirms go off; merges follow the merge rule; direction and money still ask",
-	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money",
+	AutonomyAssisted:   "the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask",
+	AutonomyAutonomous: "the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask",
+	AutonomyFullAuto:   "autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool",
 }
 
 // AutonomyStates are the four states the level control offers (C14):
@@ -184,6 +184,10 @@ const DefaultBacklogCap = 8
 // card, as new_card files one.
 var assistedOff = []string{"new_card", "move_card", "start_plan", "accept_plan", "retry", "grant_session", "routine_run"}
 
+// fullAutoOff are the always-confirm tools that come off at full auto:
+// merges follow the rule, and the agent judges alerts and writes documents.
+var fullAutoOff = []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"}
+
 // AlwaysConfirm are the tools confirmed at every level: merges while the
 // rule is human, invites, the actions outside the project, and the
 // changes of the project's file: the level, the cap and the routines.
@@ -192,12 +196,12 @@ var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_ver
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
-// base as its files set it with the always-confirm set, assisted takes
+// base as its files set it with the always-confirm set and fund, assisted takes
 // the starts and filings off and keeps the always-confirm set, autonomous
 // keeps the always-confirm set only, with merges following the rule.
 func ConfirmFor(level, mergeRule string, base []string) []string {
 	ensure := func(list []string) []string {
-		for _, t := range AlwaysConfirm {
+		for _, t := range append(slices.Clone(AlwaysConfirm), "fund") {
 			if !slices.Contains(list, t) {
 				list = append(list, t)
 			}
@@ -209,7 +213,7 @@ func ConfirmFor(level, mergeRule string, base []string) []string {
 		return ensure(slices.DeleteFunc(slices.Clone(base), func(t string) bool { return slices.Contains(assistedOff, t) }))
 	case AutonomyAutonomous:
 		if mergeRule == MergeAuto {
-			return slices.DeleteFunc(slices.Clone(AlwaysConfirm), func(t string) bool { return t == "approve_merge" || t == "deny_merge" })
+			return slices.DeleteFunc(slices.Clone(AlwaysConfirm), func(t string) bool { return slices.Contains(fullAutoOff, t) })
 		}
 		return slices.Clone(AlwaysConfirm)
 	default:

@@ -19,9 +19,10 @@ func TestProjectBudgetBounded(t *testing.T) {
 		return files
 	}
 	for name, tc := range map[string]struct{ budget, want string }{
-		"negative": {"budget: {month_eur: -1}\n", "project demo-app: budget.month_eur must not be negative (0 stops the project's spend)"},
-		"looser":   {"budget: {month_eur: 60}\n", "project demo-app: budget.month_eur 60 is looser than policy.yaml's budget.month_eur 50"},
-		"empty":    {"budget: {}\n", "projects/demo-app.yaml: schema:"},
+		"negative":            {"budget: {month_eur: -1}\n", "project demo-app: budget.month_eur must not be negative (0 stops the project's spend)"},
+		"poolWithoutRaiseMax": {"budget: {month_eur: 10, discretionary_eur: 5}\n", "project demo-app: budget.discretionary_eur 5 needs budget.raise_max_eur above 0: every raise would refuse"},
+		"looser":              {"budget: {month_eur: 60}\n", "project demo-app: budget.month_eur 60 is looser than policy.yaml's budget.month_eur 50"},
+		"empty":               {"budget: {}\n", "projects/demo-app.yaml: schema:"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := ParseTree(with(tc.budget)); err == nil || !strings.Contains(err.Error(), tc.want) {
