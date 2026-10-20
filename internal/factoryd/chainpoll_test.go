@@ -224,6 +224,7 @@ type chainForgejo struct {
 	merged    map[string][]map[string]any               // repository -> its closed pull requests
 	statuses  map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
+	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
 	reads     []string                                  // "repository dir" of every workflow-list read
 }
@@ -237,7 +238,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
 		owner, rest, ok := strings.Cut(rest, "/")
 		name, after, ok2 := strings.Cut(rest, "/")
-		if !ok || !ok2 || owner == "" || name == "" {
+		if !ok || owner == "" || name == "" {
 			t.Errorf("call outside a repository: %s", r.URL.Path)
 			http.NotFound(w, r)
 			return
@@ -278,6 +279,10 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
 		case p == "/contents/.forgejo/workflows" || p == "/contents/.gitea/workflows":
+			if f.invisible[repo] {
+				http.NotFound(w, r)
+				return
+			}
 			f.reads = append(f.reads, repo+" "+p)
 			files, named := f.workflows[repo]
 			if !named {
@@ -288,6 +293,12 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				out = append(out, map[string]any{"name": name, "type": "file"})
 			}
 			reply(out)
+		case r.Method == "GET" && p == "":
+			if f.invisible[repo] {
+				http.NotFound(w, r)
+				return
+			}
+			reply(map[string]any{"name": repo})
 		default:
 			t.Errorf("unexpected call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
@@ -1238,5 +1249,52 @@ func TestChainStalledRaisesTheAlert(t *testing.T) {
 	}
 	if a := raised[0]; a.Fingerprint != demoRepo || a.Source != demoRepo || a.Detail["sha"] != demoCommit {
 		t.Fatalf("alert %+v, want the repository's fingerprint and the head sha named", a)
+	}
+}
+
+// A repository the projects token cannot see answers every call with a
+// 404, which reads exactly like a repository without workflows. The
+// chain must not mistake one for the other: an invisible repository is
+// a configuration fault — logged every poll, alerted once, never
+// cached — while a workflow-less one degrades once and falls silent.
+func TestChainPollerAlertsOnAnInvisibleRepository(t *testing.T) {
+	f := &chainForgejo{
+		invisible: map[string]bool{demoRepo: true},
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(61, commitC2, "success")},
+		},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	for range 2 {
+		if err := p.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := chainOf(store, demoRepo); len(got) != 0 {
+		t.Fatalf("chain of the invisible %s %+v, want nothing recorded", demoRepo, got)
+	}
+	if n := strings.Count(logs.String(), demoRepo+" is invisible"); n != 2 {
+		t.Fatalf("the invisible repository logged %d times, want every poll: %s", n, logs.String())
+	}
+	alerts := 0
+	for _, a := range store.alerts {
+		if a.Kind == AlertChainStalled && a.Source == demoRepo {
+			alerts++
+		}
+	}
+	if alerts != 1 {
+		t.Fatalf("the invisible repository raised %d chain_stalled alerts, want one deduped row", alerts)
+	}
+	if got := chainOf(store, codeRepo); len(got) != 2 {
+		t.Fatalf("chain of %s %+v, want the workflow-bearing repository recorded", codeRepo, got)
 	}
 }

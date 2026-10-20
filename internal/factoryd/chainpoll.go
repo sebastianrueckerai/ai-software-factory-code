@@ -461,10 +461,28 @@ func (p *ChainPoller) serves(ctx context.Context, proj Project) (bool, policy.Ch
 	return true, chain, nil
 }
 
+// RepoVisible reports whether the projects token can see repo at all:
+// a contents call answers 404 alike for a missing workflows directory
+// and a repository the token has no access to, and the two must not
+// read alike on the board.
+func (f *Forgejo) RepoVisible(ctx context.Context, repo Repo) (bool, error) {
+	_, err := f.projectsCall(ctx, http.MethodGet, "/api/v1/repos/"+repo.String(), nil, http.StatusOK)
+	switch {
+	case err == nil:
+		return true, nil
+	case errors.Is(err, ErrNotFound):
+		return false, nil
+	}
+	return false, err
+}
+
 // watching reads whether repository's pushes run a workflow at all,
-// once: a repository whose workflow list is empty has no chain to record
-// — PR-only CI and mode run cannot produce one — and degrades to none
-// for itself, noted once.
+// once: a repository whose workflow list is empty has no chain to
+// record — PR-only CI and mode run cannot produce one — and degrades
+// to none for itself, noted once. A repository whose list is empty
+// because the projects token cannot see it at all is no degradation:
+// a configuration fault, which logs every poll and alerts, and whose
+// verdict is never cached — access restored, the chain records.
 func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 	if watching, ok := p.watched[repo.String()]; ok {
 		return watching, nil
@@ -473,12 +491,27 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	watching := len(files) > 0
-	p.watched[repo.String()] = watching
-	if !watching {
-		log.Printf("chain poller: %s has no workflow: its chain degrades to none, nothing recorded", repo)
+	if len(files) > 0 {
+		p.watched[repo.String()] = true
+		return true, nil
 	}
-	return watching, nil
+	// an empty list is ambiguous: a repository without workflows and a
+	// repository the projects token cannot see answer alike. Ask the
+	// repository itself before degrading — an invisible one is a
+	// configuration fault, logged every poll and alerted once, never
+	// cached; silence is how it hides.
+	visible, err := p.Forgejo.RepoVisible(ctx, repo)
+	if err != nil {
+		return false, err
+	}
+	if !visible {
+		log.Printf("chain poller: %s is invisible to the projects token: the chain cannot record — restore the token's access (ruling 164)", repo)
+		p.raiseChainAlert(ctx, repo.String(), AlertChainStalled, map[string]any{"reason": "the projects token cannot see the repository"})
+		return false, nil
+	}
+	p.watched[repo.String()] = false
+	log.Printf("chain poller: %s has no workflow: its chain degrades to none, nothing recorded", repo)
+	return false, nil
 }
 
 // record writes the repository's chain: one row per pull request whose
