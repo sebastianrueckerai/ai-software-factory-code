@@ -1,0 +1,4 @@
+go: github.com/securego/gosec/v2@v2.29.0 requires go >= 1.25.0; switching to go1.26.9
+scripts/pg-test.sh go test -race -p 1 ./...
+scripts/pg-test.sh: line 31: initdb: command not found
+make: *** [Makefile:2: test] Error 127
