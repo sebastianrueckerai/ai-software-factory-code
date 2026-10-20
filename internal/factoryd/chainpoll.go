@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -410,15 +411,34 @@ func (p *ChainPoller) polledNow(repository string) {
 // are watched whether the repository is served or recording fails.
 func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 	serving, chain, err := p.serves(ctx, proj)
+	var cards uncarriedCards
 	if err == nil && serving {
-		if err = p.record(ctx, proj, chain); err == nil {
+		if err = p.record(ctx, proj, chain, &cards); err == nil {
 			p.reconcile(ctx, proj.Repository)
 		}
 	}
-	if chain.Stall > 0 {
-		p.uncarried(ctx, proj.Repository, chain.Stall)
-	}
+	p.uncarried(ctx, proj.Repository, cmp.Or(chain.Stall, policy.DefaultChainStall), &cards)
 	return err
+}
+
+// uncarriedCards is a tick's one read of a repository's merged cards
+// without a carry row: the late mapping takes from it the cards it gives
+// a row, and the alert watches what is left.
+type uncarriedCards struct {
+	cards  []Task
+	loaded bool
+}
+
+func (u *uncarriedCards) load(ctx context.Context, store ChainStore, repository string) error {
+	if u.loaded {
+		return nil
+	}
+	cards, err := store.UncarriedMerged(ctx, repository)
+	if err != nil {
+		return err
+	}
+	u.cards, u.loaded = cards, true
+	return nil
 }
 
 // uncarried raises chain_uncarried for every merged card of repository
@@ -427,18 +447,14 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 // run that never came — and resolves the alert of a card that gained a
 // row or left merged. The alert's own key holds it to one open row per
 // card.
-func (p *ChainPoller) uncarried(ctx context.Context, repository string, bound time.Duration) {
-	cards, err := p.Store.UncarriedMerged(ctx, repository)
-	if err != nil {
+func (p *ChainPoller) uncarried(ctx context.Context, repository string, bound time.Duration, read *uncarriedCards) {
+	if err := read.load(ctx, p.Store, repository); err != nil {
 		log.Printf("chain poller: %s: uncarried cards: %v", repository, err)
 		return
 	}
-	var standing []string
-	for _, c := range cards {
-		since := c.CreatedAt
-		if c.FinishedAt != nil {
-			since = *c.FinishedAt
-		}
+	standing := []string{}
+	for _, c := range read.cards {
+		since := *c.FinishedAt
 		if p.now().Sub(since) <= bound {
 			continue
 		}
@@ -520,10 +536,11 @@ func (f *Forgejo) RepoVisible(ctx context.Context, repo Repo) (bool, error) {
 // PR-only CI and mode run cannot produce one — and degrades to none for
 // itself, noted once, its list read again on every tick until it gains
 // a workflow. Only a workflow found is cached: a served repository is
-// never read again, so a failing read cannot unserve it. A repository whose list is empty
-// because the projects token cannot see it at all is no degradation:
-// a configuration fault, which logs every poll and alerts, and whose
-// verdict is never cached — access restored, the chain records.
+// never read again, so a failing read cannot unserve it. A repository
+// whose list is empty because the projects token cannot see it at all is
+// no degradation: a configuration fault, which logs every poll and
+// alerts, and whose verdict is never cached — access restored, the
+// chain records.
 func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 	if p.watched[repo.String()] {
 		return true, nil
@@ -569,7 +586,7 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 // only, the runs before it belong to the era before the chain was
 // recorded. A run already recorded only moves to a status it finished
 // at.
-func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.ChainConfig) error {
+func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.ChainConfig, uncarried *uncarriedCards) error {
 	repo := proj.Repo()
 	runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
 		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
@@ -650,7 +667,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	p.watch(ctx, proj.Repository, newest.CommitSHA, verdict, cfg.Stall, newest, findings)
 	// the late path never gates the head, the watch or the reconciler
 	key := proj.Repository + " late"
-	if err := p.recordLate(ctx, proj, seen, verdictOf); err != nil {
+	if err := p.recordLate(ctx, proj, seen, verdictOf, uncarried); err != nil {
 		if p.failed[key] != err.Error() {
 			log.Printf("chain poller: %s: late carry rows: %v", proj.Repository, err)
 		}
@@ -717,13 +734,12 @@ const chainRangesKept = 512
 // run of the window whose range holds the card's merge commit records
 // it, with the commit's verdict. Only a card without a row is written,
 // so no row moves, and nothing is read while no such card exists.
-func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error)) error {
-	cards, err := p.Store.UncarriedMerged(ctx, proj.Repository)
-	if err != nil {
+func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error), uncarried *uncarriedCards) error {
+	if err := uncarried.load(ctx, p.Store, proj.Repository); err != nil {
 		return err
 	}
 	late := map[string]int64{}
-	for _, c := range cards {
+	for _, c := range uncarried.cards {
 		if c.MergeCommit != "" {
 			late[c.MergeCommit] = c.PRNumber
 		}
@@ -750,6 +766,7 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 				return err
 			}
 			delete(late, sha)
+			uncarried.cards = slices.DeleteFunc(uncarried.cards, func(c Task) bool { return c.PRNumber == pr })
 			if len(late) == 0 {
 				return nil
 			}

@@ -51,12 +51,14 @@ type BoardTask struct {
 // sits at or after it, so a green run later than its own red carry
 // deploys it — or that no chain names at all and that finished before the
 // chain began recording runs (none recorded yet: every card, while none
-// is). A carry run with no green run at or after it keeps the card
+// is; a done card only — a merged one is live through coverage alone).
+// A carry run with no green run at or after it keeps the card
 // waiting; every row's status is its commit's verdict — the runs AND
 // the required contexts — so coverage demands them too.
 const deployLive = `(tasks.pr_number = 0
 	OR ` + chainCovers + `
-	OR NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
+	OR tasks.status = 'done'
+	   AND NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
 // chainGreen is the newest green run of the card's repository, 0 for none.

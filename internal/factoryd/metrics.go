@@ -331,10 +331,11 @@ func metricRevertedRefiled(ctx context.Context, db *sql.DB, repo string, w metri
 	return r, err
 }
 
-// metricTimeToRestore: alert to the fix card's finish, by fingerprint.
+// metricTimeToRestore: alert to the fix card's done, by fingerprint: a
+// merged fix card waits for the chain and has restored nothing yet.
 func metricTimeToRestore(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	const pair = ` FROM alerts a JOIN tasks ot ON ot.id = a.task_id
-		CROSS JOIN LATERAL (SELECT min(t.finished_at) AS fix FROM tasks t WHERE t.alert_fingerprint = a.fingerprint AND t.alert_fingerprint <> '' AND t.finished_at > a.raised_at) f
+		CROSS JOIN LATERAL (SELECT min(t.finished_at) AS fix FROM tasks t WHERE t.alert_fingerprint = a.fingerprint AND t.alert_fingerprint <> '' AND t.status = 'done' AND t.finished_at > a.raised_at) f
 		WHERE a.kind = 'alert' AND a.raised_at >= %s AND a.raised_at < $3 AND ot.repository = $1 AND f.fix IS NOT NULL`
 	const agg = `percentile_cont(0.5) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (f.fix - a.raised_at)) * 1000)`
 	return metricMedian(ctx, db, repo, w,

@@ -755,7 +755,7 @@ func insertTask(ctx context.Context, db interface {
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $28, $29::jsonb,
-         CASE WHEN $7 IN ('done', 'failed', 'closed') THEN COALESCE($16, now()) END)
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,

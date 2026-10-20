@@ -221,6 +221,13 @@ func (s *fakeStore) UncarriedMerged(ctx context.Context, repository string) ([]T
 			carried = carried || c.repo == repository && c.pr == t.PRNumber
 		}
 		if !carried {
+			if t.FinishedAt == nil { // the database stamps every merged row
+				now := time.Now()
+				if s.chainNow != nil {
+					now = s.chainNow()
+				}
+				t.FinishedAt = &now
+			}
 			out = append(out, t)
 		}
 	}
@@ -1488,9 +1495,16 @@ func TestAnUncarriedMergedCardAlertsAfterTheBound(t *testing.T) {
 	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
 	p.End = func(context.Context, string, string, string) error { return nil }
-	merged := clock.Add(-10 * time.Minute)
-	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "merged", MergeCommit: "f00d", FinishedAt: &merged}
-	store.tasks["t-unserved"] = Task{ID: "t-unserved", Repository: demoRepo, PRNumber: 3, Status: "merged", FinishedAt: &merged}
+	store.chainNow = p.Now
+	merged := clock
+	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: "f00d"}
+	store.tasks["t-unserved"] = Task{ID: "t-unserved", Repository: demoRepo, PRNumber: 3, Status: "in-review"}
+	for _, id := range []string{"t-served", "t-unserved"} {
+		if err := store.TransitionTask(context.Background(), id, []string{"in-review"}, "merged"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	clock = clock.Add(10 * time.Minute)
 	tick := func() {
 		t.Helper()
 		if err := p.Tick(context.Background()); err != nil {
@@ -1578,21 +1592,23 @@ func TestARepositoryThatGainsAWorkflowIsServed(t *testing.T) {
 	if got := chainOf(store, demoRepo); len(got) != 1 || got[0].run != 21 {
 		t.Fatalf("chain %+v, want the head row of run 21 once the repository has a workflow", got)
 	}
-	f.mu.Lock()
-	f.invisible = map[string]bool{demoRepo: true}
-	f.mu.Unlock()
-	if err := p.Tick(context.Background()); err != nil {
-		t.Fatal(err)
+	reads := func() int {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		return len(slices.DeleteFunc(slices.Clone(f.reads), func(r string) bool { return !strings.HasPrefix(r, demoRepo+" ") }))
 	}
+	served := reads()
 	f.mu.Lock()
-	f.invisible = nil
 	f.runs[demoRepo] = []map[string]any{pushRun(22, demoCommit, "success"), pushRun(21, demoCommit, "success")}
 	f.mu.Unlock()
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, demoRepo); len(got) != 1 || got[0].run != 22 {
-		t.Fatalf("chain %+v, want a served repository kept served through a failed read", got)
+		t.Fatalf("chain %+v, want the served repository to go on recording", got)
+	}
+	if n := reads(); n != served {
+		t.Fatalf("%d workflow-list reads after a served tick, want the %d it had: a served repository is never read again", n, served)
 	}
 }
 
@@ -1648,5 +1664,35 @@ func TestThePollAgeGaugeGrowsWhileThePollerIsDead(t *testing.T) {
 	clock = clock.Add(15 * time.Second)
 	if got := age(); got != 15 {
 		t.Fatalf("age 15 s after a new tick = %v, want 15", got)
+	}
+}
+
+// A project file whose chain block cannot run leaves its repository
+// unrecorded, but a card merged before the file broke still alerts
+// after the default stall bound.
+func TestAnUncarriedCardAlertsInARepositoryWhoseChainBlockIsBroken(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}}}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Mode: "sometimes"}},
+		}}}
+	}
+	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	store.chainNow = p.Now
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: codeRepo, PRNumber: 12, Status: "in-review"}
+	if err := store.TransitionTask(context.Background(), "t-x", []string{"in-review"}, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(policy.DefaultChainStall + time.Minute)
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, codeRepo); len(got) != 0 {
+		t.Fatalf("chain %+v, want the broken repository unrecorded", got)
+	}
+	if len(store.alerts) != 1 || store.alerts[0].Kind != AlertChainUncarried || store.alerts[0].Fingerprint != codeRepo+" t-x" {
+		t.Fatalf("alerts %+v, want one chain_uncarried for t-x", store.alerts)
 	}
 }

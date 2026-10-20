@@ -226,6 +226,8 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	must(`UPDATE tasks SET reverted_at = '2026-09-22T09:00Z' WHERE id = 'c5'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-x' WHERE id = 'c6'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-p' WHERE id = 'c5'`)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, alert_fingerprint) VALUES
+		('c8', 1, 0, 'merged', 'sf/code', 'agent', 'alert', '2026-10-07T08:30Z', '2026-10-07T09:00Z', 'fp-m')`)
 	must(`UPDATE tasks SET alert_fingerprint = '' WHERE id = 'c3'`)
 	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at) VALUES
 		('c7', 1, 0, 'running', 'sf/code', 'agent', 'webhook', '2026-10-05T08:00Z')`)
@@ -287,6 +289,7 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('alert', 'signoz', 'c2', '2026-10-04T12:00Z', NULL),     -- c2's refile, no fix task
 		('alert', 'signoz', 'c5', '2026-09-15T08:00Z', 'fp-p'),   -- prev: fixed 122 h later by c5
 		('alert', 'signoz', 'c3', '2026-10-07T13:30Z', ''),       -- empty fingerprint pairs with nothing
+		('alert', 'signoz', 'c6', '2026-10-07T08:00Z', 'fp-m'),   -- its fix card c8 is merged, waiting for the chain: no restore yet
 		('escalation', 'gate', 'c3', '2026-10-07T13:00Z', NULL),
 		('escalation', 'gate', 'c5', '2026-09-21T10:00Z', NULL),
 		('escalation', 'gate', 'o1', '2026-10-02T18:30Z', NULL)`)

@@ -400,10 +400,16 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
 	}
 	t.Status = to
-	if Final(to) {
+	if Final(to) || to == "merged" {
 		now := time.Now()
-		s.finished[id] = now
-		t.FinishedAt, t.Gate, t.GateSince = &now, "", nil
+		if s.chainNow != nil {
+			now = s.chainNow()
+		}
+		t.FinishedAt = &now
+		if Final(to) {
+			s.finished[id] = now
+			t.Gate, t.GateSince = "", nil
+		}
 	}
 	s.tasks[id] = t
 	return nil
