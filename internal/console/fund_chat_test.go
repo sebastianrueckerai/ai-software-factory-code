@@ -152,3 +152,71 @@ func TestFundFillsThePoolExactly(t *testing.T) {
 		t.Fatalf("fund of the pool's last 0.2: %v", err)
 	}
 }
+
+const needRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.900000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
+
+func needRig(t *testing.T) *rig {
+	r := fundRig(t)
+	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
+	return r
+}
+
+func answerFund(t *testing.T, r *rig, via string) (string, error) {
+	t.Helper()
+	_, s := r.loggedIn(t)
+	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) {
+		if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
+			return "", nil
+		}
+		return needRefusal, nil
+	}
+	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", "the fix is in", factoryd.AnswerFund)
+}
+
+// The chat answer's fund value is a chat-attributed raise: it meets the
+// pool, raise_max_eur and the card cap as the fund tool does.
+func TestChatAnswerFundPastThePoolRefusesAndChangesNothing(t *testing.T) {
+	r := needRig(t)
+	r.tasks.fundedEUR = 2.5
+	_, err := answerFund(t, r, factoryd.ViaChat)
+	var no *refusal
+	if !errors.As(err, &no) || !strings.Contains(no.msg, "discretionary_eur") {
+		t.Fatalf("answer fund past the pool = %v, want a refusal naming discretionary_eur", err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || len(r.events.rows) != 0 || len(r.fg.comments) != 0 {
+		t.Errorf("budget %v, %d rows, %d comments after the refusal, want 2, none, none", task.BudgetEUR, len(r.events.rows), len(r.fg.comments))
+	}
+}
+
+func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
+	r := needRig(t)
+	if _, err := answerFund(t, r, factoryd.ViaChat); err != nil {
+		t.Fatalf("answer fund: %v", err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
+		t.Errorf("budget_eur = %v, want 2.9", task.BudgetEUR)
+	}
+	funded := 0
+	for _, e := range r.events.rows {
+		if e.Kind == factoryd.EventCardFunded {
+			funded++
+			if e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 0.9 {
+				t.Errorf("the card_funded row = %+v", e)
+			}
+		}
+	}
+	if funded != 1 {
+		t.Errorf("%d card_funded rows, want 1", funded)
+	}
+}
+
+// The board's answer keeps no pool: the member's own money.
+func TestBoardAnswerFundIgnoresThePool(t *testing.T) {
+	r := needRig(t)
+	r.tasks.fundedEUR = 2.95
+	if _, err := answerFund(t, r, factoryd.ViaButton); err != nil {
+		t.Fatalf("board answer fund: %v", err)
+	}
+}

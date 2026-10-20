@@ -984,7 +984,14 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
 		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
-			return c.doFund(ctx, a, id, need, text, nil)
+			if a.via != factoryd.ViaChat {
+				return c.doFund(ctx, a, id, need, text, nil)
+			}
+			p, ok, err := c.projectAt(ctx, t.Repository)
+			if err != nil || !ok {
+				return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+			}
+			return c.fundWithinBounds(ctx, a, p.Name, id, need, text)
 		}
 		return "", refuse(http.StatusConflict, "this answer needs the Fund form on the card: name the amount")
 	}

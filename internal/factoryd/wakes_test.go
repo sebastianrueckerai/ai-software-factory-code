@@ -579,7 +579,7 @@ func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
 			t.Fatal(err)
 		}
 		calls := starter.recorded()
-		if len(calls) != 1 || strings.Contains(calls[0].text, "fund") != tc.want {
+		if len(calls) != 1 || strings.Contains(calls[0].text, "takes fund from your pool.") != tc.want {
 			t.Errorf("approvers %v at %s: wake %+v, want fund named %v", tc.approvers, tc.autonomy, calls, tc.want)
 		}
 	}

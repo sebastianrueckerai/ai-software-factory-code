@@ -1680,19 +1680,25 @@ func (t *turn) systemText() (string, error) {
 // transaction, so parallel turns cannot overspend it. Money compares in
 // cents.
 func (t *turn) fund(in toolInput) (string, error) {
-	ctx := t.r.Context()
-	if _, err := t.c.accessToken(ctx, t.a.s); err != nil {
+	return t.c.fundWithinBounds(t.r.Context(), t.a, t.p.Name, in.TaskID, in.EUR, in.Text)
+}
+
+// fundWithinBounds is every chat-attributed raise: the fund tool's and the
+// chat answer's fund value.
+func (c *Console) fundWithinBounds(ctx context.Context, a actor, project, id string, eur float64, text string) (string, error) {
+	in := toolInput{TaskID: id, EUR: eur, Text: text}
+	if _, err := c.accessToken(ctx, a.s); err != nil {
 		return "", refuse(http.StatusConflict, "the member's login has lapsed: the answer cannot be posted; record your analysis with attach_analysis")
 	}
-	v, ok := t.c.inForce(ctx)
+	v, ok := c.inForce(ctx)
 	if !ok {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
 	}
 	var b policy.ProjectBudget
-	if pb := v.Projects[t.p.Name].Budget; pb != nil {
+	if pb := v.Projects[project].Budget; pb != nil {
 		b = *pb
 	}
-	card, err := t.c.cardIn(ctx, t.a, in.TaskID)
+	card, err := c.cardIn(ctx, a, in.TaskID)
 	if err != nil {
 		return "", err
 	}
@@ -1709,7 +1715,7 @@ func (t *turn) fund(in toolInput) (string, error) {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the member can make a sizing exception.",
 			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
-	return t.c.doFund(ctx, t.a, in.TaskID, in.EUR, in.Text, &b.DiscretionaryEUR)
+	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &b.DiscretionaryEUR)
 }
 
 // poolSpent is the refusal of a raise past the month's pool.
