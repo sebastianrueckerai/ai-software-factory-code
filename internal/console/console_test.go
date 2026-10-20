@@ -864,6 +864,8 @@ type rig struct {
 	sessions  *fakeSessions
 	events    *fakeEvents
 	chat      *fakeChat
+	// gateway is the lab's scripted model, nil in the tests
+	gateway *chatGateway
 	mirrors   *fakeMirrors
 	routines  *fakeRoutines
 	deps      *fakeDeps

@@ -3,6 +3,7 @@ package console
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 	"testing"
@@ -67,7 +68,7 @@ func (j labSceneJSON) scene() labScene {
 		objects: j.Objects, events: j.Events, chat: j.Chat, proposals: j.Proposals, usedProposals: j.UsedProposals,
 		spend: j.Spend, chatSpend: j.ChatSpend, github: j.GitHub, alerts: j.Alerts, drawer: j.Drawer, autonomy: j.Autonomy,
 		seen: j.Seen, working: j.Working, inbox: j.Inbox, open: j.Open, archived: j.Archived, routines: j.Routines,
-		runs: j.Runs, routinesAt: j.RoutinesAt, metrics: j.Metrics}
+		runs: j.Runs, routinesAt: j.RoutinesAt, metrics: j.Metrics, replies: j.Replies}
 }
 
 // check refuses a scene the console never holds: a status, gate or lane
@@ -197,4 +198,19 @@ func TestLabSceneJSONRefuses(t *testing.T) {
 			t.Errorf("%s: err %v, want %q in it", tc.name, err, tc.want)
 		}
 	}
+}
+
+func TestLabSceneChatReplies(t *testing.T) {
+	r, _, g := newChatRig(t)
+	g.lenient = true
+	g.script("nord-booking", []labReply{{{Say: "A waitlist, "}, {Say: "noted."}}})
+	ck, s := r.loggedIn(t)
+	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"add a waitlist"}})
+	equal(t, "stream", []any{code, events}, []any{200, []string{`text {"text":"A waitlist, "}`, `text {"text":"noted."}`, `done {}`}})
+	rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	if last := rows[len(rows)-1]; last.Role != "assistant" || last.Content != "A waitlist, noted." {
+		t.Fatalf("last row %+v, want the scripted answer", last)
+	}
+	code, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	t.Logf("unscripted: %d %v", code, events)
 }

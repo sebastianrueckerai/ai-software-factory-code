@@ -710,6 +710,9 @@ type chatGateway struct {
 	// hears of each call before it waits
 	hold    chan struct{}
 	arrived chan struct{}
+	// lenient makes a lab of the gateway: a call off the script answers 500
+	// "unscripted chat turn" and no check fails the test
+	lenient bool
 	// compacts are the compaction calls' requests and summaries the
 	// answers they get in order, "summary n" when none is scripted
 	compacts  []map[string]any
@@ -730,7 +733,7 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !g.lenient {
 		g.t.Errorf("model call body: %v", err)
 	}
 	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
@@ -763,13 +766,17 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.requests = append(g.requests, body)
-	if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
+	if (r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
-		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(4096) {
+		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(4096)) && !g.lenient {
 		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias big, streamed",
 			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task)
 	}
 	if len(g.replies) == 0 {
+		if g.lenient {
+			http.Error(w, "unscripted chat turn", http.StatusInternalServerError)
+			return
+		}
 		g.t.Errorf("an unscripted model call")
 		http.Error(w, "unscripted", http.StatusInternalServerError)
 		return
@@ -790,6 +797,32 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	for _, line := range append(reply, "[DONE]") {
 		fmt.Fprintf(w, "data: %s\n\n", line)
+	}
+}
+
+// script sets the project the gateway serves and the replies it answers
+// with in order, each a chunk of text or of tool calls per data line.
+func (g *chatGateway) script(project string, replies []labReply) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.project, g.replies = project, nil
+	for _, reply := range replies {
+		var lines []string
+		calls := 0
+		for _, chunk := range reply {
+			if chunk.Say != "" {
+				lines = append(lines, say(chunk.Say))
+			}
+			if len(chunk.Call) > 0 {
+				var nameArgs []string
+				for _, c := range chunk.Call {
+					nameArgs = append(nameArgs, c[0], c[1])
+				}
+				lines = append(lines, call(calls, nameArgs...))
+				calls += len(chunk.Call)
+			}
+		}
+		g.replies = append(g.replies, lines)
 	}
 }
 

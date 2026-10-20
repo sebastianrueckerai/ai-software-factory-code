@@ -68,7 +68,10 @@ func TestLab(t *testing.T) {
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
-	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
+	r.gateway = &chatGateway{t: t, lenient: true}
+	model := httptest.NewServer(r.gateway)
+	t.Cleanup(model.Close)
+	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
 	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
@@ -288,6 +291,8 @@ type labScene struct {
 	events    []factoryd.Event
 	chat      []factoryd.ChatMessage
 	proposals []factoryd.ChatProposal
+	// replies are the model's scripted answers, one per chat turn
+	replies []labReply
 	// usedProposals are the scene's proposals the member already pressed,
 	// their do- row among the chat's
 	usedProposals []factoryd.ChatProposal
@@ -531,6 +536,9 @@ func labProjects() []factoryd.Project {
 func (r *rig) seedScene(s labScene) string {
 	now := time.Now()
 	project := cmp.Or(s.project, labCodeProject)
+	if r.gateway != nil {
+		r.gateway.script(project.Name, s.replies)
+	}
 	repository, login := project.Repository, project.Login
 	r.projects.rows = s.projects
 	if r.projects.rows == nil {
