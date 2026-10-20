@@ -61,6 +61,10 @@ func TestStallCardAnswers(t *testing.T) {
 			t.Fatalf("the drawer lacks %q:\n%s", want, drawer)
 		}
 	}
+	// only its choices: no close of its own, no free answer
+	if strings.Contains(drawer, `action="/tasks/t-stall/close"`) || strings.Contains(drawer, `name="answer"`) {
+		t.Errorf("the drawer offers a close of its own or a free answer; want the three choices alone:\n%s", drawer)
+	}
 	// a press moves the card where its answer takes it (C31): the re-run
 	// keeps it waiting, check again and dismiss close it, and a closed
 	// human card shows in no column
@@ -208,7 +212,22 @@ func TestRollFailedCardAnswers(t *testing.T) {
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
 	face := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
 	lanes := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String(), "Escalations")
+	// on the face and in the lanes view, the card's own escalation article
+	// (its face's card is an article inside it)
+	need := func(page string) string {
+		at := strings.Index(page, `id="need-t-roll"`)
+		if at < 0 {
+			t.Fatalf("no escalation article of t-roll:\n%s", page)
+		}
+		end := at + strings.Index(page[at:], "</article>") + len("</article>")
+		return page[at : end+strings.Index(page[end:], "</article>")]
+	}
+	face, lanes = need(face), need(lanes)
 	for name, page := range map[string]string{"drawer": drawer, "face": face, "lanes view": lanes} {
+		// only its choices: the question's Close alone, no free answer
+		if n := strings.Count(page, `action="/tasks/t-roll/close"`); n != 1 || strings.Contains(page, `name="answer"`) {
+			t.Errorf("the %s has %d close forms and a free answer form %t; want the question's Close alone:\n%s", name, n, strings.Contains(page, `name="answer"`), page)
+		}
 		for value, want := range map[string]string{
 			factoryd.AnswerRetryRoll: `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
 			factoryd.AnswerPark:      `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,

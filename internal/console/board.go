@@ -576,10 +576,14 @@ type card struct {
 
 // Closes: the face offers its viewer, a writer, Close: a card in the
 // backlog or waiting on a human, or failed without an issue, which has no
-// other way out.
+// other way out. A choice card offers its choices alone.
 func (k card) Closes() bool {
-	return k.MayWriteSummary && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
+	return k.MayWriteSummary && !k.ChoiceCard() && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
 }
+
+// ChoiceCard: the card answers by its question's choices alone, no free
+// answer and no close of its own (choiceCard).
+func (k card) ChoiceCard() bool { return choiceCard(k.Task) }
 
 // Routine: a routine's run filed the card, which wears the chip (C16).
 func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }

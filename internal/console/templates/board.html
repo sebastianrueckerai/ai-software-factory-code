@@ -112,7 +112,7 @@
 {{end}}<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-{{$.Card.ID}}{{$.Suffix}}">Or in your words</button>
 </div>
 {{end}}{{end}}{{end}}{{end}}{{if .Card.IssueNumber}}{{if .Card.AnswersPending}}<p class="liveness" role="status">This card holds answers its run has not taken — the run may be gone. The factory's heal pass will chase it; hold further answers.</p>
-{{else if .Card.Ask}}<form method="post" action="/tasks/{{.Card.ID}}/answer" hx-post="/tasks/{{.Card.ID}}/answer" hx-target="#board" hx-swap="outerHTML" data-to="running"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
+{{else if and .Card.Ask (not .Card.ChoiceCard)}}<form method="post" action="/tasks/{{.Card.ID}}/answer" hx-post="/tasks/{{.Card.ID}}/answer" hx-target="#board" hx-swap="outerHTML" data-to="running"{{if .Card.Choices}} class="own" id="own-{{.Card.ID}}{{.Suffix}}" hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required></textarea>
