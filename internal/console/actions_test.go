@@ -1,6 +1,8 @@
 package console
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -60,9 +62,10 @@ func TestStallCardAnswers(t *testing.T) {
 		}
 	}
 	// a press moves the card where its answer takes it (C31): the re-run
-	// keeps it waiting, check again and dismiss close it
+	// keeps it waiting, check again and dismiss close it, and a closed
+	// human card shows in no column
 	for value, want := range map[string]string{factoryd.AnswerRerunAgain: `class="inline">`,
-		factoryd.AnswerCheckAgain: `class="inline" data-to="closed">`, factoryd.AnswerDismiss: `class="inline" data-to="closed">`} {
+		factoryd.AnswerCheckAgain: `class="inline" data-to="off">`, factoryd.AnswerDismiss: `class="inline" data-to="off">`} {
 		at := strings.Index(drawer, `name="value" value="`+value+`"`)
 		if form := drawer[strings.LastIndex(drawer[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-stall/answer" hx-post="/tasks/t-stall/answer" hx-target="#board" hx-swap="outerHTML" `+want) {
 			t.Errorf("the %s form does not end its tag with %s:\n%s", value, want, form)
@@ -156,4 +159,135 @@ func TestStallCardAnswersInTheChat(t *testing.T) {
 		t.Fatalf("dismissed %v, want the stall dismissed", r.dismissed)
 	}
 	equal(t, "the note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/41/comments"), []string{"Dismiss"})
+}
+
+// rollFailedCard is the roll ladder's failed-roll card, #42 on sf/code, as
+// the roller files it.
+func rollFailedCard() factoryd.BoardTask {
+	q := &factoryd.HumanQuestion{Ask: "3 rolls failed since the last one merged: main's newest images are not live. Retry the roll, park it or close it?",
+		Choices: []factoryd.QuestionChoice{
+			{Value: factoryd.AnswerRetryRoll, Label: "Retry the roll"},
+			{Value: factoryd.AnswerPark, Label: "Park"},
+			{Value: factoryd.AnswerClose, Label: "Close"},
+		}}
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-roll", Kind: "human", Status: "waiting-human", Source: factoryd.SourceRollFailed,
+		Repository: "sf/code", IssueNumber: 42, Objective: "needs you: 3 rolls failed since the last one merged"},
+		Escalation: q.Ask, Question: q}
+}
+
+// The failed-roll card's three choices act from the board: the face, the
+// lanes view's escalations and the drawer offer them as buttons. "Retry the roll" posts its exact
+// label as the member's comment, the roller's retry, and keeps the card
+// in place: the roller closes it and files the new roll. "Park" records
+// the answer and posts nothing; "Close" closes the card off the board.
+// The human card runs no workflow, so no answer signals one. Words that
+// name no choice are refused with the choices.
+func TestRollFailedCardAnswers(t *testing.T) {
+	const comments = "/api/v1/repos/sf/code/issues/42/comments"
+	closed := []string{`/api/v1/repos/sf/code/issues/42 {"state":"closed"}`}
+	var whole []string
+	click := func(t *testing.T, value, answer string) (*rig, *fakeEvents, int, int, string) {
+		t.Helper()
+		r, ev := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
+		r.c.cfg.AnswerWhole = func(_ context.Context, taskID string, comment int64, by string) error {
+			whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
+			return nil
+		}
+		ck, s := r.loggedIn(t)
+		before := ev.count()
+		rec := r.do(post("/tasks/t-roll/answer", url.Values{"csrf": {s.csrf}, "value": {value}, "answer": {answer}}), ck)
+		return r, ev, before, rec.Code, rec.Body.String()
+	}
+
+	// the face and the drawer offer the three as buttons; a press of
+	// retry or park keeps the card where it is, close takes it off
+	r, _ := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
+	ck, _ := r.loggedIn(t)
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
+	face := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	lanes := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String(), "Escalations")
+	for name, page := range map[string]string{"drawer": drawer, "face": face, "lanes view": lanes} {
+		for value, want := range map[string]string{
+			factoryd.AnswerRetryRoll: `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
+			factoryd.AnswerPark:      `class="inline">` + "\n" + `<input type="hidden" name="csrf"`,
+		} {
+			at := strings.Index(page, `name="value" value="`+value+`"`)
+			if at < 0 {
+				t.Fatalf("the %s lacks the %s button:\n%s", name, value, page)
+			}
+			if form := page[strings.LastIndex(page[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-roll/answer" hx-post="/tasks/t-roll/answer" hx-target="#board" hx-swap="outerHTML" `+want) {
+				t.Errorf("the %s's %s form does not end its tag with %s:\n%s", name, value, want, form)
+			}
+		}
+		for _, want := range []string{
+			`<button type="submit" aria-label="Retry the roll, posted on the issue as you">Retry the roll</button>`,
+			`<button type="submit" aria-label="Park, kept off the issue: the card stays waiting">Park</button>`,
+			`<form method="post" action="/tasks/t-roll/close" hx-post="/tasks/t-roll/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">`,
+			`<button type="submit" class="deny" aria-label="Close">Close</button>`,
+		} {
+			if !strings.Contains(page, want) {
+				t.Errorf("the %s lacks %q:\n%s", name, want, page)
+			}
+		}
+	}
+
+	r, ev, before, code, body := click(t, factoryd.AnswerRetryRoll, "")
+	if code != http.StatusSeeOther {
+		t.Fatalf("retry = %d %q, want 303", code, body)
+	}
+	if r.fg.comments[comments] != "Retry the roll" || len(r.fg.patched) != 0 || len(whole) != 0 {
+		t.Fatalf("retry: comment %q, patched %v, whole %v; want the exact label posted, the card kept, no signal", r.fg.comments[comments], r.fg.patched, whole)
+	}
+	retried := postedDetail(1)
+	retried["value"] = factoryd.AnswerRetryRoll
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll", detail: retried})
+
+	r, ev, before, code, body = click(t, factoryd.AnswerPark, "")
+	if code != http.StatusSeeOther {
+		t.Fatalf("park = %d %q, want 303", code, body)
+	}
+	if r.fg.comments[comments] != "" || len(r.fg.patched) != 0 {
+		t.Fatalf("park: comment %q, patched %v; want nothing posted", r.fg.comments[comments], r.fg.patched)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
+		detail: map[string]any{"answer": "Park", "value": factoryd.AnswerPark}})
+
+	r, ev, before, code, body = click(t, factoryd.AnswerClose, "")
+	if code != http.StatusSeeOther {
+		t.Fatalf("close = %d %q, want 303", code, body)
+	}
+	if !slices.Equal(r.fg.patched, closed) || r.fg.comments[comments] != "Close" {
+		t.Fatalf("close: patched %v, comment %q; want the card closed", r.fg.patched, r.fg.comments[comments])
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": "Close"}})
+
+	r, ev, before, code, body = click(t, "", "retry it next week")
+	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close.\n" || ev.count() != before || len(r.fg.patched) != 0 {
+		t.Fatalf("words = %d %q, %d rows, patched %v; want 400 naming the choices, nothing done", code, body, ev.count()-before, r.fg.patched)
+	}
+}
+
+// The chat's answer row takes the failed-roll card's choice as the
+// board's button does: "Retry the roll" posts the exact label the roller
+// matches and keeps the card, where the plain human card closes with a
+// prefixed note.
+func TestRollFailedCardAnswersInTheChat(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, rollFailedCard())
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#42 needs you: 3 rolls failed", Choices: []string{"Retry the roll", "Park", "Close"}, TaskID: "t-roll", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"Retry the roll"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("the press = %d %q", code, body)
+	}
+	equal(t, "the comment", r.fg.commentBodies("/api/v1/repos/sf/code/issues/42/comments"), []string{"Retry the roll"})
+	equal(t, "the patches", r.fg.patched, []string(nil))
 }

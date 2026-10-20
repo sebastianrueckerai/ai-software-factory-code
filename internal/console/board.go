@@ -1858,8 +1858,8 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
-		if t.Source == factoryd.SourceChainStall {
-			k.Question = bt.Question // its choices act (doStallAnswer)
+		if choiceCard(t) {
+			k.Question = bt.Question // its choices act (doChoiceAnswer)
 		}
 		return k
 	}
@@ -2274,10 +2274,21 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			if factoryd.Final(t.Status) {
 				break
 			}
-			if wide {
-				d.HumanTasks = append(d.HumanTasks, k)
-			} else {
-				needs = append(needs, need{Since: t.CreatedAt, Card: k})
+			// a choice card's question answers from its face, as an
+			// escalation's does
+			asks := k.Question != nil && v.escalated(t)
+			n := need{Since: t.CreatedAt, Card: k}
+			if asks {
+				n = escalation(k)
+				n.Since = t.CreatedAt
+			}
+			if !wide {
+				needs = append(needs, n)
+				break
+			}
+			d.HumanTasks = append(d.HumanTasks, k)
+			if asks {
+				d.Escalations = append(d.Escalations, n)
 			}
 		case wide:
 			i, ok := byStatus[t.Status]

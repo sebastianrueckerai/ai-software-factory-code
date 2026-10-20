@@ -89,14 +89,14 @@
 {{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
 <div class="choices" role="group" aria-label="Answer with one click">
 {{range .Choices}}{{if eq .Value "close"}}
-<form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="closed">
+<form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="{{if eq $.Card.Kind "human"}}off{{else}}closed{{end}}">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
 <button type="submit" class="deny" aria-label="{{.Label}}">{{.Label}}</button></form>
-{{else}}{{$stays := or (eq .Value "park") (eq .Value "keep_waiting") (eq .Value "rerun_again")}}
-<form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" hx-target="#board" hx-swap="outerHTML" class="inline"{{if not $stays}} data-to="{{if or (eq .Value "check_again") (eq .Value "dismiss")}}closed{{else}}running{{end}}"{{end}}>
+{{else}}{{$kept := or (eq .Value "park") (eq .Value "keep_waiting") (eq .Value "rerun_again")}}{{$stays := or $kept (eq .Value "retry")}}
+<form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" hx-target="#board" hx-swap="outerHTML" class="inline"{{if not $stays}} data-to="{{if or (eq .Value "check_again") (eq .Value "dismiss")}}off{{else}}running{{end}}"{{end}}>
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
 <input type="hidden" name="value" value="{{.Value}}">
-<button type="submit" aria-label="{{.Label}}{{if $stays}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
+<button type="submit" aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>
 {{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>
 <div class="info">{{markup .Info}}</div>

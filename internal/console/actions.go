@@ -944,7 +944,8 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // answer, the label retrying the card. A worded answer on a running
 // agent card steers its session (doSteer) instead of the wrongState
 // wall, so the board form and the answer tool, which both ride here,
-// reach a session too.
+// reach a session too. A choice card's answer acts by its choice
+// (doChoiceAnswer).
 func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
 	if len(text) > factoryd.MaxAnswer {
@@ -957,8 +958,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	if t.Kind == "agent" && t.Status == "running" && text != "" && c.cfg.Steer != nil {
 		return c.doSteer(ctx, a, id, text)
 	}
-	if t.Source == factoryd.SourceChainStall && t.Status == "waiting-human" && t.IssueNumber != 0 {
-		return c.doStallAnswer(ctx, a, t, text, value)
+	if choiceCard(t) && t.Status == "waiting-human" && t.IssueNumber != 0 {
+		return c.doChoiceAnswer(ctx, a, t, text, value)
 	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
@@ -1006,16 +1007,25 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
 }
 
-// doStallAnswer answers chain stall card t, the stall ladder's human
-// step, with the choice value or text names, on the card's own commit:
+// choiceCard tells a human card factoryd asks on whose choices act: the
+// chain stall card and the failed roll card.
+func choiceCard(t factoryd.Task) bool {
+	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed
+}
+
+// doChoiceAnswer answers choice card t with the choice value or text
+// names, one of its own. The stall card's act on the card's own commit:
 // re-run again re-runs the head's stuck runs and keeps the card waiting,
 // nothing posted; check again closes the card and lets the watch run on;
 // dismiss dismisses the stall until the head changes and closes the card.
 // A head that moved on from the card's commit, or concluded, refuses the
 // re-run and the dismissal with its own line; check again closes the
-// card all the same. Words that name no choice are refused with the
-// choices.
-func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
+// card all the same. The failed roll card's retry posts its label as the
+// member's comment, which the roller takes for the retry, and keeps the
+// card: the roller closes it and files the new roll; park records the
+// answer, nothing posted; close closes the card. Words that name no
+// choice are refused with the choices.
+func (c *Console) doChoiceAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
 		return "", err
@@ -1028,6 +1038,9 @@ func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
+	if label == "" {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+	}
 	var gone factoryd.ErrStallGone
 	switch value {
 	case factoryd.AnswerRerunAgain:
@@ -1054,10 +1067,16 @@ func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed; see the factoryd log.")
 		}
 		return c.doClose(ctx, a, t.ID, label)
-	case factoryd.AnswerCheckAgain:
-		return c.doClose(ctx, a, t.ID, label)
+	case factoryd.AnswerRetryRoll:
+		if err := c.answerCardValue(ctx, a, t, label, value); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber), nil
+	case factoryd.AnswerPark:
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, map[string]any{"answer": label, "value": value})
+		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
 	}
-	return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+	return c.doClose(ctx, a, t.ID, label) // check again, close
 }
 
 // answerInChatNote is doAnswerValue's note when the member's own words
@@ -1133,8 +1152,8 @@ func answerFits(text string) error {
 // answer, is whole (Config.AnswerWhole). The answer is on the issue
 // either way: a failed signal costs only the quiet window.
 func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, posted int64) {
-	if c.cfg.AnswerWhole == nil || posted == 0 {
-		return
+	if c.cfg.AnswerWhole == nil || posted == 0 || t.Kind == "human" {
+		return // a human card runs no workflow: a signal would start one
 	}
 	if err := c.cfg.AnswerWhole(ctx, t.ID, posted, a.s.user); err != nil {
 		log.Printf("console: %s's answer %d to %s not signalled whole, the card resumes after the quiet window: %v", a.s.user, posted, t.ID, err)

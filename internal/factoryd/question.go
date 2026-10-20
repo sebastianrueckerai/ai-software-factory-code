@@ -326,6 +326,10 @@ const (
 	AnswerDismiss    = "dismiss"
 )
 
+// AnswerRetryRoll is the failed-roll card's retry: its label, posted as
+// the member's comment, is what the roller takes for it (consumeRetry).
+const AnswerRetryRoll = "retry"
+
 // stallQuestion is the stall card's question: what of repository's head
 // at sha has been pending since when, the cards the stall holds, and the
 // three answers.

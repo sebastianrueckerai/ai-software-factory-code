@@ -514,8 +514,8 @@ const rollAttemptBound = 3
 
 // rollAskMarker names the roll ladder's question in the card it files,
 // so StandingQuestion recognises it while it waits. rollRetryLabel is
-// the retry choice's label: the comment a click posts (question.go), and
-// what consumeRetry answers.
+// the retry choice's label: the comment a press posts (the console's
+// doChoiceAnswer), and what consumeRetry answers.
 const (
 	rollAskMarker  = "rolls failed since the last one merged"
 	rollRetryLabel = "Retry the roll"
@@ -558,7 +558,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 		Recommendation: "Retry the roll, after reading the newest failed card's reason",
 		Source:         "the roller's",
 		Choices: []QuestionChoice{
-			{Value: "retry", Label: rollRetryLabel},
+			{Value: AnswerRetryRoll, Label: rollRetryLabel},
 			{Value: AnswerPark, Label: "Park"},
 			{Value: AnswerClose, Label: "Close"},
 		},
@@ -569,8 +569,8 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 }
 
 // consumeRetry acts on the roll ladder's answered question: a member's
-// Retry the roll — the click posts the label as their comment
-// (question.go) — resets the ladder. The failed attempts' requests go,
+// Retry the roll — a press posts the label as their comment — resets the
+// ladder. The failed attempts' requests go,
 // their commits unjudged again, and the card closes as factoryd's own,
 // so the judge of this very poll files one fresh roll of main's newest
 // green images; a failure after it climbs from zero. Park and close need

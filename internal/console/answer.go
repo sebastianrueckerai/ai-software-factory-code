@@ -75,8 +75,9 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // merge approves on Approve, or runs a factory pull request's red checks
 // again on Re-run the checks, and a pending plan accepts on Accept, each
 // under the role its board button and chat tool need, a waiting
-// question takes the choice as the member's answer, a stall card acts on
-// it, another human-lane escalation closes with it. A card settled since
+// question takes the choice as the member's answer, a choice card (the
+// stall card, the failed roll card) acts on it, another human-lane
+// escalation closes with it. A card settled since
 // its escalation row m asked, by an answer, the question's withdrawal or
 // the wait guard, says so: the first answer wins.
 func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string, m factoryd.ChatMessage) (string, error) {
@@ -131,7 +132,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	switch {
 	case t.Status != "waiting-human":
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
-	case t.Source == factoryd.SourceChainStall:
+	case choiceCard(t):
 		return c.doAnswer(ctx, a, id, choice)
 	case t.Kind == "human":
 		return c.doClose(ctx, a, id, "Answered in the chat: "+choice)
