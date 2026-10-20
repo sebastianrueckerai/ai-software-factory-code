@@ -847,12 +847,13 @@ var chatView = (function () {
   }
 
   // the level control under Send (C14, C32): its menu of the four states;
-  // a pick sets the level at once and writes it through the project's
-  // file, the control locked until the write lands and back at the old
-  // level when it fails; the inbox's poke follows. Escape and a click
-  // outside close the menu
+  // a pick shows the level at once and writes it through the project's
+  // file behind the control, the writes one after another, and a refused
+  // write puts the level the factory holds back; the inbox's poke tells
+  // the other members. Escape and a click outside close the menu
   var levelBtn = document.getElementById("level-btn"), levelPop = document.getElementById("level-pop"), levelsEl = document.getElementById("chat-levels");
   var levels = levelsEl ? JSON.parse(levelsEl.textContent || "null") || [] : [];
+  var levelKnown = levelBtn ? levelBtn.dataset.level : "", levelWant = levelKnown, levelWrite = Promise.resolve();
   function closeLevel(focus) {
     if (!levelPop || levelPop.hidden) return;
     levelPop.hidden = true;
@@ -880,20 +881,24 @@ var chatView = (function () {
       e.stopPropagation();
       var pick = e.target.closest("[data-lvl]");
       if (!pick) return;
-      var to = pick.dataset.lvl, from = levelBtn.dataset.level;
+      var to = pick.dataset.lvl;
       closeLevel(true);
-      if (to === from) return;
+      if (to === levelWant) return;
+      levelWant = to;
       showLevel(to);
-      levelBtn.disabled = true;
-      fetch(base.replace(/\/chat$/, "/autonomy"), {method: "POST", body: new URLSearchParams({autonomy: to}).toString(),
-        headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+      levelWrite = levelWrite.then(function () {
+        return fetch(base.replace(/\/chat$/, "/autonomy"), {method: "POST", body: new URLSearchParams({autonomy: to}).toString(),
+          headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}});
+      }).then(function (resp) {
         if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
+        levelKnown = to;
       }).catch(function (err) {
-        showLevel(from);
+        // a later pick stands on its own write
+        if (levelWant === to) {
+          levelWant = levelKnown;
+          showLevel(levelKnown);
+        }
         failed(err);
-      }).then(function () {
-        levelBtn.disabled = false;
-        if (document.activeElement === document.body) levelBtn.focus();
       });
     });
     document.addEventListener("click", function (e) {

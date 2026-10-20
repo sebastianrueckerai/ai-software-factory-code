@@ -155,6 +155,10 @@ func (p *Poker) Pass(ctx context.Context) error {
 			if ok {
 				to = pokeTo(tree, e.Repository)
 			}
+			if e.Kind == EventAutonomyChanged {
+				// the member who set the level knows it: the row tells the others
+				to = slices.DeleteFunc(slices.Clone(to), func(login string) bool { return login == e.Actor })
+			}
 			plan := PokeDelivery{RowLevel: deliveryLevel(m), Derived: to, On: true}
 			if inTree {
 				plan.On = project.MessengersOn()
