@@ -62,8 +62,8 @@ func TestProjectMetricsJSON(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	for _, key := range []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
-		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_mix",
-		"interventions", "escalations", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
+		"interventions", "escalations", "escalated_share", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 		"chat_tool_work", "ci_duration"} {
 		if _, ok := body[key]; !ok {
 			t.Errorf("body lacks %s", key)
@@ -149,7 +149,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"Delivery", "Stability", "Cost", "Autonomy", "The factory itself",
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
-		"spend / week", "per card, median", "tokens / card", "model mix",
+		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
 		"interventions / card", "escalations", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work",
 		"How the project runs its work, over the window and against the one before.",
@@ -219,18 +219,21 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mCountMove down", mCountMove(-38), "−38"},
 		{"mK", mK(84000), "84 k"},
 		{"mK fractional", mK(84500), "84.5 k"},
+		{"mK millions", mK(2249900), "2.2 M"},
+		{"mK whole millions", mK(3000000), "3 M"},
 		{"mEur", mEur(87.4), "€87.40"},
 		{"mEur two sixty", mEur(2.6), "€2.60"},
 		{"mEurMove up", mEurMove(9.1), "+€9.10"},
 		{"mEurMove down", mEurMove(-0.3), "−€0.30"},
 		{"mDec", mDec(1.4), "1.4"},
 		{"mDecMove", mDecMove(-0.3), "−0.3"},
-		{"mMix", mMix([]factoryd.MixShare{{Alias: "coding-frontier", Share: 71}, {Alias: "review-frontier", Share: 18}, {Alias: "pulse", Share: 11}}), "coding-frontier 71 % · review-frontier 18 % · pulse 11 %"},
+		{"mMix", mMix([]factoryd.MixShare{{Alias: "big", Share: 71}, {Alias: "big", Share: 18}, {Alias: "pulse", Share: 11}}), "big 71 % · big 18 % · pulse 11 %"},
 		{"mMix empty", mMix(nil), "—"},
 		{"mDiff", mDiff(factoryd.DiffSize{Files: 9, Insertions: 240, Deletions: 95, Has: true}), "9 files · +240 −95"},
 		{"mDiff one file", mDiff(factoryd.DiffSize{Files: 1, Insertions: 3, Deletions: 1, Has: true}), "1 file · +3 −1"},
 		{"mDiff absent", mDiff(factoryd.DiffSize{}), "—"},
 		{"mChat", mChat(factoryd.ChatWork{Calls: 312, Minutes: 41}), "312 calls · 41 min"},
+		{"mChat under a minute", mChat(factoryd.ChatWork{Calls: 170, Minutes: 0.04}), "170 calls · 2 s"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)

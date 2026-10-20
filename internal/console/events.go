@@ -192,9 +192,13 @@ func (c *Console) projectEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// heartbeat is how often the stream writes a comment line, which keeps an
-// idle stream open through the Gateway; a test shortens it.
+// heartbeat is how often the stream writes event "ping", which keeps an
+// idle stream open through the Gateway and tells the page its stream
+// still talks; a test shortens it.
 var heartbeat = 25 * time.Second
+
+// ping is the stream's heartbeat, its data the console's build.
+var ping = "event: ping\ndata: " + build + "\n\n"
 
 // streamBuffer is how many events a stream may fall behind before the bus
 // drops it.
@@ -293,7 +297,8 @@ func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool,
 }
 
 // projectEventsStream answers GET /projects/{name}/events/stream to whoever
-// sees the project's board. A writer gets one SSE message per new events
+// sees the project's board. It opens with event "ping" and sends it at
+// every heartbeat. A writer gets one SSE message per new events
 // row, event "event", its id the row's, its data the feed's row, and a
 // live-only event (session_said) without an id; a reconnect's
 // Last-Event-ID replays the rows after it from the table, oldest first
@@ -307,7 +312,7 @@ func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool,
 // that a card's face changed with time alone, and, to a member who only
 // reads, that events came. Each heartbeat checks
 // the session and the member's sight of the project again, and the stream
-// ends once either is gone.
+// ends once either is gone, or once the console's server shuts down.
 func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	ctx, user := r.Context(), current(r).user
 	p, ok, err := c.projectOf(ctx, r.PathValue("name"))
@@ -391,7 +396,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	if err := write(""); err != nil {
+	if err := write(ping); err != nil {
 		log.Printf("console: the stream of %s: %v", p.Repository, err)
 		return
 	}
@@ -416,6 +421,8 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-c.ended:
+			return
 		case e, ok := <-ch:
 			if !ok {
 				return
@@ -435,7 +442,7 @@ func (c *Console) projectEventsStream(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		case <-tick.C:
-			if !allowed() || write(": ping\n\n") != nil || look(false) != nil {
+			if !allowed() || write(ping) != nil || look(false) != nil {
 				return
 			}
 		}

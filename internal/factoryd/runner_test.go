@@ -669,7 +669,7 @@ func testRunnerConfig() RunnerConfig {
 		FactoryNamespace:     "factory",
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
 		GitBaseURL:           "http://forgejo-http.forgejo.svc.cluster.local:3000",
-		Models:               ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"},
+		Models:               ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens:         8192,
 		HeadroomTokens:       16384,
 		ChecksPoll:           time.Millisecond,
@@ -835,7 +835,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 
 	logs := envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "README.md"}}) + "\n" +
 		pushRequestLine("c0ffee") + "\n" + tokenLogs + pushedLine("c0ffee") + "\n" + resultLine(true, "pushed branch factory/t1 at c0ffee")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, logs)
 	if err != nil {
 		t.Fatalf("RunSession: %v", err)
 	}
@@ -851,7 +851,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 		t.Fatalf("revoked = %v, want both session tokens revoked at its end", hub.revoked)
 	}
 	env := podEnv(kube.podAt(0))
-	if env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/coding-cheap" {
+	if env["REPO_SHA"] != "abc123" || env["MODEL"] != "factory/small" {
 		t.Fatalf("pod env = %v, want the base SHA and the cheap model", env)
 	}
 	if env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/ai-software-factory-code.git" {
@@ -1003,7 +1003,7 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "pushed branch factory/t1 at c0ffee")); err != nil {
 		t.Fatal(err)
 	}
@@ -1120,7 +1120,7 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 	coder.Tools = map[string]policy.ToolCap{policy.ToolWebSearch: {MaxRequests: 1, MaxEUR: 0.1}, policy.ToolRequestInfo: {}}
 	v.Document.Classes["coder"] = coder
 	runner.cfg.Policy = func() policy.Version { return v }
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}
@@ -1160,7 +1160,7 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}}
 		kube := newFakeKube()
 		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 			pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 			t.Fatal(err)
 		}
@@ -1179,14 +1179,14 @@ func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 
-	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/coding-frontier",
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 2, Model: "factory/big",
 		StartRef: "c1", ParentSessionID: "s-prev", Findings: []string{"check \"pr / test\": failure"},
 		Answers: []string{"sebastian: b", "sebastian: a"}}, nil, resultLine(false, "gave up"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := podEnv(kube.podAt(0))
-	if env["REPO_SHA"] != "c1" || env["MODEL"] != "factory/coding-frontier" || env["PARENT_SESSION_ID"] != "s-prev" ||
+	if env["REPO_SHA"] != "c1" || env["MODEL"] != "factory/big" || env["PARENT_SESSION_ID"] != "s-prev" ||
 		!strings.Contains(env["FINDINGS"], "pr / test") || env["ANSWERS"] != `["sebastian: b","sebastian: a"]` {
 		t.Fatalf("pod env = %v, want the branch head, the stronger model, the parent and the findings", env)
 	}
@@ -1208,7 +1208,7 @@ func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	dead := &sessionProgress{SessionID: "s-dead"}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small", Findings: []string{"earlier note"}},
 		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
@@ -1238,7 +1238,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 	hub.tokens = []TokenRef{{ID: 50, Name: "task-t1"}, {ID: 51, Name: "task-t1-base"}}
 
 	dead := &sessionProgress{SessionID: "s-dead", Running: true, Events: 7}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"earlier note"}},
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small", Findings: []string{"earlier note"}},
 		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
@@ -1383,7 +1383,7 @@ func TestRunSessionCheckinHandoverStopsGracefully(t *testing.T) {
 		// what the worker prints after its SIGTERM
 		envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": false}}) + "\n" +
 		pushedLine("c-wip") + "\n" + resultLine(false, "stopped: work in progress pushed at c-wip") + "\n"
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1397,7 +1397,7 @@ func TestRunSessionCheckinHandoverStopsGracefully(t *testing.T) {
 		rec.Session != res.SessionID || rec.ParentSession != res.SessionID {
 		t.Fatalf("record = %+v, want the session-moment handover record of the session's own parentage", res.CheckIn.Record)
 	}
-	if chat.calls != 1 || chat.aliases[0] != "review-frontier" {
+	if chat.calls != 1 || chat.aliases[0] != "big" {
 		t.Fatalf("chat = %d calls on %v, want one conversation on the check-in's alias", chat.calls, chat.aliases)
 	}
 	if len(kube.deletedPods) == 0 {
@@ -1425,7 +1425,7 @@ func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
 		{Text: `{"decision":"continue","reason":"one failing command, the session carries on"}`},
 	}
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + pushedLine("c1") + "\n" + resultLine(true, "done")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, logs)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1489,7 +1489,7 @@ func TestRunSessionCheckinCapExhaustedIsDeterministic(t *testing.T) {
 		res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "check-in call cap reached" {
 		t.Fatalf("result = %+v, want the deterministic human ask under the spend kind", res)
 	}
-	if rec := res.CheckIn.Record; rec == nil || rec.Model != "review-frontier" || rec.Moment != CheckInSession || len(rec.Calls) != 0 {
+	if rec := res.CheckIn.Record; rec == nil || rec.Model != "big" || rec.Moment != CheckInSession || len(rec.Calls) != 0 {
 		t.Fatalf("record = %+v, want the no-conversation record under the class's review model", rec)
 	}
 	if res.Trip != string(TripRepetition) {
@@ -1578,7 +1578,7 @@ func TestRunSessionCheckinNoAliasContinues(t *testing.T) {
 // every call refused for its life (the #937 probe's defect).
 func TestCheckinAliasFollowsTheVersionInForce(t *testing.T) {
 	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"on track"}`})
-	pinned := testPolicyVersion() // coder: no checkin_model, so the pin's fallback is review-frontier
+	pinned := testPolicyVersion() // coder: no checkin_model, so the pin's fallback is big
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return pinned, true, nil }
 	inForce := testPolicyVersion()
 	cl := inForce.Document.Classes["coder"]
@@ -1690,7 +1690,7 @@ func TestRunSessionTripRunsCheckinAndContinues(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.SessionID == "" {
 		t.Fatalf("result = %+v, want the push through", res)
 	}
-	if chat.calls != 1 || !slices.Equal(chat.aliases, []string{"review-frontier"}) {
+	if chat.calls != 1 || !slices.Equal(chat.aliases, []string{"big"}) {
 		t.Fatalf("chat = %d calls on %v, want one on the check-in's alias", chat.calls, chat.aliases)
 	}
 	in := chat.gots[0].Input
@@ -1755,7 +1755,7 @@ func TestRunSessionCapCutsOffASlowCheckin(t *testing.T) {
 func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
-	in := SessionAnswerInput{TaskID: "t2", SessionID: "s1", Model: "factory/coding-cheap", Attempt: 2, Since: time.Now().Add(-time.Minute)}
+	in := SessionAnswerInput{TaskID: "t2", SessionID: "s1", Model: "factory/small", Attempt: 2, Since: time.Now().Add(-time.Minute)}
 
 	runner.record(t.Context(), "t2", "session_start", map[string]any{"session": "s1", "attempt": 2})
 	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || ok {
@@ -1770,7 +1770,7 @@ func TestSessionAnsweredRecordsTheStartedSession(t *testing.T) {
 		t.Fatalf("answered session = (%v, %v), want true", ok, err)
 	}
 	tl, _ = objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
-	for _, want := range []string{`"event":"session_started"`, `"session":"s1"`, `"model":"coding-cheap"`, `"attempt":2`} {
+	for _, want := range []string{`"event":"session_started"`, `"session":"s1"`, `"model":"small"`, `"attempt":2`} {
 		if !strings.Contains(string(tl), want) {
 			t.Errorf("timeline lacks %s:\n%s", want, tl)
 		}
@@ -1962,12 +1962,12 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 			if tc.log != "" {
 				bodies = []string{tc.log}
 			}
-			res, err := runSession(t, ctx, runner, SessionInput{TaskID: "t4i", Attempt: 1, Model: "factory/coding-cheap", Findings: []string{"go vet: unreachable code"}}, nil, bodies...)
+			res, err := runSession(t, ctx, runner, SessionInput{TaskID: "t4i", Attempt: 1, Model: "factory/small", Findings: []string{"go vet: unreachable code"}}, nil, bodies...)
 			reason := startEscalation(tc.step, tc.act, tc.summary)
 			if err != nil || res.Outcome != OutcomeEscalate || res.Summary != tc.summary || res.Reason != reason || !res.StartFailed {
 				t.Fatalf("result = (%+v, %v), want an escalation:\n%s", res, err, reason)
 			}
-			if len(res.Findings) != 0 || res.Model != "factory/coding-cheap" || res.Trip != "" {
+			if len(res.Findings) != 0 || res.Model != "factory/small" || res.Trip != "" {
 				t.Fatalf("findings %q, trip %q on %s, want none of its own on its model", res.Findings, res.Trip, res.Model)
 			}
 			if got := escalationSource(res.Reason); got != "start" {
@@ -2003,7 +2003,7 @@ func TestRunSessionRetriesATransientStartFailure(t *testing.T) {
 			objects := &fakeObjectStore{}
 			runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
 			line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step, Transient: true}})
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/coding-cheap"}, nil, string(line))
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4j", Attempt: 1, Model: "factory/small"}, nil, string(line))
 			if err == nil || !strings.Contains(err.Error(), summary) || isTerminal(err) || res.StartFailed || res.Reason != "" {
 				t.Fatalf("result = (%+v, %v), want a retryable error with the worker's summary", res, err)
 			}
@@ -2196,7 +2196,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
 	short(runner)
-	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 	var rep ReportResult
 	if err == nil {
 		err = val.Get(&rep)
@@ -2304,9 +2304,9 @@ func TestSlowPodStartIsNoTimeOfTheCheapRung(t *testing.T) {
 	}
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	runner.startPoll, runner.cheapCap = 50*time.Millisecond, time.Second
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4s", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4s", Attempt: 1, Model: "factory/small"}, nil,
 		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+resultLine(true, "no changes to push"))
-	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != "" || res.Model != "factory/coding-cheap" || res.Summary != "no changes to push" {
+	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != "" || res.Model != "factory/small" || res.Summary != "no changes to push" {
 		t.Fatalf("result = (%+v, %v), want no trip on the cheap rung", res, err)
 	}
 }
@@ -3297,20 +3297,20 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	}()
 	// the cancel ends the session by its context or by the closed log
 	// stream, whichever the loop takes first
-	if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-cheap"}, nil, hangLogs); err != nil && !strings.Contains(err.Error(), "context canceled") {
+	if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, hangLogs); err != nil && !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("err = %v, want the test's cancel after the climb", err)
 	}
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, coding-frontier: the cheap rung's 50ms passed without a push.") {
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: this session continues on the stronger model, big: the cheap rung's 50ms passed without a push.") {
 		t.Fatalf("worker got %q, want the brief and the climb's message", texts)
 	}
-	if store.tasks["t2"].ModelAlias != "coding-frontier" {
+	if store.tasks["t2"].ModelAlias != "big" {
 		t.Fatalf("model_alias = %q, want the stronger alias for the gateway", store.tasks["t2"].ModelAlias)
 	}
 	step := timelineStep(t, objects, "t2", "model_switched")
-	if step["from"] != "coding-cheap" || step["to"] != "coding-frontier" || step["trip"] != "cheap_cap" {
+	if step["from"] != "small" || step["to"] != "big" || step["trip"] != "cheap_cap" {
 		t.Fatalf("model_switched step = %v", step)
 	}
 	if !slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "continues on the stronger model from here") }) {
@@ -3323,11 +3323,11 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 func TestRunSessionResultNamesTheModelItEndedOn(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), kube, &fakeObjectStore{})
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "factory/coding-frontier"}, nil, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "factory/big"}, nil, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Model != "factory/coding-frontier" || res.Outcome != OutcomePushed {
+	if res.Model != "factory/big" || res.Outcome != OutcomePushed {
 		t.Fatalf("result = %+v, want the model it ended on", res)
 	}
 }
@@ -3336,7 +3336,7 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}
@@ -3351,7 +3351,7 @@ func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	// testPolicyYAML sets limits.sessions to 3
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 3, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 3, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}
@@ -3391,7 +3391,7 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 		}
 		cancel()
 	}()
-	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
@@ -3428,7 +3428,7 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 		}
 		cancel()
 	}()
-	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
 	worker.mu.Lock()
 	n := len(worker.texts)
 	worker.mu.Unlock()
@@ -3463,7 +3463,7 @@ func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 		}
 		cancel()
 	}()
-	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/coding-frontier"}, nil, hangLogs)
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
 	if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "spend_no_push") {
 		t.Fatalf("chat = %d calls, want the spend trip's conversation", chat.calls)
 	}
@@ -3480,7 +3480,7 @@ func TestRunSessionPassesTheContextCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}
@@ -3561,7 +3561,7 @@ func TestRunSessionCheckinHumanStopsBeforeTheConversation(t *testing.T) {
 		res.CheckIn.Verdicts[finding].State != CheckConfirmed {
 		t.Fatalf("check-in = %+v, want the human ask under goal_conflict with the verdict", res.CheckIn)
 	}
-	if rec := res.CheckIn.Record; rec == nil || rec.Model != "review-frontier" || rec.ParentSession != "" ||
+	if rec := res.CheckIn.Record; rec == nil || rec.Model != "big" || rec.ParentSession != "" ||
 		rec.Decision != CheckHuman || rec.ReasonKind != CheckGoalConflict {
 		t.Fatalf("record = %+v, want the coder class's review model and the ask carried to Task 6", res.CheckIn.Record)
 	}

@@ -160,7 +160,7 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 	if mints := hub.minted(); len(mints) != 0 {
 		t.Fatalf("a dry run mints nothing, minted %v", mints)
 	}
-	if len(ll.chats) != 2 || ll.chats[0]["model"] != "review-frontier" || !slices.Equal(ll.purposes, []string{"review", "review"}) {
+	if len(ll.chats) != 2 || ll.chats[0]["model"] != "big" || !slices.Equal(ll.purposes, []string{"review", "review"}) {
 		t.Fatalf("chats %v, purposes %v", ll.chats, ll.purposes)
 	}
 	first, second := userMessage(ll.chats[0]), userMessage(ll.chats[1])
@@ -351,7 +351,7 @@ func TestDecideHoldout(t *testing.T) {
 func TestFileVerdict(t *testing.T) {
 	ctx := context.Background()
 	card := seedCriteriaPlan(t)
-	card.Process, card.ModelAlias = "maintenance", "factory/coding-cheap"
+	card.Process, card.ModelAlias = "maintenance", "factory/small"
 	r, _, store := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
 	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
 		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +
@@ -553,7 +553,7 @@ func settleRig(t *testing.T, rows ...Holdout) (*Runner, *fakeKube, *fakeStore) {
 	t.Helper()
 	kube := newFakeKube()
 	card := seedCriteriaPlan(t)
-	card.Process, card.ModelAlias = "maintenance", "factory/coding-cheap"
+	card.Process, card.ModelAlias = "maintenance", "factory/small"
 	r, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
 	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
 		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +

@@ -43,7 +43,7 @@ func TestPGStore(t *testing.T) {
 
 	// factoryd owns task rows; seed one the way it would.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app', 'coding-cheap')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app', 'small')`,
 	); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -51,13 +51,13 @@ func TestPGStore(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
 	}
-	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/app", ModelAlias: "coding-cheap"}
+	want := Task{ID: "t1", BudgetEUR: 10, SpentEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/app", ModelAlias: "small"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("task = %+v, want %+v", got, want)
 	}
 
 	// a hold and its release book the task and the ledger together
-	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "coding-cheap",
+	h, err := s.TakeHold(ctx, policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "small",
 		Bytes: 1000, Price: policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}, WantOut: 1024, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
 	if err != nil || h.MaxOut != 1024 {
 		t.Fatalf("TakeHold = (%+v, %v), want 1024 tokens", h, err)
@@ -65,11 +65,11 @@ func TestPGStore(t *testing.T) {
 	cost := 0.5
 	// the hold is 1000 × 1e-6 + 1024 × 4e-6 = 0.005096 EUR: 0.5 is over it
 	if b, err := s.ReleaseHold(ctx, h, &cost, policy.Usage{}); err != nil || b.Spent != 2.5 ||
-		b.OverHold != "COST OVER HOLD: model coding-cheap cost 0.500000 EUR against a hold of 0.005096 EUR; booked in full" {
+		b.OverHold != "COST OVER HOLD: model small cost 0.500000 EUR against a hold of 0.005096 EUR; booked in full" {
 		t.Fatalf("ReleaseHold = (%+v, %v), want spent 2.5, flagged", b, err)
 	}
 	var ledger string
-	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(task_id || ' ' || kind || ' ' || ref || ' ' || eur::text, ';') FROM ledger`).Scan(&ledger); err != nil || ledger != "t1 model coding-cheap 0.5" {
+	if err := s.db.QueryRowContext(ctx, `SELECT string_agg(task_id || ' ' || kind || ' ' || ref || ' ' || eur::text, ';') FROM ledger`).Scan(&ledger); err != nil || ledger != "t1 model small 0.5" {
 		t.Fatalf("ledger = (%q, %v)", ledger, err)
 	}
 
@@ -88,7 +88,7 @@ func TestPGStore(t *testing.T) {
 
 	spend := 2.75
 	if err := s.InsertAudit(ctx, AuditRow{
-		TaskID: "t1", Decision: "allowed", Reason: "", ModelAlias: "coding-cheap", SpendEUR: &spend, PolicyVersion: &v.ID,
+		TaskID: "t1", Decision: "allowed", Reason: "", ModelAlias: "small", SpendEUR: &spend, PolicyVersion: &v.ID,
 		OutputLimit: &h.MaxOut, HoldEUR: &h.EUR, OverHold: "COST OVER HOLD: x", Deployment: "zai/glm-5.3",
 	}); err != nil {
 		t.Fatalf("InsertAudit: %v", err)
@@ -99,7 +99,7 @@ func TestPGStore(t *testing.T) {
 		t.Fatalf("InsertAudit (no spend): %v", err)
 	}
 
-	if err := s.InsertAudit(ctx, AuditRow{TaskID: "t2", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "review-frontier"}); err != nil {
+	if err := s.InsertAudit(ctx, AuditRow{TaskID: "t2", Kind: policy.PurposeReview, Decision: "allowed", ModelAlias: "big"}); err != nil {
 		t.Fatalf("InsertAudit (review): %v", err)
 	}
 	var kinds string
@@ -174,7 +174,7 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	}
 	defer s.db.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
-		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'coding-cheap')`); err != nil {
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {
@@ -186,8 +186,8 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 			"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":140000,\"completion_tokens\":900,\"prompt_tokens_details\":{\"cached_tokens\":131600},\"cost\":0.007818}}\n\n" +
 			"data: [DONE]\n\n"})
 	srv := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "sa"}}, Store: s, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
-		Prices: fakePrices{"coding-cheap": {In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: 32768}}})
-	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
+		Prices: fakePrices{"small": {In: 0.30e-6, CacheRead: 0.03e-6, Out: 1.50e-6, MaxOutput: 32768}}})
+	if rr := doChat(t, srv.Routes("test"), `{"model":"small","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
 	}
 	_, bodies, _ := stub.seen()
@@ -215,7 +215,7 @@ func TestRowsCarryTheSessionAndTheAuthor(t *testing.T) {
 	defer s.db.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
 		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, author)
-		VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'coding-cheap', 'alice')`); err != nil {
+		VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'alice')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {
@@ -225,11 +225,11 @@ func TestRowsCarryTheSessionAndTheAuthor(t *testing.T) {
 	stub.setResp(stubResp{status: http.StatusOK, headers: map[string]string{"Content-Type": "text/event-stream"},
 		body: "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":1000,\"completion_tokens\":10,\"cost\":0.0004}}\n\ndata: [DONE]\n\n"})
 	srv := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: "t1", SAUID: "sa", Session: "s-1"}}, Store: s, Minter: &fakeMinter{}, LiteLLMURL: stub.URL,
-		Prices: fakePrices{"coding-cheap": {In: 0.30e-6, Out: 1.50e-6, MaxOutput: 32768}}})
-	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-cheap","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
+		Prices: fakePrices{"small": {In: 0.30e-6, Out: 1.50e-6, MaxOutput: 32768}}})
+	if rr := doChat(t, srv.Routes("test"), `{"model":"small","stream":true,"messages":[]}`); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d (%s)", rr.Code, rr.Body.String())
 	}
-	if rr := doChat(t, srv.Routes("test"), `{"model":"coding-frontier","messages":[]}`); rr.Code != http.StatusForbidden {
+	if rr := doChat(t, srv.Routes("test"), `{"model":"big","messages":[]}`); rr.Code != http.StatusForbidden {
 		t.Fatalf("another model's call = %d (%s), want the capability refusal", rr.Code, rr.Body.String())
 	}
 	if err := s.InsertAudit(ctx, AuditRow{TaskID: "t-gone", Decision: "refused_task_unknown"}); err != nil {

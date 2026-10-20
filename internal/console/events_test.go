@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -527,8 +528,18 @@ func streamAt(t *testing.T, r *rig, name, query, lastID string) (*http.Response,
 		resp.Body.Close()
 		srv.Close()
 	})
-	return resp, bufio.NewReader(resp.Body)
+	br := bufio.NewReader(resp.Body)
+	if resp.StatusCode == http.StatusOK {
+		if got := nextMessage(t, br); !slices.Equal(got, pinged) {
+			t.Fatalf("the stream opened with %q, want %q", got, pinged)
+		}
+	}
+	return resp, br
 }
+
+// pinged is the stream's heartbeat as nextMessage reads it: event ping,
+// the console's build its data.
+var pinged = []string{"event: ping", "data: " + build}
 
 // nextMessage is the stream's next message, or comment, as its lines up
 // to the blank line that ends it; the test fails after two seconds.
@@ -605,7 +616,7 @@ func (f *readingForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
 func skipPings(t *testing.T, br *bufio.Reader) []string {
 	t.Helper()
 	for range 40 {
-		if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+		if got := nextMessage(t, br); !slices.Equal(got, pinged) {
 			return got
 		}
 	}
@@ -651,7 +662,7 @@ func TestStreamFollowsReadOnly(t *testing.T) {
 		switch got := nextMessage(t, br); {
 		case slices.Equal(got, []string{"read: EOF"}):
 			return
-		case slices.Equal(got, []string{": ping"}), len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
+		case slices.Equal(got, pinged), len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
 		default:
 			t.Fatalf("after bob lost the project the stream sent %q", got)
 		}
@@ -691,7 +702,7 @@ func TestStreamStopsRowsToAFormerWriter(t *testing.T) {
 		r.c.mu.Unlock()
 		// the second heartbeat after it checked the member again
 		for pings := 0; pings < 2; {
-			if got := nextMessage(t, br); slices.Equal(got, []string{": ping"}) {
+			if got := nextMessage(t, br); slices.Equal(got, pinged) {
 				pings++
 			}
 		}
@@ -699,7 +710,7 @@ func TestStreamStopsRowsToAFormerWriter(t *testing.T) {
 			Via: factoryd.ViaButton, At: at, Detail: map[string]any{"text": "a writer's steer"}})
 		for pings := 0; pings < 2; {
 			switch got := nextMessage(t, br); {
-			case slices.Equal(got, []string{": ping"}):
+			case slices.Equal(got, pinged):
 				pings++
 			case len(got) > 0 && got[0] == "event: board":
 			default:
@@ -765,7 +776,7 @@ func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
 	if got := nextMessage(t, br); len(got) != 2 || got[0] != "event: event" {
 		t.Fatalf("first %q, want the agent's text", got)
 	}
-	for _, want := range []string{": ping", "event: counters"} {
+	for _, want := range []string{"event: ping", "event: counters"} {
 		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
 			t.Fatalf("got %q, want %s", got, want)
 		}
@@ -774,7 +785,7 @@ func TestStreamHeartbeatReadsTheBoard(t *testing.T) {
 	r.tasks.set("", running)
 	// the panel carries no stage ages (C20), so the card's age alone
 	// changes no counter: the heartbeat's ping, then the board event
-	for _, want := range []string{": ping", "event: board"} {
+	for _, want := range []string{"event: ping", "event: board"} {
 		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
 			t.Fatalf("after the card's age changed: %q, want %s", got, want)
 		}
@@ -916,7 +927,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 		switch got := nextMessage(t, br); {
 		case len(got) > 0 && got[0] == "event: counters":
 			t.Fatalf("unchanged counters sent again: %q", got)
-		case slices.Equal(got, []string{": ping"}):
+		case slices.Equal(got, pinged):
 			pings++
 		}
 	}
@@ -936,7 +947,7 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 	t.Cleanup(func() { heartbeat = was })
 	r := newRig(t)
 	_, br := streamOf(t, r, "")
-	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+	if got := nextMessage(t, br); !slices.Equal(got, pinged) {
 		t.Fatalf("a live session's stream sent %q, want the heartbeat", got)
 	}
 	r.sessions.mu.Lock()
@@ -947,7 +958,7 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 		switch got := nextMessage(t, br); {
 		case slices.Equal(got, []string{"read: EOF"}):
 			return
-		case slices.Equal(got, []string{": ping"}):
+		case slices.Equal(got, pinged):
 			pings++
 		case len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
 		default:
@@ -957,14 +968,51 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 	t.Fatal("the stream outlived its session by two heartbeats")
 }
 
-// A quiet stream sends the heartbeat comment within its interval.
+// A quiet stream sends the heartbeat within its interval.
 func TestStreamHeartbeat(t *testing.T) {
 	was := heartbeat
 	heartbeat = 20 * time.Millisecond
 	t.Cleanup(func() { heartbeat = was })
 	_, br := streamOf(t, newRig(t), "")
-	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
-		t.Fatalf("a quiet stream sent %q, want the comment \": ping\"", got)
+	if got := nextMessage(t, br); !slices.Equal(got, pinged) {
+		t.Fatalf("a quiet stream sent %q, want the heartbeat %q", got, pinged)
+	}
+}
+
+// The console's server shuts down without waiting on its open streams:
+// EndStreams, registered on its shutdown, ends them, so Shutdown returns
+// before its timeout and the stream reads its end.
+func TestStreamEndsAtTheServersShutdown(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: r.c, ReadHeaderTimeout: time.Second}
+	srv.RegisterOnShutdown(r.c.EndStreams)
+	go srv.Serve(ln)
+	req, err := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+"/projects/ai-software-factory-code/events/stream", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(ck)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	br := bufio.NewReader(resp.Body)
+	if got := nextMessage(t, br); !slices.Equal(got, pinged) {
+		t.Fatalf("the stream opened with %q, want %q", got, pinged)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown with an open stream: %v, want it to return once the stream ended", err)
+	}
+	if got := nextMessage(t, br); !slices.Equal(got, []string{"read: EOF"}) {
+		t.Fatalf("after the shutdown the stream read %q, want its end", got)
 	}
 }
 
@@ -1413,6 +1461,180 @@ console.log(JSON.stringify(out));
 		`"streams":["/projects/code/events/stream?project=code closed","/projects/code/events/stream?project=code&q=exp"],` +
 		`"followed":["GET /board?project=code&q=exp","GET /cards/t-run/drawer?tab=chat"],"caret":[2,3],"refocused":true,"kept":true,` +
 		`"replaced":[[{"doc":"docs/a.md"},"/?project=code&q=exp&doc=docs%2Fa.md#card=t-1"],[null,"/?project=code&q=exp"]],"popped":[[],"exp",[],[],"",["GET /board?project=code"]]}`
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// The board stays live across a roll and a tab left behind, console.js
+// under node: a failed read of the board's own flashes nothing, a member's
+// action the router answers in a roll's gap (502 to 504 without the
+// Content-Security-Policy, or no answer) flashes that the factory
+// restarts, the console's own refusal and the router's other answers
+// their text; a stream a refused connect closed reads the board in 5 s (an
+// ended session answers it with the login) and opens anew, whose open
+// reads the board again and tells the chat, as the browser's own
+// reconnect after a drop does, while a stream moved to a new query reads
+// the board and tells the chat nothing; a tab back in front reopens a
+// stream closed or silent for over a minute, not a talking one, and a
+// hidden tab or the network back checks too; a ping naming another build
+// reloads the page once it is hidden, nothing typed and nothing streaming.
+func TestBoardStaysLive(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var listeners = {}, winListeners = {}, requests = [], pending = [], timers = [], sources = [], reloads = 0, clock = 1000000, opened = 0, typed = [], streaming = null;
+function el(props) {
+  return Object.assign({dataset: {}, hidden: false, textContent: "", innerHTML: "",
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
+    getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {},
+    classList: {contains: function () { return false; }}}, props);
+}
+var byID = {board: el({id: "board", dataset: {project: "code", query: "?project=code"}}), live: el(), flash: el({hidden: true})};
+function EventSource(url) { this.url = url; this.on = {}; this.readyState = 0; sources.push(this); }
+EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
+EventSource.prototype.close = function () { this.closed = true; this.readyState = 2; };
+EventSource.CONNECTING = 0; EventSource.OPEN = 1; EventSource.CLOSED = 2;
+var document = {hidden: false, activeElement: null,
+  body: el({querySelectorAll: function (sel) { return sel === "input, textarea" ? typed : []; }}),
+  documentElement: {getAttribute: function () { return "dark"; }},
+  getElementById: function (id) { return byID[id] || null; },
+  querySelector: function (sel) { return sel === 'meta[name="build"]' ? {content: "b1"} : sel === '[aria-busy="true"]' ? streaming : null; },
+  querySelectorAll: function () { return []; },
+  addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+  removeEventListener: function () {},
+  dispatchEvent: function (e) { if (e.type === "streamopen") opened++; (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }};
+var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }}, document: document,
+  location: {hash: "", reload: function () { reloads++; }}, history: {state: null, replaceState: function () {}, pushState: function () {}},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  Date: {now: function () { return clock; }},
+  setTimeout: function (fn, ms) { timers.push([fn, ms]); }, setInterval: function () {}, clearTimeout: function () {},
+  CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
+  fetch: function (url) { requests.push("fetch " + url); return new Promise(function () {}); },
+  htmx: {ajax: function (verb, url) { requests.push(verb + " " + url); return new Promise(function (ok) { pending.push(ok); }); }, swap: function () {}, process: function () {}},
+  window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }}};
+require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+function fire(type, e) { (listeners[type] || []).forEach(function (fn) { fn(e || {}); }); }
+function settle() {
+  pending.splice(0).forEach(function (ok) { ok(); });
+  return new Promise(function (done) { setImmediate(done); });
+}
+function xhr(status, csp, text) { return {status: status, responseText: text, getResponseHeader: function (h) { return h === "Content-Security-Policy" && csp ? "default-src 'self'" : null; }}; }
+function flashed() { var f = byID.flash.hidden ? "" : byID.flash.textContent; byID.flash.hidden = true; return f; }
+(async function () {
+var out = {};
+fire("DOMContentLoaded");
+var es = sources[0];
+es.readyState = 1;
+es.onopen();
+fire("htmx:responseError", {detail: {elt: byID.board, xhr: xhr(503, false, "upstream connect error or disconnect/reset before headers")}});
+out.flash = [flashed()];
+fire("htmx:responseError", {detail: {elt: el({id: "move"}), xhr: xhr(503, false, "upstream connect error or disconnect/reset before headers")}});
+out.flash.push(flashed());
+fire("htmx:responseError", {detail: {elt: el({id: "move"}), xhr: xhr(409, true, "The lane takes no card from you.\n")}});
+out.flash.push(flashed());
+fire("htmx:sendError", {detail: {elt: el({id: "move"}), xhr: xhr(0, false, "")}});
+out.flash.push(flashed());
+fire("htmx:responseError", {detail: {elt: el({id: "move"}), xhr: xhr(503, true, "cannot read the session")}});
+out.flash.push(flashed());
+fire("htmx:responseError", {detail: {elt: el({id: "move"}), xhr: xhr(413, false, "Payload Too Large")}});
+out.flash.push(flashed());
+// a roll's refused connect closes the stream
+es.readyState = 2;
+es.onerror();
+out.timers = timers.map(function (t) { return t[1]; });
+out.down = byID.live.textContent;
+timers[0][0]();
+out.closed = [requests.slice(), sources.length, !!es.closed];
+es = sources[1];
+es.readyState = 1;
+es.onopen();
+await settle();
+out.reopened = [requests.slice(), opened, byID.live.textContent];
+await settle();
+// the tab coming back: a talking stream stays, a silent or closed one is reopened
+requests = [];
+clock += 59000;
+fire("visibilitychange");
+out.talking = [sources.length, requests.slice()];
+clock += 2000;
+fire("visibilitychange");
+out.silent = [sources.length, requests.slice(), !!es.closed];
+await settle();
+es = sources[2];
+es.readyState = 1;
+es.onopen();
+await settle();
+es.readyState = 2;
+document.hidden = true;
+fire("visibilitychange");
+out.hidden = sources.length;
+document.hidden = false;
+winListeners.online.forEach(function (fn) { fn({}); });
+out.online = sources.length;
+await settle();
+es = sources[3];
+es.readyState = 1;
+es.onopen();
+clock += 61000;
+winListeners.pageshow.forEach(function (fn) { fn({persisted: true}); });
+out.restored = sources.length;
+await settle();
+es = sources[4];
+es.readyState = 1;
+es.onopen();
+await settle();
+// the ping: its own build reloads nothing, another reloads once hidden,
+// nothing typed and nothing streaming
+es.on.ping({data: "b1"});
+document.hidden = true;
+fire("visibilitychange");
+out.reloads = [reloads];
+document.hidden = false;
+es.on.ping({data: "b2"});
+out.reloads.push(reloads);
+var field = el({type: "text", value: "half a task", defaultValue: ""});
+typed = [field];
+document.hidden = true;
+fire("visibilitychange");
+out.reloads.push(reloads);
+typed = [];
+streaming = el();
+fire("visibilitychange");
+out.reloads.push(reloads);
+streaming = null;
+fire("visibilitychange");
+out.reloads.push(reloads);
+// the browser's own reconnect after a drop tells the chat; a stream moved
+// to a new query reads the board and tells it nothing
+var was = opened;
+es.readyState = 0;
+es.onerror();
+es.readyState = 1;
+es.onopen();
+out.dropped = opened - was;
+await settle();
+await settle();
+requests = [];
+byID.board = el({id: "board", dataset: {project: "code", query: "?project=code&q=x"}});
+fire("htmx:afterSwap", {detail: {target: byID.board}});
+sources[sources.length - 1].onopen();
+out.moved = [opened - was, requests.slice(), sources.length];
+console.log(JSON.stringify(out));
+})();`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
+	got, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node: %v\n%s", err, got)
+	}
+	const restarts = "The factory did not answer: it restarts after a deploy. Try again in a moment."
+	want := `{"flash":["","` + restarts + `","The lane takes no card from you.","` + restarts + `","cannot read the session","Payload Too Large"],` +
+		`"timers":[5000],"down":"The live stream is down; it reconnects by itself.",` +
+		`"closed":[["GET /board?project=code"],2,true],` +
+		`"reopened":[["GET /board?project=code","GET /board?project=code"],1,""],` +
+		`"talking":[2,[]],"silent":[3,["GET /board?project=code"],true],` +
+		`"hidden":3,"online":4,"restored":5,"reloads":[0,0,0,0,1],"dropped":1,"moved":[1,["GET /board?project=code&q=x"],6]}`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

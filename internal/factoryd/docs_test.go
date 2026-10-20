@@ -30,7 +30,7 @@ func TestSessionReadsTheProjectsDocumentRepository(t *testing.T) {
 			v := testPolicyVersion()
 			v.Projects["x"] = policy.ProjectConfig{Repository: "sf/x", Agents: policy.AgentsCoder, Chat: &policy.ChatConfig{DocRepo: tc.docRepo}}
 			runner.cfg.Policy = func() policy.Version { return v }
-			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/coding-cheap"}, nil,
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
 				pushedLine("c0ffee")+"\n"+resultLine(true, "pushed branch factory/t1 at c0ffee")); err != nil {
 				t.Fatal(err)
 			}

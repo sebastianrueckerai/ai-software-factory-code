@@ -33,7 +33,7 @@ func wantSums(t *testing.T, got, want map[string]float64) {
 func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}}
 	merged := prTask
-	merged.Status, merged.PRNumber, merged.SpentEUR, merged.ModelAlias = "in-review", 7, 0.42, "coding-frontier"
+	merged.Status, merged.PRNumber, merged.SpentEUR, merged.ModelAlias = "in-review", 7, 0.42, "big"
 	merged.Usage.Attempts = 2
 	r, store, _ := newActivityRunner(t, merged, fj)
 	m, reader := testMetrics(t)
@@ -45,7 +45,7 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 		}
 	}
 	report := prTask
-	report.ID, report.Status, report.SpentEUR, report.ModelAlias, report.Parent = "t-report", "running", 0.05, "coding-cheap", "t1"
+	report.ID, report.Status, report.SpentEUR, report.ModelAlias, report.Parent = "t-report", "running", 0.05, "small", "t1"
 	report.Usage.Attempts = 1
 	store.CreateTask(context.Background(), report)
 	if _, err := execActivity(t, r, ActivityFinish, "t-report", "done", "report posted as issue comment 3"); err != nil {
@@ -59,7 +59,7 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	}
 	store.projects = []Project{}
 	failed := prTask
-	failed.ID, failed.Status, failed.SpentEUR, failed.ModelAlias = "t2", "running", 0.1, "coding-cheap"
+	failed.ID, failed.Status, failed.SpentEUR, failed.ModelAlias = "t2", "running", 0.1, "small"
 	failed.Usage.Attempts = 3
 	store.CreateTask(context.Background(), failed)
 	if _, err := execActivity(t, r, ActivityFinish, "t2", "failed", "3 attempts exhausted"); err != nil {
@@ -67,17 +67,17 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	}
 
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=2,lane=none,merge_rule=auto,model_alias=coding-frontier,process=none,project=demo,state=done":    1,
-		"attempts=1,lane=none,merge_rule=auto,model_alias=coding-cheap,process=none,project=demo,state=done":       1,
-		"attempts=0,lane=none,merge_rule=auto,model_alias=none,process=none,project=demo,state=done":               1,
-		"attempts=3,lane=none,merge_rule=human,model_alias=coding-cheap,process=none,project=sf/repo,state=failed": 1,
+		"attempts=2,lane=none,merge_rule=auto,model_alias=big,process=none,project=demo,state=done":         1,
+		"attempts=1,lane=none,merge_rule=auto,model_alias=small,process=none,project=demo,state=done":       1,
+		"attempts=0,lane=none,merge_rule=auto,model_alias=none,process=none,project=demo,state=done":        1,
+		"attempts=3,lane=none,merge_rule=human,model_alias=small,process=none,project=sf/repo,state=failed": 1,
 	})
 	got := histograms(t, reader, "factory.task.cost")
 	want := map[string]histPoint{
-		"lane=none,model_alias=coding-frontier,outcome=merged,process=none": {1, 0.42},
-		"lane=none,model_alias=coding-cheap,outcome=done,process=none":      {1, 0.05},
-		"lane=none,model_alias=none,outcome=merged,process=none":            {1, 0},
-		"lane=none,model_alias=coding-cheap,outcome=failed,process=none":    {1, 0.1},
+		"lane=none,model_alias=big,outcome=merged,process=none":   {1, 0.42},
+		"lane=none,model_alias=small,outcome=done,process=none":   {1, 0.05},
+		"lane=none,model_alias=none,outcome=merged,process=none":  {1, 0},
+		"lane=none,model_alias=small,outcome=failed,process=none": {1, 0.1},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("cost = %v, want %v", got, want)
@@ -149,12 +149,12 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 func TestSessionRecorderKeepsTheModelAlias(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running"})
-	for _, model := range []string{"factory/coding-cheap", "factory/coding-frontier"} {
+	for _, model := range []string{"factory/small", "factory/big"} {
 		if _, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s-"+model, "", model); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.ModelAlias != "coding-frontier" {
+	if got, _, _ := store.Task(context.Background(), "t1"); got.ModelAlias != "big" {
 		t.Fatalf("model alias = %q, want the last session's", got.ModelAlias)
 	}
 }
@@ -270,7 +270,7 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 	ctx := context.Background()
 	m, reader := testMetrics(t)
 	card := prTask
-	card.Status, card.PRNumber, card.SpentEUR, card.ModelAlias, card.Lane, card.Process = "in-review", 7, 0.3, "coding-cheap", "ready", "spec"
+	card.Status, card.PRNumber, card.SpentEUR, card.ModelAlias, card.Lane, card.Process = "in-review", 7, 0.3, "small", "ready", "spec"
 	card.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 1}
 	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}})
 	r.cfg.Metrics, r.completion.Metrics = m, m
@@ -290,12 +290,12 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=1,lane=ready,merge_rule=human,model_alias=coding-cheap,process=spec,project=linkshort,state=done": 1,
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=linkshort,state=failed":        1,
+		"attempts=1,lane=ready,merge_rule=human,model_alias=small,process=spec,project=linkshort,state=done": 1,
+		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=linkshort,state=failed": 1,
 	})
 	if got, want := histograms(t, reader, "factory.task.cost"), map[string]histPoint{
-		"lane=ready,model_alias=coding-cheap,outcome=merged,process=spec": {1, 0.3},
-		"lane=none,model_alias=none,outcome=failed,process=none":          {1, 0},
+		"lane=ready,model_alias=small,outcome=merged,process=spec": {1, 0.3},
+		"lane=none,model_alias=none,outcome=failed,process=none":   {1, 0},
 	}; !maps.Equal(got, want) {
 		t.Fatalf("cost = %v, want %v", got, want)
 	}
@@ -346,7 +346,7 @@ func TestReportMetricsTakeParentLane(t *testing.T) {
 		{ID: "t-presort", Parent: "t1", Source: SourcePresort},
 		{ID: "t-screen", Parent: "t-ready", Source: SourceScreening},
 	} {
-		report.Status, report.Repository, report.IssueNumber, report.ModelAlias, report.SpentEUR = "running", "sf/repo", 4, "coding-cheap", 0.05
+		report.Status, report.Repository, report.IssueNumber, report.ModelAlias, report.SpentEUR = "running", "sf/repo", 4, "small", 0.05
 		report.Usage.Attempts = 1
 		store.CreateTask(ctx, report)
 		if _, err := execActivity(t, r, ActivityFinish, report.ID, "done", "report posted"); err != nil {
@@ -354,12 +354,12 @@ func TestReportMetricsTakeParentLane(t *testing.T) {
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=1,lane=backlog,merge_rule=human,model_alias=coding-cheap,process=maintenance,project=demo,state=done": 1,
-		"attempts=1,lane=ready,merge_rule=human,model_alias=coding-cheap,process=spec,project=demo,state=done":          1,
+		"attempts=1,lane=backlog,merge_rule=human,model_alias=small,process=maintenance,project=demo,state=done": 1,
+		"attempts=1,lane=ready,merge_rule=human,model_alias=small,process=spec,project=demo,state=done":          1,
 	})
 	if got, want := histograms(t, reader, "factory.task.cost"), map[string]histPoint{
-		"lane=backlog,model_alias=coding-cheap,outcome=done,process=maintenance": {1, 0.05},
-		"lane=ready,model_alias=coding-cheap,outcome=done,process=spec":          {1, 0.05},
+		"lane=backlog,model_alias=small,outcome=done,process=maintenance": {1, 0.05},
+		"lane=ready,model_alias=small,outcome=done,process=spec":          {1, 0.05},
 	}; !maps.Equal(got, want) {
 		t.Fatalf("cost = %v, want %v", got, want)
 	}

@@ -2529,7 +2529,7 @@ func TestDayResume(t *testing.T) {
 	store := newFakeStore()
 	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "agent", TaskID: "t1"},
 		{ID: 3, Kind: AlertEscalation, Source: "day_cap", TaskID: "t2"}}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}, Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"coding-frontier": 32768}}}}}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}, Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"big": 32768}}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}, Policy: func() policy.Version { return v }}}
 	ctx := context.Background()
 	verdicts := func() []string {
@@ -2540,20 +2540,20 @@ func TestDayResume(t *testing.T) {
 		return out
 	}
 	store.daySpent = 39.99
-	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || ok || !slices.Equal(verdicts(), []string{"/", "/", "/"}) {
+	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || ok || !slices.Equal(verdicts(), []string{"/", "/", "/"}) {
 		t.Fatalf("0.01 EUR free: (%v, %v), alerts %q; want the wait on, no alert judged", ok, err, verdicts())
 	}
 	store.daySpent = 39.98
-	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "/"}) {
+	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "/"}) {
 		t.Fatalf("0.02 EUR free: (%v, %v), alerts %q; want the wait's end and t1's day-cap alert judged", ok, err, verdicts())
 	}
 	store.daySpent = 63.44
-	if ok, err := r.DayResume(ctx, "t2", "factory/coding-frontier", true); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "real/factoryd"}) {
+	if ok, err := r.DayResume(ctx, "t2", "factory/big", true); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "real/factoryd"}) {
 		t.Fatalf("the turn: (%v, %v), alerts %q; want the wait's end however spent the old day", ok, err, verdicts())
 	}
 	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
 	store.daySpent = 0
-	if ok, err := r.DayResume(ctx, "t1", "factory/coding-frontier", false); err != nil || ok {
+	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || ok {
 		t.Fatalf("unpriced: (%v, %v), want the wait on to the turn", ok, err)
 	}
 }
@@ -2597,7 +2597,7 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 // The floor reads the free headroom the gateway grants against, the
 // task's outstanding holds netted (roadmap 243, card #756). Budget 5.00,
 // spent 4.83 and a hold of 0.17: 0.17 remains, the hold takes all of it,
-// and the cheapest call on coding-frontier, 1024 output tokens at 1.5e-5,
+// and the cheapest call on big, 1024 output tokens at 1.5e-5,
 // needs 0.01536. The refusal names the hold, its expiry and both actions.
 // Settled at its call's cost of 0.05, spent is 4.88 and 0.12 is free: a
 // call fits. Swept instead, the hold is booked in full: spent is 5.00,
@@ -2611,11 +2611,11 @@ func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	store.held = map[string]policy.TaskFree{"t-756": {Held: 0.17, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
 
-	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
+	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big")
 	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
 		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
 		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), " +
-		"so 0.000000 EUR is free, and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
+		"so 0.000000 EUR is free, and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
 		"an answer would start an attempt whose first call cannot run."; err != nil || why != want {
 		t.Fatalf("held: (%q, %v), want %q", why, err, want)
 	}
@@ -2624,16 +2624,16 @@ func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	settled.SpentEUR = 4.88
 	store.tasks["t-756"] = settled
 	store.held = nil
-	if why, err := r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier"); err != nil || why != "" {
+	if why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big"); err != nil || why != "" {
 		t.Fatalf("settled: (%q, %v), want funded", why, err)
 	}
 
 	swept := store.tasks["t-756"]
 	swept.SpentEUR = 5
 	store.tasks["t-756"] = swept
-	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/coding-frontier")
+	why, err = r.AttemptFunded(context.Background(), "t-756", "factory/big")
 	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/coding-frontier needs 0.015360 EUR " +
+		"0.000 EUR of the 5.000 EUR budget remains, and the cheapest call on factory/big needs 0.015360 EUR " +
 		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."; err != nil || why != want {
 		t.Fatalf("swept: (%q, %v), want %q", why, err, want)
 	}
@@ -2667,15 +2667,15 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 	}
 	var id int64
 	if err := s.db.QueryRowContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at)
-		VALUES ('t-756', 'model', 'coding-frontier', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
+		VALUES ('t-756', 'model', 'big', 0.17, '2030-01-01T00:00:00Z') RETURNING id`).Scan(&id); err != nil {
 		t.Fatal(err)
 	}
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	r := &Runner{store: s, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: testPolicyVersion}}
-	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "coding-frontier", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
+	call := policy.HoldRequest{TaskID: "t-756", Kind: policy.KindModel, Ref: "big", Price: frontier, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
 	agree := func(stage, wantWhy string, fits bool) {
 		t.Helper()
-		why, err := r.AttemptFunded(ctx, "t-756", "factory/coding-frontier")
+		why, err := r.AttemptFunded(ctx, "t-756", "factory/big")
 		if err != nil || !strings.Contains(why, wantWhy) || (why == "") != fits {
 			t.Fatalf("%s: floor (%q, %v), want %q", stage, why, err, wantWhy)
 		}
@@ -2693,12 +2693,12 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 	agree("held", "outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2030-01-01T00:00:00Z), so 0.000000 EUR is free", false)
 
 	cost := 0.05
-	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "coding-frontier", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
+	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "big", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
 		t.Fatal(err)
 	}
 	agree("settled", "", true)
 
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-756', 'model', 'coding-frontier', 0.12, now() - interval '1 second')`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t-756', 'model', 'big', 0.12, now() - interval '1 second')`); err != nil {
 		t.Fatal(err)
 	}
 	if n, err := s.SweepHolds(ctx); err != nil || n != 1 {
@@ -2720,40 +2720,40 @@ func (p aliasPrices) Price(_ context.Context, alias string) (policy.Price, error
 // The fund's floor is a session's opening (roadmap 243): every call that
 // started before its first one ended, each priced at its own alias's rate
 // and summed as the holds take them. Card #704: 0.11 EUR of its 5.00 left
-// on coding-frontier (3e-6 in, 1.5e-5 out); coding-cheap is 1e-6 in, 4e-6
+// on big (3e-6 in, 1.5e-5 out); small is 1e-6 in, 4e-6
 // out. The answer path's floor, 1024 output tokens at 0.01536 EUR, fits.
 // Of the newest sessions, s1 opened with two calls asking 24,576 output
 // tokens each, which the gateway holds at a token a byte without an
 // earlier call of the task: 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 on
-// coding-frontier and 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 on
-// coding-cheap, 0.607001 together, more than s2's one call of 43,683 bytes
+// big and 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 on
+// small, 0.607001 together, more than s2's one call of 43,683 bytes
 // (0.499689). The fund's floor refuses, and the card is fundable. At 0.56
-// free it still refuses; an earlier coding-frontier call of 10,144 prompt
+// free it still refuses; an earlier big call of 10,144 prompt
 // tokens in 44,342 bytes calibrates that call's prompt to 10,144 tokens
 // with a quarter's margin, 0.03804 + 0.36864 + 0.105335 = 0.512015 EUR,
 // which 0.56 funds. An opening call on an alias nobody prices refuses the
 // fund. With no opening on the alias the floor measures every alias's;
 // with none at all, the cheapest call.
 func TestSessionFundedPricesASessionsOpening(t *testing.T) {
-	prices := aliasPrices{"coding-frontier": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
-		"coding-cheap": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
+	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
+		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-704", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.89}); err != nil {
 		t.Fatal(err)
 	}
-	s1 := []policy.OpeningCall{{Ref: "coding-frontier", Bytes: 44342, WantOut: 24576}, {Ref: "coding-cheap", Bytes: 7031, WantOut: 24576}}
-	s2 := []policy.OpeningCall{{Ref: "coding-frontier", Bytes: 43683, WantOut: 24576}}
-	store.openings = map[string]policy.Opening{"coding-frontier": {Sessions: [][]policy.OpeningCall{s2, s1}}}
+	s1 := []policy.OpeningCall{{Ref: "big", Bytes: 44342, WantOut: 24576}, {Ref: "small", Bytes: 7031, WantOut: 24576}}
+	s2 := []policy.OpeningCall{{Ref: "big", Bytes: 43683, WantOut: 24576}}
+	store.openings = map[string]policy.Opening{"big": {Sessions: [][]policy.OpeningCall{s2, s1}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: prices, Policy: testPolicyVersion}}
 	ctx := context.Background()
 
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/coding-frontier"); err != nil || why != "" {
+	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
 		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
 	}
-	why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier")
+	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.110 EUR of the 5.000 EUR budget remains, and a session's opening on factory/coding-frontier needs 0.607001 EUR " +
-		"(2 calls at once: 44342 bytes on coding-frontier asking 24576 output tokens, 7031 bytes on coding-cheap asking 24576 output tokens; " +
+		"0.110 EUR of the 5.000 EUR budget remains, and a session's opening on factory/big needs 0.607001 EUR " +
+		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens; " +
 		"the largest of the newest 2 sessions' openings on it, as the holds take them); a session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
 		t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, want)
 	}
@@ -2761,32 +2761,32 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	raised := store.tasks["t-704"]
 	raised.BudgetEUR = 5.45
 	store.tasks["t-704"] = raised
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil || !strings.Contains(why, "0.560 EUR of the 5.450 EUR budget remains") {
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || !strings.Contains(why, "0.560 EUR of the 5.450 EUR budget remains") {
 		t.Fatalf("0.56 free: (%q, %v), want the opening refused", why, err)
 	}
 	calibrated := slices.Clone(s1)
 	calibrated[0].Earlier = policy.Usage{PromptTokens: 10144, BodyBytes: 44342}
-	store.openings["coding-frontier"] = policy.Opening{Sessions: [][]policy.OpeningCall{calibrated}}
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil || why != "" {
+	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{calibrated}}
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
 		t.Fatalf("calibrated at 0.56 free: (%q, %v), want the opening to fit", why, err)
 	}
-	store.openings["coding-frontier"] = policy.Opening{Sessions: [][]policy.OpeningCall{{s1[0], {Ref: "coding-unpriced", Bytes: 7031}}}}
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil ||
-		why != `the attempt's floor on coding-frontier cannot be read: LiteLLM has no model "coding-unpriced"` {
+	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{{s1[0], {Ref: "coding-unpriced", Bytes: 7031}}}}
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
+		why != `the attempt's floor on big cannot be read: LiteLLM has no model "coding-unpriced"` {
 		t.Fatalf("an unpriced opening call: (%q, %v), want the fund refused naming its alias", why, err)
 	}
 
 	raised.BudgetEUR = 5
 	store.tasks["t-704"] = raised
-	store.openings["coding-frontier"] = policy.Opening{Sessions: [][]policy.OpeningCall{s2}, AnyRef: true}
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil ||
-		!strings.Contains(why, "needs 0.499689 EUR (43683 bytes on coding-frontier asking 24576 output tokens; the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
+	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{s2}, AnyRef: true}
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
+		!strings.Contains(why, "needs 0.499689 EUR (43683 bytes on big asking 24576 output tokens; the largest of the newest 1 sessions' openings on any model, none on it being recorded") {
 		t.Fatalf("measured on any alias: (%q, %v)", why, err)
 	}
-	store.openings["coding-frontier"] = policy.Opening{AnyRef: true}
+	store.openings["big"] = policy.Opening{AnyRef: true}
 	raised.SpentEUR = 4.995
 	store.tasks["t-704"] = raised
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier"); err != nil ||
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
 		!strings.Contains(why, "needs 0.015360 EUR (no session's opening is recorded: 1024 output tokens at the hold machinery's minimum)") {
 		t.Fatalf("nothing measured: (%q, %v)", why, err)
 	}
@@ -2807,30 +2807,30 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	r := &Runner{store: store, cfg: RunnerConfig{
 		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
 		Policy: func() policy.Version { return v },
-		Models: ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}}}
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
 	ctx := context.Background()
 
-	why, err := r.SessionFunded(ctx, "t-1", "factory/coding-frontier")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/coding-frontier needs 0.600000 EUR "+
+	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR "+
 		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push.") {
 		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
-	if why, err := r.SessionFunded(ctx, "t-1", "coding-frontier"); err != nil || !BudgetRefusal(why) ||
-		!strings.Contains(why, "a session on coding-frontier needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
+		!strings.Contains(why, "a session on big needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
 		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
-	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
 		t.Fatalf("cheap at 0.50 free = (%q, %v), want funded", why, err)
 	}
 	raised := store.tasks["t-1"]
 	raised.SpentEUR = 4.8
 	store.tasks["t-1"] = raised
-	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil ||
-		!strings.Contains(why, "a session on factory/coding-cheap needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil ||
+		!strings.Contains(why, "a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml)") {
 		t.Fatalf("cheap at 0.20 free = (%q, %v), want the 0.300000 EUR floor named", why, err)
 	}
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
-	if why, err := r.SessionFunded(ctx, "t-1", "factory/coding-cheap"); err != nil || why != "" {
+	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
 		t.Fatalf("cheap without a floor at 0.20 free = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
 	}
 }
@@ -2854,9 +2854,9 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: frontier}, Policy: func() policy.Version { return v }}}
 	inf := math.Inf(1)
 	const (
-		answerTail = ", and the cheapest call on factory/coding-frontier needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
+		answerTail = ", and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
 			"an answer would start an attempt whose first call cannot run."
-		fundTail = ", and a session's opening on factory/coding-frontier needs 0.015360 EUR (no session's opening is recorded: " +
+		fundTail = ", and a session's opening on factory/big needs 0.015360 EUR (no session's opening is recorded: " +
 			"1024 output tokens at the hold machinery's minimum); a session started now could not make its opening calls."
 	)
 	for _, tc := range []struct {
@@ -2872,7 +2872,7 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	} {
 		t.Run(tc.decision, func(t *testing.T) {
 			store.capsFree = &tc.free
-			why, err := r.SessionFunded(context.Background(), "t-1", "factory/coding-frontier")
+			why, err := r.SessionFunded(context.Background(), "t-1", "factory/big")
 			if err != nil || why != tc.opening+fundTail {
 				t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, tc.opening+fundTail)
 			}
@@ -2882,7 +2882,7 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 			if q := escalationQuestion(why); len(q) > 300 || !strings.HasSuffix(q, ".") {
 				t.Errorf("the question row = %q, want the actions within 300 characters", q)
 			}
-			why, err = r.AttemptFunded(context.Background(), "t-1", "factory/coding-frontier")
+			why, err = r.AttemptFunded(context.Background(), "t-1", "factory/big")
 			if want := tc.opening + answerTail; err != nil || why != want {
 				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
 			}
@@ -2896,7 +2896,7 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 // On the database factoryd and the gateway share, the fund's floor and
 // the gateway's holds of a session's opening agree (roadmap 243), the
 // figures of TestSessionFundedPricesASessionsOpening: s-x opened with
-// 44,342 bytes on coding-frontier and 7,031 on coding-cheap, each asking
+// 44,342 bytes on big and 7,031 on small, each asking
 // 24,576 output tokens (0.607001 EUR together); its third call started
 // after the first ended and is no part of it. Taken in that order, each at
 // its alias's price, at 0.11 free the first hold is refused; at 0.31 the
@@ -2920,25 +2920,25 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.89 WHERE id = 't-704';
 		INSERT INTO ledger (task_id, kind, ref, session, held_at, created_at, want_out, eur, prompt_tokens, output_tokens, body_bytes) VALUES
-		('t-x', 'model', 'coding-frontier', 's-x', now() - interval '10 seconds', now() - interval '1 second', 24576, 0.02, 10144, 50, 44342),
-		('t-x', 'model', 'coding-cheap', 's-x', now() - interval '9 seconds', now() - interval '2 seconds', 24576, 0.01, 1607, 598, 7031),
-		('t-x', 'model', 'coding-frontier', 's-x', now() - interval '1 second', now(), 24576, 0.02, 11000, 50, 48000)`); err != nil {
+		('t-x', 'model', 'big', 's-x', now() - interval '10 seconds', now() - interval '1 second', 24576, 0.02, 10144, 50, 44342),
+		('t-x', 'model', 'small', 's-x', now() - interval '9 seconds', now() - interval '2 seconds', 24576, 0.01, 1607, 598, 7031),
+		('t-x', 'model', 'big', 's-x', now() - interval '1 second', now(), 24576, 0.02, 11000, 50, 48000)`); err != nil {
 		t.Fatal(err)
 	}
-	prices := aliasPrices{"coding-frontier": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
-		"coding-cheap": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
+	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
+		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
 	r := &Runner{store: s, cfg: RunnerConfig{Prices: prices, Policy: testPolicyVersion}}
 	agree := func(stage string, budget float64, refusal, opens string) {
 		t.Helper()
 		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET budget_eur = $1 WHERE id = 't-704'`, budget); err != nil {
 			t.Fatal(err)
 		}
-		why, err := r.SessionFunded(ctx, "t-704", "factory/coding-frontier")
+		why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 		if err != nil || (why == "") != (opens == "") || !strings.HasPrefix(why, opens) {
 			t.Fatalf("%s: the fund's floor = (%q, %v), want it to open %q", stage, why, err, opens)
 		}
 		var refused *policy.Refusal
-		for _, c := range []policy.OpeningCall{{Ref: "coding-frontier", Bytes: 44342}, {Ref: "coding-cheap", Bytes: 7031}} {
+		for _, c := range []policy.OpeningCall{{Ref: "big", Bytes: 44342}, {Ref: "small", Bytes: 7031}} {
 			_, err := policy.TakeHold(ctx, s.db, policy.HoldRequest{TaskID: "t-704", Kind: policy.KindModel, Ref: c.Ref, Session: "s-new",
 				Bytes: c.Bytes, WantOut: 24576, Price: prices[c.Ref], DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
 			if errors.As(err, &refused) {
@@ -2960,7 +2960,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		}
 	}
 	agree("0.11 free", 5, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
-	if why, err := r.AttemptFunded(ctx, "t-704", "factory/coding-frontier"); err != nil || why != "" {
+	if why, err := r.AttemptFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
 		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
 	}
 	agree("0.31 free", 5.2, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
@@ -2993,11 +2993,11 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	}
 	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: cheap}, Policy: testPolicyVersion}}
 
-	why, err := r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap")
+	why, err := r.AttemptFunded(context.Background(), "t-solvent", "factory/small")
 	if err != nil || why != "" {
 		t.Fatalf("solvent: (%q, %v), want funded", why, err)
 	}
-	why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap")
+	why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3009,27 +3009,27 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	// an unpriced model refuses the attempt, naming the alias without its
 	// provider prefix (roadmap 222, item 5)
 	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
-		why != "the attempt's floor on coding-cheap cannot be read: LiteLLM has no model" {
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
+		why != "the attempt's floor on small cannot be read: LiteLLM has no model" {
 		t.Fatalf("unpriced: (%q, %v), want the refusal naming the alias", why, err)
 	}
 	limitless := testPolicyVersion()
 	limitless.Tree.Document.Prices.MaxOutputTokens = nil
 	r.cfg.Prices, r.cfg.Policy = stubPrices{price: cheap}, func() policy.Version { return limitless }
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil ||
-		why != "the attempt's floor on coding-cheap cannot be read: coding-cheap has no output limit: prices.max_output_tokens in policy.yaml names none" {
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil ||
+		why != "the attempt's floor on small cannot be read: small has no output limit: prices.max_output_tokens in policy.yaml names none" {
 		t.Fatalf("limitless: (%q, %v), want the refusal naming the missing limit", why, err)
 	}
 	r.cfg.Policy = testPolicyVersion
 	// the price is read for the alias LiteLLM knows, not the prefixed name
 	asked := &askedPrices{price: cheap}
 	r.cfg.Prices = asked
-	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/coding-cheap"); err != nil || why != "" || !slices.Equal(asked.aliases, []string{"coding-cheap"}) {
-		t.Fatalf("prefixed: (%q, %v), asked %q; want funded on coding-cheap", why, err, asked.aliases)
+	if why, err = r.AttemptFunded(context.Background(), "t-solvent", "factory/small"); err != nil || why != "" || !slices.Equal(asked.aliases, []string{"small"}) {
+		t.Fatalf("prefixed: (%q, %v), asked %q; want funded on small", why, err, asked.aliases)
 	}
 	// no price source wired: every attempt is funded
 	r.cfg.Prices = nil
-	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/coding-cheap"); err != nil || why != "" {
+	if why, err = r.AttemptFunded(context.Background(), "t-burned", "factory/small"); err != nil || why != "" {
 		t.Fatalf("no prices: (%q, %v), want funded", why, err)
 	}
 }

@@ -285,6 +285,7 @@ func main() {
 	if err != nil || !ok {
 		log.Fatalf("no project file lists factoryd's namespace %s (%v)", kube.Namespace(), err)
 	}
+	store.SelfRepository = own.Repository
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -640,6 +641,7 @@ func main() {
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
 	}
+	consoleServer.RegisterOnShutdown(consoleHandler.EndStreams)
 	go func() {
 		log.Printf("console listening on %s", *consoleAddr)
 		if err := consoleServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {

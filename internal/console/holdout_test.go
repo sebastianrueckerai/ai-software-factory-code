@@ -120,8 +120,16 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 			t.Errorf("click %s %s %s = %d %q; want %d %q", tc.verb, tc.revision, tc.index, rec.Code, rec.Body, tc.status, tc.want)
 		}
 	}
-	if rec := click("2", "3", "drop"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("drop: %d %s", rec.Code, rec.Body)
+	drop := r.do(htmxPost("/tasks/t-plan/plan/holdout", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"3"}, "verb": {"drop"},
+		"project": {"linkshort"}}), ck)
+	if drop.Code != http.StatusOK || !strings.HasPrefix(drop.Body.String(), `<div id="board"`) ||
+		!strings.Contains(drop.Body.String(), `<p class="note" role="status">Hold-out 3 of plan #1 dropped.</p>`) {
+		t.Fatalf("drop by htmx: %d %s", drop.Code, drop.Body)
+	}
+	answer := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "answer": {"It does"},
+		"project": {"linkshort"}}), ck)
+	if answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `<p class="note" role="status">Answered question 1 of plan #1.</p>`) {
+		t.Fatalf("the confirmation's answer by htmx: %d %s", answer.Code, answer.Body)
 	}
 	if card := board(); strings.Contains(card, `action="/tasks/t-plan/plan/holdout"`) || !strings.Contains(card, ">dropped<") {
 		t.Errorf("the card after the drop:\n%s", card)

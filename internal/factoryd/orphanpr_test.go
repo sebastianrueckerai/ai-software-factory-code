@@ -101,13 +101,13 @@ func TestFactoryPRCardFundsItsGates(t *testing.T) {
 		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'in-review' WHERE id = 't-gates'`); err != nil {
 			t.Fatal(err)
 		}
-		call := policy.HoldRequest{TaskID: "t-gates", Kind: policy.KindModel, Ref: "review-frontier", Bytes: reviewDiffMax + 16<<10,
+		call := policy.HoldRequest{TaskID: "t-gates", Kind: policy.KindModel, Ref: "big", Bytes: reviewDiffMax + 16<<10,
 			Price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, WantOut: 2048 + 16384, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
 		review, err := policy.TakeHold(ctx, s.db, call)
 		if err != nil || review.MaxOut != call.WantOut || math.Abs(review.EUR-0.473088) > 1e-9 {
 			t.Fatalf("%s: the review's hold = (%+v, %v), want 0.473088 EUR for all %d output tokens", source, review, err, call.WantOut)
 		}
-		call.Ref = "coding-frontier"
+		call.Ref = "big"
 		if audit, err := policy.TakeHold(ctx, s.db, call); err != nil || audit.MaxOut != call.WantOut {
 			t.Fatalf("%s: the audit's hold beside the review's = (%+v, %v), want all %d output tokens", source, audit, err, call.WantOut)
 		}

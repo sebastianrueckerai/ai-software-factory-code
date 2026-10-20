@@ -496,7 +496,7 @@ spec:
       containers:
       - name: factoryd
         # same image as the gateway; the deployment picks the other binary
-        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:df27fe57537d187116982b41da743ea7ae9ecc388340cb5c79b981936eca7203
+        image: git.aisoftwarefactory.world/sf/factory-gateway@sha256:dc6bfcc0a24dc1e5c8526251d0eea398831d0b4a394a907c20c717e7507588e8
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
@@ -591,7 +591,7 @@ spec:
         - name: SIGNOZ_WEBHOOK_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:685baf99083bbdf093f6818a9cef57c17f3b693a3fe35dffdf4189204af0e4a3
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:9ddaffc9f38849f0d3844350d27293cc24a764a302cb4d908fbbbe17aaa082cd
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
@@ -603,7 +603,7 @@ spec:
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
         - name: WORKER_IMAGE
-          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:6ed536748ad611a69bd5f3e09a1ec717fe0e7db693eee15c7e50aee4fc5aedd4
+          value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:e6a99f1c7be6e619b6289e864d15c65f2176feac4a3f70a7b7e7fe40bd173d0c
         - name: GATEWAY_URL
           value: http://factory-gateway.factory.svc.cluster.local:8081
         - name: INTAKE_TOKEN
@@ -626,7 +626,9 @@ spec:
         # the agent sandboxes get the same endpoint (ruling 158)
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://signoz-otel-collector.platform.svc.cluster.local:4318
-        readinessProbe: {httpGet: {path: /readyz, port: http}}
+        # every second: the console has no backend between the old pod and
+        # the new, which takes traffic at its first good probe
+        readinessProbe: {httpGet: {path: /readyz, port: http}, periodSeconds: 1}
         livenessProbe: {httpGet: {path: /readyz, port: http}}
         securityContext:
           runAsNonRoot: true

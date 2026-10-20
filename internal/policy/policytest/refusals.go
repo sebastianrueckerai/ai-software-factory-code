@@ -119,12 +119,12 @@ var Refusals = map[string]Refusal{
 		Want: []string{"processes/maintenance.yaml: dependencies: no lane plan makes dependencies: remove the block or add the lane"}},
 	"audit_stage": {Change: in(maint, "  - {name: audit, on_findings: human, enabled: true}\n", ""),
 		Want: []string{"projects/ai-software-factory-code.yaml: audit: process maintenance lists no audit stage"}},
-	"review_model": {Change: in(pol, "    review_model: review-frontier\n", ""),
+	"review_model": {Change: in(pol, "    review_model: big\n", ""),
 		Want: []string{"processes/maintenance.yaml: lanes.ready: class coder names no review_model, which the review stage calls",
 			"processes/spec.yaml: lanes.ready: class coder names no review_model, which the review stage calls"}},
-	"audit_model": {Change: in(pol, "    audit_model: coding-frontier\n", ""),
+	"audit_model": {Change: in(pol, "    audit_model: big\n", ""),
 		Want: []string{"processes/maintenance.yaml: lanes.ready: class coder names no audit_model, which the audit stage calls for project ai-software-factory-code (audit: true)"}},
-	"supervisor_model": {Change: in(pol, "    session: plan\n    models: [coding-cheap, coding-frontier]\n    supervisor_model: supervisor\n", "    session: plan\n    models: [coding-cheap, coding-frontier]\n"),
+	"supervisor_model": {Change: in(pol, "    session: plan\n    models: [small, big]\n    supervisor_model: supervisor\n", "    session: plan\n    models: [small, big]\n"),
 		Want: []string{"processes/spec.yaml: lanes.plan: class planner names no supervisor_model, which the session supervisor calls"}},
 
 	// F: the floor no process may lower

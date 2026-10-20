@@ -642,6 +642,10 @@ const FactoryDecider = "factoryd"
 type PGStore struct {
 	db  *sql.DB
 	bus *EventBus
+	// SelfRepository is the factory's own repository (owner/name), the
+	// project whose deploys are its rolls; main sets it from the project
+	// file that lists factoryd's namespace.
+	SelfRepository string
 	// sealKey is the key the mirror tokens are sealed under, the console
 	// session key (CONSOLE_SESSION_KEY), set once by SetSealKey before
 	// factoryd serves; nil: no mirror token may be written or read. It

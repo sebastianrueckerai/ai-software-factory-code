@@ -154,8 +154,8 @@ func TestCardFaceCalls(t *testing.T) {
 		factoryd.Task{ID: "t-none", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "no calls", BudgetEUR: 5, SpentEUR: 1.2})
 	r.ledger.calls = map[string][]policy.ModelCall{
 		"t-calls": {
-			{Ref: "coding-cheap", EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000, OutputTokens: 1200}},
-			{Ref: "coding-frontier", EUR: 0.0240, Usage: policy.Usage{PromptTokens: 30000, OutputTokens: 800}},
+			{Ref: "small", EUR: 0.0180, Usage: policy.Usage{PromptTokens: 70000, CachedTokens: 66000, OutputTokens: 1200}},
+			{Ref: "big", EUR: 0.0240, Usage: policy.Usage{PromptTokens: 30000, OutputTokens: 800}},
 		},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -181,7 +181,7 @@ func TestCardFaceChips(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare", CreatedAt: time.Now()}},
 		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "full",
-			ModelAlias: "coding-cheap"}, Dependencies: "#3, #5"},
+			ModelAlias: "small"}, Dependencies: "#3, #5"},
 		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Lane: "ready", Repository: "sf/code", Objective: "deps done"}},
 		{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-deps", Lane: "ready", Repository: "sf/code", Objective: "waits"},
 			WaitingOn: "#7", Dependencies: "#7"},
@@ -191,7 +191,7 @@ func TestCardFaceChips(t *testing.T) {
 	if want := `<span class="chip blocked" title="#3, #5">blocked by 2</span>`; !strings.Contains(full, want) {
 		t.Errorf("t-full lacks %s:\n%s", want, full)
 	}
-	if strings.Contains(full, "coding-cheap") || strings.Contains(full, `class="badge"`) {
+	if strings.Contains(full, "small") || strings.Contains(full, `class="badge"`) {
 		t.Errorf("the face names the model or the default lane:\n%s", full)
 	}
 	if bare := faceOf(t, body, "t-bare"); strings.Contains(bare, `class="chips"`) || strings.Contains(bare, `class="transitions"`) {
@@ -693,10 +693,10 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		htmx("/cards/t-c2/lane") + ` class="inline move" data-move="ready">` + filter,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-plan/start-plan") + ` class="inline">` + filter,
-		htmx("/tasks/t-spec2/plan/accept") + ">\n" + filter,
-		htmx("/tasks/t-spec2/plan/changes") + ">\n" + filter,
-		htmx("/tasks/t-spec2/plan/reject") + ">\n" + filter,
-		`<form method="post" action="/tasks/t-ask/answer">` + "\n" + filter,
+		htmx("/tasks/t-spec2/plan/accept") + ` data-to="done">` + "\n" + filter,
+		htmx("/tasks/t-spec2/plan/changes") + ` data-to="running">` + "\n" + filter,
+		htmx("/tasks/t-spec2/plan/reject") + ` data-to="failed">` + "\n" + filter,
+		`<form method="post" ` + htmx("/tasks/t-ask/answer") + ` data-to="running">` + "\n" + filter,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the filtered board lacks %s", want)
@@ -766,7 +766,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">`
 	choice := func(c string) string {
-		return `<form method="post" action="/tasks/t-ch/answer">` + "\n" + filter + "\n" +
+		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#board" hx-swap="outerHTML" data-to="running">` + "\n" + filter + "\n" +
 			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
 	}
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
@@ -779,7 +779,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
 			choice("a replica") + choice("a shard") + choice("both") +
 			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
+			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#board" hx-swap="outerHTML" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required></textarea>`
 		if !strings.Contains(esc, want) {
@@ -790,7 +790,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		}
 		plain := escalationOf(t, body, "t-plain")
 		if strings.Contains(plain, `class="choices"`) || strings.Contains(plain, `name="answer" value=`) ||
-			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer">`) ||
+			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" hx-target="#board" hx-swap="outerHTML" data-to="running">`) ||
 			!strings.Contains(plain, `<label for="answer-t-plain">Your answer, posted on the issue as you</label>`) {
 			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the text box alone", page, plain)
 		}
@@ -916,9 +916,9 @@ func TestWaitingHumanCardWithoutAnAskOffersTheFactoryOrAClose(t *testing.T) {
 		}
 		pair := func(id string) string {
 			n := fmt.Sprintf("#%d", numbers[id])
-			return `<form method="post" action="/tasks/` + id + `/go" hx-post="/tasks/` + id + `/go" hx-target="#board" hx-swap="outerHTML" class="inline">` + filter +
+			return `<form method="post" action="/tasks/` + id + `/go" hx-post="/tasks/` + id + `/go" hx-target="#board" hx-swap="outerHTML" class="inline" data-to="off">` + filter +
 				`<button type="submit" aria-label="Have the factory do ` + n + `">Have the factory do it</button></form>` +
-				`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" hx-target="#board" hx-swap="outerHTML" class="inline close">` + filter +
+				`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">` + filter +
 				`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close ` + n + ` with a note">Close with note</button></form>`
 		}
 		for _, id := range []string{"t-wait", "t-back"} {
@@ -947,8 +947,8 @@ func TestWaitingHumanCardWithoutAnAskOffersTheFactoryOrAClose(t *testing.T) {
 	// shape; the asking card's drawer keeps its answer form and no go
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-wait/drawer?tab=overview", nil), ck).Body.String()
 	open := `<div class="open-need"><h3>Open</h3>` + "\n" +
-		`<div class="acts"><form method="post" action="/tasks/t-wait/go" hx-post="/tasks/t-wait/go" hx-target="#board" hx-swap="outerHTML" class="inline"><input type="hidden" name="csrf" value="` + s.csrf + `"><button type="submit" aria-label="Have the factory do #31">Have the factory do it</button></form>` +
-		`<form method="post" action="/tasks/t-wait/close" hx-post="/tasks/t-wait/close" hx-target="#board" hx-swap="outerHTML" class="inline close"><input type="hidden" name="csrf" value="` + s.csrf + `"><label for="note-t-wait-d">note, posted on the issue as you</label><textarea id="note-t-wait-d" name="note" rows="3" maxlength="4000" required></textarea><button type="submit" class="deny" aria-label="Close #31 with a note">Close with note</button></form></div>`
+		`<div class="acts"><form method="post" action="/tasks/t-wait/go" hx-post="/tasks/t-wait/go" hx-target="#board" hx-swap="outerHTML" class="inline" data-to="off"><input type="hidden" name="csrf" value="` + s.csrf + `"><button type="submit" aria-label="Have the factory do #31">Have the factory do it</button></form>` +
+		`<form method="post" action="/tasks/t-wait/close" hx-post="/tasks/t-wait/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off"><input type="hidden" name="csrf" value="` + s.csrf + `"><label for="note-t-wait-d">note, posted on the issue as you</label><textarea id="note-t-wait-d" name="note" rows="3" maxlength="4000" required></textarea><button type="submit" class="deny" aria-label="Close #31 with a note">Close with note</button></form></div>`
 	if !strings.Contains(drawer, open) {
 		t.Errorf("the drawer of t-wait lacks the pair in its Open section:\n%s", drawer)
 	}
@@ -1002,7 +1002,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 		if strings.Contains(page, "view=wide") {
 			filter += `<input type="hidden" name="view" value="wide">`
 		}
-		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#board" hx-swap="outerHTML" class="inline close">` + filter +
+		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">` + filter +
 			`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close #41 with a note">Close with note</button></form>`
 		idle := faceOf(t, body, "t-idle")
 		if !strings.Contains(idle, idleClose) {
@@ -1017,7 +1017,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 			}
 		}
 		q := escalationOf(t, body, "t-q")
-		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#board" hx-swap="outerHTML" class="inline close">` + "\n" + filter + "\n" +
+		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
 			`<button type="submit" class="deny" aria-label="End the card">End the card</button></form>`
 		if !strings.Contains(q, oneClick) {
 			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
@@ -1226,6 +1226,24 @@ func TestNeedsYouFreeAnswerGoesToTheChat(t *testing.T) {
 	}
 	if msgs[1].Role != "assistant" {
 		t.Fatalf("the turn's row = %+v", msgs[1])
+	}
+}
+
+// The same typed answer sent by htmx (the card's form) lands on the chat
+// by HX-Redirect: htmx would swap a followed redirect's page into the
+// board.
+func TestNeedsYouFreeAnswerByHtmxLandsOnTheChat(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "The session hit its cap. Which way on?", Choices: []factoryd.QuestionChoice{
+			{Value: "fund", Label: "Fund one more session"}, {Value: "park", Label: "Park it"}}}}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("I read the card and answer with my own judgement.")}}
+	rec := r.do(htmxPost("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"answer": {"use your own judgement on the replica"}}), ck)
+	if rec.Code != http.StatusOK || rec.Header().Get("HX-Redirect") != chatPath || rec.Header().Get("Location") != "" || rec.Body.Len() != 0 {
+		t.Fatalf("the typed answer by htmx = %d, HX-Redirect %q, Location %q, body %q; want 200 to the chat %q",
+			rec.Code, rec.Header().Get("HX-Redirect"), rec.Header().Get("Location"), rec.Body.String(), chatPath)
 	}
 }
 

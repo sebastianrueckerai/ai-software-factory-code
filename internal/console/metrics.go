@@ -103,16 +103,20 @@ func mPctMove(d float64) string   { return msign(d) + mCount(math.Abs(d)*100) }
 func mEur(v float64) string       { return fmt.Sprintf("€%.2f", v) }
 func mEurMove(d float64) string   { return msign(d) + mEur(math.Abs(d)) }
 
-// mK reads token counts: whole thousands as k, fractions to one digit.
+// mK reads token counts: whole thousands as k, whole millions as M,
+// fractions to one digit.
 func mK(n float64) string {
-	if n < 1000 {
+	unit, div := " M", 1e6
+	switch {
+	case n < 1000:
 		return mCount(n)
+	case n < 1e6:
+		unit, div = " k", 1e3
 	}
-	if k := n / 1000; k == math.Trunc(k) {
-		return mCount(k) + " k"
-	} else {
-		return mDec(k) + " k"
+	if k := n / div; k == math.Trunc(k) {
+		return mCount(k) + unit
 	}
+	return mDec(n/div) + unit
 }
 
 // mDur reads milliseconds as the deck's durations: hours and padded
@@ -158,7 +162,12 @@ func mDiff(d factoryd.DiffSize) string {
 	return fmt.Sprintf("%s %s · +%s −%s", mCount(d.Files), files, mCount(d.Insertions), mCount(d.Deletions))
 }
 
+// mChat reads the chat's tool work: calls and minutes, seconds under a
+// minute.
 func mChat(c factoryd.ChatWork) string {
+	if c.Minutes < 1 {
+		return fmt.Sprintf("%s calls · %s s", mCount(c.Calls), mCount(c.Minutes*60))
+	}
 	return fmt.Sprintf("%s calls · %s min", mCount(c.Calls), mCount(c.Minutes))
 }
 

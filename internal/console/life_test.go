@@ -25,11 +25,11 @@ func TestRunsOfACardsLife(t *testing.T) {
 	events := []factoryd.Event{status(10, 5, "running"), status(10, 30, "in-review"), status(10, 36, "running"), status(10, 50, "in-review"),
 		status(10, 57, "waiting-human"), {TaskID: "t-life", Kind: factoryd.EventQuestionAsked, At: at(10, 57), Detail: map[string]any{"question": "Merge PR #9?"}}}
 	steps := []map[string]any{
-		{"step": "session_start", "time": stamp(10, 5, 30), "session": "s-1", "model": "coding-cheap", "attempt": 1.0},
+		{"step": "session_start", "time": stamp(10, 5, 30), "session": "s-1", "model": "small", "attempt": 1.0},
 		{"step": "session_end", "time": stamp(10, 30, 0), "session": "s-1", "attempt": 1.0, "outcome": "pushed"},
 		{"step": "checks", "time": stamp(10, 35, 50), "started": stamp(10, 30, 10), "state": "failure",
 			"jobs": []any{map[string]any{"name": "test", "status": "failure"}, map[string]any{"name": "vet", "status": "success"}}},
-		{"step": "session_start", "time": stamp(10, 36, 10), "session": "s-2", "model": "coding-frontier", "attempt": 2.0},
+		{"step": "session_start", "time": stamp(10, 36, 10), "session": "s-2", "model": "big", "attempt": 2.0},
 		{"step": factoryd.StepProviderRefused, "time": stamp(10, 40, 0), "status": 429.0},
 		{"step": "session_end", "time": stamp(10, 50, 0), "session": "s-2", "attempt": 2.0, "outcome": "pushed"},
 		{"step": "checks", "time": stamp(10, 55, 0), "started": stamp(10, 50, 10), "state": "success",
@@ -43,9 +43,9 @@ func TestRunsOfACardsLife(t *testing.T) {
 		eur                 float64
 	}{
 		{"queued", "10:00", "5 min", "", 0},
-		{"building", "10:05", "25 min", "attempt 1, coding-cheap, pushed", 0.30},
+		{"building", "10:05", "25 min", "attempt 1, small, pushed", 0.30},
 		{"verifying", "10:30", "6 min", "checks 1/2, test failed", 0},
-		{"building", "10:36", "14 min", "stalled on the provider, 429 · attempt 2, coding-frontier, pushed", 0.40},
+		{"building", "10:36", "14 min", "stalled on the provider, 429 · attempt 2, big, pushed", 0.40},
 		{"verifying", "10:50", "7 min", "checks 2/2 · review by factoryd: approve", 0},
 		{"waiting on you", "10:57", "33 min", "asked: Merge PR #9?", 0},
 	}
@@ -58,7 +58,7 @@ func TestRunsOfACardsLife(t *testing.T) {
 			t.Errorf("run %d: %s at %s for %s, %q, €%.2f; want %s at %s for %s, %q, €%.2f", i, r.Kind, r.At(), r.Duration(), r.Note(), r.EUR, w.kind, w.at, w.dur, w.note, w.eur)
 		}
 	}
-	if runs[1].Attempt != 1 || runs[1].Model != "coding-cheap" || runs[3].Attempt != 2 || runs[3].Model != "coding-frontier" {
+	if runs[1].Attempt != 1 || runs[1].Model != "small" || runs[3].Attempt != 2 || runs[3].Model != "big" {
 		t.Errorf("the building runs' attempts: %+v, %+v", runs[1], runs[3])
 	}
 	if got, want := lifeLine(runs, task.SpentEUR), "52 min factory in 2 attempts · 38 min waiting · €0.70"; got != want {

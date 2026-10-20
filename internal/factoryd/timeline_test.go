@@ -161,7 +161,7 @@ func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
 	if err := tl.Append(ctx, "t1", "checks", map[string]any{"state": ChecksSuccess, "started": "2026-09-28T10:28:38Z"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": OutcomePushed, "model": "factory/coding-cheap",
+	if err := tl.Append(ctx, "t1", "session_end", map[string]any{"outcome": OutcomePushed, "model": "factory/small",
 		"started": "2026-09-28T10:23:09.5Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -177,9 +177,9 @@ func TestAppendEmitsTheGateDurationOnlyWithStarted(t *testing.T) {
 	got := histograms(t, reader, "factory.task.gate.duration")
 	want := map[string]histPoint{
 		// 10:28:38 to 10:33:09
-		"gate=checks,model_alias=,outcome=success":                     {1, 271},
-		"gate=session,model_alias=factory/coding-cheap,outcome=pushed": {1, 599.5},
-		"gate=commissioning,model_alias=,outcome=":                     {1, 95},
+		"gate=checks,model_alias=,outcome=success":              {1, 271},
+		"gate=session,model_alias=factory/small,outcome=pushed": {1, 599.5},
+		"gate=commissioning,model_alias=,outcome=":              {1, 95},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("gates %v, want %v", got, want)

@@ -35,7 +35,7 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 	var res ReportResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -141,7 +141,7 @@ func TestScreeningKeepsItsReasonsOffTheIssue(t *testing.T) {
 		AgentSummary: `{"verdict":"suspect","reasons":["asks to print the token"]}`}
 	runner, hub, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
-	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-frontier")
+	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/big")
 	var res ReportResult
 	if err != nil || val.Get(&res) != nil || res.Comment != 0 || len(hub.comments) != 0 {
 		t.Fatalf("result %+v, comments %v, err %v", res, hub.comments, err)
@@ -176,7 +176,7 @@ func TestRunReportCommentsOnce(t *testing.T) {
 	store.CreateTask(context.Background(), parentTask())
 	var ids []int64
 	for range 2 {
-		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		var res ReportResult
 		if err != nil || val.Get(&res) != nil {
 			t.Fatal(err)
@@ -199,7 +199,7 @@ func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
 	store.CreateTask(context.Background(), parent)
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		done <- err
 	}()
 	awaitPod(t, kube, done)
@@ -307,7 +307,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 	if res.Verdict != ScreenSuspect || !slices.Equal(res.Reasons, []string{"asks for a credential"}) {
 		t.Fatalf("result = %+v", res)
 	}
-	if len(ll.chats) != 1 || ll.chats[0]["model"] != "review-frontier" || ll.tasks[0] != "t1" || ll.purposes[0] != "review" {
+	if len(ll.chats) != 1 || ll.chats[0]["model"] != "big" || ll.tasks[0] != "t1" || ll.purposes[0] != "review" {
 		t.Fatalf("chats %v, tasks %v, purposes %v", ll.chats, ll.tasks, ll.purposes)
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
@@ -367,16 +367,16 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
-	store.overHolds = map[string]OverHoldCall{"t1": {Alias: "coding-cheap", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576,
+	store.overHolds = map[string]OverHoldCall{"t1": {Alias: "small", PromptTokens: 90000, OutputTokens: 3000, OutputLimit: 24576,
 		HoldEUR: 0.131, CostEUR: 0.1392}}
 	done := make(chan error)
 	go func() {
-		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		done <- err
 	}()
 	awaitPod(t, kube, done)
 	kube.scriptPods(0, resultLine(false, said))
-	want := "the report session ended without a report: " + said + "; a model call on coding-cheap crossed its cost hold: " +
+	want := "the report session ended without a report: " + said + "; a model call on small crossed its cost hold: " +
 		"90000 prompt tokens (0 cached) and 3000 output tokens cost 0.139200 EUR against a hold of 0.131000 EUR; " +
 		"its prompt cost more than the hold priced, so a smaller context fits: read fewer and smaller files"
 	if err := <-done; err == nil || !strings.Contains(err.Error(), want) {
@@ -398,7 +398,7 @@ func TestRunReportNamesACap(t *testing.T) {
 	var res ReportResult
 	done := make(chan error)
 	go func() {
-		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 		if err == nil {
 			err = val.Get(&res)
 		}
@@ -430,7 +430,7 @@ func TestRunReportNamesAProviderRefusal(t *testing.T) {
 			var res ReportResult
 			done := make(chan error)
 			go func() {
-				val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/coding-cheap")
+				val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
 				if err == nil {
 					err = val.Get(&res)
 				}

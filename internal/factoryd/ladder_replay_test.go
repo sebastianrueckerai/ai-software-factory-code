@@ -514,7 +514,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 			t.Fatalf("climb message = %.120s, want the stuck rule's climb on churn", l.worker.texts[2])
 		}
 		tl := string(objGet(l.objects, "sessions/t1/timeline.jsonl"))
-		if !strings.Contains(tl, `"step":"model_switched"`) || !strings.Contains(tl, `"to":"coding-frontier"`) ||
+		if !strings.Contains(tl, `"step":"model_switched"`) || !strings.Contains(tl, `"to":"big"`) ||
 			!strings.Contains(tl, `"trip":"churn"`) {
 			t.Fatalf("timeline = %s, want the climb in place", tl)
 		}
@@ -676,7 +676,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		if ask == nil || ask.Moment != CheckInDead || ask.ParentSession != dead.SessionID || ask.Stop != stop {
 			t.Fatalf("the dead ask = %+v, want the dead moment, the dead session as parent, its stop", ask)
 		}
-		if l.sessions[1].ParentSessionID != dead.SessionID || l.sessions[1].Model != "factory/coding-frontier" {
+		if l.sessions[1].ParentSessionID != dead.SessionID || l.sessions[1].Model != "factory/big" {
 			t.Fatalf("the reader's input = %+v, want the dead session as parent and the stronger rung", l.sessions[1])
 		}
 		if !strings.Contains(l.chat.gots[0].Input, stop) || !strings.Contains(l.chat.gots[0].Input, dead.SessionID) {

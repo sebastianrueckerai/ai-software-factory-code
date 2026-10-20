@@ -33,9 +33,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The fixture ledger: 2026-10-10 spends t-m's coding-cheap 0.5 and search
-// 0.1 (day total 0.6); 2026-10-11 spends t-r's coding-frontier 1.2 and
-// review/review-frontier 0.3 and t-m's search 0.2 (day total 1.7). By
+// The fixture ledger: 2026-10-10 spends t-m's small 0.5 and search
+// 0.1 (day total 0.6); 2026-10-11 spends t-r's big 1.2 and
+// review/big 0.3 and t-m's search 0.2 (day total 1.7). By
 // card on 2026-10-11 alone: t-r 1.5 + t-m 0.8 = 2.3000 EUR; over both
 // days the grand total is 0.6 + 1.7 = 2.3000 EUR by hand too. Each line
 // names its day behind its ref, which the fake ledger filters on.
@@ -45,9 +45,9 @@ var fixtureDays = []policy.DayCost{
 }
 
 var fixtureTasks = []policy.TaskCost{
-	{TaskID: "t-r", EUR: 1.5, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-frontier 2026-10-11", EUR: 1.2},
-		{Kind: policy.KindModel, Ref: "review/review-frontier 2026-10-11", EUR: 0.3}}},
-	{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "coding-cheap 2026-10-11", EUR: 0.6},
+	{TaskID: "t-r", EUR: 1.5, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "big 2026-10-11", EUR: 1.2},
+		{Kind: policy.KindModel, Ref: "review/big 2026-10-11", EUR: 0.3}}},
+	{TaskID: "t-m", EUR: 0.8, Lines: []policy.CostLine{{Kind: policy.KindModel, Ref: "small 2026-10-11", EUR: 0.6},
 		{Kind: policy.KindTool, Ref: "search 2026-10-11", EUR: 0.2}}},
 }
 
@@ -69,7 +69,7 @@ type acceptLedger struct {
 // ledger store does: only the days whose day falls in the window, each
 // card's lines with a day in the window summed into its EUR and kept as
 // its lines, and the window's own From and To on the head. The fixture's
-// lines carry their day in Ref behind a space: "coding-cheap 2026-10-10".
+// lines carry their day in Ref behind a space: "small 2026-10-10".
 // DaySpend is the fixture's total of one day, the board's figure; it is
 // no window read.
 func (l *acceptLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
@@ -132,7 +132,7 @@ func (l *acceptLedger) CurrentPolicy(context.Context) (policy.Version, bool, err
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
 		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
-			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/coding-cheap"}}},
+			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},

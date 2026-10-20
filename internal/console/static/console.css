@@ -211,6 +211,10 @@ footer#live:empty { display: none; }
 .card { position: relative; background: var(--bg-card); border: 1px solid var(--line); border-radius: 2px; padding: 7px 8px 8px; margin-bottom: 6px; transition: background-color .12s, border-color .12s; }
 .card:hover { background: var(--bg-hover); border-color: var(--line-strong); }
 .card .card { border: 0; padding: 0; margin: 0; background: none; box-shadow: none; }
+/* a card a press acted on (C31): dimmed while the factory takes it, its
+   controls gone once the press moved it */
+.card[aria-busy="true"], .open-need[aria-busy="true"] { opacity: .55; }
+.card[data-sent] :is(form, .choices, .acts, .transitions, .fold, .own-toggle, .need-foot, .meta) { display: none; }
 .card .card:hover { background: none; }
 .card:has(> .line2 > .st-running) { box-shadow: inset 2px 0 0 var(--st-running); }
 .card:has(> .line2 > .st-review) { box-shadow: inset 2px 0 0 var(--st-review); }

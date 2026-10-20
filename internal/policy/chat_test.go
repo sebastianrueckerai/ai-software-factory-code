@@ -16,17 +16,17 @@ func TestChatDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ChatConfig{Model: "operator", VisionModel: "vision", MonthlyEUR: 5,
+	want := ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 		Confirm: []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
 			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
 			"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 	if got := tree.Document.ChatOf(tree.Projects["linkshort"]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChatOf(linkshort) = %+v, want %+v", got, want)
 	}
-	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeOperator); got != "operator" {
+	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeOperator); got != Big {
 		t.Fatalf("FactoryModel(chat, operator) = %q, want operator", got)
 	}
-	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{"operator", "pulse", "vision"}) {
+	if got := tree.Document.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, Small, "vision"}) {
 		t.Fatalf("FactoryModels(chat) = %v, want [operator pulse vision]", got)
 	}
 	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeVision); got != "vision" {
@@ -56,10 +56,10 @@ func TestChatProjectBlockReplacesThePolicys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]ChatConfig{
-		"linkshort": {Model: "operator", VisionModel: "vision", MonthlyEUR: 4, Confirm: []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource",
+		"linkshort": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource",
 			"release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}},
-		"demo-app":                 {Model: "operator", VisionModel: "vision", MonthlyEUR: 2.5, Confirm: AlwaysConfirm},
-		"ai-software-factory-code": {Model: "operator", VisionModel: "vision", MonthlyEUR: 4, Confirm: append([]string{"new_card"}, AlwaysConfirm...)},
+		"demo-app":                 {Model: Big, VisionModel: "vision", MonthlyEUR: 2.5, Confirm: AlwaysConfirm},
+		"ai-software-factory-code": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: append([]string{"new_card"}, AlwaysConfirm...)},
 	} {
 		if got := tree.Document.ChatOf(tree.Projects[name]); !reflect.DeepEqual(got, want) {
 			t.Errorf("ChatOf(%s) = %#v, want %#v", name, got, want)
@@ -74,7 +74,7 @@ func TestChatBlockRefusals(t *testing.T) {
 	for name, tc := range map[string]struct{ file, block, want string }{
 		"unknown tool": {"projects/linkshort.yaml", "chat:\n  confirm: [aprove_merge]\n",
 			`project linkshort: chat.confirm: unknown tool "aprove_merge"`},
-		"unknown model":        {"policy.yaml", "chat:\n  model: gpt-5\n", `policy: chat.model "gpt-5": want one of [operator]`},
+		"unknown model":        {"policy.yaml", "chat:\n  model: gpt-5\n", `policy: chat.model "gpt-5": want one of [big small]`},
 		"unknown vision model": {"policy.yaml", "chat:\n  vision_model: gpt-5\n", `policy: chat.vision_model "gpt-5": want one of [vision]`},
 		"negative budget":      {"policy.yaml", "chat:\n  monthly_eur: -1\n", "policy: chat.monthly_eur must not be negative"},
 		"a class named chat":   {"policy.yaml", "", `policy: a capability class may not be named "chat"`},

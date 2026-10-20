@@ -29,12 +29,12 @@ limits: {sessions: 3, agent_time: 10m, supervisor_calls: 3, supervisor_timeout: 
 classes:
   coder:
     session: code
-    models: [coding-cheap, coding-frontier]
+    models: [small, big]
     tools: {}
-    review_model: review-frontier
+    review_model: big
     supervisor_model: supervisor
 prices:
-  max_output_tokens: {coding-cheap: 32768, coding-frontier: 32768, review-frontier: 32768, supervisor: 32768, operator: 32768, pulse: 32768}
+  max_output_tokens: {small: 32768, big: 32768, supervisor: 32768, operator: 32768, pulse: 32768}
 risk:
   classes:
     - {name: forbidden, outcome: forbidden}
@@ -398,17 +398,17 @@ func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
 	ctx := context.Background()
 	src := &memSource{}
 	store := &memPolicy{}
-	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}
-	if got := ladder.Aliases(); !slices.Equal(got, []string{"coding-cheap", "coding-frontier"}) {
+	ladder := ModelLadder{Start: "factory/small", Stronger: "factory/big"}
+	if got := ladder.Aliases(); !slices.Equal(got, []string{"small", "big"}) {
 		t.Fatalf("aliases = %v", got)
 	}
 	l := &PolicyLoader{Source: src, Store: store, LadderModels: ladder.Aliases()}
-	narrow := strings.Replace(testPolicyYAML, "[coding-cheap, coding-frontier]", "[coding-cheap]", 1)
+	narrow := strings.Replace(testPolicyYAML, "[small, big]", "[small]", 1)
 
 	// the only valid version leaves out a rung: no boot
 	src.push("narrow", testFiles(narrow))
 	if err := l.Boot(ctx); err == nil || store.records != 0 {
-		t.Fatalf("boot with a policy that drops coding-frontier = %v after %d records, want a refusal", err, store.records)
+		t.Fatalf("boot with a policy that drops big = %v after %d records, want a refusal", err, store.records)
 	}
 	src.push("wide", testFiles(testPolicyYAML))
 	l = &PolicyLoader{Source: src, Store: store, LadderModels: ladder.Aliases()}
@@ -417,7 +417,7 @@ func TestPolicyLoaderKeepsTheLadderAllowed(t *testing.T) {
 	}
 	// a later push that drops a rung is rejected, version 1 stays
 	src.push("narrow-2", testFiles(narrow))
-	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), "coding-frontier") || l.Current().ID != 1 {
+	if err := l.Load(ctx); err == nil || !strings.Contains(err.Error(), "big") || l.Current().ID != 1 {
 		t.Fatalf("push dropping a rung = %v with version %d current, want a rejection with 1", err, l.Current().ID)
 	}
 	// a stored version that drops a rung does not count as valid at boot
@@ -435,17 +435,17 @@ func TestCheckTreeLadderPerLane(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	if _, err := CheckTree(files, ladder); err != nil {
 		t.Fatalf("the fixture tree: %v", err)
 	}
-	const planner = "    session: plan\n    models: [coding-cheap, coding-frontier]\n"
+	const planner = "    session: plan\n    models: [small, big]\n"
 	if !strings.Contains(string(files["policy.yaml"]), planner) {
 		t.Fatal("policy.yaml lacks the planner's models")
 	}
-	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), planner, "    session: plan\n    models: [coding-cheap]\n", 1))
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), planner, "    session: plan\n    models: [small]\n", 1))
 	_, err = CheckTree(files, ladder)
-	if err == nil || err.Error() != `policy.yaml: capability class "planner" does not allow the ladder model "coding-frontier" (lane plan of processes/spec.yaml starts it)` {
+	if err == nil || err.Error() != `policy.yaml: capability class "planner" does not allow the ladder model "big" (lane plan of processes/spec.yaml starts it)` {
 		t.Fatalf("CheckTree = %v", err)
 	}
 }
@@ -822,7 +822,7 @@ func TestCheckProjectFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	linkshort := files["projects/linkshort.yaml"]
 	delete(files, "projects/linkshort.yaml")
 	if err := CheckProjectFile(files, "linkshort", linkshort, ladder); err != nil {
@@ -851,7 +851,7 @@ func TestCheckChange(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ladder := ModelLadder{Start: "factory/coding-cheap", Stronger: "factory/coding-frontier"}.Aliases()
+	ladder := ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
 	const brief = "routines/demo-app-deps.md"
 	demo := []byte(string(files["projects/demo-app.yaml"]) + "routines:\n  - name: deps\n    title: Deps\n    schedule:\n      - cron: \"0 6 * * 4\"\n" +
 		"    files: human\n    brief: " + brief + "\n")

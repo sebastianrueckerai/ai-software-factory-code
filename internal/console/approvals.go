@@ -59,6 +59,9 @@ type approvalCard struct {
 	Open        string // "<n> questions open" while any waits for its answer
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
+	// TaskStatus is its task's, where the task's card stands once the
+	// request is decided
+	TaskStatus string
 	// Filter is the board's filter, which the card's forms keep.
 	Filter   boardFilter
 	CSRF     string
@@ -125,6 +128,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
 	t, ok := tasks[a.TaskID]
+	k.TaskStatus = t.Status
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
@@ -282,52 +286,45 @@ func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.Pla
 
 // approve approves the approval request the path names (doApprove).
 func (c *Console) approve(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
-		_, err := c.doApprove(ctx, a, id)
-		return err
-	})
+	c.decideButton(w, r, c.doApprove)
 }
 
 // deny denies the approval request the path names with the human's
 // reason (doDeny).
 func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
-		_, err := c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
-		return err
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		return c.doDeny(ctx, a, id, r.PostFormValue("action"), r.PostFormValue("note"))
 	})
 }
 
 // waive records the member's waiver of one criterion of the criteria
 // request the path names, with their one-line reason (doWaive).
 func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
-		_, err := c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
-		return err
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		return c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
 	})
 }
 
 // rerun runs the red checks of the factory pull request card whose merge
 // request the path names again (doRerun).
 func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
-	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) error {
-		_, err := c.doRerun(ctx, a, id)
-		return err
-	})
+	c.decideButton(w, r, c.doRerun)
 }
 
 // decideButton runs a button's decision on the approval request the path
-// names and goes back to the board the form carried.
-func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) error) {
+// names and shows the board the form carried with its note.
+func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) (string, error)) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	if err := decision(r.Context(), button(r), id); err != nil {
+	note, err := decision(r.Context(), button(r), id)
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
 // review submits a pull request review on q's pull request as a's member.

@@ -142,7 +142,7 @@ type TaskCost struct {
 }
 
 // CostLine is a task's spend on one ledger kind and ref: a model alias, a
-// factoryd purpose and its alias (review/review-frontier), a tool, a
+// factoryd purpose and its alias (review/big), a tool, a
 // resource.
 type CostLine struct {
 	Kind string  `json:"kind"`

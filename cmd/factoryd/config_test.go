@@ -87,8 +87,8 @@ func TestConfigCheck(t *testing.T) {
 		}, []string{`projects/ai-software-factory-infra.yaml: project ai-software-factory-infra: objects "flux"`, "processes/spec.yaml: yaml: unmarshal errors:"}},
 		"ladder model left out": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "policy.yaml"))
-			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [coding-cheap, coding-frontier]", "models: [coding-cheap]", 1))
-		}, []string{`policy.yaml: capability class "coder" does not allow the ladder model "coding-frontier" (lane ready of processes/maintenance.yaml starts it)`}},
+			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [small, big]", "models: [small]", 1))
+		}, []string{`policy.yaml: capability class "coder" does not allow the ladder model "big" (lane ready of processes/maintenance.yaml starts it)`}},
 		"a looser project file": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "projects/demo-app.yaml"))
 			write(t, filepath.Join(dir, "projects/demo-app.yaml"), strings.Replace(string(b), "max_lease_hours: 2", "max_lease_hours: 48", 1))

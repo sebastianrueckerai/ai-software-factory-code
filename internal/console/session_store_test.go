@@ -303,7 +303,7 @@ func TestAStoreFailureKeepsTheLogin(t *testing.T) {
 		t.Fatal("the failed read deleted the row")
 	}
 	_, br := streamOf(t, r, "")
-	if got := nextMessage(t, br); !slices.Equal(got, []string{": ping"}) {
+	if got := nextMessage(t, br); !slices.Equal(got, pinged) {
 		t.Fatalf("a live session's stream sent %q, want the heartbeat", got)
 	}
 	failOnce()
@@ -311,7 +311,7 @@ func TestAStoreFailureKeepsTheLogin(t *testing.T) {
 	// session after the failure was set
 	for pings := 0; pings < 2; {
 		switch got := nextMessage(t, br); {
-		case slices.Equal(got, []string{": ping"}):
+		case slices.Equal(got, pinged):
 			pings++
 		case len(got) > 0 && (got[0] == "event: counters" || got[0] == "event: board"):
 		default:

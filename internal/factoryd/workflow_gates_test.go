@@ -371,7 +371,7 @@ func TestWorkflowBeforeStagesFailedReproductionIsFindings(t *testing.T) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 	second := g.sessions[1]
-	if second.Model != "factory/coding-frontier" || len(second.Findings) != 1 ||
+	if second.Model != "factory/big" || len(second.Findings) != 1 ||
 		!strings.Contains(second.Findings[0], "exit 1") || !strings.Contains(second.Findings[0], "--- FAIL: TestX") || !strings.Contains(second.Findings[0], "go test ./x") {
 		t.Fatalf("second attempt = %+v", second)
 	}

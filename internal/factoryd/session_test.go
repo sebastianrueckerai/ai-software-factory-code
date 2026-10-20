@@ -60,7 +60,7 @@ var _ ObjectStore = (*fakeObjectStore)(nil)
 func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {
 	store := newFakeStore()
 	objects := &fakeObjectStore{}
-	r, err := NewSessionRecorder(context.Background(), store, objects, "t1", "s1", "s0", "factory/coding-cheap")
+	r, err := NewSessionRecorder(context.Background(), store, objects, "t1", "s1", "s0", "factory/small")
 	if err != nil {
 		t.Fatalf("NewSessionRecorder: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {
 
 func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 	store := newFakeStore()
-	r, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s1", "", "factory/coding-cheap")
+	r, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s1", "", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +131,7 @@ func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 // the history so far, whole, as a copy the caller cannot corrupt.
 func TestTranscript(t *testing.T) {
 	objects := &fakeObjectStore{}
-	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/coding-cheap")
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}

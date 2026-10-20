@@ -53,7 +53,7 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	reader := sdkmetric.NewManualReader()
 	tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)),
-		sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)), "t1", "s-1", "factory/coding-cheap")
+		sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)), "t1", "s-1", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 	if root.Parent().IsValid() {
 		t.Fatal("the session span has a parent; it must be the trace's root")
 	}
-	if a := attrs(root); a["task.id"] != "t1" || a["session.id"] != "s-1" || a["model_alias"] != "coding-cheap" || a["outcome"] != "failed" {
+	if a := attrs(root); a["task.id"] != "t1" || a["session.id"] != "s-1" || a["model_alias"] != "small" || a["outcome"] != "failed" {
 		t.Fatalf("session attributes %v", a)
 	}
 	for _, name := range []string{"brief", "run", "push"} {
@@ -162,10 +162,10 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 			"status=error,tool=write": 1, "status=ok,tool=factory-tools_echo": 1,
 		},
 		"worker.session.tokens": {
-			"direction=input,model_alias=coding-cheap": 150, "direction=output,model_alias=coding-cheap": 53,
-			"direction=reasoning,model_alias=coding-cheap": 2,
+			"direction=input,model_alias=small": 150, "direction=output,model_alias=small": 53,
+			"direction=reasoning,model_alias=small": 2,
 		},
-		"worker.session.duration": {"model_alias=coding-cheap,outcome=failed": 95},
+		"worker.session.duration": {"model_alias=small,outcome=failed": 95},
 	}
 	if !reflect.DeepEqual(got, wantMetrics) {
 		t.Fatalf("metrics\n%v\nwant\n%v", got, wantMetrics)
@@ -207,7 +207,7 @@ func TestSessionOutcome(t *testing.T) {
 func TestResultLineComesAfterTheSessionSpan(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)),
-		sdkmetric.NewMeterProvider(), "t1", "s-1", "factory/coding-cheap")
+		sdkmetric.NewMeterProvider(), "t1", "s-1", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}

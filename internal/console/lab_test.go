@@ -13,6 +13,7 @@ import (
 	"image/draw"
 	"image/png"
 	"io"
+	"maps"
 	"math"
 	"net"
 	"net/http"
@@ -43,11 +44,17 @@ func TestLab(t *testing.T) {
 	dir := cmp.Or(os.Getenv("CONSOLE_LAB_DIR"), "/tmp/claude-1000/console-lab")
 	addr := cmp.Or(os.Getenv("CONSOLE_LAB_ADDR"), "127.0.0.1:8090")
 	scenario := cmp.Or(os.Getenv("CONSOLE_LAB_SCENARIO"), "busy")
+	// a writer's board redraws at a heartbeat, so a seed shows within a second
+	was := heartbeat
+	heartbeat = time.Second
+	t.Cleanup(func() { heartbeat = was })
 
 	r := newRig(t)
 	r.c.cfg.Timelines = lockedObjects{r.objects}
 	forgejo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		files, ok := labPRFiles[req.URL.Path]
+		labObjects.RLock()
+		files, ok := labFiles[req.URL.Path]
+		labObjects.RUnlock()
 		if !ok {
 			r.fg.serve(w, req)
 			return
@@ -65,21 +72,19 @@ func TestLab(t *testing.T) {
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
-	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: "http://127.0.0.1:9", Token: "lab"} // the panel shows; no turn is sent
+	r.gateway = &chatGateway{t: t, lenient: true}
+	model := httptest.NewServer(r.gateway)
+	t.Cleanup(model.Close)
+	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
 	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
 			return "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/coding-frontier needs 0.600000 EUR", nil
+				"0.520 EUR of the 2.000 EUR budget remains, and a session's first call on factory/big needs 0.600000 EUR", nil
 		}
 		return "", nil
 	}
-	r.projects.rows = slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
-	r.projects.rows[0].Process, r.projects.rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
-	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
-	demo := &r.projects.rows[slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
-	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
 	r.c.cfg.Kustomization = func(_ context.Context, namespace, _ string) (factoryd.FluxState, error) {
 		if namespace == "demo-prod" {
 			return factoryd.FluxState{Ready: "False",
@@ -88,9 +93,6 @@ func TestLab(t *testing.T) {
 		return factoryd.FluxState{Ready: "True", Message: "Applied revision: deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456",
 			Applied: "deploy@sha1:5f6d735b077a3bd077e556109d5651d4abfb8456"}, nil
 	}
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "seed",
-		Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}}
-	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 120}
 	// the messenger panel (roadmap 145): telegram connected, discord offered,
 	// two levels the writer set and one left to its derived default
 	r.c.cfg.Messengers = &Messengers{
@@ -182,6 +184,23 @@ func TestLab(t *testing.T) {
 		w.Header().Set("X-Lab-Drawer", drawer)
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("POST /lab/scene", func(w http.ResponseWriter, req *http.Request) {
+		dec := json.NewDecoder(http.MaxBytesReader(w, req.Body, 4<<20))
+		dec.DisallowUnknownFields()
+		var j labSceneJSON
+		if err := dec.Decode(&j); err != nil {
+			http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		if err := j.check(time.Now()); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("X-Lab-Drawer", r.seedScene(j.scene()))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
 		// the event stream stays open as long as its page; a seed must not wait for it
 		if !strings.HasSuffix(req.URL.Path, "/events/stream") {
@@ -252,7 +271,21 @@ func (o lockedObjects) Delete(ctx context.Context, k string) error {
 	return o.m.Delete(ctx, k)
 }
 
+// labProject names the project a scene shows, its repository and the
+// member who views it.
+type labProject struct{ Name, Repository, Login string }
+
 type labScene struct {
+	project labProject
+	// projects, config, monthCap and prFiles replace the Go-coded scenes'
+	// project rows, ai-software-factory-code's configuration, its month cap
+	// and the lab's pull request files
+	projects []factoryd.Project
+	config   *policy.ProjectConfig
+	monthCap float64
+	prFiles  map[string]string
+	// remote is the mirror's remote, "" for the code project's
+	remote    string
 	tasks     []factoryd.BoardTask
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
@@ -262,6 +295,8 @@ type labScene struct {
 	events    []factoryd.Event
 	chat      []factoryd.ChatMessage
 	proposals []factoryd.ChatProposal
+	// replies are the model's scripted answers, one per chat turn
+	replies []labReply
 	// usedProposals are the scene's proposals the member already pressed,
 	// their do- row among the chat's
 	usedProposals []factoryd.ChatProposal
@@ -480,8 +515,55 @@ func (r *rig) labSeed(name string) (string, error) {
 	if !ok {
 		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake or metrics", name)
 	}
+	return r.seedScene(scene(time.Now())), nil
+}
+
+// labCodeProject is the project every Go-coded scene shows.
+var labCodeProject = labProject{"ai-software-factory-code", "sf/code", "sebastian"}
+
+// labFiles are the changed files of the pull requests the lab's Forgejo
+// answers, by path; a seed replaces them.
+var labFiles = labPRFiles
+
+// labProjects are the project rows of the Go-coded scenes.
+func labProjects() []factoryd.Project {
+	rows := slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
+	rows[0].Process, rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
+	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
+	demo := &rows[slices.IndexFunc(rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
+	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
+	return rows
+}
+
+// seedScene replaces what every fake answers with scene s's data and
+// answers the card its drawer shots open.
+func (r *rig) seedScene(s labScene) string {
 	now := time.Now()
-	s := scene(now)
+	project := cmp.Or(s.project, labCodeProject)
+	if r.gateway != nil {
+		r.gateway.script(project.Name, s.replies)
+	}
+	repository, login := project.Repository, project.Login
+	r.projects.rows = s.projects
+	if r.projects.rows == nil {
+		r.projects.rows = labProjects()
+	}
+	config := s.config
+	if config == nil {
+		config = &policy.ProjectConfig{Repository: repository, MergeRule: "human", Objects: "seed",
+			Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}
+	}
+	r.ledger.mu.Lock()
+	r.ledger.files = map[string]policy.ProjectConfig{project.Name: *config}
+	r.ledger.monthCaps = map[string]float64{project.Name: cmp.Or(s.monthCap, 120)}
+	r.ledger.mu.Unlock()
+	r.repoWriters[repository] = []string{login}
+	labObjects.Lock()
+	labFiles = s.prFiles
+	if labFiles == nil {
+		labFiles = labPRFiles
+	}
+	labObjects.Unlock()
 	r.tasks.mu.Lock()
 	r.tasks.tasks, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.deps, s.plans, s.questions
 	r.tasks.mu.Unlock()
@@ -499,7 +581,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.events.mu.Lock()
 	r.events.rows = nil
 	for i, e := range s.events {
-		e.ID, e.Repository = int64(i+1), "sf/code"
+		e.ID, e.Repository = int64(i+1), repository
 		r.events.rows = append(r.events.rows, e)
 	}
 	r.events.next = int64(len(s.events))
@@ -510,25 +592,25 @@ func (r *rig) labSeed(name string) (string, error) {
 		nil, map[string]int64{}, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
 	r.chat.inboxes, r.chat.archived = nil, map[string]bool{}
 	for _, n := range s.archived {
-		r.chat.archived[fmt.Sprint("sf/code sebastian ", n)] = true
+		r.chat.archived[fmt.Sprint(repository, " ", login, " ", n)] = true
 	}
 	if s.inbox > 0 {
-		r.chat.inboxes = map[string]factoryd.ChatConversation{"sf/code sebastian": {Number: s.inbox, Title: factoryd.InboxTitle,
+		r.chat.inboxes = map[string]factoryd.ChatConversation{repository + " " + login: {Number: s.inbox, Title: factoryd.InboxTitle,
 			State: factoryd.ThreadActive, Inbox: true, FirstAt: now.Add(-time.Hour), LastAt: now.Add(-time.Hour)}}
 	}
 	for i, m := range s.chat {
 		m.ID, m.Conversation = int64(i+1), cmp.Or(m.Conversation, 1)
-		r.chat.msgs["sf/code sebastian"] = append(r.chat.msgs["sf/code sebastian"], m)
+		r.chat.msgs[repository+" "+login] = append(r.chat.msgs[repository+" "+login], m)
 	}
 	for n, upto := range s.seen {
-		r.chat.seen[fmt.Sprint("sf/code sebastian ", n)] = upto
+		r.chat.seen[fmt.Sprint(repository, " ", login, " ", n)] = upto
 	}
 	for n, sum := range s.summaries {
-		r.chat.summaries[fmt.Sprint("sf/code sebastian ", n)] = sum
-		r.chat.compacts[fmt.Sprint("sf/code sebastian ", n)] = 1
+		r.chat.summaries[fmt.Sprint(repository, " ", login, " ", n)] = sum
+		r.chat.compacts[fmt.Sprint(repository, " ", login, " ", n)] = 1
 	}
 	if len(s.chat) > 0 {
-		r.chat.started = map[string]int64{"sf/code sebastian": cmp.Or(s.open, s.chat[len(s.chat)-1].Conversation)}
+		r.chat.started = map[string]int64{repository + " " + login: cmp.Or(s.open, s.chat[len(s.chat)-1].Conversation)}
 	}
 	for _, p := range s.proposals {
 		r.chat.proposals = append(r.chat.proposals, &fakeProposal{ChatProposal: p})
@@ -540,15 +622,15 @@ func (r *rig) labSeed(name string) (string, error) {
 	}
 	r.chat.atts = nil
 	for _, a := range s.attachments {
-		r.chat.atts = append(r.chat.atts, storedAttachment{repository: "sf/code", login: "sebastian", a: a})
+		r.chat.atts = append(r.chat.atts, storedAttachment{repository: repository, login: login, a: a})
 	}
-	r.chat.spend = []spendRow{{"sf/code", now, s.spend - s.chatSpend, false}, {"sf/code", now, s.chatSpend, true}}
+	r.chat.spend = []spendRow{{repository, now, s.spend - s.chatSpend, false}, {repository, now, s.chatSpend, true}}
 	r.chat.mu.Unlock()
 	r.mirrors.mu.Lock()
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {
-		r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport] = factoryd.Mirror{Project: "ai-software-factory-code",
-			Direction: factoryd.MirrorExport, Remote: "sebastianrueckerai/ai-software-factory-code", State: s.github,
+		r.mirrors.rows[project.Name+" "+factoryd.MirrorExport] = factoryd.Mirror{Project: project.Name,
+			Direction: factoryd.MirrorExport, Remote: cmp.Or(s.remote, "sebastianrueckerai/ai-software-factory-code"), State: s.github,
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
 	r.mirrors.mu.Unlock()
@@ -556,8 +638,12 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.figures.SetMetrics(s.metrics)
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
-	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
-	r.resources.standing = map[string]cloudres.StandingUse{"demo-app/demo-app": {Count: 1, MonthlyEUR: 5.99}}
+	r.resources.use = map[string]cloudres.EnvelopeUse{repository: {OpenServers: 1, MonthEUR: 0.43}}
+	standing := "demo-app/demo-app"
+	if project != labCodeProject {
+		standing = repository
+	}
+	r.resources.standing = map[string]cloudres.StandingUse{standing: {Count: 1, MonthlyEUR: 5.99}}
 	// the cluster's nightly backup and dump, last run at their latest
 	// 02:00 and 02:30 UTC; the dump's last run failed
 	nightly := func(minute int) time.Time {
@@ -575,7 +661,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.routines.mu.Lock()
 	r.routines.views, r.routines.runs, r.routines.skips, r.routines.ran = slices.Clone(s.routines), map[string][]factoryd.RoutineRun{}, nil, nil
 	for name, runs := range s.runs {
-		r.routines.runs[labProject+"/"+name] = runs
+		r.routines.runs[project.Name+"/"+name] = runs
 	}
 	// a Skip once moves the routine's next run on, as factoryd's views do,
 	// and its undo puts the scene's view back
@@ -589,7 +675,7 @@ func (r *rig) labSeed(name string) (string, error) {
 			*v = s.routines[i]
 			return
 		}
-		v.State.SkipNext, v.State.SkipBy = true, "sebastian"
+		v.State.SkipNext, v.State.SkipBy = true, login
 		if every := v.Routine.MergesEvery(); every > 0 {
 			v.MergesLeft += every
 			v.NextWords = fmt.Sprintf("after %d more merges", v.MergesLeft)
@@ -600,16 +686,16 @@ func (r *rig) labSeed(name string) (string, error) {
 	r.routines.mu.Unlock()
 	r.c.turns = newTurnGate()
 	for _, n := range s.working {
-		r.c.turns.enter(threadKey("sf/code", "sebastian", n))
+		r.c.turns.enter(threadKey(repository, login, n))
 	}
-	if p, ok := r.ledger.files["ai-software-factory-code"]; ok {
+	if p, ok := r.ledger.files[project.Name]; ok {
 		p.Autonomy = cmp.Or(s.autonomy, policy.AutonomyManual)
-		r.ledger.files["ai-software-factory-code"] = p
+		r.ledger.files[project.Name] = p
 	}
 	r.c.mu.Lock()
 	r.c.checks = nil
 	r.c.mu.Unlock()
-	return s.drawer, nil
+	return s.drawer
 }
 
 // labCosts is the ledger of the 14 days to now: total spread over them by
@@ -641,7 +727,7 @@ func labCosts(now time.Time, total float64, tasks []factoryd.BoardTask) policy.C
 		}
 		review := round(bt.SpentEUR * 0.12)
 		c.Tasks = append(c.Tasks, policy.TaskCost{TaskID: bt.ID, EUR: bt.SpentEUR, Lines: []policy.CostLine{
-			{Kind: policy.KindModel, Ref: cmp.Or(bt.ModelAlias, "coding-cheap"), EUR: bt.SpentEUR - review},
+			{Kind: policy.KindModel, Ref: cmp.Or(bt.ModelAlias, "small"), EUR: bt.SpentEUR - review},
 			{Kind: policy.KindModel, Ref: "review/review", EUR: review}}})
 	}
 	slices.SortFunc(c.Tasks, func(a, b policy.TaskCost) int { return cmp.Compare(b.EUR, a.EUR) })
@@ -656,9 +742,9 @@ func labID(issue int64) string {
 
 // labCard is issue's card of the code project, filed age before now with
 // its issue's title and body as factoryd builds the objective; one that
-// has had a session ran it on coding-cheap.
+// has had a session ran it on small.
 func labCard(now time.Time, issue int64, status, lane string, age time.Duration, title, body string) factoryd.Task {
-	alias := "coding-cheap"
+	alias := "small"
 	if slices.Contains([]string{"backlog", "queued", "waiting-deps", "closed"}, status) {
 		alias = ""
 	}
@@ -737,8 +823,8 @@ func busyScene(now time.Time) labScene {
 	merge := labCard(now, 607, "in-review", "ready", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table "+
 			"with their expiry and purge the old ones in the settlement pass.")
-	merge.PRNumber, merge.Gate, merge.GateSince, merge.SpentEUR, merge.ModelAlias = 612, factoryd.GateApproval, at(25*time.Minute), 1.31, "coding-frontier"
-	s.objects["sessions/"+merge.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(merge.CreatedAt, "coding-frontier", "")...)
+	merge.PRNumber, merge.Gate, merge.GateSince, merge.SpentEUR, merge.ModelAlias = 612, factoryd.GateApproval, at(25*time.Minute), 1.31, "big"
+	s.objects["sessions/"+merge.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(merge.CreatedAt, "big", "")...)
 
 	esc := factoryd.BoardTask{Task: labCard(now, 603, "waiting-human", "ready", 95*time.Minute, "Board export: keep the nightly snapshots",
 		"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."),
@@ -750,7 +836,7 @@ func busyScene(now time.Time) labScene {
 	plan := labCard(now, 558, "waiting-human", "plan", 64*time.Minute, "Console: a project's activity feed",
 		"Show each project's events as a feed beside the board: who did what, by which way, when.\nThe feed reads the events table; no new store.\n"+
 			"A writer filters it by card and by kind.\nIt pages back 500 rows at most.\nAcceptance: the feed shows a steer within a second of its row.")
-	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "coding-frontier"
+	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "big"
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Four cards: the feed's read model first, then the page and the filters side by side, then the live rows.",
 		Cards: []factoryd.PlanCard{
 			{Key: "feed-read", Role: factoryd.RoleFoundation, Title: "Events: a paged read of a project's feed", Size: "small"},
@@ -765,10 +851,10 @@ func busyScene(now time.Time) labScene {
 
 	drawer := labCard(now, 606, "running", "ready", 72*time.Minute, "Console polish: clamp board chip objectives, theme the scrollbar",
 		"Long objectives push the chips off the card; clamp them at three lines. Theme every scrollbar with the page's colours.")
-	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "coding-frontier"
-	tl := pushedTimeline(drawer.CreatedAt, "coding-cheap", "acceptance")
+	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "big"
+	tl := pushedTimeline(drawer.CreatedAt, "small", "acceptance")
 	s2 := ago(37 * time.Minute)
-	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "coding-frontier", "attempt": 2})
+	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "big", "attempt": 2})
 	s.objects["sessions/"+drawer.ID+"/timeline.jsonl"] = jsonl(tl...)
 	said := func(d time.Duration, text string) map[string]any {
 		return map[string]any{"time": stamp(s2.Add(d)), "kind": "model_call", "detail": map[string]any{"text": text, "cost": 0.02}}
@@ -803,17 +889,17 @@ func busyScene(now time.Time) labScene {
 	review := labCard(now, 601, "in-review", "ready", 4*time.Hour, "Pulse: recompute on a card's status change",
 		"The pulse recomputes every ten minutes; a card that fails waits that long to show. Recompute on each task_status row, at most once a minute.")
 	review.PRNumber, review.Gate, review.GateSince, review.SpentEUR = 605, factoryd.GateMergeQueue, at(8*time.Minute), 0.87
-	s.objects["sessions/"+review.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(review.CreatedAt, "coding-cheap", "")...)
+	s.objects["sessions/"+review.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(review.CreatedAt, "small", "")...)
 
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
-	planDone.BudgetEUR, planDone.ModelAlias = 5, "coding-frontier"
+	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
 	exported := finished(labCard(now, 596, "done", "ready", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
 	failed := finished(labCard(now, 597, "failed", "ready", 6*time.Hour, "Gateway: retry a 529 from the provider with backoff",
 		"An overloaded provider answers 529; retry it twice with backoff before the session ends."), now, 5*time.Hour, 2.00)
-	failed.ModelAlias = "coding-frontier"
+	failed.ModelAlias = "big"
 	closed := finished(labCard(now, 590, "closed", "backlog", 5*24*time.Hour, "Board: drag cards between lanes",
 		"Drag a card from the backlog into ready."), now, 20*time.Hour, 0)
 
@@ -838,7 +924,7 @@ func busyScene(now time.Time) labScene {
 		"head_sha": "b7e04c19d2a3", "recommendation": "Merge it: the migration only adds a table and an index, and the acceptance test restarts the console between a proposal and its Do it.",
 		"why_human": []string{"the project's merge rule is human", "risk class high is requires_approval",
 			"migration: schema migration, human review required: internal/factoryd/migrations/0031_chat_proposals.sql"},
-		"audit": map[string]any{"verdict": "findings", "model": "coding-frontier", "deployment": "zai/glm-5.3", "findings": []map[string]any{
+		"audit": map[string]any{"verdict": "findings", "model": "big", "deployment": "zai/glm-5.3", "findings": []map[string]any{
 			{"item": "token stored in clear", "file": "internal/factoryd/chat.go", "line": 268,
 				"why": "the proposal row keeps its token unhashed; a database reader could replay a Do it within its 30 minutes"}}},
 	})
@@ -975,7 +1061,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		{Role: "user", Content: "What is #606 stuck on, and can it finish under its budget?", At: ago(14 * time.Minute)},
 		{Role: "assistant", At: ago(14*time.Minute - 4*time.Second), ToolCalls: []factoryd.ChatToolCall{{ID: "call_1", Name: "card",
 			Arguments: fmt.Sprintf(`{"task_id":%q}`, running.ID), ReadAt: ago(14*time.Minute - 4*time.Second),
-			Result: ref(running) + ": running, gate session for 23 min, session 2 on coding-frontier\nspent €1.72 of €2.00\n" +
+			Result: ref(running) + ": running, gate session for 23 min, session 2 on big\nspent €1.72 of €2.00\n" +
 				"PR #609: checks 3/4, acceptance failed (TestDrawerObjective)"}}},
 		{Role: "assistant", At: ago(14*time.Minute - 9*time.Second), Content: "#606 is in its second session. The first pushed PR #609, then the " +
 			"**acceptance** job failed: the clamp cuts the objective at two lines and `TestDrawerObjective` reads three.\n\n" +
@@ -1001,8 +1087,6 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 // calendar. A scene with the routines stands for a moment of it: their
 // runs read as the round's dates, and every age counts back from now.
 var labMonday = time.Date(2026, 10, 12, 6, 0, 0, 0, time.UTC)
-
-const labProject = "ai-software-factory-code"
 
 // labBumpBrief is the weekly bump's brief, routines/weekly-bump.md.
 const labBumpBrief = "The factory pins every outside input of its builds and its cluster: nothing moves until this card moves it. " +
@@ -1052,7 +1136,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	}
 	s.routinesAt = at
 	run := func(rt policy.Routine, n int, trigger string, due time.Time, took time.Duration, outcome, note string, issue int64) factoryd.RoutineRun {
-		r := factoryd.RoutineRun{Project: labProject, Routine: rt.Name, Run: n, Due: due, Started: due, Ended: due.Add(took), Trigger: trigger,
+		r := factoryd.RoutineRun{Project: labCodeProject.Name, Routine: rt.Name, Run: n, Due: due, Started: due, Ended: due.Add(took), Trigger: trigger,
 			Outcome: outcome, Note: note, Issue: issue}
 		if issue > 0 {
 			r.TaskID = labID(issue)
@@ -1112,7 +1196,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	}
 
 	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
-		v := factoryd.RoutineView{Project: labProject, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
+		v := factoryd.RoutineView{Project: labCodeProject.Name, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
 		labNext(&v, now, at, at)
 		if every := rt.MergesEvery(); every > 0 {
 			v.MergesLeft = every - st.Merges
@@ -1120,12 +1204,12 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 		}
 		return v
 	}
-	b := view(labBump, factoryd.RoutineState{Project: labProject, Routine: labBump.Name, Runs: s.runs[labBump.Name][0].Run})
+	b := view(labBump, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labBump.Name, Runs: s.runs[labBump.Name][0].Run})
 	b.Open, b.Held = open, held
 	s.routines = []factoryd.RoutineView{b,
 		view(labTemplatePass, factoryd.RoutineState{Routine: labTemplatePass.Name, Runs: 1312}),
-		view(labDeps, factoryd.RoutineState{Project: labProject, Routine: labDeps.Name, Runs: 9}),
-		view(labAudit, factoryd.RoutineState{Project: labProject, Routine: labAudit.Name, Merges: 14, Runs: 4}),
+		view(labDeps, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labDeps.Name, Runs: 9}),
+		view(labAudit, factoryd.RoutineState{Project: labCodeProject.Name, Routine: labAudit.Name, Merges: 14, Runs: 4}),
 	}
 }
 
@@ -1201,13 +1285,13 @@ func fireScene(now time.Time) labScene {
 		"Open 200 followers on one project's stream and measure the heartbeat's board reads.")
 	stale.Gate, stale.GateSince, stale.SpentEUR = factoryd.GateSession, at(41*time.Minute), 0.88
 	s.objects["sessions/"+stale.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(ago(41 * time.Minute)),
-		"session": "s-1", "model": "coding-cheap", "attempt": 1})
+		"session": "s-1", "model": "small", "attempt": 1})
 
 	near := labCard(now, 620, "running", "ready", 65*time.Minute, "Pulse: name the failed cards first",
 		"A pulse that lists a failure after the running cards hides it; name failed cards first.")
-	near.PRNumber, near.Gate, near.GateSince, near.SpentEUR, near.ModelAlias = 622, factoryd.GateSession, at(14*time.Minute), 1.95, "coding-frontier"
-	tl := pushedTimeline(near.CreatedAt, "coding-cheap", "test")
-	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(ago(14 * time.Minute)), "session": "s-2", "model": "coding-frontier", "attempt": 2})
+	near.PRNumber, near.Gate, near.GateSince, near.SpentEUR, near.ModelAlias = 622, factoryd.GateSession, at(14*time.Minute), 1.95, "big"
+	tl := pushedTimeline(near.CreatedAt, "small", "test")
+	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(ago(14 * time.Minute)), "session": "s-2", "model": "big", "attempt": 2})
 	s.objects["sessions/"+near.ID+"/timeline.jsonl"] = jsonl(tl...)
 	s.objects["sessions/"+near.ID+"/s-2.jsonl"] = jsonl(
 		map[string]any{"time": stamp(ago(13 * time.Minute)), "kind": "model_call", "detail": map[string]any{"text": "The test job failed on TestPulseOrder: the failed card comes second. Sorting the bullets by state first."}},
@@ -1216,18 +1300,18 @@ func fireScene(now time.Time) labScene {
 
 	refused := func(d time.Duration) string {
 		return jsonl(
-			map[string]any{"step": "session_start", "time": stamp(ago(d + 2*time.Minute)), "session": "s-1", "model": "coding-frontier", "attempt": 1},
+			map[string]any{"step": "session_start", "time": stamp(ago(d + 2*time.Minute)), "session": "s-1", "model": "big", "attempt": 1},
 			map[string]any{"step": "session_end", "time": stamp(ago(d)), "session": "s-1", "attempt": 1, "outcome": "provider_refused"},
 			map[string]any{"step": factoryd.StepProviderRefused, "time": stamp(ago(d)), "status": 429, "reason": "budget exhausted", "backoff_s": 120},
 		)
 	}
 	wait1 := labCard(now, 615, "running", "ready", 25*time.Minute, "Gateway: count the provider's 429s per model",
 		"Count each refusal per model alias so the pulse can name a provider that is down.")
-	wait1.Gate, wait1.GateSince, wait1.SpentEUR, wait1.ModelAlias = factoryd.GateProvider, at(2*time.Minute), 0.06, "coding-frontier"
+	wait1.Gate, wait1.GateSince, wait1.SpentEUR, wait1.ModelAlias = factoryd.GateProvider, at(2*time.Minute), 0.06, "big"
 	s.objects["sessions/"+wait1.ID+"/timeline.jsonl"] = refused(2 * time.Minute)
 	wait2 := labCard(now, 621, "running", "ready", 18*time.Minute, "Review: retry the review on a provider refusal",
 		"A refused review call fails the gate; retry it after the provider's backoff.")
-	wait2.Gate, wait2.GateSince, wait2.SpentEUR, wait2.ModelAlias = factoryd.GateProvider, at(1*time.Minute), 0.02, "coding-frontier"
+	wait2.Gate, wait2.GateSince, wait2.SpentEUR, wait2.ModelAlias = factoryd.GateProvider, at(1*time.Minute), 0.02, "big"
 	s.objects["sessions/"+wait2.ID+"/timeline.jsonl"] = refused(time.Minute)
 
 	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "ready", 5*time.Hour, "Board export: import a snapshot back",
@@ -1235,13 +1319,13 @@ func fireScene(now time.Time) labScene {
 		Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\n\n" +
 			"- acceptance: TestExportRoundTrip fails on the second import\n- review: the importer drops a card's accent",
 		EscalatedAt: ago(12 * time.Minute), EscalationAlert: 66}
-	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "coding-frontier", 3
+	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "big", 3
 
 	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "ready", 50*time.Minute, "Board export: document the snapshot format",
 		"Describe the snapshot's JSON in docs/export.md."), WaitingOn: "#610"}
 	f1 := finished(labCard(now, 604, "failed", "ready", 4*time.Hour, "Export: GitHub pull requests for merged cards",
 		"Open a GitHub pull request for every card merged since the export's last run."), now, 70*time.Minute, 2.00)
-	f1.ModelAlias = "coding-frontier"
+	f1.ModelAlias = "big"
 	f2 := finished(labCard(now, 609, "failed", "ready", 3*time.Hour, "Fresh-context and aged-read acceptance tests",
 		"Add the acceptance tests for a fresh context and an aged read."), now, 35*time.Minute, 1.21)
 	done := finished(labCard(now, 602, "done", "ready", 7*time.Hour, "Costs: the day cap line under the table",
@@ -1282,7 +1366,7 @@ func quietScene(now time.Time) labScene {
 		"Say in the first paragraph what the factory is for and who runs it.")
 	run.Gate, run.GateSince, run.SpentEUR = factoryd.GateSession, &run.CreatedAt, 0.22
 	s.objects["sessions/"+run.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(now.Add(-15 * time.Minute)),
-		"session": "s-1", "model": "coding-cheap", "attempt": 1})
+		"session": "s-1", "model": "small", "attempt": 1})
 	s.objects["sessions/"+run.ID+"/s-1.jsonl"] = jsonl(map[string]any{"time": stamp(now.Add(-14 * time.Minute)), "kind": "model_call",
 		"detail": map[string]any{"text": "Reading README.md and docs/overview.md first."}})
 	roll := labCard(now, 626, "running", "ready", 9*time.Minute, "roll 5e1f0a2: factoryd, gateway, worker, ci-runner", "Roll the merged changes.")
@@ -1374,8 +1458,8 @@ func TestLabMetricsScene(t *testing.T) {
 	if !m.RevertedRefiled.Has || m.RevertedRefiled.Reverted != 2 || m.RevertedRefiled.Refiled != 1 {
 		t.Errorf("reverted · refiled = %v · %v (has %v)", m.RevertedRefiled.Reverted, m.RevertedRefiled.Refiled, m.RevertedRefiled.Has)
 	}
-	if got := mMix(m.ModelMix); got != "coding-frontier 71 % · review-frontier 18 % · pulse 11 %" {
-		t.Errorf("model mix = %q", got)
+	if got := mMix(m.ModelSpend); got != "big 89 % · small 11 %" {
+		t.Fatalf("model spend = %q", got)
 	}
 	d := m.DiffSize
 	if !d.Has || d.Files != 9 || d.Insertions != 240 || d.Deletions != 95 {
@@ -1421,13 +1505,22 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Spend:         move(87.4, 82.6, [7]float64{61.2, 68.4, 74.9, 71.8, 79.2, 82.6, 87.4}),
 		PerCard:       move(2.6, 2.9, [7]float64{3.4, 3.3, 3.1, 3.0, 2.9, 2.7, 2.6}),
 		TokensPerCard: flat(84000),
-		ModelMix: []factoryd.MixShare{
-			{Alias: "coding-frontier", Share: 71},
-			{Alias: "review-frontier", Share: 18},
-			{Alias: "pulse", Share: 11},
+		ModelSpend:    []factoryd.MixShare{{Alias: "big", Share: 89}, {Alias: "small", Share: 11}},
+		ServedBy: []factoryd.MixShare{
+			{Alias: "zai/glm-5.3", Share: 71},
+			{Alias: "dashscope/qwen3.8-max", Share: 18},
+			{Alias: "zai/glm-5.3-flash", Share: 9},
+			{Alias: "other", Share: 2},
 		},
-		Interventions:    move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
-		Escalations:      flat(5),
+		Interventions:  move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
+		Escalations:    flat(5),
+		EscalatedShare: move(0.16, 0.19, [7]float64{0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.16}),
+		ToolSpend:      move(0.42, 0.37, [7]float64{0.28, 0.31, 0.35, 0.33, 0.36, 0.37, 0.42}),
+		ToolMix: []factoryd.MixShare{
+			{Alias: "web_scrape", Share: 61},
+			{Alias: "web_search", Share: 35},
+			{Alias: "fal_run", Share: 4},
+		},
 		HumanBlocked:     move(0.18, 0.22, [7]float64{0.24, 0.23, 0.22, 0.21, 0.20, 0.19, 0.18}),
 		ReviewAcceptance: move(0.824, 0.794, [7]float64{0.74, 0.76, 0.77, 0.78, 0.79, 0.80, 0.824}),
 		SelfDeploys:      move(2, 1, [7]float64{1, 2, 1, 1, 2, 1, 2}),
@@ -1435,5 +1528,65 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 			Weeks: [7]float64{9, 9, 9, 9, 9, 9, 9}},
 		ChatWork: factoryd.ChatWork{Calls: 312, Minutes: 41, PrevCalls: 274, PrevMinutes: 36,
 			Weeks: [7]float64{238, 251, 262, 274, 288, 299, 312}},
+	}
+}
+
+func TestSeedSceneProject(t *testing.T) {
+	r := newRig(t)
+	t.Cleanup(func() { labFiles = labPRFiles })
+	now := time.Now()
+	cfg := policy.ProjectConfig{Repository: "nord/booking", MergeRule: "auto"}
+	s := labScene{project: labProject{"nord-booking", "nord/booking", "maria"}, remote: "nord/booking-mirror", github: "in sync",
+		projects: []factoryd.Project{{Name: "nord-booking", Repository: "nord/booking"}}, config: &cfg, monthCap: 40,
+		prFiles: map[string]string{"/p": "x"},
+		events:  []factoryd.Event{labEvent(1, factoryd.EventTaskStatus, "factory", factoryd.ViaFactoryd, now.Add(-time.Minute), nil)},
+		chat:    []factoryd.ChatMessage{{Role: "user", Content: "hello", At: now.Add(-time.Minute)}}}
+	r.seedScene(s)
+	if got := r.events.rows[0].Repository; got != "nord/booking" {
+		t.Fatalf("event repository %q, want nord/booking", got)
+	}
+	if _, ok := r.chat.msgs["nord/booking maria"]; !ok {
+		t.Fatalf("chat keyed %v, want nord/booking maria", slices.Collect(maps.Keys(r.chat.msgs)))
+	}
+	if got := r.ledger.files["nord-booking"]; got.MergeRule != "auto" || len(r.ledger.files) != 1 {
+		t.Fatalf("ledger files %v, want only nord-booking with merge rule auto", r.ledger.files)
+	}
+	if len(r.projects.rows) != 1 || r.projects.rows[0].Name != "nord-booking" {
+		t.Fatalf("projects %v, want the scene's one", r.projects.rows)
+	}
+	if got := r.ledger.monthCaps["nord-booking"]; got != 40 {
+		t.Fatalf("month cap %v, want 40", got)
+	}
+	if got := labFiles["/p"]; got != "x" || len(labFiles) != 1 {
+		t.Fatalf("pull request files %v, want only /p", labFiles)
+	}
+	if got := r.repoWriters["nord/booking"]; !slices.Equal(got, []string{"maria"}) {
+		t.Fatalf("writers %v, want maria", got)
+	}
+	if got := r.mirrors.rows["nord-booking "+factoryd.MirrorExport].Remote; got != "nord/booking-mirror" {
+		t.Fatalf("mirror remote %q, want nord/booking-mirror", got)
+	}
+	if _, ok := r.resources.standing["nord/booking"]; !ok {
+		t.Fatalf("standing keyed %v, want nord/booking", slices.Collect(maps.Keys(r.resources.standing)))
+	}
+
+	r.seedScene(labScene{github: "in sync"})
+	if len(r.projects.rows) != len(labProjects()) {
+		t.Fatalf("empty scene: %d projects, want %d", len(r.projects.rows), len(labProjects()))
+	}
+	if got := r.ledger.monthCaps["ai-software-factory-code"]; got != 120 {
+		t.Fatalf("empty scene: month cap %v, want 120", got)
+	}
+	if len(labFiles) != len(labPRFiles) {
+		t.Fatalf("empty scene: %d pull request files, want %d", len(labFiles), len(labPRFiles))
+	}
+	if got := r.repoWriters["sf/code"]; !slices.Equal(got, []string{"sebastian"}) {
+		t.Fatalf("empty scene: writers %v, want sebastian", got)
+	}
+	if got := r.mirrors.rows["ai-software-factory-code "+factoryd.MirrorExport].Remote; got != "sebastianrueckerai/ai-software-factory-code" {
+		t.Fatalf("empty scene: mirror remote %q", got)
+	}
+	if _, ok := r.resources.standing["demo-app/demo-app"]; !ok {
+		t.Fatalf("empty scene: standing keyed %v", slices.Collect(maps.Keys(r.resources.standing)))
 	}
 }

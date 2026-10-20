@@ -264,7 +264,7 @@ func TestSuperviseGateModelReviewEscalates(t *testing.T) {
 	if d != (GateDecision{Action: ActionEscalate, Diagnosis: "the review alias answers in minutes", Recommendation: "skip the review for this head"}) {
 		t.Fatalf("decision = %+v", d)
 	}
-	want := `{"review":{"model":"review-frontier"}}`
+	want := `{"review":{"model":"big"}}`
 	if got := jsonOf(bundle["state"]); got != want || bundle["last_error"] != c.failure {
 		t.Fatalf("state = %s, last error %v\nwant    %s", got, bundle["last_error"], want)
 	}

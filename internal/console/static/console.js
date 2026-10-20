@@ -42,13 +42,21 @@ document.addEventListener("htmx:configRequest", function (e) {
 });
 
 // A refused board action (a move the lane does not take from you) answers
-// one sentence; htmx swaps nothing on an error, so show it.
-document.addEventListener("htmx:responseError", function (e) {
-  var flash = document.getElementById("flash");
-  if (!flash) return;
-  flash.textContent = e.detail.xhr.responseText.trim() || "The factory refused: " + e.detail.xhr.status;
+// one sentence; htmx swaps nothing on an error, so show it. Every answer of
+// the console carries its Content-Security-Policy: a 502 to 504 without
+// it, or no answer at all, is the router's while the console's pod rolls,
+// and says so in place of the router's text. The board's own reads flash
+// nothing: the stream reads the board again once it is back.
+function refused(e) {
+  var flash = document.getElementById("flash"), xhr = e.detail.xhr;
+  if (!flash || e.detail.elt.id === "board") return;
+  var rolling = !xhr.status || xhr.status >= 502 && xhr.status <= 504 && !xhr.getResponseHeader("Content-Security-Policy");
+  flash.textContent = rolling ? "The factory did not answer: it restarts after a deploy. Try again in a moment." :
+    xhr.responseText.trim() || "The factory refused: " + xhr.status;
   flash.hidden = false;
-});
+}
+document.addEventListener("htmx:responseError", refused);
+document.addEventListener("htmx:sendError", refused);
 // A refusal that answers the board (a plan revision gone stale) is
 // swapped in: its line stands on the card it concerns.
 document.addEventListener("htmx:beforeSwap", function (e) {
@@ -221,9 +229,11 @@ document.addEventListener("DOMContentLoaded", offerLanes);
 // board the first replaced. A find that changes the board's query moves
 // the stream to it, whose first open reads the board as a reconnect does.
 // The footer says when the stream is down, and a stream a refused connect
-// closed (a roll's 503 gap) the board reopens itself.
+// closed (a roll's 503 gap, a session's end) the board reopens itself, as
+// it does one closed or silent when the tab comes back. A page whose build
+// the stream's ping does not name loads itself anew once it is hidden.
 (function () {
-  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null;
+  var missed = {}, latest = {}, asked = 0, finding = false, reading = false, es = null, following = "", viewQ = null, heard = 0, outdated = false;
   function board() { return document.getElementById("board"); }
   function retry() {
     var ids = Object.keys(missed);
@@ -408,30 +418,43 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     text.textContent = d.text || "";
     if (end) box.scrollTop = box.scrollHeight;
   }
-  function follow(project, query) {
+  // follow opens the stream; down says it was down before, as a drop is
+  function follow(project, query, down) {
     var opened = es !== null;
     if (es) es.close();
     following = query;
     var s = es = new EventSource("/projects/" + encodeURIComponent(project) + "/events/stream" + query);
     s.onopen = function () {
+      heard = Date.now();
       document.getElementById("live").textContent = "";
       // the replay after a reconnect holds at most the newest 500 events,
       // a stream moved to a new query replays none, and the agent's text
-      // is never replayed: the board and the Chat are read again
+      // is never replayed: the board and the drawer's Chat are read again,
+      // and after a time down the chat's thread too
       if (opened) {
         swapBoard();
         chat("");
+        if (down) document.dispatchEvent(new CustomEvent("streamopen"));
       }
       opened = true;
+      down = false;
     };
     s.onerror = function () {
+      down = true;
       document.getElementById("live").textContent = "The live stream is down; it reconnects by itself.";
       // a connect the server refused (the 503 the router answers while the
-      // console's pod rolls) closes the EventSource for good: the browser
-      // never retries it, so the board opens one itself, and its onopen
-      // reads the board again, healing the cards the gap froze
-      if (s.readyState === EventSource.CLOSED) setTimeout(function () { if (es === s) follow(project, query); }, 5000);
+      // console's pod rolls, the login page once the session ended) closes
+      // the EventSource for good: the browser never retries it, so the
+      // board reopens it itself
+      if (s.readyState === EventSource.CLOSED) setTimeout(function () { if (es === s) reopen(); }, 5000);
     };
+    // the ping comes at the open and at every heartbeat, its data the
+    // console's build
+    s.addEventListener("ping", function (m) {
+      heard = Date.now();
+      outdated = outdated || m.data !== document.querySelector('meta[name="build"]').content;
+      reload();
+    });
     s.addEventListener("event", function (m) {
       var e = JSON.parse(m.data);
       document.dispatchEvent(new CustomEvent("factoryevent", { detail: e }));
@@ -448,6 +471,32 @@ document.addEventListener("DOMContentLoaded", offerLanes);
     s.addEventListener("counters", function (m) { counters(JSON.parse(m.data)); });
     s.addEventListener("board", function () { swapBoard(); });
   }
+  // reopen reads the board, which an ended session answers with the way
+  // to the login (htmx follows it), and opens the stream anew, whose open
+  // reads the board again for the events between
+  function reopen() {
+    var b = board();
+    swapBoard();
+    follow(b.dataset.project, b.dataset.query, true);
+  }
+  // a tab back in front, the network back or a page restored from the
+  // back-forward cache asks whether its stream still talks: one closed, or
+  // silent past two heartbeats (a sleep or a network change can drop a
+  // connection without a word), is reopened
+  function check() {
+    if (document.hidden || !es) return;
+    if (es.readyState === EventSource.CLOSED || es.readyState === EventSource.OPEN && Date.now() - heard > 60000) reopen();
+  }
+  // an outdated page loads itself anew while it is hidden and nothing on
+  // it is being filled in or streams; a member looking at it keeps it
+  // until they leave the tab
+  function reload() {
+    if (outdated && document.hidden && !busy(document.body) && !document.querySelector('[aria-busy="true"]')) location.reload();
+  }
+  document.addEventListener("visibilitychange", check);
+  document.addEventListener("visibilitychange", reload);
+  window.addEventListener("online", check);
+  window.addEventListener("pageshow", check);
   document.addEventListener("DOMContentLoaded", function () {
     var b = board();
     if (b && b.dataset.project) follow(b.dataset.project, b.dataset.query);
@@ -520,6 +569,153 @@ document.addEventListener("click", function (e) {
   box.hidden = !open;
   if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
 });
+
+// A card's press acts at once (C31): the card moves to the column that
+// holds the status its form's data-to names, or a lane move's lane column,
+// sliding there, and leaves the board when no column holds it; a form
+// without one moves nothing. From the press on the card is locked: its
+// buttons, on the board and in the drawer, take no press, and a second
+// action on it is dropped, so one press registers. The move holds across
+// the board's swaps until the factory's board shows the card out of the
+// columns it left: an approval's answer does at once, a workflow's step
+// seconds later; then a drawer showing the card's open need loads again.
+// A refusal or a lost request puts the card back at once, the reason in
+// the flash, and so does a factory that has not moved it within a minute.
+(function () {
+  var acts = {}, wait = 60000;
+  function board() { return document.getElementById("board"); }
+  // own are the card's, or the routine's, elements a column's cards hold
+  function own(id) {
+    var q = CSS.escape(id);
+    return ":scope > [data-card=\"" + q + "\"], :scope > [data-ghost=\"" + q + "\"]";
+  }
+  function onBoard(id) {
+    var out = [];
+    document.querySelectorAll("#board .cards").forEach(function (c) { out.push.apply(out, c.querySelectorAll(own(id))); });
+    return out;
+  }
+  function colOf(el) { return el.closest(".column").getAttribute("aria-labelledby"); }
+  function lock(a, el) {
+    el.setAttribute("aria-busy", "true");
+    a.busy.push(el);
+    el.querySelectorAll("button:not(:disabled)").forEach(function (b) {
+      b.disabled = true;
+      a.off.push(b);
+    });
+  }
+  function lockAll(a) {
+    var q = CSS.escape(a.id);
+    onBoard(a.id).forEach(function (el) { lock(a, el); });
+    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .open-need, #drawer [data-routine-drawer^=\"" + q + ":\"] .acts").forEach(function (el) { lock(a, el); });
+  }
+  function glide(el, was) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    var r = el.getBoundingClientRect();
+    el.animate([{transform: "translate(" + (was.left - r.left) + "px, " + (was.top - r.top) + "px)"}, {transform: "none"}], {duration: 200, easing: "ease-out"});
+  }
+  // place moves the card out of the columns it left: one copy to the top
+  // of its new column unless the card stands there already, the others
+  // hidden. The mark is data-sent, not a class: htmx settles a swapped
+  // element's classes from the one of its id it replaced.
+  function place(a, slide) {
+    var to = a.to && document.querySelector("#board .column" + a.to + " > .cards");
+    var there = to && to.querySelector(own(a.id));
+    onBoard(a.id).forEach(function (el) {
+      if (a.from.indexOf(colOf(el)) < 0 || el.hasAttribute("data-sent")) return;
+      a.moved.push({el: el, parent: el.parentNode, next: el.nextSibling});
+      el.setAttribute("data-sent", "");
+      if (to && !there) {
+        var was = slide && el.getBoundingClientRect();
+        to.prepend(el);
+        there = el;
+        if (was) glide(el, was);
+      } else el.hidden = true;
+    });
+    a.board = board();
+    lockAll(a);
+  }
+  function free(a) {
+    delete acts[a.id];
+    clearTimeout(a.timer);
+    a.off.forEach(function (b) { b.disabled = false; });
+    a.busy.forEach(function (el) { el.removeAttribute("aria-busy"); });
+  }
+  function back(a, why) {
+    for (var i = a.moved.length - 1; i >= 0; i--) {
+      var m = a.moved[i];
+      if (!m.el.isConnected) continue;
+      m.parent.insertBefore(m.el, m.next && m.next.parentNode === m.parent ? m.next : null);
+      m.el.hidden = false;
+      m.el.removeAttribute("data-sent");
+    }
+    free(a);
+    var flash = document.getElementById("flash");
+    if (!why || !flash) return;
+    flash.textContent = why;
+    flash.hidden = false;
+  }
+  // the factory's board shows the card out of the columns it left: the
+  // move is the factory's now
+  function landed(a) {
+    free(a);
+    var q = CSS.escape(a.id);
+    if (document.querySelector("#drawer [data-drawer=\"" + q + "\"] .open-need")) {
+      htmx.ajax("GET", "/cards/" + encodeURIComponent(a.id) + "/drawer", {target: "#drawer", swap: "innerHTML"});
+    }
+  }
+  function actOf(xhr) {
+    for (var id in acts) if (acts[id].xhr === xhr) return acts[id];
+    return null;
+  }
+  // the answer is in: a refusal goes back, a board that answers it (a
+  // stale plan) standing as the truth; an accepted press without a move
+  // is done, one with a move waits for the board that shows it
+  function answered(a, xhr, swaps) {
+    a.xhr = null;
+    if (xhr.status >= 200 && xhr.status < 400) {
+      a.ok = true;
+      if (!a.from.length) landed(a);
+    } else if (swaps) free(a);
+    else back(a, xhr.status ? "" : "The factory could not be reached; the card is back in its column.");
+  }
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    var f = e.detail.elt, k = f.closest && f.closest("[data-card], [data-ghost], [data-drawer], [data-routine-drawer]");
+    if (e.defaultPrevented || e.detail.requestConfig.verb !== "post" || !k) return;
+    var id = (k.dataset.card || k.dataset.ghost || k.dataset.drawer || k.dataset.routineDrawer).split(":")[0];
+    if (acts[id]) {
+      e.preventDefault();
+      return;
+    }
+    var a = acts[id] = {id: id, xhr: e.detail.xhr, to: "", from: [], moved: [], off: [], busy: []};
+    var lane = f.dataset.move;
+    if (f.dataset.to) a.to = "[data-holds~=\"" + CSS.escape(f.dataset.to) + "\"]";
+    else if (lane && document.querySelector("#board .column[data-lane=\"" + CSS.escape(lane) + "\"]")) a.to = "[data-lane=\"" + CSS.escape(lane) + "\"]";
+    if (a.to) {
+      var to = document.querySelector("#board .column" + a.to), cols = onBoard(id).map(colOf);
+      a.from = cols.filter(function (c, i) { return cols.indexOf(c) === i && (!to || c !== to.getAttribute("aria-labelledby")); });
+    }
+    a.timer = setTimeout(function () {
+      if (acts[id] === a) back(a, "The factory has not moved the card yet; it is back in its column.");
+    }, wait);
+    place(a, true);
+  });
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var a = actOf(e.detail.xhr);
+    if (a) answered(a, e.detail.xhr, e.detail.shouldSwap);
+  });
+  document.addEventListener("htmx:afterRequest", function (e) {
+    var a = actOf(e.detail.xhr);
+    if (a) answered(a, e.detail.xhr, false);
+  });
+  document.addEventListener("htmx:afterSwap", function () {
+    var b = board();
+    Object.keys(acts).forEach(function (id) {
+      var a = acts[id];
+      if (a.ok && a.board !== b && !onBoard(id).some(function (el) { return a.from.indexOf(colOf(el)) >= 0; })) landed(a);
+      else place(a, false);
+    });
+  });
+})();
 
 // The card drawer docked at the right edge over the board: #card=<id> in
 // the URL opens it, on load too, and a card links there; #card=<id>:<section>

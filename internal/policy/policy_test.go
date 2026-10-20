@@ -28,7 +28,7 @@ budget:
 classes:
   coder:
     session: code
-    models: [coding-cheap, coding-frontier]
+    models: [small, big]
     tools: {}
 risk:
   classes:
@@ -65,7 +65,7 @@ func TestParseValid(t *testing.T) {
 	if !reflect.DeepEqual(d.Approvers, []string{"sebastian"}) {
 		t.Fatalf("approvers = %v", d.Approvers)
 	}
-	if got := d.Classes["coder"].Models; len(got) != 2 || got[0] != "coding-cheap" || got[1] != "coding-frontier" {
+	if got := d.Classes["coder"].Models; len(got) != 2 || got[0] != "small" || got[1] != "big" {
 		t.Fatalf("coder models = %v", got)
 	}
 }
@@ -104,8 +104,8 @@ func TestParseRejects(t *testing.T) {
 		"session floor above the card maximum": {strings.Replace(valid, "month_eur: 50", "month_eur: 50\n  session_floor_frontier_eur: 6", 1),
 			"exceeds budget.task_max_eur"},
 		"no classes":          {"version: 1\nbudget: {task_default_eur: 1, task_max_eur: 1, day_eur: 1, month_eur: 1}\nlimits: {sessions: 3, agent_time: 20m, supervisor_calls: 3, supervisor_timeout: 6m, stronger_after: 1}\n", "no capability classes"},
-		"class no models":     {strings.Replace(valid, "[coding-cheap, coding-frontier]", "[]", 1), "allows no models"},
-		"empty model":         {strings.Replace(valid, "[coding-cheap, coding-frontier]", `[coding-cheap, ""]`, 1), "empty model"},
+		"class no models":     {strings.Replace(valid, "[small, big]", "[]", 1), "allows no models"},
+		"empty model":         {strings.Replace(valid, "[small, big]", `[small, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
 		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
 		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "tool escalate_to_human is free: list it as {}"},
@@ -116,7 +116,7 @@ func TestParseRejects(t *testing.T) {
 			"prices: {replicate: {max_seconds: 9, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
 		"replicate fractional max_seconds": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 30.5, models: {a/b: cpu}, eur_per_second: {cpu: 0.0001}}}\n", "max_seconds must be whole seconds, at least 10"},
-		"zero output limit":  {valid + "prices: {max_output_tokens: {coding-frontier: 0}}\n", "prices.max_output_tokens of coding-frontier must be positive"},
+		"zero output limit":  {valid + "prices: {max_output_tokens: {big: 0}}\n", "prices.max_output_tokens of big must be positive"},
 		"fal unbounded":      {strings.Replace(valid, "tools: {}", "tools: {fal_run: {max_requests: 5, max_eur: 1}}", 1), "prices.fal needs"},
 		"two documents":      {valid + "---\nversion: 1\n", "more than one YAML document"},
 		"empty approver":     {strings.Replace(valid, "approvers: [sebastian]", `approvers: [sebastian, ""]`, 1), "approvers must be distinct"},
@@ -149,13 +149,13 @@ budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
     session: code
-    models: [coding-cheap]
+    models: [small]
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.2}
       replicate_predict: {max_requests: 5, max_eur: 0.5}
   researcher:
     session: code
-    models: [coding-cheap]
+    models: [small]
     tools:
       web_scrape: {max_requests: 10, max_eur: 1}
 prices:
@@ -301,16 +301,16 @@ func TestFitResource(t *testing.T) {
 var inf = math.Inf(1)
 
 // An opening's hold sums its calls' holds as Fit prices them with the
-// headroom unbounded, each at its own alias's rate: coding-frontier 3e-6
-// in, 1.5e-5 out, coding-cheap 1e-6 in, 4e-6 out, both limited to 32,768
+// headroom unbounded, each at its own alias's rate: big 3e-6
+// in, 1.5e-5 out, small 1e-6 in, 4e-6 out, both limited to 32,768
 // output tokens. s1's 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 and
 // 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 make 0.607001, less than s2's
-// 80,000 × 3e-6 + 0.36864 = 0.60864 (at coding-frontier's rate alone s1
+// 80,000 × 3e-6 + 0.36864 = 0.60864 (at big's rate alone s1
 // would take 0.891399). A call asking no limit takes the limit: 1,000 ×
 // 3e-6 + 32,768 × 1.5e-5 = 0.49452; under a limit of 8,192, it and a call
 // asking 50,000 take 8,192: 0.003 + 0.12288 = 0.12588.
 func TestOpeningHoldSumsWhatTheHoldsTake(t *testing.T) {
-	prices := map[string]Price{"coding-frontier": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "coding-cheap": {In: 1e-6, Out: 4e-6, MaxOutput: 32768}}
+	prices := map[string]Price{"big": {In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}, "small": {In: 1e-6, Out: 4e-6, MaxOutput: 32768}}
 	price := func(ref string) (Price, error) {
 		if p, ok := prices[ref]; ok {
 			return p, nil
@@ -318,20 +318,20 @@ func TestOpeningHoldSumsWhatTheHoldsTake(t *testing.T) {
 		return Price{}, fmt.Errorf("LiteLLM has no model %q", ref)
 	}
 	r := HoldRequest{Kind: KindModel}
-	s1 := []OpeningCall{{Ref: "coding-frontier", Bytes: 44342, WantOut: 24576}, {Ref: "coding-cheap", Bytes: 7031, WantOut: 24576}}
-	s2 := []OpeningCall{{Ref: "coding-frontier", Bytes: 80000, WantOut: 24576}}
+	s1 := []OpeningCall{{Ref: "big", Bytes: 44342, WantOut: 24576}, {Ref: "small", Bytes: 7031, WantOut: 24576}}
+	s2 := []OpeningCall{{Ref: "big", Bytes: 80000, WantOut: 24576}}
 	if eur, calls, err := (Opening{Sessions: [][]OpeningCall{s1, s2}}).Hold(r, price); err != nil || !near(eur, 0.60864) || !reflect.DeepEqual(calls, s2) {
 		t.Fatalf("hold = (%v, %v, %v), want s2's 0.60864", eur, calls, err)
 	}
-	unasked := Opening{Sessions: [][]OpeningCall{{{Ref: "coding-frontier", Bytes: 1000}}}}
+	unasked := Opening{Sessions: [][]OpeningCall{{{Ref: "big", Bytes: 1000}}}}
 	if eur, _, err := unasked.Hold(r, price); err != nil || !near(eur, 0.49452) {
 		t.Fatalf("hold of a call asking no limit = (%v, %v), want the limit's 0.49452", eur, err)
 	}
-	prices["coding-frontier"] = Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 8192}
+	prices["big"] = Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 8192}
 	if eur, _, err := unasked.Hold(r, price); err != nil || !near(eur, 0.12588) {
 		t.Fatalf("hold of a call asking no limit = (%v, %v), want 0.12588 under 8192", eur, err)
 	}
-	if eur, _, err := (Opening{Sessions: [][]OpeningCall{{{Ref: "coding-frontier", Bytes: 1000, WantOut: 50000}}}}).Hold(r, price); err != nil || !near(eur, 0.12588) {
+	if eur, _, err := (Opening{Sessions: [][]OpeningCall{{{Ref: "big", Bytes: 1000, WantOut: 50000}}}}).Hold(r, price); err != nil || !near(eur, 0.12588) {
 		t.Fatalf("hold of a call asking past the limit = (%v, %v), want 0.12588 under 8192", eur, err)
 	}
 	if _, _, err := (Opening{Sessions: [][]OpeningCall{s1, {{Ref: "unpriced", Bytes: 1000}}}}).Hold(r, price); err == nil || err.Error() != `LiteLLM has no model "unpriced"` {
@@ -439,7 +439,7 @@ func TestFit(t *testing.T) {
 // deployments publish; without the policy's, no call of it can be held,
 // whatever its deployments publish.
 func TestLimited(t *testing.T) {
-	d, err := Parse([]byte(valid + "prices: {max_output_tokens: {coding-frontier: 8192}}\n"))
+	d, err := Parse([]byte(valid + "prices: {max_output_tokens: {big: 8192}}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -449,10 +449,10 @@ func TestLimited(t *testing.T) {
 		want      int
 		err       string
 	}{
-		{alias: "coding-frontier", want: 8192},
-		{alias: "coding-frontier", published: 4096, want: 4096},
-		{alias: "coding-frontier", published: 32768, want: 8192},
-		{alias: "coding-cheap", published: 4096, err: "coding-cheap has no output limit"},
+		{alias: "big", want: 8192},
+		{alias: "big", published: 4096, want: 4096},
+		{alias: "big", published: 32768, want: 8192},
+		{alias: "small", published: 4096, err: "small has no output limit"},
 	} {
 		p, err := d.Limited(tc.alias, Price{In: 1e-6, Out: 4e-6, MaxOutput: tc.published})
 		if tc.err != "" {
@@ -515,9 +515,9 @@ func TestFitCalibrated(t *testing.T) {
 
 func TestParseModelInfo(t *testing.T) {
 	body := `{"data":[
-	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":2.8e-7,"output_cost_per_token":4.2e-7,"cache_read_input_token_cost":2.8e-8,"cache_creation_input_token_cost":0.0,"max_output_tokens":8192,"search_context_cost_per_query":null}},
-	 {"model_name":"coding-cheap","model_info":{"input_cost_per_token":1.5e-7,"output_cost_per_token":4.7e-7,"cache_creation_input_token_cost":2e-7,"max_output_tokens":131072}},
-	 {"model_name":"coding-frontier","model_info":{"input_cost_per_token":1.4e-6,"output_cost_per_token":4.4e-6,"output_cost_per_reasoning_token":5e-6,"max_output_tokens":null}},
+	 {"model_name":"small","model_info":{"input_cost_per_token":2.8e-7,"output_cost_per_token":4.2e-7,"cache_read_input_token_cost":2.8e-8,"cache_creation_input_token_cost":0.0,"max_output_tokens":8192,"search_context_cost_per_query":null}},
+	 {"model_name":"small","model_info":{"input_cost_per_token":1.5e-7,"output_cost_per_token":4.7e-7,"cache_creation_input_token_cost":2e-7,"max_output_tokens":131072}},
+	 {"model_name":"big","model_info":{"input_cost_per_token":1.4e-6,"output_cost_per_token":4.4e-6,"output_cost_per_reasoning_token":5e-6,"max_output_tokens":null}},
 	 {"model_name":"long-context","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,
 	   "input_cost_per_token_above_200k_tokens":3e-6,"output_cost_per_token_above_200k_tokens":6e-6,"output_cost_per_token_priority":7e-6}},
 	 {"model_name":"tiered","model_info":{"input_cost_per_token":1e-7,"output_cost_per_token":1e-7,
@@ -547,8 +547,8 @@ func TestParseModelInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]Price{
-		"coding-cheap":    {In: 2.8e-7, CacheRead: 2e-7, Out: 4.7e-7, MaxOutput: 131072},
-		"coding-frontier": {In: 1.4e-6, CacheRead: 1.4e-6, Out: 5e-6},
+		"small":           {In: 2.8e-7, CacheRead: 2e-7, Out: 4.7e-7, MaxOutput: 131072},
+		"big":             {In: 1.4e-6, CacheRead: 1.4e-6, Out: 5e-6},
 		"long-context":    {In: 3e-6, CacheRead: 3e-6, Out: 7e-6},
 		"tiered":          {In: 8e-7, CacheRead: 1e-8, Out: 9e-6},
 		"cache-write":     {In: 1.25e-6, CacheRead: 1.25e-6, Out: 2e-6},
@@ -627,12 +627,12 @@ func TestAllowsModel(t *testing.T) {
 		model   string
 		want    bool
 	}{
-		{[]string{"coder"}, "coding-cheap", true},
-		{[]string{"coder"}, "coding-frontier", true},
-		{[]string{"coder"}, "review-frontier", false},
-		{[]string{"reviewer", "coder"}, "coding-cheap", true},
-		{[]string{"reviewer"}, "coding-cheap", false},
-		{nil, "coding-cheap", false},
+		{[]string{"coder"}, "small", true},
+		{[]string{"coder"}, "big", true},
+		{[]string{"coder"}, "vision", false},
+		{[]string{"reviewer", "coder"}, "small", true},
+		{[]string{"reviewer"}, "small", false},
+		{nil, "small", false},
 	} {
 		if got := d.AllowsModel(tc.classes, tc.model); got != tc.want {
 			t.Errorf("AllowsModel(%v, %s) = %v, want %v", tc.classes, tc.model, got, tc.want)
@@ -647,18 +647,18 @@ budget: {task_default_eur: 2, task_max_eur: 5, day_eur: 20, month_eur: 50}
 classes:
   coder:
     session: code
-    models: [coding-cheap]
-    review_model: review-frontier
+    models: [small]
+    review_model: big
     supervisor_model: supervisor
-    audit_model: coding-frontier
+    audit_model: big
     checkin_model: checkin
   researcher:
     session: code
-    models: [coding-cheap]
+    models: [small]
     review_model: review-cheap
   plain:
     session: code
-    models: [coding-cheap]
+    models: [small]
 risk:
   classes: [{name: normal, outcome: requires_approval}]
   default: normal
@@ -675,10 +675,10 @@ func TestFactoryModel(t *testing.T) {
 		purpose string
 		want    string
 	}{
-		{[]string{"coder"}, PurposeReview, "review-frontier"},
+		{[]string{"coder"}, PurposeReview, "big"},
 		{[]string{"coder"}, PurposeSupervisor, "supervisor"},
 		{[]string{"coder"}, PurposeGateSupervisor, "supervisor"},
-		{[]string{"coder"}, PurposeAudit, "coding-frontier"},
+		{[]string{"coder"}, PurposeAudit, "big"},
 		{[]string{"coder"}, PurposeCheckin, "checkin"},
 		{[]string{"researcher"}, PurposeCheckin, "review-cheap"},
 		{[]string{"plain"}, PurposeCheckin, ""},
@@ -689,21 +689,21 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{"coder"}, "session", ""},
 		{nil, PurposeReview, ""},
 		{[]string{"coder"}, PurposeOperator, ""},
-		{[]string{ClassChat}, PurposeOperator, "operator"},
+		{[]string{ClassChat}, PurposeOperator, Big},
 		{[]string{"coder"}, PurposeCompact, ""},
-		{[]string{ClassChat}, PurposeCompact, "pulse"},
+		{[]string{ClassChat}, PurposeCompact, Small},
 	} {
 		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
 			t.Errorf("FactoryModel(%v, %s) = %q, want %q", tc.classes, tc.purpose, got, tc.want)
 		}
 	}
-	if d.AllowsModel([]string{"coder"}, "review-frontier") || d.AllowsModel([]string{"coder"}, "supervisor") {
+	if d.AllowsModel([]string{"coder"}, "checkin") || d.AllowsModel([]string{"coder"}, "supervisor") {
 		t.Fatal("a factory model is not an agent model")
 	}
-	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"coding-frontier", "review-cheap", "supervisor"}) {
+	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"big", "review-cheap", "supervisor"}) {
 		t.Fatalf("FactoryModels = %v", got)
 	}
-	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"checkin", "coding-frontier", "review-frontier", "supervisor"}) {
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "checkin", "supervisor"}) {
 		t.Fatalf("FactoryModels(coder) = %v, want the check-in alias once", got)
 	}
 }

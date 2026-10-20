@@ -1393,15 +1393,29 @@ var chatView = (function () {
   // over the page's one stream (the settle concept)
   var settleEvents = {question_asked: 1, question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
     plan_accepted: 1, plan_changes_requested: 1, plan_rejected: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
+  // reread reads the open thread again, a hidden tab once it is back
+  var behind = false;
+  function reread() {
+    behind = document.hidden;
+    if (open && !behind && !busy(openRef()) && !readOnly) load(open, openOwner, true);
+  }
   document.addEventListener("factoryevent", function (e) {
     if (!settleEvents[e.detail.kind]) return;
     listThreads();
-    if (open && !busy(openRef()) && !document.hidden && !readOnly) load(open, openOwner, true);
+    reread();
   });
   // a hidden tab still reads the list — the stream reaches it, the title's
-  // count must too — and the tab coming back to the front reads it at once
+  // count must too — and the tab coming back to the front reads it at
+  // once, and the open thread a settling event passed while it was hidden
   document.addEventListener("visibilitychange", function () {
-    if (!document.hidden) listThreads();
+    if (document.hidden) return;
+    listThreads();
+    if (behind) reread();
+  });
+  // a reopened stream replays no turn: the gap is read again
+  document.addEventListener("streamopen", function () {
+    listThreads();
+    reread();
   });
   setInterval(listThreads, 10000);
 

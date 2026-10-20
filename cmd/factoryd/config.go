@@ -135,7 +135,7 @@ func checkTree(dir string) (policy.Tree, []policy.SchemaDifference, error) {
 // tree against.
 func ladder() factoryd.ModelLadder {
 	return factoryd.ModelLadder{
-		Start:    env("MODEL", "factory/coding-cheap"),
-		Stronger: env("STRONGER_MODEL", "factory/coding-frontier"),
+		Start:    env("MODEL", "factory/"+policy.Small),
+		Stronger: env("STRONGER_MODEL", "factory/"+policy.Big),
 	}
 }

@@ -45,13 +45,13 @@ func TestPGStorePlanStaleness(t *testing.T) {
 	}
 	// t-mid's first session runs against revision 1, before the second
 	// revision lands; t-last's runs after it
-	if err := s.InsertSession(ctx, Session{ID: "s-mid", TaskID: "t-mid", Model: "factory/coding-frontier"}); err != nil {
+	if err := s.InsertSession(ctx, Session{ID: "s-mid", TaskID: "t-mid", Model: "factory/big"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "s2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.InsertSession(ctx, Session{ID: "s-last", TaskID: "t-last", Model: "factory/coding-frontier"}); err != nil {
+	if err := s.InsertSession(ctx, Session{ID: "s-last", TaskID: "t-last", Model: "factory/big"}); err != nil {
 		t.Fatal(err)
 	}
 
