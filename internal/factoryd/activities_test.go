@@ -1224,16 +1224,23 @@ func taskEnds(t *testing.T, objects *fakeObjectStore, id string) []string {
 var mergedCard = Task{ID: "t1", Status: "running", Kind: "agent", Objective: "Add a make check target", Repository: "sf/repo",
 	PRNumber: 7, Source: "api"}
 
+// mergedAt is Forgejo's pull request number, merged at commit.
+func mergedAt(number int64, commit string) string {
+	return fmt.Sprintf(`{"number":%d,"state":"closed","merged":true,"merge_commit_sha":%q}`, number, commit)
+}
+
 // A merged pull request in a project whose chain runs ends its card in
-// merged: every cleanup of a done card runs at the merge, the final step
-// names merged, and no task_ended fires before the chain covers it.
+// merged: Forgejo's merge commit recorded on the card, every cleanup of a
+// done card run at the merge, the final step naming merged, and no
+// task_ended before the chain covers it.
 func TestFinishEndsAMergedPullRequestInMerged(t *testing.T) {
 	r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
+	hub.pulls = map[int64]string{7: mergedAt(7, "m7")}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" {
-		t.Fatalf("status = %q, want merged", got.Status)
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" || got.MergeCommit != "m7" {
+		t.Fatalf("status = %q, merge commit %q; want merged at m7", got.Status, got.MergeCommit)
 	}
 	if !slices.Equal(hub.revoked, []int64{1, 2}) {
 		t.Fatalf("revoked = %v, want the card's two tokens", hub.revoked)
@@ -1246,6 +1253,87 @@ func TestFinishEndsAMergedPullRequestInMerged(t *testing.T) {
 	}
 	if got := timelineStep(t, objects, "t1", "final"); got["state"] != "merged" || got["reason"] != "pull request merged" {
 		t.Fatalf("final step = %v, want merged with the merge's reason", got)
+	}
+}
+
+// A card whose merge commit is recorded merged: no read asks Forgejo.
+func TestFinishTakesARecordedMergeCommitAsMerged(t *testing.T) {
+	card := mergedCard
+	card.MergeCommit = "m7"
+	r, hub, store, _ := chainRunner(t, card, policy.ChainModeRun)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if slices.ContainsFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "pull ") }) {
+		t.Fatalf("calls = %v, want no pull request read", hub.calls)
+	}
+}
+
+// A done card whose pull request never merged — an acceptance close after
+// an earlier attempt opened one, or one Forgejo no longer has — ends done
+// as any card without a merge: no merge commit, task_ended at once.
+func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
+	for name, pulls := range map[string]map[int64]string{
+		"open": {7: `{"number":7,"state":"open","merged":false}`},
+		"gone": nil,
+	} {
+		r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
+		hub.pulls = pulls
+		reason := `acceptance "make check" exited 0 in session s2`
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" || got.MergeCommit != "" {
+			t.Fatalf("%s: status = %q, merge commit %q; want done, none", name, got.Status, got.MergeCommit)
+		}
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: " + reason}) {
+			t.Fatalf("%s: task_ended = %q", name, got)
+		}
+	}
+}
+
+// A read of the pull request that fails is an error for the activity to
+// retry: the card stays as it was, nothing cleaned.
+func TestFinishRetriesAFailedPullRequestRead(t *testing.T) {
+	r, hub, store, _ := chainRunner(t, mergedCard, policy.ChainModeRun)
+	hub.pulls = map[int64]string{7: ""}
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err == nil {
+		t.Fatal("Finish passed a failed pull request read")
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "running" || len(hub.revoked) != 0 {
+		t.Fatalf("status = %q, revoked = %v; want the card untouched", got.Status, hub.revoked)
+	}
+	if _, on := store.liveSessions["t1"]; !on {
+		t.Fatal("the live session went before the card's end was decided")
+	}
+}
+
+// A merged card's re-check that fails leaves it merged, never closing, so
+// the next end retries it: that one ends it done with one task_ended.
+func TestFinishKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
+	r, _, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
+	t.Cleanup(down.Close)
+	up := r.completion.LiteLLM
+	r.completion.LiteLLM = &LiteLLMAdmin{BaseURL: down.URL, MasterKey: "mk"}
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err == nil {
+		t.Fatal("Finish passed a failed re-check")
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" || len(taskEnds(t, objects, "t1")) != 0 {
+		t.Fatalf("status = %q, task_ended = %q; want merged and no end", got.Status, taskEnds(t, objects, "t1"))
+	}
+	r.completion.LiteLLM = up
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+		t.Fatalf("status = %q, want done", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
+		t.Fatalf("task_ended = %q, want one naming the run", got)
 	}
 }
 

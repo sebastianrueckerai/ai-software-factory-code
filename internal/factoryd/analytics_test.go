@@ -31,7 +31,7 @@ func wantSums(t *testing.T, got, want map[string]float64) {
 // EUR by alias and outcome: merged for a done task with a pull request.
 // The merge itself is no outcome: the card counts when its chain ends it.
 func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
-	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}}
 	merged := prTask
 	merged.Status, merged.PRNumber, merged.SpentEUR, merged.ModelAlias = "in-review", 7, 0.42, "coding-frontier"
 	merged.Usage.Attempts = 2
@@ -272,7 +272,7 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 	card := prTask
 	card.Status, card.PRNumber, card.SpentEUR, card.ModelAlias, card.Lane, card.Process = "in-review", 7, 0.3, "coding-cheap", "ready", "spec"
 	card.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 1}
-	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}})
+	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}})
 	r.cfg.Metrics, r.completion.Metrics = m, m
 	store.projects = []Project{{Name: "linkshort", Repository: "sf/repo"}}
 	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {

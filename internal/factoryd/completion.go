@@ -32,14 +32,26 @@ type Completion struct {
 func TokenName(taskID string) string     { return "task-" + taskID }
 func BaseTokenName(taskID string) string { return TokenName(taskID) + "-base" }
 
+// Complete ends task taskID in finalStatus. A merged card spends nothing
+// already, its credentials gone at the merge: the re-check runs while it
+// stays merged and one move ends it, so a failure leaves it merged for
+// the next end to retry, never closing.
 func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus string) error {
-	if err := c.Store.TransitionTask(ctx, taskID, []string{"backlog", "queued", "waiting-deps", "running", "in-review", "merged", "waiting-human", "waiting-poster", "closing"}, "closing"); err != nil {
+	t, _, err := c.Store.Task(ctx, taskID)
+	if err != nil {
 		return err
+	}
+	from := "merged"
+	if t.Status != "merged" {
+		from = "closing"
+		if err := c.Store.TransitionTask(ctx, taskID, []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, "closing"); err != nil {
+			return err
+		}
 	}
 	if err := c.reconcile(ctx, taskID); err != nil {
 		return err
 	}
-	if err := c.Store.TransitionTask(ctx, taskID, []string{"closing"}, finalStatus); err != nil {
+	if err := c.Store.TransitionTask(ctx, taskID, []string{from}, finalStatus); err != nil {
 		return err
 	}
 	c.finished(ctx, taskID, finalStatus)

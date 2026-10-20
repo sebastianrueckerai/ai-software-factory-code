@@ -14,6 +14,7 @@ func TestAMergeEndsTheWorkflowMerged(t *testing.T) {
 	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "in-review"), policy.ChainModeRun)
 	g := newGateHarness(t, autoGates)
 	g.finish = r.Finish
+	hub.pulls = map[int64]string{7: mergedAt(7, "m7")}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 
@@ -23,8 +24,8 @@ func TestAMergeEndsTheWorkflowMerged(t *testing.T) {
 	if g.steps[len(g.steps)-1] != "merge" || slices.Contains(g.states, "merged") {
 		t.Fatalf("steps = %v, states = %v; want the merge the last step and no merged move of the workflow's own", g.steps, g.states)
 	}
-	if got, _, _ := store.Task(t.Context(), "t1"); got.Status != "merged" {
-		t.Fatalf("status = %q, want merged", got.Status)
+	if got, _, _ := store.Task(t.Context(), "t1"); got.Status != "merged" || got.MergeCommit != "m7" {
+		t.Fatalf("status = %q, merge commit %q; want merged at m7", got.Status, got.MergeCommit)
 	}
 	if !slices.Equal(hub.revoked, []int64{1, 2}) || len(taskEnds(t, objects, "t1")) != 0 {
 		t.Fatalf("revoked = %v, task_ended = %q; want the card's tokens revoked and no end", hub.revoked, taskEnds(t, objects, "t1"))

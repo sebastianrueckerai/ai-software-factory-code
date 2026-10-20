@@ -2154,9 +2154,10 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
 // issue label) and, for a failure, the reason as an issue comment.
 // Finishing an already-finished task is a no-op, so a retried Finish never
-// double-completes. A done end of a card that waits for its chain
-// (endsMerged) runs every step of done and lands in merged, not final and
-// without task_ended: its Finish with done at live ends it.
+// double-completes. A done end of a card whose pull request merged and
+// waits for its chain (endsMerged) runs every step of done and lands in
+// merged, not final and without task_ended: its Finish with done at live
+// ends it.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -2165,9 +2166,17 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	if !ok || Final(t.Status) {
 		return nil // nothing to finish: gone, or already final
 	}
+	// a malformed repository still completes the task, only uncommented
+	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && t.Status != "merged" && endsMerged(t, cfg.Chain) {
-		state = "merged"
+	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && t.Status != "merged" && repoErr == nil && endsMerged(t, cfg.Chain) {
+		merged, err := r.cardMerged(ctx, repo, t)
+		if err != nil {
+			return err
+		}
+		if merged {
+			state = "merged"
+		}
 	}
 	if t.Source == SourceRoll {
 		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
@@ -2180,8 +2189,6 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	r.forgetNamespace(ctx, taskID)
 	why := r.untrusted(t, reason)
 	msg := "factoryd: task " + taskID + " failed: " + why
-	// a malformed repository still completes the task, only uncommented
-	repo, repoErr := SplitRepo(t.Repository)
 	if repoErr == nil {
 		if final != "done" {
 			if final == "closed" {
@@ -2246,11 +2253,29 @@ func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error
 	return nil
 }
 
-// endsMerged tells a card whose done end waits for its chain: its pull
-// request merged in a project whose chain runs. A roll is live when its
-// own rollout says so, before it finishes.
+// endsMerged tells a card that waits for its chain once its pull request
+// merged: one in a project whose chain runs. A roll is live when its own
+// rollout says so, before it finishes.
 func endsMerged(t Task, chain policy.ChainConfig) bool {
 	return t.PRNumber > 0 && t.Source != SourceRoll && chain.Resolved().Mode == policy.ChainModeRun
+}
+
+// cardMerged tells whether card t's pull request merged: a recorded merge
+// commit says so without a read, else Forgejo answers and its merge
+// commit is recorded, whatever path merged the card. A pull request
+// Forgejo no longer has merged nothing.
+func (r *Runner) cardMerged(ctx context.Context, repo Repo, t Task) (bool, error) {
+	if t.MergeCommit != "" {
+		return true, nil
+	}
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+	if errors.Is(err, ErrNotFound) {
+		return false, nil
+	}
+	if err != nil || !pr.Merged {
+		return false, err
+	}
+	return true, r.store.SetTaskMergeCommit(ctx, t.ID, pr.MergeCommit)
 }
 
 // cleanup passes a Finish cleanup step's Forgejo refusal, logged, and
