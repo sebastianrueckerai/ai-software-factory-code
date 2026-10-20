@@ -270,6 +270,9 @@ func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 	if q.Choices[0].Value != "say:A" || q.Choices[1].Value != "say:B" || q.Choices[2].Value != AnswerPark || q.Choices[3].Value != AnswerClose {
 		t.Errorf("values = %+v", q.Choices)
 	}
+	if q := plainQuestion(AgentAsks+"Which?", []string{"A", " ", ""}); !slices.Equal(q.Labels(), []string{"A", "Leave it waiting", "End the card"}) {
+		t.Errorf("empty choices offer buttons: %q", q.Labels())
+	}
 	if q := plainQuestion(AgentAsks+"Which?", []string{"park"}); q.Choices[0].Value != "say:park" {
 		t.Errorf("an agent's park label must not carry the park value: %+v", q.Choices)
 	}

@@ -171,7 +171,8 @@ func plainQuestion(reason string, choices []string) *HumanQuestion {
 		q.Choices = nil
 		seen := map[string]bool{"Leave it waiting": true, "End the card": true}
 		for _, c := range choices {
-			if !seen[c] {
+			c = strings.TrimSpace(c)
+			if c != "" && !seen[c] {
 				seen[c] = true
 				q.Choices = append(q.Choices, QuestionChoice{"say:" + c, c})
 			}
