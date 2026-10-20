@@ -315,6 +315,9 @@ func (s *acceptTasks) Dependencies(_ context.Context, _ string) ([]factoryd.Depe
 func (s *acceptTasks) Dependents(_ context.Context, _ string) ([]factoryd.Dependency, error) {
 	return nil, nil
 }
+func (s *acceptTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Task, error) {
+	return nil, nil
+}
 
 func (s *acceptTasks) moveCard(taskID, lane string) {
 	s.mu.Lock()

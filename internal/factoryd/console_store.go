@@ -42,6 +42,10 @@ type BoardTask struct {
 	AnswersPending  int
 	ChainState      string
 	ChainLive       bool
+	// RollIssue is the issue of the roll task that carries the card's pull
+	// request in an opened request, or a merged one while the card is
+	// merged; 0 for none.
+	RollIssue int64
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
@@ -91,7 +95,11 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
 		        ORDER BY cr.run_id DESC LIMIT 1), ''),
-		        (` + deployLive + `)`
+		        (` + deployLive + `),
+		        COALESCE((SELECT roll.issue_number FROM roll_requests rr JOIN tasks roll ON roll.id = rr.task_id
+		        WHERE tasks.pr_number > 0 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[]
+		        AND (rr.state = 'opened' OR rr.state = 'merged' AND tasks.status = 'merged')
+		        ORDER BY rr.created_at DESC LIMIT 1), 0)`
 
 const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
@@ -102,7 +110,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive, &b.RollIssue)...)
 	})
 	if err != nil {
 		return b, err
@@ -139,6 +147,27 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		tasks = append(tasks, b)
 	}
 	return tasks, rows.Err()
+}
+
+// RollCarries are the cards the requests of roll task id carry: those
+// whose pull request one of them lists, by issue.
+func (s *PGStore) RollCarries(ctx context.Context, id string) ([]Task, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE EXISTS (SELECT 1 FROM roll_requests rr
+		WHERE rr.task_id = $1 AND rr.repository = tasks.repository AND rr.prs @> ARRAY[tasks.pr_number]::bigint[])
+		AND tasks.pr_number > 0 ORDER BY tasks.issue_number, tasks.id`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Task
+	for rows.Next() {
+		t, err := scanTask(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
 }
 
 // FinishedQuery asks for a page of one project's finished cards on the
@@ -183,7 +212,7 @@ func (s *PGStore) FinishedTasks(ctx context.Context, q FinishedQuery) ([]BoardTa
 		 WHERE repository = $3 AND status = ANY($4) AND kind NOT IN ($5, 'human')
 		   AND (finished_at > $6 OR status = 'failed' AND plan_key IS NOT NULL AND EXISTS (SELECT 1 FROM task_deps td JOIN tasks w ON w.id = td.task_id
 		       WHERE td.depends_on = tasks.id AND w.status = 'waiting-deps'))
-		   AND (`+deployLive+`)
+		   AND (status <> 'done' OR `+deployLive+`)
 		   AND ($8 = '' OR COALESCE(finished_at, created_at) = $7 AND tasks.id > $8
 		       OR CASE WHEN $9 THEN COALESCE(finished_at, created_at) > $7 ELSE COALESCE(finished_at, created_at) < $7 END)
 		 ORDER BY CASE WHEN $9 THEN COALESCE(finished_at, created_at) END, COALESCE(finished_at, created_at) DESC, tasks.id

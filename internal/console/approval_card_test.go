@@ -115,3 +115,66 @@ func TestAMergedCardWaitsInProgressDoneIsDone(t *testing.T) {
 		t.Fatal("a done card is not a finished card in Done")
 	}
 }
+
+// A merged card under an open roll reads "blocked by roll #N", the words
+// linking the roll's issue, ahead of what the chain's own row says; one
+// with no roll keeps the chain's words.
+func TestAMergedCardNamesItsRoll(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	card := func(id string, roll int64, state string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "merged", Repository: "sf/code",
+			PRNumber: 9, Objective: id + " change"}, ChainState: state, RollIssue: roll}
+	}
+	r.tasks.tasks = []factoryd.BoardTask{card("t-roll", 1162, "failure"), card("t-none", 0, "failure")}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	progress := col(t, body, "In progress")
+	want := `<span class="pill st-merged">merged</span> <span class="st st-merged"><a href="https://git.example/sf/code/issues/1162" target="_blank" rel="noopener">blocked by roll #1162</a></span>`
+	if !strings.Contains(progress, want) {
+		t.Errorf("In progress lacks %s:\n%s", want, progress)
+	}
+	if strings.Count(progress, "blocked by roll") != 1 || !strings.Contains(progress, `<span class="st st-failed">chain red</span>`) {
+		t.Errorf("the card with no roll must read chain red, and only one card names a roll:\n%s", progress)
+	}
+}
+
+func TestDeployStageWords(t *testing.T) {
+	for _, c := range []struct {
+		state string
+		roll  int64
+		want  string
+	}{
+		{"failure", 5, "blocked by roll #5"}, {"failure", 0, "chain red"}, {"cancelled", 0, "chain red"},
+		{"stalled", 0, "stalled"}, {"", 0, "waiting for the chain"}, {"pending", 0, "chain running"},
+	} {
+		if got := deployStage(c.state, c.roll); got != c.want {
+			t.Errorf("deployStage(%q, %d) = %q, want %q", c.state, c.roll, got, c.want)
+		}
+	}
+}
+
+// A roll task is a card like any other: running, it sits in In progress
+// under its title; its drawer lists the cards it carries, and the merged
+// card's drawer names the roll it waits for.
+func TestARollCardShowsOnTheBoard(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-roll", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Repository: "sf/code",
+			IssueNumber: 1162, Objective: "roll abc1234: factoryd, gateway, worker, ci-runner"}},
+		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "merged", Repository: "sf/code", IssueNumber: 7, PRNumber: 9, Objective: "feed page"}, RollIssue: 1162},
+	}
+	r.tasks.carries = map[string][]string{"t-roll": {"t-m"}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if progress := col(t, body, "In progress"); !strings.Contains(progress, `data-card="t-roll"`) || !strings.Contains(progress, "roll abc1234: factoryd, gateway, worker, ci-runner") {
+		t.Fatalf("In progress lacks the roll card:\n%s", progress)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-roll/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(drawer, `<span class="why">carries</span>`) || !strings.Contains(drawer, `hx-get="/cards/t-m/drawer"`) {
+		t.Errorf("the roll's drawer does not list the card it carries:\n%s", drawer)
+	}
+	drawer = r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(drawer, `<span class="why">blocked by</span>`) || !strings.Contains(drawer, `hx-get="/cards/t-roll/drawer"`) {
+		t.Errorf("the merged card's drawer does not name its roll:\n%s", drawer)
+	}
+}

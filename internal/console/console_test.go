@@ -259,6 +259,7 @@ type fakeTasks struct {
 	// criteria are the criteria verdict rows by task
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
+	carries  map[string][]string // the cards a roll task carries
 	read     func(s *fakeTasks, id string)
 }
 
@@ -440,6 +441,18 @@ func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, err
 		}
 	}
 	return factoryd.Task{}, false, nil
+}
+
+func (s *fakeTasks) RollCarries(_ context.Context, id string) ([]factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Task
+	for _, t := range s.tasks {
+		if slices.Contains(s.carries[id], t.ID) {
+			out = append(out, t.Task)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
@@ -2966,11 +2979,10 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 // A roll's card sits in the human lane only when its merge decision is
 // the one remaining action (ruling 219): at a pending merge approval or
 // in a waiting-human state; while its checks or review run the status
-// mapping places it in the verifying column.
-// A roll task is no card (Sebastian, 2026-10-18): the change's own card
-// tracks its deploy. But a roll's pending merge decision still reaches
-// the human: its approval card stands in needs you.
-func TestBoardShowsARollsMergeApprovalWithoutACard(t *testing.T) {
+// mapping places it in the verifying column. A roll task is a card like
+// any other (Sebastian, 2026-10-20); at its merge decision the approval
+// card stands in needs you in its place.
+func TestBoardShowsARollLikeAnyCard(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.tasks.set("", []factoryd.Task{
@@ -2981,15 +2993,18 @@ func TestBoardShowsARollsMergeApprovalWithoutACard(t *testing.T) {
 		{ID: "t-branch", Kind: "agent", Source: factoryd.SourceRoll, Status: "running", Objective: "roll c3c3c3c: console", Repository: "sf/code"},
 	}...)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(body, "roll c1c1c1c") || strings.Contains(body, "roll c3c3c3c") {
-		t.Errorf("a roll without a decision left a card:\n%s", body)
+	progress := col(t, body, "In progress")
+	for _, want := range []string{"roll c1c1c1c", "roll c3c3c3c"} {
+		if !strings.Contains(progress, want) {
+			t.Errorf("In progress lacks %s:\n%s", want, progress)
+		}
 	}
 	needs := col(t, body, "Needs you")
 	if !strings.Contains(needs, `id="approval-4"`) {
 		t.Errorf("the pending merge approval of roll c2c2c2c is not in needs you:\n%s", needs)
 	}
-	if c := col(t, body, "In progress"); strings.Contains(c, "roll c2c2c2c") {
-		t.Errorf("the approval's roll task rendered a card too:\n%s", c)
+	if strings.Contains(progress, "roll c2c2c2c") {
+		t.Errorf("the approval's roll task rendered a card in progress too:\n%s", progress)
 	}
 }
 

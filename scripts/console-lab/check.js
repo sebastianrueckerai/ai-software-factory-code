@@ -75,7 +75,7 @@ const mustHave = {
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
-  quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+  quiet: ["3 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
 
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
     "model mix", "7 days", "28 days", "90 days"],
@@ -315,6 +315,14 @@ async function text(page) {
       if (psw > 390) fails.push("metrics: horizontal scroll at 390 (" + psw + ")");
       if (mp.errors.length) fails.push("metrics phone: " + mp.errors[0]);
       await mp.ctx.close();
+    }
+    if (sc === "quiet") {
+      const merged = p.page.locator('#board [data-card="' + labID(623) + '"]');
+      const word = merged.locator(".line2 .st a");
+      if ((await word.count()) !== 1 || (await word.innerText()).trim() !== "blocked by roll #626") fails.push("quiet: the merged card's face does not read the linked word blocked by roll #626");
+      else if (!(await word.getAttribute("href")).endsWith("/issues/626")) fails.push("quiet: the roll word links " + (await word.getAttribute("href")) + ", not the roll's issue");
+      const rollCol = await p.page.locator('#board section:has(h3:has-text("In progress")) [data-card="' + labID(626) + '"]').count();
+      if (!rollCol) fails.push("quiet: the roll card is not in the In progress column");
     }
     if (sc === "busy") {
       // the theme selector (C15): the sun sets light and is pressed, a second

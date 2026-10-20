@@ -1285,7 +1285,11 @@ func quietScene(now time.Time) labScene {
 		"session": "s-1", "model": "coding-cheap", "attempt": 1})
 	s.objects["sessions/"+run.ID+"/s-1.jsonl"] = jsonl(map[string]any{"time": stamp(now.Add(-14 * time.Minute)), "kind": "model_call",
 		"detail": map[string]any{"text": "Reading README.md and docs/overview.md first."}})
-	s.tasks = []factoryd.BoardTask{{Task: run},
+	roll := labCard(now, 626, "running", "ready", 9*time.Minute, "roll 5e1f0a2: factoryd, gateway, worker, ci-runner", "Roll the merged changes.")
+	roll.Source = factoryd.SourceRoll
+	merged := finished(labCard(now, 623, "merged", "ready", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
+	merged.PRNumber = 623
+	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollIssue: 626},
 		{Task: finished(labCard(now, 622, "done", "ready", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
 			"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)},
 		{Task: finished(labCard(now, 621, "done", "ready", 6*time.Hour, "Costs: the day cap line under the table",

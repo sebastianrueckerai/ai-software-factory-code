@@ -672,6 +672,10 @@ func (a *AcceptanceRig) Dependents(context.Context, string) ([]factoryd.Dependen
 	return nil, nil
 }
 
+func (a *AcceptanceRig) RollCarries(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) SetHumanSummary(context.Context, string, string) error { return nil }
 
 func (a *AcceptanceRig) SetTaskAccent(context.Context, string, string) error { return nil }

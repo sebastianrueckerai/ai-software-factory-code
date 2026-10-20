@@ -291,6 +291,10 @@ func (s *accBatchTasks) Dependents(_ context.Context, _ string) ([]factoryd.Depe
 	return nil, nil
 }
 
+func (s *accBatchTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 func (s *accBatchTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
 func (s *accBatchTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
 func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }

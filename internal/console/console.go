@@ -82,6 +82,8 @@ type Tasks interface {
 	// first; Dependents those that depend on it.
 	Dependencies(ctx context.Context, id string) ([]factoryd.Dependency, error)
 	Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error)
+	// RollCarries are the cards the requests of roll task id carry.
+	RollCarries(ctx context.Context, id string) ([]factoryd.Task, error)
 	// SetHumanSummary is a writer's summary of task id; "" restores the
 	// generated title (the column back to NULL).
 	SetHumanSummary(ctx context.Context, id, summary string) error

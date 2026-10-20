@@ -474,9 +474,11 @@ type card struct {
 	factoryd.Task
 	IssueURL string
 	PRURL    string
-	Reason   string   // an escalation's reason
-	Choices  []string // the answers its agent offered, a button each
-	Capped   bool     // an escalated card at its session cap, which an answer grants a session
+	// RollURL is the issue of the roll a merged card waits for.
+	RollURL string
+	Reason  string   // an escalation's reason
+	Choices []string // the answers its agent offered, a button each
+	Capped  bool     // an escalated card at its session cap, which an answer grants a session
 	// Ask says the card waits on an answer: an intake row holds its ask.
 	// Without one a human card that waits offers the factory or a close
 	// (roadmap 1131).
@@ -1777,16 +1779,18 @@ func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []fact
 }
 
 // humanLane: t has no agent, so its card is in the human lane: a human
-// task. A roll is no card (Sebastian, 2026-10-18): each card tracks its
-// own deploy, so the roll tasks the roller files never show.
+// task.
 func (v *boardView) humanLane(t factoryd.Task) bool {
 	return t.Kind == "human"
 }
 
 // deployStage is the chain position a merged card shows while its change
-// is not live yet: where its deploy chain sits (roadmap 297), the words
-// of the chain itself, no roll in them.
-func deployStage(state string) string {
+// is not live yet: the roll it waits for, else where its deploy chain
+// sits (roadmap 297).
+func deployStage(state string, rollIssue int64) string {
+	if rollIssue > 0 {
+		return fmt.Sprintf("blocked by roll #%d", rollIssue)
+	}
 	switch state {
 	case "":
 		return "waiting for the chain"
@@ -1835,7 +1839,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
 		fiveColumn(t, v.user))
 	if bt.Status == "merged" {
-		k.Stage = deployStage(bt.ChainState)
+		k.Stage = deployStage(bt.ChainState, bt.RollIssue)
+		if bt.RollIssue > 0 {
+			k.RollURL = fmt.Sprintf("%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/")+"/"+t.Repository, bt.RollIssue)
+		}
 	}
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
@@ -2237,9 +2244,6 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		if t.Source == factoryd.SourceRoll {
-			continue // a roll is no card (Sebastian, 2026-10-18)
-		}
 		human, col := v.humanLane(t), fiveColumn(t, v.user)
 		// the status line counts the project's cards, whatever the accent;
 		// a plan that waits on its acceptance counts as its approval
@@ -3311,7 +3315,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 				d.Body = strings.TrimSpace(d.Body[:max(i, 0)])
 			}
 		}
-		if d.Related, err = c.relatedCards(ctx, bt.Task, k); err != nil {
+		if d.Related, err = c.relatedCards(ctx, bt, k); err != nil {
 			problem("related cards", err)
 		}
 	case "activity":
@@ -3389,7 +3393,8 @@ func objectiveParts(objective string) (headline, provenance, body string) {
 // relatedCards are the cards t relates to, each in its live state: those
 // it waits on that are not done, the plan it is part of, and an accepted
 // plan's cards (k's Plan).
-func (c *Console) relatedCards(ctx context.Context, t factoryd.Task, k card) ([]related, error) {
+func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k card) ([]related, error) {
+	t := bt.Task
 	var ids, whys []string
 	deps, err := c.cfg.Tasks.Dependencies(ctx, t.ID)
 	if err != nil {
@@ -3404,6 +3409,22 @@ func (c *Console) relatedCards(ctx context.Context, t factoryd.Task, k card) ([]
 		ids, whys = append(ids, t.Parent), append(whys, "part of plan")
 	}
 	var out []related
+	if bt.RollIssue > 0 {
+		if roll, ok, err := c.cfg.Tasks.TaskByIssue(ctx, t.Repository, bt.RollIssue); err != nil {
+			return nil, err
+		} else if ok {
+			out = append(out, related{"blocked by", c.card(roll)})
+		}
+	}
+	if t.Source == factoryd.SourceRoll {
+		carried, err := c.cfg.Tasks.RollCarries(ctx, t.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, ct := range carried {
+			out = append(out, related{"carries", c.card(ct)})
+		}
+	}
 	for i, id := range ids {
 		rt, ok, err := c.cfg.Tasks.Task(ctx, id)
 		if err != nil {

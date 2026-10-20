@@ -418,3 +418,87 @@ func TestUncarriedAlertRowsStandOncePerCard(t *testing.T) {
 		t.Fatalf("%d open rows after nothing stands, want none", n)
 	}
 }
+
+// A merged card reads the issue of the newest roll that carries its pull
+// request and is opened, or merged while the card is merged; a failed,
+// refused or skipped request, another repository's, and a done card read
+// 0. The roll task's carried cards are the cards its requests list.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestRollIssueOfAMergedCard(t *testing.T) {
+	ctx := context.Background()
+	s := seedMergedCards(t, ctx)
+	for _, r := range []struct {
+		id, repo, status string
+		issue            int64
+	}{{"roll-old", "sf/r", "done", 1100}, {"roll-new", "sf/r", "running", 1162}} {
+		if err := s.CreateTask(ctx, Task{ID: r.id, Status: r.status, BudgetEUR: 1, Repository: r.repo, Kind: "agent", Source: SourceRoll, IssueNumber: r.issue, Objective: "roll"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req := func(sha, state, task string, prs ...int64) {
+		t.Helper()
+		if err := s.InsertRollRequest(ctx, RollRequest{SHA: sha, Repository: "sf/r", RunID: 1, State: state, TaskID: task, PRs: prs}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue := func(id string) int64 {
+		t.Helper()
+		b, ok, err := s.BoardTask(ctx, id)
+		if err != nil || !ok {
+			t.Fatalf("BoardTask %s = %v, %v", id, ok, err)
+		}
+		return b.RollIssue
+	}
+	req("s1", "merged", "roll-old", 7)
+	if got := issue("t-a"); got != 1100 {
+		t.Fatalf("a merged card under a merged roll: RollIssue = %d, want 1100", got)
+	}
+	req("s2", "opened", "roll-new", 7, 9)
+	if got := issue("t-a"); got != 1162 {
+		t.Fatalf("under an opened roll too: RollIssue = %d, want the newest, 1162", got)
+	}
+	if got := issue("t-b"); got != 0 {
+		t.Fatalf("a request not carrying pr 8 gave t-b RollIssue %d, want 0", got)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'failed' WHERE sha = 's2'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := issue("t-a"); got != 1100 {
+		t.Fatalf("a failed request must not count: RollIssue = %d, want 1100", got)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done' WHERE id = 't-a'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := issue("t-a"); got != 0 {
+		t.Fatalf("a done card under a merged roll: RollIssue = %d, want 0", got)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'opened' WHERE sha = 's2'`); err != nil {
+		t.Fatal(err)
+	}
+	if got := issue("t-a"); got != 1162 {
+		t.Fatalf("an opened roll names even a done card: RollIssue = %d, want 1162", got)
+	}
+	carried, err := s.RollCarries(ctx, "roll-new")
+	if err != nil || len(carried) != 2 || carried[0].ID != "t-a" || carried[1].ID != "t-c" {
+		t.Fatalf("RollCarries = %+v, %v; want t-a and t-c", carried, err)
+	}
+}
+
+// A failed card whose pull request never merged stays in the finished
+// page once the chain records runs, where deployLive alone would hide it.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestFailedCardsStayInFinished(t *testing.T) {
+	ctx := context.Background()
+	s := seedMergedCards(t, ctx)
+	now := time.Now()
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', finished_at = $1 WHERE id = 't-c'`, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 1, "success"); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-time.Hour)})
+	if err != nil || !slices.ContainsFunc(got, func(b BoardTask) bool { return b.ID == "t-c" }) {
+		t.Fatalf("FinishedTasks = %+v, %v; want the failed t-c among them", got, err)
+	}
+}
