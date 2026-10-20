@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -66,13 +67,14 @@ func (s *PGStore) MergedCardCommits(ctx context.Context, repository string, shas
 		WHERE repository = $1 AND pr_number > 0 AND merge_commit = ANY($2)`, repository, shas)
 }
 
-// UncarriedMergedCards maps the merge commit of every merged card of
-// repository that has one and no carry row to its pull request: the
-// cards whose commit was recorded after the poller mapped their run.
-func (s *PGStore) UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error) {
-	return s.commitCards(ctx, `SELECT merge_commit, pr_number FROM tasks t
-		WHERE repository = $1 AND status = 'merged' AND pr_number > 0 AND merge_commit <> ''
-		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = t.repository AND c.pr_number = t.pr_number)`, repository)
+// UncarriedMerged lists the merged cards of repository with a pull
+// request and no carry row, the merge commit recorded or not: the cards
+// the late mapping gives a row, and those a silent chain alerts for.
+func (s *PGStore) UncarriedMerged(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks t
+		WHERE repository = $1 AND status = 'merged' AND pr_number > 0
+		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = t.repository AND c.pr_number = t.pr_number)
+		ORDER BY id`, repository)
 }
 
 func (s *PGStore) commitCards(ctx context.Context, query string, args ...any) (map[string]int64, error) {
@@ -222,7 +224,7 @@ type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
 	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
-	UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error)
+	UncarriedMerged(ctx context.Context, repository string) ([]Task, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
@@ -233,6 +235,7 @@ type ChainStore interface {
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	ResolveChainAlerts(ctx context.Context, repository string) error
+	ResolveChainUncarried(ctx context.Context, repository string, standing []string) error
 }
 
 // ChainProjects is the project list the poller serves.
@@ -311,11 +314,14 @@ type ChainPoller struct {
 	Poll time.Duration
 
 	ranges   map[[3]string][]string       // repository, base, head -> the commits of that compare
-	watched  map[string]bool              // repository -> whether its pushes run a workflow, read once
+	watched  map[string]bool              // repository -> true once its pushes run a workflow
 	noted    map[string]bool              // the chain-block complaints logged, once each
 	failed   map[string]string            // repository -> the failure it last logged
 	episodes map[headKey]chainEpisode     // the head rows watched between polls
 	ends     map[string]map[string]string // repository -> covered card -> the end failure it last logged
+
+	pollMu sync.Mutex
+	polled map[string]time.Time // repository -> its last successful tick, read by the poll age gauge
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -342,6 +348,9 @@ func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
 		p.ranges = map[[3]string][]string{}
+		p.pollMu.Lock()
+		p.polled = map[string]time.Time{}
+		p.pollMu.Unlock()
 		p.ends = map[string]map[string]string{}
 	}
 }
@@ -354,10 +363,13 @@ func (p *ChainPoller) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	seen := map[string]bool{}
 	for _, proj := range projects {
 		if !proj.Active() {
 			continue
 		}
+		seen[proj.Repository] = true
+		p.polledSince(proj.Repository)
 		if err := p.project(ctx, proj); err != nil {
 			// one repository's failure stops no other's poll, and logs
 			// once until it recovers
@@ -368,23 +380,78 @@ func (p *ChainPoller) Tick(ctx context.Context) error {
 			continue
 		}
 		delete(p.failed, proj.Repository)
+		p.polledNow(proj.Repository)
 	}
+	p.pollMu.Lock()
+	maps.DeleteFunc(p.polled, func(repository string, _ time.Time) bool { return !seen[repository] })
+	p.pollMu.Unlock()
 	return nil
+}
+
+// polledSince starts a repository's poll age at its first sight, so a
+// repository whose every tick fails still ages.
+func (p *ChainPoller) polledSince(repository string) {
+	p.pollMu.Lock()
+	defer p.pollMu.Unlock()
+	if _, ok := p.polled[repository]; !ok {
+		p.polled[repository] = p.now()
+	}
+}
+
+func (p *ChainPoller) polledNow(repository string) {
+	p.pollMu.Lock()
+	defer p.pollMu.Unlock()
+	p.polled[repository] = p.now()
 }
 
 // project serves one repository: its file's chain block read, its
 // workflow list watched, its chain recorded and the merged cards that
-// recording covers ended.
+// recording covers ended. The merged cards the chain still does not carry
+// are watched whether the repository is served or recording fails.
 func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 	serving, chain, err := p.serves(ctx, proj)
-	if err != nil || !serving {
-		return err
+	if err == nil && serving {
+		if err = p.record(ctx, proj, chain); err == nil {
+			p.reconcile(ctx, proj.Repository)
+		}
 	}
-	if err := p.record(ctx, proj, chain); err != nil {
-		return err
+	if chain.Stall > 0 {
+		p.uncarried(ctx, proj.Repository, chain.Stall)
 	}
-	p.reconcile(ctx, proj.Repository)
-	return nil
+	return err
+}
+
+// uncarried raises chain_uncarried for every merged card of repository
+// still without a carry row a stall bound after its merge — no row, no
+// run in sight: a repository not served, a token that cannot read it, a
+// run that never came — and resolves the alert of a card that gained a
+// row or left merged. The alert's own key holds it to one open row per
+// card.
+func (p *ChainPoller) uncarried(ctx context.Context, repository string, bound time.Duration) {
+	cards, err := p.Store.UncarriedMerged(ctx, repository)
+	if err != nil {
+		log.Printf("chain poller: %s: uncarried cards: %v", repository, err)
+		return
+	}
+	var standing []string
+	for _, c := range cards {
+		since := c.CreatedAt
+		if c.FinishedAt != nil {
+			since = *c.FinishedAt
+		}
+		if p.now().Sub(since) <= bound {
+			continue
+		}
+		fingerprint := repository + " " + c.ID
+		standing = append(standing, fingerprint)
+		if _, err := p.Store.InsertAlert(ctx, Alert{Kind: AlertChainUncarried, Source: repository, Fingerprint: fingerprint,
+			Detail: map[string]any{"card": c.ID, "since": since}}); err != nil {
+			log.Printf("chain poller: %s: raise %s for %s: %v", repository, AlertChainUncarried, c.ID, err)
+		}
+	}
+	if err := p.Store.ResolveChainUncarried(ctx, repository, standing); err != nil {
+		log.Printf("chain poller: %s: resolve %s: %v", repository, AlertChainUncarried, err)
+	}
 }
 
 // reconcile ends every merged card of repository a green run covers, on
@@ -448,16 +515,18 @@ func (f *Forgejo) RepoVisible(ctx context.Context, repo Repo) (bool, error) {
 	return false, err
 }
 
-// watching reads whether repository's pushes run a workflow at all,
-// once: a repository whose workflow list is empty has no chain to
-// record — PR-only CI and mode run cannot produce one — and degrades
-// to none for itself, noted once. A repository whose list is empty
+// watching reads whether repository's pushes run a workflow at all: a
+// repository whose workflow list is empty has no chain to record —
+// PR-only CI and mode run cannot produce one — and degrades to none for
+// itself, noted once, its list read again on every tick until it gains
+// a workflow. Only a workflow found is cached: a served repository is
+// never read again, so a failing read cannot unserve it. A repository whose list is empty
 // because the projects token cannot see it at all is no degradation:
 // a configuration fault, which logs every poll and alerts, and whose
 // verdict is never cached — access restored, the chain records.
 func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
-	if watching, ok := p.watched[repo.String()]; ok {
-		return watching, nil
+	if p.watched[repo.String()] {
+		return true, nil
 	}
 	files, err := p.Forgejo.WorkflowList(ctx, repo)
 	if err != nil {
@@ -465,6 +534,7 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 	}
 	if len(files) > 0 {
 		p.watched[repo.String()] = true
+		delete(p.noted, repo.String()+" no workflow")
 		return true, nil
 	}
 	// an empty list is ambiguous: a repository without workflows and a
@@ -481,8 +551,10 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 		p.raiseChainAlert(ctx, repo.String(), AlertChainStalled, map[string]any{"reason": "the projects token cannot see the repository"})
 		return false, nil
 	}
-	p.watched[repo.String()] = false
-	log.Printf("chain poller: %s has no workflow: its chain degrades to none, nothing recorded", repo)
+	if key := repo.String() + " no workflow"; !p.noted[key] {
+		p.noted[key] = true
+		log.Printf("chain poller: %s has no workflow: its chain degrades to none, nothing recorded", repo)
+	}
 	return false, nil
 }
 
@@ -646,9 +718,18 @@ const chainRangesKept = 512
 // it, with the commit's verdict. Only a card without a row is written,
 // so no row moves, and nothing is read while no such card exists.
 func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error)) error {
-	late, err := p.Store.UncarriedMergedCards(ctx, proj.Repository)
-	if err != nil || len(late) == 0 {
+	cards, err := p.Store.UncarriedMerged(ctx, proj.Repository)
+	if err != nil {
 		return err
+	}
+	late := map[string]int64{}
+	for _, c := range cards {
+		if c.MergeCommit != "" {
+			late[c.MergeCommit] = c.PRNumber
+		}
+	}
+	if len(late) == 0 {
+		return nil
 	}
 	prev := ""
 	for _, run := range seen {

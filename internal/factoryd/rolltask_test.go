@@ -704,11 +704,6 @@ func mainPins() map[string]string {
 	return k8sManifests(sha256Of(gwOldIdx), sha256Of(gwOldIdx), sha256Of(workerOldIdx), sha256Of(runnerIdx))
 }
 
-// The newest green push run of main whose images changed files one roll
-// task: the issue names the changed images, their new references and the
-// merged pull requests since the last roll (the roll tasks' own left
-// out); an image rebuilt with no input change is no change. A second poll
-// files nothing: each commit once.
 // A carried pull request whose title cannot be read still lists, by its
 // number alone; the other keeps its title, and the roll is filed.
 func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
@@ -738,6 +733,11 @@ func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
 	}
 }
 
+// The newest green push run of main whose images changed files one roll
+// task: the issue names the changed images, their new references and the
+// merged pull requests since the last roll (the roll tasks' own left
+// out); an image rebuilt with no input change is no change. A second poll
+// files nothing: each commit once.
 func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{

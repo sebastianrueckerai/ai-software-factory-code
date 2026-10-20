@@ -369,11 +369,14 @@ func main() {
 	// commit, read with a read:package token, open the roll's pull request
 	registry := rollRegistry(forgejo.BaseURL, registryReadToken)
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
-	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: time.Minute,
+	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Registry:  registry, SigningKey: rollSigningKey()}
 	go roller.Run(ctx)
 	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.Finish)
+	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
 	go chainPoller.Run(ctx)
 	// the factory's own dependency health (roadmap 299): the provider seam
 	// is the control-plane probe alone, so a cloud switch stays one value
@@ -1015,5 +1018,5 @@ func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerIntercepto
 func newChainPoller(forgejo *factoryd.Forgejo, store *factoryd.PGStore, current func() policy.Version, workflows factoryd.BoundedWorkflows,
 	timeline *factoryd.Timeline, own factoryd.Repo, end func(ctx context.Context, taskID, final, reason string) error) *factoryd.ChainPoller {
 	return &factoryd.ChainPoller{Forgejo: forgejo, Store: store, Projects: store, Policy: current,
-		Workflows: workflows, Timeline: timeline, Own: own, End: end, Now: time.Now, Poll: time.Minute}
+		Workflows: workflows, Timeline: timeline, Own: own, End: end, Now: time.Now, Poll: 15 * time.Second}
 }

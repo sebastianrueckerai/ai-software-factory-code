@@ -36,6 +36,10 @@ const (
 	// repository), resolved when a green head concludes.
 	AlertChainRed     = "chain_red"
 	AlertChainStalled = "chain_stalled"
+	// AlertChainUncarried is a merged card the chain never carried past the
+	// project's stall bound, one open row per card (fingerprint repository
+	// and id), resolved when the card gains a carry row or leaves merged.
+	AlertChainUncarried = "chain_uncarried"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.
@@ -288,6 +292,19 @@ func (s *PGStore) ResolveChainAlerts(ctx context.Context, repository string) err
 	_, err := s.db.ExecContext(ctx, `UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
 		WHERE kind = ANY($4) AND fingerprint = $1 AND verdict IS NULL`,
 		repository, VerdictReal, "factoryd", []string{AlertChainRed, AlertChainStalled})
+	return err
+}
+
+// ResolveChainUncarried resolves repository's open chain_uncarried alerts
+// whose fingerprint standing does not name: their cards are carried, or
+// no longer merged.
+func (s *PGStore) ResolveChainUncarried(ctx context.Context, repository string, standing []string) error {
+	if standing == nil {
+		standing = []string{} // a nil array is NULL, and <> ALL(NULL) matches nothing
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
+		WHERE kind = $4 AND source = $1 AND verdict IS NULL AND fingerprint <> ALL($5)`,
+		repository, VerdictReal, "factoryd", AlertChainUncarried, standing)
 	return err
 }
 

@@ -1196,7 +1196,7 @@ func (s *PGStore) Ping(ctx context.Context) error {
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	changed, err := s.changeStatus(ctx,
 		`status = $2,
-		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN now() ELSE finished_at END,
+		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE finished_at END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
 		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`,
 		`id = $1 AND status = ANY($3)`, id, to, from)

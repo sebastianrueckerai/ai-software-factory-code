@@ -273,17 +273,15 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	}
 }
 
-// MergedCardCommits maps each of the given merge commits to its card's
-// pull request: a card without a pull request or of another repository
-// is left out, and a commit not asked for stays out. Requires a disposable
-// Postgres (FACTORYD_TEST_DATABASE_URL).
-func TestMergedCardCommitsListsMergedCards(t *testing.T) {
-	ctx := context.Background()
+// seedMergedCards truncates the store and files the cards the merge-commit
+// reads are tested over.
+func seedMergedCards(t *testing.T, ctx context.Context) *PGStore {
+	t.Helper()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
-	defer s.db.Close()
+	t.Cleanup(func() { s.db.Close() })
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
@@ -308,6 +306,16 @@ func TestMergedCardCommitsListsMergedCards(t *testing.T) {
 			}
 		}
 	}
+	return s
+}
+
+// MergedCardCommits maps each of the given merge commits to its card's
+// pull request: a card without a pull request or of another repository
+// is left out, and a commit not asked for stays out. Requires a disposable
+// Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestMergedCardCommitsListsMergedCards(t *testing.T) {
+	ctx := context.Background()
+	s := seedMergedCards(t, ctx)
 	got, err := s.MergedCardCommits(ctx, "sf/r", []string{"m-a", "m-b", "m-c", "m-d", "m-e", "m-x"})
 	if err != nil {
 		t.Fatal(err)
@@ -318,17 +326,87 @@ func TestMergedCardCommitsListsMergedCards(t *testing.T) {
 	if got, err = s.MergedCardCommits(ctx, "sf/r", []string{"m-b"}); err != nil || !maps.Equal(got, map[string]int64{"m-b": 8}) {
 		t.Fatalf("MergedCardCommits of m-b = %v, %v", got, err)
 	}
-	un, err := s.UncarriedMergedCards(ctx, "sf/r")
-	if err != nil || !maps.Equal(un, map[string]int64{"m-a": 7}) {
-		t.Fatalf("UncarriedMergedCards = %v, %v, want only t-a: merged, with a commit and a pull request", un, err)
+}
+
+func TestUncarriedMergedListsOnlyRowlessCards(t *testing.T) {
+	ctx := context.Background()
+	s := seedMergedCards(t, ctx)
+	ids := func(repository string) []string {
+		t.Helper()
+		cards, err := s.UncarriedMerged(ctx, repository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, c := range cards {
+			out = append(out, c.ID)
+		}
+		return out
+	}
+	if got := ids("sf/r"); !slices.Equal(got, []string{"t-a", "t-nocommit"}) {
+		t.Fatalf("UncarriedMerged = %v, want t-a and t-nocommit: merged with a pull request and no row, the merge commit or none", got)
 	}
 	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 3, "success"); err != nil {
 		t.Fatal(err)
 	}
-	if un, err = s.UncarriedMergedCards(ctx, "sf/r"); err != nil || len(un) != 0 {
-		t.Fatalf("UncarriedMergedCards = %v, %v, want none once t-a has a row", un, err)
+	if got := ids("sf/r"); !slices.Equal(got, []string{"t-nocommit"}) {
+		t.Fatalf("UncarriedMerged = %v, want t-nocommit alone once t-a has a row", got)
 	}
-	if un, err = s.UncarriedMergedCards(ctx, "sf/other"); err != nil || !maps.Equal(un, map[string]int64{"m-e": 7}) {
-		t.Fatalf("UncarriedMergedCards of sf/other = %v, %v, want t-other: the row of pr 7 in sf/r is not its", un, err)
+	if got := ids("sf/other"); !slices.Equal(got, []string{"t-other"}) {
+		t.Fatalf("UncarriedMerged of sf/other = %v, want t-other: the row of pr 7 in sf/r is not its", got)
+	}
+}
+
+// A card moved to merged carries the merge's stamp, the clock the
+// uncarried alert reads; chain_uncarried rows stand once per card and
+// resolve when their fingerprint no longer stands. Requires a disposable
+// Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestUncarriedAlertRowsStandOncePerCard(t *testing.T) {
+	ctx := context.Background()
+	s := seedMergedCards(t, ctx)
+	if err := s.TransitionTask(ctx, "t-c", []string{"in-review"}, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	cards, err := s.UncarriedMerged(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range cards {
+		if c.ID == "t-c" && (c.FinishedAt == nil || time.Since(*c.FinishedAt) > time.Minute) {
+			t.Fatalf("t-c merged with finished_at %v, want the merge's stamp", c.FinishedAt)
+		}
+	}
+	for _, id := range []string{"t-a", "t-a", "t-nocommit"} {
+		if _, err := s.InsertAlert(ctx, Alert{Kind: AlertChainUncarried, Source: "sf/r", Fingerprint: "sf/r " + id, Detail: map[string]any{"card": id}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func() int {
+		var n int
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE kind = $1 AND verdict IS NULL`, AlertChainUncarried).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := open(); n != 2 {
+		t.Fatalf("%d open rows after t-a twice and t-nocommit, want 2", n)
+	}
+	if err := s.ResolveChainUncarried(ctx, "sf/r", []string{"sf/r t-nocommit"}); err != nil {
+		t.Fatal(err)
+	}
+	if n := open(); n != 1 {
+		t.Fatalf("%d open rows after t-a stood no more, want t-nocommit's alone", n)
+	}
+	if err := s.ResolveChainUncarried(ctx, "sf/other", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := open(); n != 1 {
+		t.Fatalf("%d open rows after another repository's resolve, want it untouched", n)
+	}
+	if err := s.ResolveChainUncarried(ctx, "sf/r", nil); err != nil {
+		t.Fatal(err)
+	}
+	if n := open(); n != 0 {
+		t.Fatalf("%d open rows after nothing stands, want none", n)
 	}
 }

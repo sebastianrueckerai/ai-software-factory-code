@@ -84,9 +84,28 @@ func (i *openActivityInbound) ExecuteActivity(ctx context.Context, in *intercept
 	return i.Next.ExecuteActivity(ctx, in)
 }
 
+// RegisterPollAge exports factory.chain.poll_age{repository}: the seconds
+// since the poller's last successful tick of each repository, computed at
+// each export — never recorded at tick time, which would read 0 for as
+// long as the poller is dead.
+func (p *ChainPoller) RegisterPollAge(meter metric.Meter) error {
+	_, err := meter.Float64ObservableGauge("factory.chain.poll_age", metric.WithUnit("s"),
+		metric.WithDescription("seconds since the chain poller's last successful tick of a repository"),
+		metric.WithFloat64Callback(func(_ context.Context, obs metric.Float64Observer) error {
+			now := p.now()
+			p.pollMu.Lock()
+			defer p.pollMu.Unlock()
+			for repository, at := range p.polled {
+				obs.Observe(now.Sub(at).Seconds(), metric.WithAttributes(attribute.String("repository", repository)))
+			}
+			return nil
+		}))
+	return err
+}
+
 // alertKinds are the alerts table's kinds, reported by
 // factory.alert.count with every verdict.
-var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening, AlertMonthCap, AlertChainRed, AlertChainStalled}
+var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening, AlertMonthCap, AlertChainRed, AlertChainStalled, AlertChainUncarried}
 
 // RegisterAlertCount exports factory.alert.count{kind,verdict}, read from
 // the alerts table at each export: every kind and verdict, 0 when the table

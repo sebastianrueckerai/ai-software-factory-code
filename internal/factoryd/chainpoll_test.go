@@ -17,6 +17,9 @@ import (
 	"testing"
 	"time"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -205,12 +208,12 @@ func (s *fakeStore) MergedCardCommits(ctx context.Context, repository string, sh
 	return out, nil
 }
 
-// UncarriedMergedCards mirrors PGStore's read: the merged cards with a
-// recorded merge commit and no carry row.
-func (s *fakeStore) UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error) {
-	out := map[string]int64{}
+// UncarriedMerged mirrors PGStore's read: the merged cards with a pull
+// request and no carry row, the merge commit or none.
+func (s *fakeStore) UncarriedMerged(ctx context.Context, repository string) ([]Task, error) {
+	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Status != "merged" || t.PRNumber <= 0 || t.MergeCommit == "" {
+		if t.Repository != repository || t.Status != "merged" || t.PRNumber <= 0 {
 			continue
 		}
 		carried := false
@@ -218,10 +221,24 @@ func (s *fakeStore) UncarriedMergedCards(ctx context.Context, repository string)
 			carried = carried || c.repo == repository && c.pr == t.PRNumber
 		}
 		if !carried {
-			out[t.MergeCommit] = t.PRNumber
+			out = append(out, t)
 		}
 	}
 	return out, nil
+}
+
+// ResolveChainUncarried mirrors PGStore's: the repository's open
+// chain_uncarried rows no standing fingerprint names are resolved real.
+func (s *fakeStore) ResolveChainUncarried(ctx context.Context, repository string, standing []string) error {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for i, a := range s.alerts {
+		if a.Kind == AlertChainUncarried && a.Source == repository && a.Verdict == "" && !slices.Contains(standing, a.Fingerprint) {
+			s.alerts[i].Verdict = VerdictReal
+			s.alerts[i].ResolvedBy = "factoryd"
+		}
+	}
+	return nil
 }
 
 // seedCards gives store the cards of f.merged: the merged pull requests
@@ -546,8 +563,8 @@ func TestChainPollerDegradesNoWorkflowRepos(t *testing.T) {
 	}
 	if n := len(slices.DeleteFunc(slices.Clone(f.reads), func(r string) bool {
 		return !strings.HasPrefix(r, demoRepo+" ")
-	})); n != 2 {
-		t.Fatalf("%d workflow-list reads of %s, want the two directories read once", n, demoRepo)
+	})); n != 4 {
+		t.Fatalf("%d workflow-list reads of %s, want the two directories read on each of two ticks", n, demoRepo)
 	}
 }
 
@@ -1451,5 +1468,185 @@ func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
 		{repo: codeRepo, pr: 20, sha: commitC1, run: 61, status: "success"},
 	}) {
 		t.Fatalf("chain %+v, want pr 20 at run 61", got)
+	}
+}
+
+// A merged card the chain never carries alerts once its age passes the
+// project's stall bound: no row, no run in sight — in a served repository
+// and in one the poller does not serve alike. The alert names the card,
+// stands once however many ticks pass, and resolves when the card gains
+// a carry row or leaves merged.
+func TestAnUncarriedMergedCardAlertsAfterTheBound(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{
+			codeRepo: {pushRun(61, commitC2, "success")},
+			demoRepo: {pushRun(21, demoCommit, "success")},
+		},
+		workflows: map[string][]string{demoRepo: {}},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
+	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	p.End = func(context.Context, string, string, string) error { return nil }
+	merged := clock.Add(-10 * time.Minute)
+	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "merged", MergeCommit: "f00d", FinishedAt: &merged}
+	store.tasks["t-unserved"] = Task{ID: "t-unserved", Repository: demoRepo, PRNumber: 3, Status: "merged", FinishedAt: &merged}
+	tick := func() {
+		t.Helper()
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func() []Alert {
+		var out []Alert
+		for _, a := range store.alerts {
+			if a.Kind == AlertChainUncarried && a.Verdict == "" {
+				out = append(out, a)
+			}
+		}
+		slices.SortFunc(out, func(a, b Alert) int { return cmp.Compare(a.Fingerprint, b.Fingerprint) })
+		return out
+	}
+	tick()
+	if got := open(); len(got) != 0 {
+		t.Fatalf("alerts at 10 minutes %+v, want none: the stall bound is 30m", got)
+	}
+	clock = clock.Add(21 * time.Minute)
+	tick()
+	tick()
+	got := open()
+	if len(got) != 2 {
+		t.Fatalf("alerts at 31 minutes %+v, want one per card, however many ticks", got)
+	}
+	for i, c := range []struct{ repo, card string }{{codeRepo, "t-served"}, {demoRepo, "t-unserved"}} {
+		a := got[i]
+		if a.Fingerprint != c.repo+" "+c.card || a.Source != c.repo || a.Detail["card"] != c.card || a.Detail["since"] != merged {
+			t.Fatalf("alert %+v, want fingerprint %q, source %s and detail card %s since %v", a, c.repo+" "+c.card, c.repo, c.card, merged)
+		}
+	}
+	if err := store.RecordChainRun(context.Background(), codeRepo, 12, commitC2, 61, "success"); err != nil {
+		t.Fatal(err)
+	}
+	tick()
+	if got := open(); len(got) != 1 || got[0].Source != demoRepo {
+		t.Fatalf("alerts after t-served gained a row %+v, want only t-unserved's standing", got)
+	}
+	unserved := store.tasks["t-unserved"]
+	unserved.Status = "closed"
+	store.tasks["t-unserved"] = unserved
+	tick()
+	if got := open(); len(got) != 0 {
+		t.Fatalf("alerts after t-unserved left merged %+v, want none", got)
+	}
+	for _, a := range store.alerts {
+		if a.Verdict != VerdictReal || a.ResolvedBy != "factoryd" {
+			t.Fatalf("alert %+v, want resolved real by factoryd", a)
+		}
+	}
+}
+
+// A repository without a workflow is read again on every tick: the
+// first workflow it gains serves it on the next tick, recording its
+// chain, with the degradation noted once; and once served, a failing
+// list read leaves it served.
+func TestARepositoryThatGainsAWorkflowIsServed(t *testing.T) {
+	f := &chainForgejo{
+		runs:      map[string][]map[string]any{demoRepo: {pushRun(21, demoCommit, "success")}},
+		workflows: map[string][]string{demoRepo: {}},
+	}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	for range 2 {
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := chainOf(store, demoRepo); len(got) != 0 {
+		t.Fatalf("chain %+v, want nothing recorded while no workflow exists", got)
+	}
+	if n := strings.Count(logs.String(), demoRepo+" has no workflow"); n != 1 {
+		t.Fatalf("degradation noted %d times over two ticks, want once", n)
+	}
+	f.mu.Lock()
+	f.workflows[demoRepo] = []string{"ci.yml"}
+	f.mu.Unlock()
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, demoRepo); len(got) != 1 || got[0].run != 21 {
+		t.Fatalf("chain %+v, want the head row of run 21 once the repository has a workflow", got)
+	}
+	f.mu.Lock()
+	f.invisible = map[string]bool{demoRepo: true}
+	f.mu.Unlock()
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.invisible = nil
+	f.runs[demoRepo] = []map[string]any{pushRun(22, demoCommit, "success"), pushRun(21, demoCommit, "success")}
+	f.mu.Unlock()
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, demoRepo); len(got) != 1 || got[0].run != 22 {
+		t.Fatalf("chain %+v, want a served repository kept served through a failed read", got)
+	}
+}
+
+// factory.chain.poll_age is computed when the meter collects: the
+// seconds since the repository's last successful tick, so a poller that
+// stopped reads older at every collection, and a tick resets it.
+func TestThePollAgeGaugeGrowsWhileThePollerIsDead(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}}}
+	p, _ := newTestPoller(t, f, seedProject(codeRepo))
+	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	reader := sdkmetric.NewManualReader()
+	if err := p.RegisterPollAge(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test")); err != nil {
+		t.Fatal(err)
+	}
+	age := func() float64 {
+		t.Helper()
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatal(err)
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if m.Name != "factory.chain.poll_age" {
+					continue
+				}
+				pts := m.Data.(metricdata.Gauge[float64]).DataPoints
+				if len(pts) != 1 {
+					t.Fatalf("poll_age points %+v, want one", pts)
+				}
+				if v, _ := pts[0].Attributes.Value("repository"); v.AsString() != codeRepo {
+					t.Fatalf("poll_age attributes %v, want repository %s", pts[0].Attributes, codeRepo)
+				}
+				return pts[0].Value
+			}
+		}
+		t.Fatal("no factory.chain.poll_age collected")
+		return 0
+	}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := age(); got != 0 {
+		t.Fatalf("age right after a tick = %v, want 0", got)
+	}
+	clock = clock.Add(45 * time.Second)
+	if got := age(); got != 45 {
+		t.Fatalf("age 45 s after the last tick = %v, want 45", got)
+	}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	clock = clock.Add(15 * time.Second)
+	if got := age(); got != 15 {
+		t.Fatalf("age 15 s after a new tick = %v, want 15", got)
 	}
 }
