@@ -59,6 +59,15 @@ func TestStallCardAnswers(t *testing.T) {
 			t.Fatalf("the drawer lacks %q:\n%s", want, drawer)
 		}
 	}
+	// a press moves the card where its answer takes it (C31): the re-run
+	// keeps it waiting, check again and dismiss close it
+	for value, want := range map[string]string{factoryd.AnswerRerunAgain: `class="inline">`,
+		factoryd.AnswerCheckAgain: `class="inline" data-to="closed">`, factoryd.AnswerDismiss: `class="inline" data-to="closed">`} {
+		at := strings.Index(drawer, `name="value" value="`+value+`"`)
+		if form := drawer[strings.LastIndex(drawer[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-stall/answer" hx-post="/tasks/t-stall/answer" hx-target="#board" hx-swap="outerHTML" `+want) {
+			t.Errorf("the %s form does not end its tag with %s:\n%s", value, want, form)
+		}
+	}
 
 	r, ev, before, code, body := click(t, factoryd.AnswerRerunAgain)
 	if code != http.StatusSeeOther {

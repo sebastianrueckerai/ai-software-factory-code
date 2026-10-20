@@ -119,7 +119,7 @@ func (j labSceneJSON) check(now time.Time) error {
 		return nil
 	}
 	for _, t := range j.Tasks {
-		errs = append(errs, known("parent", t.Parent))
+		errs = append(errs, known("parent", t.Parent), known("roll", t.RollID))
 	}
 	for k, vs := range j.Deps {
 		errs = append(errs, known("dependency key", k))
@@ -188,6 +188,7 @@ func TestLabSceneJSONRefuses(t *testing.T) {
 		{"timeline", `{"Tasks":[{"ID":"t-1","Status":"running","Lane":"ready","CreatedAt":"2026-01-01T00:00:00Z"}]}`, `sessions/t-1/timeline.jsonl`},
 		{"future", fmt.Sprintf(`{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","CreatedAt":%q}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(time.Hour).Format(time.RFC3339)), "CreatedAt"},
 		{"parent", `{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","Parent":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `parent "t-9"`},
+		{"roll", `{"Tasks":[{"ID":"t-1","Status":"merged","Lane":"ready","RollID":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `roll "t-9"`},
 	} {
 		var j labSceneJSON
 		if err := json.Unmarshal([]byte(tc.body), &j); err != nil {

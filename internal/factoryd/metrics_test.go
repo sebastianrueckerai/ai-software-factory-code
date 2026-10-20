@@ -240,14 +240,14 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	must(`UPDATE tasks SET sha = 'cs3' WHERE id = 'r0'`)
 	// the merges that put the rolled commits on main, a minute before each
 	// commit's CI run: merged cards, not done ones, so no card figure
-	// counts them
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, merge_commit) VALUES
-		('m0', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-0'),
-		('m1', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-1'),
-		('m2', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-2'),
-		('m4', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-4'),
-		('m5', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-5'),
-		('mo', 1, 0, 'merged', 'sf/other', 'agent', 'webhook', 'ox')`)
+	// counts them; a merged card is finished at its merge
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, merge_commit, finished_at) VALUES
+		('m0', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-0', '2026-09-25T09:29Z'),
+		('m1', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-1', '2026-09-20T08:59Z'),
+		('m2', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-2', '2026-10-11T22:59Z'),
+		('m4', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-4', '2026-10-05T10:59Z'),
+		('m5', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-5', '2026-08-23T23:39Z'),
+		('mo', 1, 0, 'merged', 'sf/other', 'agent', 'webhook', 'ox', '2026-10-02T13:59Z')`)
 	merged := func(task, repo, at string) {
 		t.Helper()
 		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES ($1, $2, $3, 'pull_request_merged', 'factoryd', 'factoryd', '{}')`, at, repo, task)
