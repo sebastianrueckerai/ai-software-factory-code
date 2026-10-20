@@ -414,3 +414,41 @@ func TestPGStoreTaskEventsFor(t *testing.T) {
 		t.Fatalf("TaskEventsFor of none = %v, %v, want empty", got, err)
 	}
 }
+
+// The agent's month is the sum of amount_eur over the repository's
+// card_funded events via chat in the UTC calendar month: hand-derived,
+// 1.25 + 0.75 = 2 in October 2026, the button's raise, the other
+// repository's, the other kinds and the month's neighbours left out.
+func TestAgentFundedEURSumsTheMonth(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	at := func(d string) time.Time { v, _ := time.Parse(time.RFC3339, d); return v }
+	for _, e := range []Event{
+		{At: at("2026-10-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 1.25}},
+		{At: at("2026-10-31T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 0.75}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaButton, Detail: map[string]any{"amount_eur": 10}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/other", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 20}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventChatFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 30}},
+		{At: at("2026-09-30T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 40}},
+		{At: at("2026-11-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 50}},
+	} {
+		if _, err := s.Record(ctx, e); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	got, err := s.AgentFundedEUR(ctx, "sf/r", at("2026-10-20T08:00:00Z"))
+	if err != nil || got != 2 {
+		t.Fatalf("AgentFundedEUR = %v, %v; want 2", got, err)
+	}
+	if got, err := s.AgentFundedEUR(ctx, "sf/none", at("2026-10-20T08:00:00Z")); err != nil || got != 0 {
+		t.Fatalf("AgentFundedEUR of a repository with none = %v, %v; want 0", got, err)
+	}
+}

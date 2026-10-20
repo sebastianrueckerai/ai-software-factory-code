@@ -30,6 +30,7 @@ type toolInput struct {
 	Body       string   `json:"body,omitempty"`
 	Lane       string   `json:"lane,omitempty"`
 	Text       string   `json:"text,omitempty"`
+	EUR        float64  `json:"eur,omitempty"`
 	Question   int      `json:"question,omitempty"`
 	Note       string   `json:"note,omitempty"`
 	Minutes    int      `json:"minutes,omitempty"`
@@ -1346,6 +1347,14 @@ var tools = []chatTool{
 			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
 		}},
+	{name: "fund", title: "Fund a card", write: true,
+		params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
+		required: []string{"task_id", "eur", "text"},
+		about:    "Raise a card's budget from the project's monthly pool, with an answer to its question.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.fund(in)
+			return note, nil, err
+		}},
 	{name: "set_dependency", title: "Set a dependency", write: true,
 		params: map[string]any{"task_id": taskParam, "depends_on": str("the card it waits for, by task id or issue number"),
 			"remove": map[string]any{"type": "boolean", "description": "removes the dependency"}},
@@ -1663,6 +1672,40 @@ func (t *turn) systemText() (string, error) {
 	fmt.Fprintf(&b, "\nChat bounds:\n  message size: %d KiB\n  model calls: as many as the task's budget holds\n", chatMessageMax>>10)
 	b.WriteString("\nThe writing guide, for every word a person reads:\n" + writingguide.Guide)
 	return b.String(), nil
+}
+
+// fund is the fund tool: doFund, after the three bounds of the project's
+// budget block and the policy, each refusal naming its bound.
+func (t *turn) fund(in toolInput) (string, error) {
+	ctx := t.r.Context()
+	v, ok := t.c.inForce(ctx)
+	if !ok {
+		return "", refuse(http.StatusInternalServerError, "no policy in force")
+	}
+	var b policy.ProjectBudget
+	if pb := v.Projects[t.p.Name].Budget; pb != nil {
+		b = *pb
+	}
+	card, err := t.c.cardIn(ctx, t.a, in.TaskID)
+	if err != nil {
+		return "", err
+	}
+	funded, err := t.c.cfg.Tasks.AgentFundedEUR(ctx, t.p.Repository, time.Now())
+	if err != nil {
+		log.Printf("console: the month's chat funding of %s: %v", t.p.Repository, err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the month's funding")
+	}
+	switch {
+	case funded+in.EUR > b.DiscretionaryEUR:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The month's pool is €%.2f of discretionary_eur and €%.2f is funded: €%.2f left, short of €%.2f. Ask a member to fund the card.",
+			b.DiscretionaryEUR, funded, max(b.DiscretionaryEUR-funded, 0), in.EUR))
+	case in.EUR > b.RaiseMaxEUR:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by less, or ask a member to fund the card.", in.EUR, b.RaiseMaxEUR))
+	case card.BudgetEUR+in.EUR > v.Document.Budget.TaskMaxEUR:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes the policy's task_max_eur of €%.2f: raise by at most €%.2f, or split the card.",
+			card.IssueNumber, card.BudgetEUR, in.EUR, v.Document.Budget.TaskMaxEUR, max(v.Document.Budget.TaskMaxEUR-card.BudgetEUR, 0)))
+	}
+	return t.c.doFund(ctx, t.a, in.TaskID, in.EUR, in.Text)
 }
 
 // limitLines are the policy's task budget and limits, one indented line

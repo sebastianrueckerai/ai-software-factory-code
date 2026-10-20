@@ -73,7 +73,7 @@ func TestPokeOf(t *testing.T) {
 			Detail: map[string]any{"budget_eur": float64(5)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
 			ChatMessage{Kind: MessagePoke, Content: "The chat's monthly budget of €5.00 is spent: the chat stands until it is raised (Fund the chat on the board) or the month turns."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
-			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money and merges still ask."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask."}, true},
 		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "backlog_cap": float64(5)}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the backlog cap to 5."}, true},
 		{"the agent's start", agentDid(EventCardMoved, "assisted", map[string]any{"lane": "ready"}), card,

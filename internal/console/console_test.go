@@ -278,6 +278,12 @@ type fakeTasks struct {
 	deps     map[string][]string // the tasks a task depends on
 	carries  map[string][]string // the cards a roll task carries
 	read     func(s *fakeTasks, id string)
+	// fundedEUR is the month's chat funding AgentFundedEUR answers
+	fundedEUR float64
+}
+
+func (s *fakeTasks) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
+	return s.fundedEUR, nil
 }
 
 // Dependencies are the tasks task id depends on, those not done first.

@@ -1146,6 +1146,20 @@ func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (
 	return from, to, err
 }
 
+// AgentFundedEUR is the EUR the project agent funded cards with via chat
+// in repository, the card_funded events of the UTC calendar month of
+// month.
+func (s *PGStore) AgentFundedEUR(ctx context.Context, repository string, month time.Time) (float64, error) {
+	var eur float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8 FROM events
+		 WHERE repository = $1 AND kind = $2 AND via = $3
+		   AND at >= date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		   AND at < (date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`,
+		repository, EventCardFunded, ViaChat, month).Scan(&eur)
+	return eur, err
+}
+
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL).
 func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET accent = NULLIF($2, '') WHERE id = $1`, id, accent)

@@ -1190,7 +1190,7 @@ func TestChatToolSentences(t *testing.T) {
 	}
 	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
 		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
-		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy",
+		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
 		required["session_step"], required["answer"]},
@@ -1529,9 +1529,9 @@ func TestSystemTool(t *testing.T) {
 		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.\n",
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
-			"  assisted: the agent starts and files ready work by itself; direction, money and merges still ask\n"+
-			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money still ask\n"+
-			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money\n",
+			"  assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask\n"+
+			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond a card's budget still ask\n"+
+			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond a card's budget\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+

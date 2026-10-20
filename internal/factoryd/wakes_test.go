@@ -419,7 +419,7 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	text := calls[0].text
 	for _, want := range []string{
 		"#40: Use a replica?",
-		"\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
+		"\n\nRead each card. Settle what your permissions allow; a card waiting on its budget takes fund from your pool. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("the wake text %q misses %q", text, want)

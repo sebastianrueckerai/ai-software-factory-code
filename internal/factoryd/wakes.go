@@ -440,7 +440,7 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk) string {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
 		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), askSentence(a.e))
 	}
-	b.WriteString("\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
+	b.WriteString("\n\nRead each card. Settle what your permissions allow; a card waiting on its budget takes fund from your pool. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	return b.String()
 }
 

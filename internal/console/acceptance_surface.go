@@ -695,6 +695,10 @@ func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float6
 	return 0, 0, factoryd.ErrNotFound
 }
 
+func (a *AcceptanceRig) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
 
 func (a *AcceptanceRig) RemoveTaskDeps(context.Context, string, []string) error { return nil }
