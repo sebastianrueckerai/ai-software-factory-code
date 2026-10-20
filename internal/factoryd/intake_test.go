@@ -2191,3 +2191,24 @@ func TestAWorkflowRunEventNudgesThePoller(t *testing.T) {
 		t.Fatalf("nudges = %v", got)
 	}
 }
+
+// An event type the intake does not handle is a naming mismatch, since
+// hooks deliver only subscribed events: logged once per type, still 2xx.
+func TestAnUnknownEventTypeLogsOnce(t *testing.T) {
+	logs := captureLog(t)
+	in, _, _ := newTestIntake(t)
+	body := []byte(`{"run":{"repository":{"full_name":"sf/demo-app"}}}`)
+	for range 2 {
+		if rr := postWebhook(in, "workflow_run_sucess", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("unknown type: %d", rr.Code)
+		}
+	}
+	if n := strings.Count(logs.String(), "unhandled event type"); n != 1 {
+		t.Fatalf("unknown type logged %d times, want 1:\n%s", n, logs.String())
+	}
+	logs.Reset()
+	postWebhook(in, "workflow_run_success", body, sign(webhookSecret, body))
+	if strings.Contains(logs.String(), "unhandled") {
+		t.Fatalf("a known type logged: %s", logs.String())
+	}
+}

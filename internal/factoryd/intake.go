@@ -32,11 +32,12 @@ import (
 // it. It implements http.Handler directly; main wires it at POST
 // /webhooks/forgejo.
 type Intake struct {
-	Store     Store
-	Forgejo   *Forgejo
-	Workflows Workflows
-	BotUser   string // factory-agent: its own issues/comments never spawn tasks or events
-	Secret    string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
+	unknownEvents sync.Map
+	Store         Store
+	Forgejo       *Forgejo
+	Workflows     Workflows
+	BotUser       string // factory-agent: its own issues/comments never spawn tasks or events
+	Secret        string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
 	// Policy is the configuration in force: a new task's budget, each
 	// project's approvers, who may move a card into a lane moved by the
 	// approvers.
@@ -154,8 +155,11 @@ func (in *Intake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		"workflow_run_skipped", "workflow_run_success", "workflow_run_waiting":
 		procErr = in.handleWorkflowRun(body)
 	default:
-		// an event type this factory does not act on yet: accepted so
-		// Forgejo's delivery list reads all 2xx, nothing to process
+		// accepted so Forgejo's delivery list reads all 2xx; hooks deliver
+		// only subscribed events, so an unknown type is a naming mismatch
+		if _, seen := in.unknownEvents.LoadOrStore(eventType, true); !seen {
+			log.Printf("webhook intake: unhandled event type %s", strconv.Quote(eventType))
+		}
 	}
 	if procErr != nil {
 		log.Printf("webhook intake: %s: %v", strconv.Quote(eventType), procErr)
