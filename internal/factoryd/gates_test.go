@@ -296,7 +296,7 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 			}
 			c := fj.comments[0]
 			if !strings.Contains(c, "risk class **forbidden**, requires_approval") || strings.Contains(c, "Agents may not change these paths:") ||
-				!strings.Contains(c, "factoryd opened this pull request, no agent: a human approves its change to these paths, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n") {
+				!strings.Contains(c, "factoryd opened this pull request, no agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n- `.forgejo/workflows/ci.yml`\n") {
 				t.Fatalf("comment = %q", c)
 			}
 		})
@@ -324,7 +324,7 @@ func TestApprovalCardNamesAFactoryPRsForbiddenPaths(t *testing.T) {
 	if err := json.Unmarshal(pending[0].Spec, &spec); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"factoryd opened this pull request, no agent: a human approves its change to paths forbidden to agents (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml",
+	want := []string{"factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class forbidden): .forgejo/workflows/ci.yml, .github/x.yml",
 		"audit: a finding"}
 	if !slices.Equal(spec.WhyHuman, want) || spec.RiskClass != "forbidden" {
 		t.Fatalf("spec = %+v, want why a human %q", spec, want)
@@ -1945,7 +1945,7 @@ func TestARollWithANonDigestChangeAsksAHuman(t *testing.T) {
 }
 
 func TestARevertMergesOnChecksAtFullAuto(t *testing.T) {
-	for _, source := range []string{SourceRevert, SourceTemplateUpdate, SourceSchemaCopy, SourceGitHubSync} {
+	for _, source := range []string{SourceRevert, SourceTemplateUpdate, SourceSchemaCopy} {
 		g, _ := fullAutoGates(source)
 		highClass(&g)
 		g.Policy.OutsideK8s = []string{"a.go"}

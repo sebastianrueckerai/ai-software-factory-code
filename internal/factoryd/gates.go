@@ -42,7 +42,9 @@ type PolicyGate struct {
 	MergeRule     string
 	// Factory: the class is forbidden to agents, and factoryd opened the
 	// pull request (factoryPRSources), which is no agent's change: Outcome
-	// is requires_approval, and a human approves its change to Paths.
+	// is requires_approval. A mechanical one merges on the merge rule at
+	// full auto; below it, and for a GitHub sync, a human approves its
+	// change to Paths.
 	Factory bool
 	// OutsideK8s is the changed paths outside k8s/, which a roll may not
 	// touch.
@@ -150,16 +152,17 @@ type Review struct {
 }
 
 // AutoMerge decides the merge outcome auto by who wrote the change (spec
-// 7.2). A pull request factoryd wrote (source roll or factoryPRSources)
-// has no risk class and no review: the project's merge rule is auto, the
-// checks are green, and a roll changed nothing outside k8s/. An agent's
-// change needs the merge rule auto, a class normal (or high, with the
-// security audit clear), green checks, an approving review that finds the
-// change a strict improvement with no drawback, and proof: the
-// reproduction failed at the base and passes at the head, or the agent
-// recorded the fault it fixed, or the review's criteria are all met or
-// waived (rulings 149, 167, 169). unmet names every condition that sends
-// the pull request to a human's card.
+// 7.2). A mechanicalSource pull request has no risk class and no review:
+// the project's merge rule is auto and the checks are green. For a roll the
+// gate also checks that every changed path is under k8s/; that only image
+// digests change is RollCommit's construction. Any other change, a GitHub
+// sync included, follows an agent's rules: the merge rule auto, a class
+// normal (or high, with the security audit clear), green checks, an
+// approving review that finds the change a strict improvement with no
+// drawback, and proof: the reproduction failed at the base and passes at
+// the head, or the agent recorded the fault it fixed, or the review's
+// criteria are all met or waived (rulings 149, 167, 169). unmet names every
+// condition that sends the pull request to a human's card.
 func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string) {
 	if g.Policy.MergeRule != policy.MergeAuto {
 		unmet = append(unmet, "the project's merge rule is "+cmp.Or(g.Policy.MergeRule, policy.MergeHuman))
@@ -167,7 +170,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 	if !g.ChecksPassed {
 		unmet = append(unmet, "the checks did not run green")
 	}
-	if source == SourceRoll || factoryPRSources(source) {
+	if mechanicalSource(source) {
 		if source == SourceRoll && len(g.Policy.OutsideK8s) > 0 {
 			unmet = append(unmet, "the roll changes paths outside k8s/: "+strings.Join(g.Policy.OutsideK8s, ", "))
 		}
@@ -407,7 +410,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths, %d changed lines.\n\n", v.ID, g.Class, g.Outcome, g.Changed, g.Lines)
 	switch {
 	case g.Factory:
-		msg += "factoryd opened this pull request, no agent: a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
+		msg += "factoryd opened this pull request, no agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Outcome == policy.OutcomeForbidden:
 		msg += "Agents may not change these paths:\n" + listPaths(g.Paths)
 	case g.large():
@@ -1273,7 +1276,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	}
 	g := in.Gates.Policy
 	if g.Factory {
-		in.WhyHuman = append([]string{fmt.Sprintf("factoryd opened this pull request, no agent: a human approves its change to paths forbidden to agents (risk class %s): %s",
+		in.WhyHuman = append([]string{fmt.Sprintf("factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s",
 			g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
 	}
 	spec, err := json.Marshal(MergeSpec{
