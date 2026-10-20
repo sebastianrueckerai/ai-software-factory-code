@@ -71,6 +71,8 @@ func TestLab(t *testing.T) {
 	docsFake, docs := docsOver(t, forgejo.URL, labDocs)
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
+	// the configuration tree, so the level control's write lands (C32)
+	withInfra(t, r).files = map[string]string{"factory/projects/" + labCodeProject.Name + ".yaml": "repository: sf/code\nmerge_rule: human\n"}
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	r.gateway = &chatGateway{t: t, lenient: true}
 	model := httptest.NewServer(r.gateway)

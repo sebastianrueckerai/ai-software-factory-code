@@ -440,6 +440,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		out[i].Messages++
 		out[i].SeenUpto = f.seen[fmt.Sprint(k, " ", m.Conversation)]
 		out[i].ClearedUpto = f.cleared[fmt.Sprint(k, " ", m.Conversation)]
+		if m.ID > out[i].ClearedUpto {
+			out[i].Unswept++
+		}
 		turnEnd := m.Role == "assistant" && !m.Queued &&
 			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
@@ -1119,7 +1122,7 @@ func TestChatTextReply(t *testing.T) {
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
 		`{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
-			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},` +
+			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
@@ -3133,17 +3136,17 @@ func TestChatNewConversation(t *testing.T) {
 		return strings.TrimSpace(rec.Body.String())
 	}
 	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
-		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},"messages":[`+
+		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
 	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
-		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},"messages":[`+
+		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
 		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
-			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
-			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
+			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},`+
+			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)
 	}

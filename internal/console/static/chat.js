@@ -329,13 +329,13 @@ var chatView = (function () {
   // headHTML is the open thread's head: its title (a click renames it),
   // its last turn or the inbox's line or the archived note, and its acts:
   // Clear old sweeps the old rows from view on any thread with more than
-  // one row, Archive and Delete… on an active thread with rows, never on
-  // the inbox (C14)
+  // one row, greyed while no row came since the last sweep; Archive and
+  // Delete… on an active thread with rows, never on the inbox (C14)
   function headHTML(t, login, now) {
     var mine = !t.login || t.login === login;
     var hint = !mine ? t.login + "'s thread: read it and talk in it" :
       t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
-    var acts = mine && t.messages >= 2 ? "<button type=\"button\" data-clear title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
+    var acts = mine && t.messages >= 2 ? "<button type=\"button\" data-clear" + (t.unswept ? "" : " disabled") + " title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
     if (mine && !t.inbox && t.state !== "archived" && t.messages) {
       acts += "<button type=\"button\" data-archive>Archive</button><button type=\"button\" class=\"danger\" data-delete>Delete…</button>";
     }
@@ -361,20 +361,14 @@ var chatView = (function () {
       return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>";
     }).join("") + "<span class=\"answer-or\">or in your words below</span>";
   }
-  // levelMenuHTML is the level control's menu (C14): its head, then the
-  // four states with their words, the current one checked
+  // levelMenuHTML is the level control's menu (C14, C32): its head, then
+  // the four states with their words, the current one checked
   function levelMenuHTML(levels, cur) {
-    return "<p class=\"lp-head\"><span>autonomy</span><span>a change confirms</span></p>" + levels.map(function (l) {
+    return "<p class=\"lp-head\"><span>autonomy</span><span>one click sets it</span></p>" + levels.map(function (l) {
       var on = l.name === cur;
       return "<button type=\"button\" role=\"menuitemradio\" aria-checked=\"" + on + "\" data-lvl=\"" + esc(l.name) + "\"><i aria-hidden=\"true\"></i><b>" +
         esc(l.name) + "</b><span class=\"ck\" aria-hidden=\"true\">" + (on ? "✓" : "") + "</span><span class=\"lw\">" + esc(l.words) + "</span></button>";
     }).join("");
-  }
-  // levelConfirmHTML is the menu turned into the confirm of state l
-  function levelConfirmHTML(l) {
-    return "<div class=\"lvl-confirm\" role=\"dialog\" aria-labelledby=\"lvl-title\"><h2 id=\"lvl-title\">Set the project's autonomy to " + esc(l.name) +
-      "?</h2><p>This writes a policy change and lands in the audit like every decision. From then on: " + esc(l.words) + ".</p>" +
-      "<div class=\"acts\"><button type=\"button\" class=\"need-btn\" data-set=\"" + esc(l.name) + "\">Set</button><button type=\"button\" data-keep>Keep</button></div></div>";
   }
   // deleteHTML is the hard delete's warning for thread t (C14)
   function deleteHTML(t) {
@@ -446,7 +440,7 @@ var chatView = (function () {
     return Math.max(min, Math.min(max, chatPx));
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
-    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, levelConfirmHTML: levelConfirmHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
+    proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML, sizeHTML: sizeHTML, clampShare: clampShare};
 })();
 
@@ -852,9 +846,11 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
 
-  // the level control under Send (C14): its menu of the four states; a
-  // change confirms in place, Set writes it through the project's file,
-  // and the inbox's poke follows; Escape, a click outside and Keep close
+  // the level control under Send (C14, C32): its menu of the four states;
+  // a pick sets the level at once and writes it through the project's
+  // file, the control locked until the write lands and back at the old
+  // level when it fails; the inbox's poke follows. Escape and a click
+  // outside close the menu
   var levelBtn = document.getElementById("level-btn"), levelPop = document.getElementById("level-pop"), levelsEl = document.getElementById("chat-levels");
   var levels = levelsEl ? JSON.parse(levelsEl.textContent || "null") || [] : [];
   function closeLevel(focus) {
@@ -862,6 +858,11 @@ var chatView = (function () {
     levelPop.hidden = true;
     levelBtn.setAttribute("aria-expanded", "false");
     if (focus) levelBtn.focus();
+  }
+  function showLevel(l) {
+    levelBtn.dataset.level = l;
+    levelBtn.querySelector(".lvl-name").textContent = l;
+    levelBtn.setAttribute("aria-label", "The project's autonomy level: " + l);
   }
   function openLevel() {
     levelPop.innerHTML = chatView.levelMenuHTML(levels, levelBtn.dataset.level);
@@ -875,28 +876,25 @@ var chatView = (function () {
       else closeLevel(true);
     });
     levelPop.addEventListener("click", function (e) {
-      // a click in the menu stays here: its content is replaced below, and
-      // the outside-click close would find the clicked node gone
+      // a click in the menu stays here: the pick closes the menu itself
       e.stopPropagation();
-      var pick = e.target.closest("[data-lvl]"), set = e.target.closest("[data-set]");
-      if (pick && pick.dataset.lvl === levelBtn.dataset.level) closeLevel(true);
-      else if (pick) {
-        levelPop.innerHTML = chatView.levelConfirmHTML(levels.filter(function (l) { return l.name === pick.dataset.lvl; })[0]);
-        levelPop.querySelector("[data-keep]").focus();
-      } else if (set) {
-        var to = set.dataset.set;
-        fetch(base.replace(/\/chat$/, "/autonomy"), {method: "POST", body: new URLSearchParams({autonomy: to}).toString(),
-          headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
-          if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
-          levelBtn.dataset.level = to;
-          levelBtn.querySelector(".lvl-name").textContent = to;
-          levelBtn.setAttribute("aria-label", "The project's autonomy level: " + to);
-          closeLevel(true);
-        }).catch(function (err) {
-          closeLevel(true);
-          failed(err);
-        });
-      } else if (e.target.closest("[data-keep]")) closeLevel(true);
+      var pick = e.target.closest("[data-lvl]");
+      if (!pick) return;
+      var to = pick.dataset.lvl, from = levelBtn.dataset.level;
+      closeLevel(true);
+      if (to === from) return;
+      showLevel(to);
+      levelBtn.disabled = true;
+      fetch(base.replace(/\/chat$/, "/autonomy"), {method: "POST", body: new URLSearchParams({autonomy: to}).toString(),
+        headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).then(function (resp) {
+        if (!resp.ok) return resp.text().then(function (why) { throw new Error(why); });
+      }).catch(function (err) {
+        showLevel(from);
+        failed(err);
+      }).then(function () {
+        levelBtn.disabled = false;
+        if (document.activeElement === document.body) levelBtn.focus();
+      });
     });
     document.addEventListener("click", function (e) {
       if (!e.target.closest(".lvlctl")) closeLevel(false);

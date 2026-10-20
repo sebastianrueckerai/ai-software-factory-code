@@ -135,19 +135,14 @@ async function main() {
         }
         // the messenger panel's stacked rows on the phone (C19), once a theme
         if (s === "busy") await shot("notifications-390.png", phone, "/notifications");
-        // the C14 faces that open on a click: the level control's menu and its
-        // confirm, the command palette, the delete warning
+        // the C14 faces that open on a click: the level control's menu, the
+        // command palette, the delete warning
         if (s === "assisted") {
           const level = async (p) => {
             await p.page.locator("#level-btn").click();
             await p.idle();
           };
           await shot("level-1440.png", desk, "/", level, false);
-          await shot("level-confirm-1440.png", desk, "/", async (p) => {
-            await level(p);
-            await p.page.locator('.lvlpop [data-lvl="autonomous"]').click();
-            await p.idle();
-          }, false);
           await shot("level-390.png", phone, "/", level, false);
         }
         if (s === "threads") {
