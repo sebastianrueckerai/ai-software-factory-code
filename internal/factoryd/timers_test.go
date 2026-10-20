@@ -203,86 +203,6 @@ func TestWatchesDieWithTheCard(t *testing.T) {
 	}
 }
 
-// The heartbeat wakes the inbox hourly while work sits open and daily
-// otherwise, on projects at assisted and above only, and a pulse that
-// says a card waits on a human holds it: the needs-you card already has
-// the member's eye.
-func TestHeartbeatOpenHourlyIdleDaily(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
-		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-		"manual":    {Repository: "sf/manual", Autonomy: policy.AutonomyManual, Notify: []string{"sebastian"}},
-	})
-	open, waiting := true, false
-	w.Pulse = func(context.Context, string) (bool, bool, error) { return open, waiting, nil }
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	calls := starter.recorded()
-	conv, err := s.EnsureInbox(t.Context(), "sf/wake", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(calls) != 1 {
-		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
-	}
-	if c := calls[0]; c.project != "wake-proj" || c.login != "sebastian" || c.conversation != conv ||
-		c.birth != "wake_heartbeat" || !strings.Contains(c.text, "hourly") {
-		t.Fatalf("the wake = %+v, want wake_heartbeat on the inbox about the hour", c)
-	}
-	*clock = clock.Add(30 * time.Minute)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 1 {
-		t.Fatalf("%d wakes at half an hour, want 1: %+v", len(calls), calls)
-	}
-	*clock = clock.Add(31 * time.Minute)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 2 {
-		t.Fatalf("%d wakes at the hour, want 2: %+v", len(calls), calls)
-	}
-	open = false
-	*clock = clock.Add(23 * time.Hour) // the next day
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 3 {
-		t.Fatalf("%d wakes on the idle day, want 3: %+v", len(calls), calls)
-	}
-	if calls[2].birth != "wake_heartbeat" || !strings.Contains(calls[2].text, "idle") {
-		t.Fatalf("the idle wake = %+v, want wake_heartbeat about the idle board", calls[2])
-	}
-	*clock = clock.Add(2 * time.Hour)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 3 {
-		t.Fatalf("%d wakes two hours in, want 3: %+v", len(calls), calls)
-	}
-	*clock = clock.Add(25 * time.Hour)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 4 {
-		t.Fatalf("%d wakes at the day, want 4: %+v", len(calls), calls)
-	}
-	waiting = true
-	*clock = clock.Add(25 * time.Hour)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls = starter.recorded(); len(calls) != 4 {
-		t.Fatalf("%d wakes while a card waits on a human, want 4: %+v", len(calls), calls)
-	}
-	for _, c := range starter.recorded() {
-		if c.project == "manual" {
-			t.Fatalf("a heartbeat woke the manual project: %+v", c)
-		}
-	}
-}
-
 // Sixteen watches and timers are a project's cap: the seventeenth add is
 // refused naming the cap, an upsert of a watched card stays inside it,
 // and a removed watch frees its slot.
@@ -323,9 +243,7 @@ func TestWakerPassIsolatesProjects(t *testing.T) {
 		"one": {Repository: "sf/one", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
 		"two": {Repository: "sf/two", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
 	})
-	w.Pulse = func(context.Context, string) (bool, bool, error) {
-		return false, false, fmt.Errorf("the pulse is down")
-	}
+	w.Store = failingCursor{WakeStore: w.Store, repository: "sf/one"}
 	for _, repository := range []string{"sf/one", "sf/two"} {
 		if _, err := s.NewConversation(t.Context(), repository, "sebastian"); err != nil {
 			t.Fatal(err)
@@ -425,98 +343,31 @@ func TestDeadBudgetTimerAsksForMoney(t *testing.T) {
 	}
 }
 
-// A heartbeat on a dead chat budget files the month-cap card once, not a
-// wake; a raised cap lets it fire.
-func TestDeadBudgetHeartbeatAsksForMoney(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
-		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-	})
-	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	w.Pulse = func(context.Context, string) (bool, bool, error) { return false, false, nil }
-	humanCards := func() int {
-		var n int
-		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	for i := range 2 {
+// A project at autonomous with no event, timer or watch is never woken,
+// however many hours pass.
+func TestNoWakeWithoutAnEventOrTimer(t *testing.T) {
+	w, _, starter, clock := newWakeRig(t, nil)
+	for range 25 {
+		*clock = clock.Add(time.Hour)
 		if err := w.Pass(t.Context()); err != nil {
 			t.Fatalf("Pass: %v", err)
 		}
-		if n := humanCards(); n != 1 {
-			t.Fatalf("pass %d: %d month-cap cards, want 1", i+1, n)
-		}
-		if calls := starter.recorded(); len(calls) != 0 {
-			t.Fatalf("pass %d: %d wakes on a dead budget, want 0", i+1, len(calls))
-		}
 	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET budget_eur = budget_eur + 5 WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	calls := starter.recorded()
-	if len(calls) != 1 || calls[0].birth != "wake_heartbeat" {
-		t.Fatalf("%d wakes after the cap rose, want the heartbeat's: %+v", len(calls), calls)
+	if calls := starter.recorded(); len(calls) != 0 {
+		t.Fatalf("%d wakes in 25 quiet hours, want 0: %+v", len(calls), calls)
 	}
 }
 
-// The heartbeat reads no pulse while its own gates hold it: a held turn
-// or both cadence marks fresh skip the board read, and with no gate the
-// pulse is read.
-func TestHeartbeatGatesBeforeThePulse(t *testing.T) {
-	assisted := func() map[string]policy.ProjectConfig {
-		return map[string]policy.ProjectConfig{
-			"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-		}
-	}
-	pulse := 0
-	counts := func() int { n := pulse; pulse = 0; return n }
+// failingCursor makes one repository's cursor read fail, so its pass errors
+// after its timer fired.
+type failingCursor struct {
+	WakeStore
+	repository string
+}
 
-	// a held turn
-	w, s, _, clock := newWakeRig(t, assisted())
-	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
-	if err := s.WakeMark(t.Context(), "sf/wake", "turn", *clock); err != nil {
-		t.Fatal(err)
+func (f failingCursor) WakeCursor(ctx context.Context, repository string) (int64, error) {
+	if repository == f.repository {
+		return 0, fmt.Errorf("the cursor is down")
 	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if n := counts(); n != 0 {
-		t.Fatalf("%d pulse reads inside a held turn, want 0", n)
-	}
-
-	// both cadence marks fresh
-	w, s, _, clock = newWakeRig(t, assisted())
-	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
-	if err := s.WakeMark(t.Context(), "sf/wake", "hb:open", *clock); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.WakeMark(t.Context(), "sf/wake", "hb:idle", *clock); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if n := counts(); n != 0 {
-		t.Fatalf("%d pulse reads behind both fresh marks, want 0", n)
-	}
-
-	// no gate: the pulse is read
-	w, s, _, _ = newWakeRig(t, assisted())
-	w.Pulse = func(context.Context, string) (bool, bool, error) { pulse++; return false, false, nil }
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if n := counts(); n != 1 {
-		t.Fatalf("%d pulse reads with no gate, want 1", n)
-	}
+	return f.WakeStore.WakeCursor(ctx, repository)
 }

@@ -2349,8 +2349,8 @@ func TestUnreadHealedHeadKeepsTheRedFaceAndSaysSo(t *testing.T) {
 	}
 }
 
-// The heartbeat's board read (the Waker's wake) renders through an actor
-// that carries no session: a red-checks merge request's healed-head read
+// The agent's board read renders through an actor that carries no
+// session: a red-checks merge request's healed-head read
 // (#1013) fails closed as HeadUnread instead of following the nil
 // session, which crashed factoryd — a member session is not required to
 // paint a card, and nothing is asked of Forgejo as a member.
@@ -2361,13 +2361,6 @@ func TestNilActorRedChecksBoard(t *testing.T) {
 	r.approvals.mu.Unlock()
 	r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
 	r.fg.calls = nil
-	// the read the heartbeat makes: PulseState renders the project's board
-	// through an actor that carries no session and answers its questions,
-	// not a panic — the approvals count as waiting on a human
-	open, waiting, err := r.c.PulseState(t.Context(), projectRows()[0])
-	if err != nil || !waiting {
-		t.Fatalf("the heartbeat's board read = %v, %v, %v: want the approvals waiting on a human", open, waiting, err)
-	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, &session{}))
 	d, err := r.c.boardOf(req, boardFilter{Project: "ai-software-factory-code", View: viewWide}, actor{})
 	if err != nil {
