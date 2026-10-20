@@ -525,6 +525,9 @@ var labCodeProject = labProject{"ai-software-factory-code", "sf/code", "sebastia
 // answers, by path; a seed replaces them.
 var labFiles = labPRFiles
 
+// labLabels are the labels of a scene's repository.
+var labLabels = []factoryd.RepoLabel{{ID: 1, Name: "agent"}, {ID: 2, Name: "human"}, {ID: 3, Name: "backlog"}, {ID: 4, Name: "plan"}}
+
 // labProjects are the project rows of the Go-coded scenes.
 func labProjects() []factoryd.Project {
 	rows := slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
@@ -567,6 +570,42 @@ func (r *rig) seedScene(s labScene) string {
 	r.tasks.mu.Lock()
 	r.tasks.tasks, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.deps, s.plans, s.questions
 	r.tasks.mu.Unlock()
+	// the lab's intake: an issue filed on the repository is the card after
+	// the scene's highest, in the lane its labels ask for
+	var highest int64
+	for _, t := range s.tasks {
+		highest = max(highest, t.IssueNumber)
+	}
+	r.fg.mu.Lock()
+	r.fg.scene = repository
+	r.fg.file = func(issue map[string]any) int64 {
+		highest++
+		var names []string
+		ids, _ := issue["labels"].([]any)
+		for _, id := range ids {
+			if i := slices.IndexFunc(labLabels, func(l factoryd.RepoLabel) bool { return float64(l.ID) == id }); i >= 0 {
+				names = append(names, labLabels[i].Name)
+			}
+		}
+		p := r.projects.rows[slices.IndexFunc(r.projects.rows, func(p factoryd.Project) bool { return p.Repository == repository })]
+		title, _ := issue["title"].(string)
+		body, _ := issue["body"].(string)
+		t := factoryd.Task{ID: labID(highest), Kind: "agent", Process: p.Process, Repository: repository, IssueNumber: highest,
+			Objective: factoryd.IssueObjective(title, body), Source: "webhook", Author: login, AuthorWriter: true, CreatedAt: time.Now()}
+		switch lane := factoryd.IssueLane(names, p.Lanes); lane {
+		case factoryd.LaneHuman:
+			t.Kind, t.Status = "human", "waiting-human"
+		case policy.LaneBacklog:
+			t.Status, t.Lane = "backlog", lane
+		default:
+			t.Status, t.Lane = "queued", lane
+		}
+		r.tasks.mu.Lock()
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: t})
+		r.tasks.mu.Unlock()
+		return highest
+	}
+	r.fg.mu.Unlock()
 	r.approvals.mu.Lock()
 	r.approvals.rows = s.approvals
 	r.approvals.mu.Unlock()
@@ -590,7 +629,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.chat.msgs, r.chat.started, r.chat.proposals, r.chat.next = map[string][]factoryd.ChatMessage{}, nil, nil, int64(len(s.chat))
 	r.chat.titles, r.chat.seen, r.chat.cleared, r.chat.summaries, r.chat.compacts =
 		nil, map[string]int64{}, map[string]int64{}, map[string]factoryd.ThreadSummary{}, map[string]int{}
-	r.chat.inboxes, r.chat.archived = nil, map[string]bool{}
+	r.chat.inboxes, r.chat.archived, r.chat.now = nil, map[string]bool{}, time.Now
 	for _, n := range s.archived {
 		r.chat.archived[fmt.Sprint(repository, " ", login, " ", n)] = true
 	}
@@ -695,6 +734,9 @@ func (r *rig) seedScene(s labScene) string {
 	r.c.mu.Lock()
 	r.c.checks = nil
 	r.c.mu.Unlock()
+	// a wake, stored as no row: the open boards read the scene at once,
+	// an empty one too, whose heartbeat redraws no board
+	r.events.bus.Publish(factoryd.Event{Repository: repository})
 	return s.drawer
 }
 

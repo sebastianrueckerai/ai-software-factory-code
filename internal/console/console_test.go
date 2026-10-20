@@ -76,6 +76,11 @@ type fakeForgejo struct {
 	pullHead string            // PR 9's current head; empty answers no pull read
 	// posted are the comment bodies per path, in the order they came
 	posted map[string][]string
+	// scene is a lab scene's repository, answered after the rig's own:
+	// its labels are labLabels, and file numbers an issue filed on it and
+	// makes it a card
+	scene string
+	file  func(issue map[string]any) int64
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -196,6 +201,18 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		f.issues = append(f.issues, body)
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{"number": 41})
+	case r.Method == http.MethodGet && f.scene != "" && r.URL.Path == "/api/v1/repos/"+f.scene+"/labels":
+		labels := []factoryd.RepoLabel{}
+		if r.URL.Query().Get("page") == "1" {
+			labels = labLabels
+		}
+		json.NewEncoder(w).Encode(labels)
+	case r.Method == http.MethodPost && f.scene != "" && r.URL.Path == "/api/v1/repos/"+f.scene+"/issues":
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		f.issues = append(f.issues, body)
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{"number": f.file(body)})
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)

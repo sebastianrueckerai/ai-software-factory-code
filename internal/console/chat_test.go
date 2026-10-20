@@ -72,6 +72,16 @@ type fakeChat struct {
 	proposals []*fakeProposal
 	// intake is the repositories' closed intake switches
 	intake map[string]bool
+	// now stamps the rows stored; nil: the fixed clock at, a second a row
+	now func() time.Time
+}
+
+// stamp is the time of the row stored as number f.next; f.mu held.
+func (f *fakeChat) stamp() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return at.Add(time.Duration(f.next) * time.Second)
 }
 
 // fakeProposal is a row of the proposals' table: used is its used_at, zero
@@ -139,7 +149,7 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
-	m.ID, m.At, m.Conversation = f.next, at.Add(time.Duration(f.next)*time.Second), cmp.Or(m.Conversation, f.current(repository, login))
+	m.ID, m.At, m.Conversation = f.next, f.stamp(), cmp.Or(m.Conversation, f.current(repository, login))
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
@@ -189,7 +199,7 @@ func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int
 	if f.inboxes == nil {
 		f.inboxes = map[string]factoryd.ChatConversation{}
 	}
-	made := at.Add(time.Duration(f.next) * time.Second)
+	made := f.stamp()
 	f.inboxes[k] = factoryd.ChatConversation{Number: max(f.highest(repository, login), f.current(repository, login)) + 1,
 		Title: factoryd.InboxTitle, State: factoryd.ThreadActive, Inbox: true, FirstAt: made, LastAt: made}
 	return f.inboxes[k].Number, nil
@@ -554,7 +564,7 @@ func (f *fakeChat) StartQueued(_ context.Context, repository, login string, id i
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
-	m.ID, m.At, m.Queued = f.next, at.Add(time.Duration(f.next)*time.Second), false
+	m.ID, m.At, m.Queued = f.next, f.stamp(), false
 	f.msgs[k] = append(f.msgs[k], m)
 	return nil
 }
@@ -576,7 +586,7 @@ func (f *fakeChat) AddChatAttachment(_ context.Context, repository, login string
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.next++
-	a.ID, a.At = f.next, at.Add(time.Duration(f.next)*time.Second)
+	a.ID, a.At = f.next, f.stamp()
 	f.atts = append(f.atts, storedAttachment{repository: repository, login: login, a: a})
 	return a, nil
 }

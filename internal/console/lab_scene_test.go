@@ -3,6 +3,8 @@ package console
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -235,5 +237,122 @@ func TestLabSceneChatReplies(t *testing.T) {
 	rows, _ = r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 20)
 	if last := rows[len(rows)-1]; last.Role == "assistant" && last.Content != "" {
 		t.Fatalf("the unscripted turn left an assistant row %+v", last)
+	}
+}
+
+// nordScene is a scene of the demo project nord/booking holding tasks.
+func nordScene(tasks ...factoryd.BoardTask) labScene {
+	objects := map[string]string{}
+	for _, t := range tasks {
+		objects["sessions/"+t.ID+"/timeline.jsonl"] = ""
+	}
+	return labScene{project: labProject{"nord-booking", "nord/booking", "sebastian"},
+		projects: []factoryd.Project{{Name: "nord-booking", Repository: "nord/booking", MergeRule: "human", Objects: "factory", Agents: "coder",
+			GitToken: "minted", Process: "spec", Lanes: testProcesses()["spec"].Lanes, File: true}},
+		tasks: tasks, objects: objects}
+}
+
+// nordCard is card #n of nord/booking in status and lane.
+func nordCard(n int64, status, lane string) factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: labID(n), Kind: "agent", Status: status, Lane: lane, Process: "spec",
+		Repository: "nord/booking", IssueNumber: n, Objective: fmt.Sprintf("Card %d", n), CreatedAt: time.Now().Add(-time.Hour)}}
+}
+
+// The New task form's File and a new_card proposal's Do it file issues on
+// the scene's repository, numbered on from the scene's highest, and each
+// lands on the board as its card.
+func TestLabSceneFilesIssue(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	token := strings.Repeat("p", 43)
+	s := nordScene(nordCard(102, "running", policy.LaneReady), nordCard(101, "done", policy.LaneReady))
+	s.proposals = []factoryd.ChatProposal{{Token: token, Kind: "proposal", Repository: "nord/booking", Login: "sebastian",
+		Tool: "new_card", Args: json.RawMessage(`{"title":"Export","body":"Export the bookings.","lane":"backlog"}`),
+		ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}}
+	r.seedScene(s)
+	ck, sess := r.loggedIn(t)
+	rec := r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Waitlist"},
+		"body": {"Guests wait for a free slot.\n\nAcceptance:\n- A freed slot goes to the first guest"}, "lane": {"ready"}}), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=103&project=nord-booking" {
+		t.Fatalf("POST /tasks = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	code, events, _ := chatPost(t, r, ck, sess, "/projects/nord-booking/chat/proposals/"+token, nil)
+	if code != http.StatusOK || !slices.Contains(events, `applied {"result":"Filed nord/booking#104 in lane backlog.","tool":"new_card"}`) {
+		t.Fatalf("Do it = %d %q, want #104 filed", code, events)
+	}
+	rec = r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Call the venue"}, "lane": {"human"}}), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=105&project=nord-booking" {
+		t.Fatalf("POST /tasks of a human card = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
+	}
+	r.fg.mu.Lock()
+	var titles []any
+	for _, issue := range r.fg.issues {
+		titles = append(titles, issue["title"])
+	}
+	r.fg.mu.Unlock()
+	equal(t, "the issues filed", titles, []any{"Waitlist", "Export", "Call the venue"})
+	r.tasks.mu.Lock()
+	var cards []string
+	for _, bt := range r.tasks.tasks {
+		cards = append(cards, fmt.Sprint(bt.ID, " #", bt.IssueNumber, " ", bt.Kind, " ", bt.Status, " ", bt.Lane, " ", bt.Repository))
+	}
+	r.tasks.mu.Unlock()
+	equal(t, "the cards", cards, []string{labID(102) + " #102 agent running ready nord/booking", labID(101) + " #101 agent done ready nord/booking",
+		labID(103) + " #103 agent queued ready nord/booking", labID(104) + " #104 agent backlog backlog nord/booking",
+		labID(105) + " #105 human waiting-human  nord/booking"})
+	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=nord-booking", nil), ck).Body.String()
+	for _, n := range []int64{103, 104, 105} {
+		if !strings.Contains(board, `href="#card=`+labID(n)+`"`) {
+			t.Errorf("the board lacks card #%d", n)
+		}
+	}
+}
+
+// After a seed, the rows the chat stores during a turn carry the real
+// clock, so the thread's head reads "now", not the rig's fixed date.
+func TestLabSceneChatRowsNow(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.lenient, r.gateway = true, g
+	s := nordScene()
+	s.replies = []labReply{{{Say: "Noted."}}}
+	r.seedScene(s)
+	ck, sess := r.loggedIn(t)
+	if code, events, _ := chatPost(t, r, ck, sess, "/projects/nord-booking/chat", url.Values{"message": {"add a waitlist"}}); code != http.StatusOK {
+		t.Fatalf("the turn = %d %q", code, events)
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "nord/booking", "sebastian", 0, 20)
+	if len(rows) != 2 {
+		t.Fatalf("%d rows, want the ask and the answer: %+v", len(rows), rows)
+	}
+	for _, m := range rows {
+		if d := time.Since(m.At); d < 0 || d > 5*time.Second {
+			t.Errorf("row %d %q at %v, want within 5 s of now", m.ID, m.Content, m.At)
+		}
+	}
+}
+
+// A seed wakes the open streams: a board that showed no card redraws on
+// the seed that adds one, as a board with cards does on its heartbeat.
+// console.js redraws the board on event board and on an event row
+// without a card.
+func TestLabSceneWakesEmptyBoard(t *testing.T) {
+	r := newRig(t)
+	r.seedScene(nordScene())
+	_, br := streamAt(t, r, "nord-booking", "", "")
+	r.seedScene(nordScene(nordCard(101, "queued", policy.LaneReady)))
+	seeded := time.Now()
+	for {
+		got := nextMessage(t, br)
+		if time.Since(seeded) > 1500*time.Millisecond {
+			t.Fatalf("no board redraw within 1.5 s of the seed; then %q", got)
+		}
+		var e struct {
+			TaskID string `json:"task_id"`
+			Kind   string `json:"kind"`
+		}
+		if slices.Contains(got, "event: board") ||
+			slices.Contains(got, "event: event") && json.Unmarshal([]byte(strings.TrimPrefix(got[len(got)-1], "data: ")), &e) == nil &&
+				e.TaskID == "" && e.Kind != factoryd.EventSessionSaid && e.Kind != factoryd.EventDocWritten {
+			return
+		}
 	}
 }
