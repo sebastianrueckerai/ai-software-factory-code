@@ -1026,7 +1026,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			if done {
 				return v
 			}
-			whyHuman = []string{failed}
+			whyHuman = slices.Concat(card, []string{failed})
 		}
 	}
 	if t.rolling && t.rollGap == versionRollGap {

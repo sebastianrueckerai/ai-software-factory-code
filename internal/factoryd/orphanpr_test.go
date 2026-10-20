@@ -687,3 +687,23 @@ func TestAGitHubSyncAtFullAutoWithoutProofAsksAHuman(t *testing.T) {
 		t.Fatalf("ok %v, unmet %q, want the proof and the review", ok, unmet)
 	}
 }
+
+// A mechanical pull request at full auto whose merge Forgejo refuses goes
+// to a human with the findings card and the refusal.
+func TestMechanicalPRRefusedMergeKeepsItsFindings(t *testing.T) {
+	concern := "ci.yml: the smoke job has no trigger"
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.review = Review{Verdict: "concerns", Summary: "x", Findings: []string{concern}}
+		g.state = RunState{Status: "queued", FactoryPR: true, Source: SourceRevert, PR: PullRequest{Number: 9}, Head: "c7"}
+		g.onChecks(ChecksResult{State: ChecksSuccess})
+		g.merge = []MergeResult{{Refusal: "not allowed to merge"}, {Merged: true}}
+	})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	want := []string{noAgent, "review, round 1: " + concern, "Forgejo refused the auto merge: not allowed to merge"}
+	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, want) {
+		t.Fatalf("approvals %+v, want the card %q", g.approvals, want)
+	}
+}
