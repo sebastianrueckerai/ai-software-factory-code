@@ -221,12 +221,8 @@ func (s *fakeStore) UncarriedMerged(ctx context.Context, repository string) ([]T
 			carried = carried || c.repo == repository && c.pr == t.PRNumber
 		}
 		if !carried {
-			if t.FinishedAt == nil { // the database stamps every merged row
-				now := time.Now()
-				if s.chainNow != nil {
-					now = s.chainNow()
-				}
-				t.FinishedAt = &now
+			if t.FinishedAt == nil { // the database's tasks_final_finished_at check refuses such a row
+				panic("fixture " + t.ID + ": merged without finished_at")
 			}
 			out = append(out, t)
 		}
@@ -668,7 +664,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 			codeRepo: {commitC2: {{"status": "pending", "context": "factory/roll"}}},
 		},
 	}
-	tk := Task{ID: "t-wait", Status: "merged", Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent"}
+	tk := Task{ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent"}
 	if err := pg.CreateTask(ctx, tk); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -857,9 +853,9 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 	p, store := newTestPoller(t, &chainForgejo{}, seedProject(codeRepo))
 	store.tasks = map[string]Task{
-		"t-green": {ID: "t-green", Status: "merged", Repository: codeRepo, PRNumber: 12},
-		"t-later": {ID: "t-later", Status: "merged", Repository: codeRepo, PRNumber: 13},
-		"t-wait":  {ID: "t-wait", Status: "merged", Repository: codeRepo, PRNumber: 14},
+		"t-green": {ID: "t-green", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12},
+		"t-later": {ID: "t-later", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 13},
+		"t-wait":  {ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14},
 	}
 	// pr 13 rode the red run 11, pr 12 the green run 12 after it, pr 14
 	// the run 14 still running
@@ -898,7 +894,7 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 // tick; an End that succeeds forgets it, so the next failure logs again.
 func TestAFailingEndLogsOnceUntilItSucceeds(t *testing.T) {
 	p, store := newTestPoller(t, &chainForgejo{}, seedProject(codeRepo))
-	store.tasks = map[string]Task{"t-green": {ID: "t-green", Status: "merged", Repository: codeRepo, PRNumber: 12}}
+	store.tasks = map[string]Task{"t-green": {ID: "t-green", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12}}
 	store.chain = []fakeChainRun{{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"}}
 	down := errors.New("forgejo is down")
 	ends := []error{down, down, nil, down}
@@ -1152,7 +1148,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 		}}}
 	}
 	p.Workflows = &fakeWorkflows{}
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", MergeCommit: demoMerge}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1317,7 +1313,7 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", MergeCommit: mergePR12}
+	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12}
 	var ended []string
 	p.End = func(ctx context.Context, taskID, final, reason string) error {
 		ended = append(ended, taskID+" "+final+" "+reason)
@@ -1358,9 +1354,9 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
-	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged"}
-	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", MergeCommit: "0c0c"}
-	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", MergeCommit: mergePR14}
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow()}
+	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c"}
+	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14}
 	ctx := context.Background()
 	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC1, 61, "success"); err != nil {
 		t.Fatal(err)
@@ -1412,8 +1408,8 @@ func TestALateCompareFailureStopsNothingElse(t *testing.T) {
 		ended = append(ended, taskID)
 		return nil
 	}
-	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", MergeCommit: mergePR12}
-	store.tasks["t-cov"] = Task{ID: "t-cov", Repository: codeRepo, PRNumber: 20, Status: "merged", MergeCommit: "0c0c"}
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12}
+	store.tasks["t-cov"] = Task{ID: "t-cov", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c"}
 	ctx := context.Background()
 	for _, row := range []struct {
 		pr  int64
@@ -1459,7 +1455,7 @@ func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
-	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", MergeCommit: "b0b0"}
+	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "b0b0"}
 	ctx := context.Background()
 	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
 		t.Fatal(err)

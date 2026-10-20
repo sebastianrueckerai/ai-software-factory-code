@@ -176,6 +176,9 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 		s.createFails--
 		return errors.New("insert failed")
 	}
+	if t.Status == "merged" && t.FinishedAt == nil {
+		panic("fixture " + t.ID + ": merged without finished_at")
+	}
 	if t.Kind == "" {
 		t.Kind = "agent"
 	}
@@ -3223,4 +3226,11 @@ func TestPGStoreOneCardPerIssue(t *testing.T) {
 	if err := file("t-second", 1109, repo); err != nil {
 		t.Fatalf("a done card frees its issue: %v", err)
 	}
+}
+
+// justNow is a merged fixture's finish stamp, as the database gives every
+// merged row.
+func justNow() *time.Time {
+	now := time.Now()
+	return &now
 }

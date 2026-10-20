@@ -113,7 +113,7 @@ func TestPokeOf(t *testing.T) {
 // concluded between merge and poke — informs nobody, its done poke its
 // only tell.
 func TestMergedPokeInformsOnce(t *testing.T) {
-	merged := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "merged"}
+	merged := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "merged", FinishedAt: justNow()}
 	merge := func(chain string, repair float64, covered bool) Event {
 		return Event{Kind: EventPullRequestMerged, TaskID: "t-1",
 			Detail: map[string]any{"pr": float64(9), "by": MergeUser, "chain": chain, "repair": repair, "covered": covered}}
@@ -293,7 +293,7 @@ func TestPGStorePokes(t *testing.T) {
 
 	// a merged card informs once at its merge, its words the chain's facts
 	// as the pass reads them: a red chain names the repair card on it
-	merged := Task{ID: "t-3", Kind: "agent", Repository: "sf/code", IssueNumber: 604, PRNumber: 9, Status: "merged", Objective: "Feed page"}
+	merged := Task{ID: "t-3", Kind: "agent", Repository: "sf/code", IssueNumber: 604, PRNumber: 9, Status: "merged", FinishedAt: justNow(), Objective: "Feed page"}
 	if err := s.CreateTask(ctx, merged); err != nil {
 		t.Fatal(err)
 	}

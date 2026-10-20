@@ -720,8 +720,8 @@ func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
 		titleFails: map[int64]bool{12: true},
 	}
 	roller, store, _ := newTestRoller(t, f)
-	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
-	store.tasks["t-13"] = Task{ID: "t-13", Status: "merged", Repository: codeRepo, PRNumber: 13, MergeCommit: agentA1}
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-13"] = Task{ID: "t-13", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 13, MergeCommit: agentA1}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -753,8 +753,8 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	f.titles = map[int64]string{12: "Keys are no longer blocked at every session (closes #4, @bob)"}
 	roller, store, wf := newTestRoller(t, f)
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
-	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
-	store.tasks["t-11"] = Task{ID: "t-11", Status: "merged", Repository: codeRepo, PRNumber: 11, MergeCommit: "0b0b"}
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-11"] = Task{ID: "t-11", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 11, MergeCommit: "0b0b"}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -936,8 +936,8 @@ func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
 	roller, store, wf := newTestRoller(t, f)
-	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
-	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}

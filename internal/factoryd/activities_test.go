@@ -2010,8 +2010,14 @@ func TestRerunChecksOfAFactoryPullRequest(t *testing.T) {
 	}
 }
 
-func withPR(t Task, n int64) Task      { t.PRNumber = n; return t }
-func withStatus(t Task, s string) Task { t.Status = s; return t }
+func withPR(t Task, n int64) Task { t.PRNumber = n; return t }
+func withStatus(t Task, s string) Task {
+	t.Status = s
+	if s == "merged" && t.FinishedAt == nil {
+		t.FinishedAt = justNow()
+	}
+	return t
+}
 func withKind(t Task, k string) Task   { t.Kind = k; return t }
 func withSource(t Task, s string) Task { t.Source = s; return t }
 

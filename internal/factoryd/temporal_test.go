@@ -49,7 +49,7 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
 	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "tm": "merged", "td": "done", "tf": "failed"} {
-		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
+		store.CreateTask(context.Background(), withStatus(Task{ID: id, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30}, st))
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
 	store.CreateTask(context.Background(), Task{ID: "th", Status: "waiting-human", Kind: "human", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
