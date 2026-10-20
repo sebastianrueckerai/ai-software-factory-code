@@ -109,13 +109,21 @@ type fakePoke struct {
 	m          ChatMessage
 }
 
-// routinePokes are the pokes the Poker writes for the routine_ran events
-// r recorded, as Poker.Pass does: their detail read back as the events
-// table gives it, to the project's notify list, else its approvers.
+// routinePokes are the pokes the Poker writes for the events of a poke
+// kind r recorded, as Poker.Pass does: their detail read back as the
+// events table gives it, to the project's notify list, else its
+// approvers.
 func routinePokes(t *testing.T, r *Runner, store *fakeStore) []fakePoke {
 	t.Helper()
+	rec := r.timeline.Events.(*fakeEventRecorder)
+	rec.mu.Lock()
+	rows := slices.Clone(rec.rows)
+	rec.mu.Unlock()
 	var out []fakePoke
-	for _, e := range recordedEvents(r, EventRoutineRan) {
+	for _, e := range rows {
+		if !slices.Contains(pokeKinds, e.Kind) {
+			continue
+		}
 		b, err := json.Marshal(e.Detail)
 		if err != nil {
 			t.Fatal(err)
@@ -184,7 +192,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "human", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
 	if created := recordedEvents(r, EventCardCreated); len(created) != 1 || created[0].TaskID != card.ID ||
@@ -194,8 +202,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Repository != "sf/ai-software-factory-code" || ran[0].TaskID != card.ID ||
 		ran[0].IssueNumber != 71 || ran[0].Actor != FactoryDecider || ran[0].Via != ViaFactoryd ||
 		!reflect.DeepEqual(ran[0].Detail, map[string]any{"project": codeProject, "routine": "weekly-bump", "run": 1, "outcome": "filed",
-			"schedule": "every Monday 06:00", "poke": "#71 needs you: Weekly bump of the pinned outside inputs."}) {
-		t.Errorf("routine_ran %+v", ran)
+			"schedule": "every Monday 06:00"}) {
+		t.Errorf("routine_ran %+v, want the run filed and no poke of its own: the card's needs-you row pokes", ran)
 	}
 	title, body, _ := strings.Cut(issues.issues[0], "\n\n")
 	if title != "Weekly bump of the pinned outside inputs" || card.Objective != title+"\n\n"+body {
@@ -217,10 +225,13 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		runs[0].Issue != 71 || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v, want run 1 filed and open", runs)
 	}
-	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: "#71 needs you: Weekly bump of the pinned outside inputs.", TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventRoutineRan}}
+	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
+		Content: "#71 needs you: Weekly bump of the pinned outside inputs", TaskID: card.ID, BirthKind: EventQuestionAsked}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
+	}
+	if deliveryLevel(want.m) != LevelNeedsYou {
+		t.Fatal("the routine card's poke stays in the inbox, want it at the messengers' needs-you level")
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -229,7 +240,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
-	if pokes := routinePokes(t, r, store); len(pokes) != 1 || pokes[0].m.Content != "#71 needs you: Weekly bump of the pinned outside inputs." {
+	if pokes := routinePokes(t, r, store); len(pokes) != 1 || pokes[0].m.Content != "#71 needs you: Weekly bump of the pinned outside inputs" {
 		t.Fatalf("pokes under tell quiet %+v, want the human card's one", pokes)
 	}
 }
@@ -434,7 +445,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	}{
 		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
 		{"hold quietly", policy.WhileOpenHold, policy.TellQuiet, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
-		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, "#71 needs you: Weekly bump of the pinned outside inputs."},
+		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, "#71 needs you: Weekly bump of the pinned outside inputs"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -467,8 +478,8 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			}
 			var pokes []fakePoke
 			if tt.poke != "" {
-				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00", BirthKind: EventRoutineRan}}}
+				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
+					Content: tt.poke, TaskID: res.TaskID, BirthKind: EventQuestionAsked}}}
 			}
 			if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
 				t.Fatalf("pokes %+v,\nwant %+v", got, pokes)
@@ -662,7 +673,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if card.Kind != "human" || card.Status != "waiting-human" || card.Source != SourceRoutine || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "factory-agent" {
 		t.Fatalf("the flipped audit's card %+v", card)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "human", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
 	if body := issues.issues[0]; !strings.HasSuffix(body, "Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1") {
@@ -671,8 +682,8 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if len(wf.started) != 0 {
 		t.Errorf("a human card started %v", wf.started)
 	}
-	want = fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
-		Content: "#71 needs you: Audit: bug hunt and architecture review.", TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventRoutineRan}}
+	want = fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
+		Content: "#71 needs you: Audit: bug hunt and architecture review", TaskID: card.ID, BirthKind: EventQuestionAsked}}
 	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
 		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
 	}

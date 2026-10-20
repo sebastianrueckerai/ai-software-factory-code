@@ -96,10 +96,14 @@ func main() {
 	if err := metrics.Tasks(otelProviders.Analytics.Meter("factoryd")); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
-	// the runner's timeline comes later; the alarm records only its card's
-	// needs-you row, so a commit refused at boot tells its person too
-	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics,
-		Timeline: &factoryd.Timeline{Events: store, Store: store}}
+	objects := &factoryd.S3{
+		Endpoint:  mustEnv("S3_ENDPOINT"),
+		Region:    env("S3_REGION", "fsn1"),
+		Bucket:    mustEnv("S3_BUCKET"),
+		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
+		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
+	}
+	configAlarm := newConfigAlarm(store, forgejo, configRepo, metrics, objects)
 	// a ladder model outside the coder class would be refused mid-task
 	configSource := &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir}
 	policyLoader := &factoryd.PolicyLoader{
@@ -121,13 +125,6 @@ func main() {
 	ciQueue := factoryd.NewCIQueue(metrics)
 
 	litellm := &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")}
-	objects := &factoryd.S3{
-		Endpoint:  mustEnv("S3_ENDPOINT"),
-		Region:    env("S3_REGION", "fsn1"),
-		Bucket:    mustEnv("S3_BUCKET"),
-		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
-		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
-	}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: litellm, Metrics: metrics}
 	// the gateway-factoryd token: the gateway's escalation hand-over to
 	// factoryd, and factoryd's model calls on a task's account
@@ -770,6 +767,7 @@ func consoleWriters(store interface {
 // interface.
 type taskCreator interface {
 	CreateTask(ctx context.Context, t factoryd.Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 
@@ -1018,6 +1016,14 @@ func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerIntercepto
 		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
 		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{Scrub: scrub}}, extra...),
 	}
+}
+
+// newConfigAlarm raises a refused commit of the tree in configDir on repo.
+// It comes before the runner, so its timeline is built as the runner's:
+// a commit refused at boot records its card's events too.
+func newConfigAlarm(store *factoryd.PGStore, forgejo *factoryd.Forgejo, repo factoryd.Repo, metrics *telemetry.Metrics, objects factoryd.ObjectStore) *factoryd.ConfigAlarm {
+	return &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: repo, Dir: configDir, Metrics: metrics,
+		Timeline: &factoryd.Timeline{Objects: objects, Metrics: metrics, Events: store, Store: store}}
 }
 
 // newChainPoller records every run-mode repository's chain (roadmap 297)

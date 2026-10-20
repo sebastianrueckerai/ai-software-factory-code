@@ -165,7 +165,7 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	roller, store, wf := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
 	rows := &fakeEventRecorder{}
-	roller.Timeline = &Timeline{Store: store, Events: rows}
+	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
 	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
 	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})

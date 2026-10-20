@@ -18,7 +18,8 @@ const routineLate = 10 * time.Minute
 // RoutineRun is a routine's one activity (roadmap 267). It begins the
 // run, applies a pending Skip once, the missed rule and the hold rule,
 // files what the routine's kind asks for and records the outcome, whose
-// event pokes the inbox by tell. A run that began earlier and has its
+// event pokes the inbox by tell; a human card's needs-you row pokes
+// whatever tell says. A run that began earlier and has its
 // outcome returns it. One an attempt left without its outcome goes on, so
 // a retry files what that attempt did not.
 func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRunResult, error) {
@@ -100,13 +101,13 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	switch files {
 	case policy.FilesHuman:
 		body := strings.TrimSpace(brief + "\n\n" + provenance)
-		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
+		t, ref, err := fileHumanCard(ctx, r.store, r.forgejo, r.timeline, p.Repo(), rt.Title, body, []string{"routine"}, Task{ID: NewTaskID(),
 			RiskClass: "standard", Objective: rt.Title + "\n\n" + body, Source: SourceRoutine, Author: r.forgejo.BotUser})
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		// a card that needs a person pokes under tell quiet too
-		return filed(t.ID, issue, fmt.Sprintf("#%d needs you: %s.", issue, rt.Title))
+		// the card's needs-you row pokes, under tell quiet too
+		return filed(t.ID, ref.Number, "")
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack
 		// maps skills (roadmap 226)

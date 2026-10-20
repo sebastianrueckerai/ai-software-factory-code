@@ -710,6 +710,7 @@ const SourceConfig = "config"
 // one alerts row per refused commit.
 type ConfigBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
@@ -735,7 +736,8 @@ type ConfigAlarm struct {
 	Dir  string
 	// Metrics counts the outcome of the tasks Resolve ends; nil counts none.
 	Metrics *telemetry.Metrics
-	// Timeline records the card's needs-you row; nil records none.
+	// Timeline records the card's card_created and needs-you row; nil
+	// records none.
 	Timeline *Timeline
 }
 

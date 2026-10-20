@@ -142,6 +142,7 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)

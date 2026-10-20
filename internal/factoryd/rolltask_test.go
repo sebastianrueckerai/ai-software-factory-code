@@ -355,6 +355,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 		}
 		switch {
+		case repo == codeRepo && r.Method == "GET" && p == "/issues":
+			reply([]any{}) // no issue a failed filing left behind
 		case p == "/v2/token":
 			reply(map[string]string{"token": "bearer-tok"})
 		case strings.HasPrefix(p, "/v2/"):
@@ -867,7 +869,7 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	roller, store, wf := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
 	rows := &fakeEventRecorder{}
-	roller.Timeline = &Timeline{Store: store, Events: rows}
+	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -1922,7 +1924,7 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
 	roller, store, _ := newTestRoller(t, f)
 	rows := &fakeEventRecorder{}
-	roller.Timeline = &Timeline{Store: store, Events: rows}
+	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	ctx := context.Background()
 	seed := func(id, sha string, run int64, request string) {
 		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}

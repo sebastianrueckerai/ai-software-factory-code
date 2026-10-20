@@ -33,6 +33,7 @@ type SchemaCopier struct {
 	// the unfinished ones it looks a build's card up in.
 	Store interface {
 		CreateTask(ctx context.Context, t Task) error
+		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 		TransitionTask(ctx context.Context, id string, from []string, to string) error
 		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 		ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)

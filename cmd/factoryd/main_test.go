@@ -152,6 +152,16 @@ func (s *fakeTaskCreator) ProjectByRepository(_ context.Context, repository stri
 	return p, ok, nil
 }
 
+// TaskByIssue finds the created row of issue issueNumber.
+func (s *fakeTaskCreator) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
+	for _, t := range s.created {
+		if t.Repository == repository && t.IssueNumber == issueNumber {
+			return t, true, nil
+		}
+	}
+	return factoryd.Task{}, false, nil
+}
+
 func (s *fakeTaskCreator) CreateTask(ctx context.Context, t factoryd.Task) error {
 	*s.events = append(*s.events, "create-row")
 	if s.err != nil {

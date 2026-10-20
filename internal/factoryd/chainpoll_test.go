@@ -376,6 +376,7 @@ type chainForgejo struct {
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
+	open      map[string][]map[string]any               // repository -> its open issues
 	status    []string                                  // the sha of every combined status read
 	reads     []string                                  // "repository dir" of every workflow-list read
 	failing   map[string]bool                           // "base...head" compares that answer 500
@@ -434,6 +435,12 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				}
 			}
 			reply(map[string]any{"state": state, "statuses": f.statuses[repo][sha]})
+		case r.Method == "GET" && p == "/issues":
+			open := []map[string]any{}
+			if r.URL.Query().Get("page") == "1" {
+				open = append(open, f.open[repo]...)
+			}
+			reply(open)
 		case r.Method == "POST" && p == "/issues":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -2038,7 +2045,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
 	rows := &fakeEventRecorder{}
-	p.Timeline = &Timeline{Store: store, Events: rows}
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	for range 2 {
 		if err := p.Tick(ctx); err != nil {
 			t.Fatal(err)
@@ -2150,6 +2157,32 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 	}
 }
 
+// A repair card whose filing left its issue behind, the task row never
+// written: the next red tick takes the bot's open issue of the card's
+// title on instead of filing a second, its labels the card's; an issue of
+// that title a task holds, or another poster's, is not taken.
+func TestARepairCardTakesOnTheIssueAFailedFilingLeft(t *testing.T) {
+	ctx := context.Background()
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	title := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure"
+	f.open = map[string][]map[string]any{demoRepo: {
+		{"number": 7, "title": title, "user": map[string]any{"login": "someone"}},
+		{"number": 8, "title": title, "user": map[string]any{"login": "factory-agent"}},
+		{"number": 9, "title": title, "user": map[string]any{"login": "factory-agent"}},
+	}}
+	store.tasks["t-held"] = Task{ID: "t-held", Kind: "human", Status: "waiting-human", Repository: demoRepo, IssueNumber: 9, Source: SourceAlert}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	cards := repairCards(store)[demoRepo]
+	if len(cards) != 1 || cards[0].IssueNumber != 8 || cards[0].Status != "waiting-human" || cards[0].Kind != "human" || len(f.issues) != 0 {
+		t.Fatalf("repair cards %+v, issues filed %q; want the card on the left-behind #8 and no new issue", cards, f.issues)
+	}
+	if want := []string{demoRepo + "#8 human state/waiting-human"}; !slices.Equal(f.labelled, want) {
+		t.Fatalf("labels %q, want %q", f.labelled, want)
+	}
+}
+
 // A human repair card a person closes while its head stays red stands as
 // that head's dismissal: the next red ticks file no card and poke
 // nobody, the chain_red alert stays open; a new red head files a new
@@ -2180,7 +2213,7 @@ func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
 
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
 	rows := &fakeEventRecorder{}
-	p.Timeline = &Timeline{Store: store, Events: rows}
+	p.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	tick(p)
 	card := repairCards(store)[demoRepo][0]
 	end(store, card)

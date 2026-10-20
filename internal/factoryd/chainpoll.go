@@ -346,6 +346,7 @@ type ChainStore interface {
 	RecordChainStall(ctx context.Context, repository, sha string) error
 	ChainHeadSince(ctx context.Context, repository, sha string) (time.Time, bool, error)
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
 	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
 	MarkChainRerun(ctx context.Context, repository, sha string) error

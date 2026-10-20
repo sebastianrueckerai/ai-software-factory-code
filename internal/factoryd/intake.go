@@ -207,6 +207,7 @@ type webhookIssue struct {
 	Poster    webhookUser    `json:"user"`
 	Labels    []webhookLabel `json:"labels"`
 	CreatedAt time.Time      `json:"created_at"`
+	HTMLURL   string         `json:"html_url"`
 }
 
 type issuesPayload struct {
@@ -1091,9 +1092,7 @@ func FileTask(ctx context.Context, store interface {
 // human, gets a human card instead (fileHumanCard): it waits on a person
 // from the start, as an issue filed there does. tl records the card's
 // events.
-func FileAgentTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if p.Agents == policy.AgentsNone || t.Kind == "human" {
 		return fileHumanCard(ctx, store, forgejo, tl, p.Repo(), title, body, labels, t)
 	}
@@ -1115,20 +1114,54 @@ func FileAgentTask(ctx context.Context, store interface {
 	return t, ref, nil
 }
 
-// fileHumanCard files t on repo as factoryd's human card through
-// FileTask, labelled labels and human (an agent label dropped: no agent
-// takes it), and records its needs-you row (recordNeedsYou).
-func fileHumanCard(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+// fileHumanCard files t on repo as factoryd's human card, labelled labels
+// and human (an agent label dropped: no agent takes it): through FileTask,
+// unless the bot's open issue of the same title that no task row holds is
+// there — an issue a filing whose task row then failed left behind is
+// taken on, not filed again. An issue a task holds is that card's, such as
+// an earlier routine run's still open. The card records card_created and
+// its needs-you row (recordNeedsYou).
+func fileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	t.Kind = "human"
 	labels = append(slices.DeleteFunc(slices.Clone(labels), func(n string) bool { return n == LabelAgent }), "human")
-	t, ref, err := FileTask(ctx, store, forgejo, repo, title, body, labels, t)
+	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
+	var ref IssueRef
+	for _, is := range open {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return Task{}, IssueRef{}, err
+		} else if !held {
+			ref = IssueRef{Number: is.Index, URL: is.HTMLURL}
+		}
+	}
+	if ref.Number == 0 {
+		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t); err != nil {
+			return Task{}, IssueRef{}, err
+		}
+	} else {
+		t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), ref.Number
+		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, ref.Number, append(labels, "state/waiting-human")); err != nil {
+			return Task{}, IssueRef{}, err
+		}
+		if err := store.CreateTask(ctx, t); err != nil {
+			return Task{}, IssueRef{}, err
+		}
+	}
+	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number})
 	recordNeedsYou(ctx, tl, t, title)
 	return t, ref, nil
+}
+
+// humanCardStore is what filing a card needs of the store: its row, and
+// the task of an issue a human card would take on.
+type humanCardStore interface {
+	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }
 
 // recordNeedsYou records factoryd's human card t's needs-you row, the one
@@ -1150,9 +1183,7 @@ func recordNeedsYou(ctx context.Context, tl *Timeline, t Task, title string) {
 // starts at once and moves running before its verify reaches in-review.
 // It runs no session, and its budget is its model gates': budget's task
 // default, at most p's card maximum and the task maximum (CardBudget).
-func FileFactoryPRTask(ctx context.Context, store interface {
-	CreateTask(ctx context.Context, t Task) error
-}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+func FileFactoryPRTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}

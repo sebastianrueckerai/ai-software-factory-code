@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -59,6 +60,8 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`) // no issue a failed filing left behind
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues":
 			var in struct{ Title, Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -651,7 +654,7 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	r := newAlertRig(t)
 	rows := &fakeEventRecorder{}
-	r.in.Timeline = &Timeline{Store: r.store, Events: rows}
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: r.store, Events: rows}
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
 	demo.Agents = "none"
 	r.in.Projects.(*memProjects).m["demo-app"] = demo
@@ -665,12 +668,14 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
 		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
 	}
-	// the person is told: the card's needs-you row, which the Poker carries
+	// the card's card_created, then the person is told: the card's
+	// needs-you row, which the Poker carries
 	title, _, _ := strings.Cut(task.Objective, "\n\n")
-	if len(rows.rows) != 1 || rows.rows[0].Kind != EventQuestionAsked || rows.rows[0].Via != ViaFactoryd ||
-		rows.rows[0].Detail["question"] != title || rows.rows[0].Detail["source"] != SourceAlert {
-		t.Fatalf("event rows %+v, want the card's needs-you row on %q", rows.rows, title)
+	if len(rows.rows) != 2 || rows.rows[0].Kind != EventCardCreated || rows.rows[0].TaskID != task.ID ||
+		!reflect.DeepEqual(rows.rows[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(1)}) {
+		t.Fatalf("event rows %+v, want the card's card_created and its needs-you row", rows.rows)
 	}
+	needsYouPoke(t, rows.rows, task, title)
 }
 
 // Ruling 180: the factory's own namespaces route like a project's. An

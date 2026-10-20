@@ -199,6 +199,7 @@ func ResourceQuotaHard(q policy.Quota) map[string]any {
 // ProjectStore in one Store.
 type FactoryPRCardStore interface {
 	CreateTask(ctx context.Context, t Task) error
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	// TasksByPR are the cards whose rows link pull request number on
 	// repository, newest first; none means the pull request has none yet.
 	TasksByPR(ctx context.Context, repository string, number int64) ([]Task, error)

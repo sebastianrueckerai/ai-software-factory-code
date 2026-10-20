@@ -688,7 +688,7 @@ func TestConfigAlarm(t *testing.T) {
 	m, reader := testMetrics(t)
 	rows := &fakeEventRecorder{}
 	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m,
-		Timeline: &Timeline{Store: store, Events: rows}}
+		Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}}
 	ctx := context.Background()
 	reason := errors.New("processes/maintenance.yaml: stages.policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}

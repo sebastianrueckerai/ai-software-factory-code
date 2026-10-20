@@ -94,6 +94,8 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"commit":{"id":"c-branch"}}`)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`) // no issue a failed filing left behind
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/pulls":
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, repo+"/pulls/"):
