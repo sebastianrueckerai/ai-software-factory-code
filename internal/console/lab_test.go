@@ -44,6 +44,10 @@ func TestLab(t *testing.T) {
 	dir := cmp.Or(os.Getenv("CONSOLE_LAB_DIR"), "/tmp/claude-1000/console-lab")
 	addr := cmp.Or(os.Getenv("CONSOLE_LAB_ADDR"), "127.0.0.1:8090")
 	scenario := cmp.Or(os.Getenv("CONSOLE_LAB_SCENARIO"), "busy")
+	// a writer's board redraws at a heartbeat, so a seed shows within a second
+	was := heartbeat
+	heartbeat = time.Second
+	t.Cleanup(func() { heartbeat = was })
 
 	r := newRig(t)
 	r.c.cfg.Timelines = lockedObjects{r.objects}
