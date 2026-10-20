@@ -101,8 +101,8 @@ func (s *PGStore) commitCards(ctx context.Context, query string, args ...any) (m
 }
 
 // ChainCard is repository's newest card of source, a repair or a stall
-// card: one stands per repository at a time, so it is the only one that
-// can be open.
+// card: a new one is filed only once the newest no longer holds the
+// repository, so the newest is the one that acts.
 func (s *PGStore) ChainCard(ctx context.Context, repository, source string) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND source = $2 ORDER BY created_at DESC, id DESC LIMIT 1`, repository, source)
 }
@@ -350,6 +350,7 @@ type ChainStore interface {
 	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
 	MarkChainRerun(ctx context.Context, repository, sha string) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
 	ChainHeldIssues(ctx context.Context, repository string) ([]int64, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
@@ -1345,8 +1346,8 @@ func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind stri
 }
 
 // fileRepair files the repair card of repository's red head: one per
-// repository while one stands (a second red tick joins the open card's
-// work), an agent card in the project's lane ready — a human card where
+// repository while one holds it (repairHeld; a second red tick joins the
+// open card's work), an agent card in the project's lane ready — a human card where
 // the project has no agents (FileAgentTask) — whose objective carries the
 // findings, the failing run's link and the issue numbers of the cards the
 // head carried. The factory's own repository files none: mainfix owns a
@@ -1361,8 +1362,14 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		log.Printf("chain poller: %s: read the open repair card: %v", repository, err)
 		return
 	}
-	if ok && !Final(card.Status) {
-		return
+	if ok {
+		switch held, err := p.repairHeld(ctx, card, run.CommitSHA); {
+		case err != nil:
+			log.Printf("chain poller: %s: read the close of repair card #%d: %v", repository, card.IssueNumber, err)
+			return
+		case held:
+			return
+		}
 	}
 	proj, ok, err := p.projectOf(ctx, repository)
 	if err != nil {
@@ -1404,4 +1411,23 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		return
 	}
 	log.Printf("chain poller: %s: head %s %s: repair card %s, issue #%d", repository, run.CommitSHA, title, t.ID, ref.Number)
+}
+
+// repairHeld reports whether repair card card, its repository's newest,
+// holds the red head at sha from a new one: a card that can still act; a
+// merged one while the red head is still the commit it was filed for,
+// its fix not yet main's head; a human one a person closed on that head,
+// which dismissed the head until it changes. factoryd's own close (the
+// head turned green) dismisses nothing.
+func (p *ChainPoller) repairHeld(ctx context.Context, card Task, sha string) (bool, error) {
+	switch {
+	case card.Status == "merged":
+		return card.SHA == sha, nil
+	case !Final(card.Status):
+		return true, nil
+	case card.Kind != "human" || card.SHA != sha:
+		return false, nil
+	}
+	events, err := p.Store.IntakeEvents(ctx, card.ID)
+	return err == nil && !botCloseRecorded(events, card), err
 }

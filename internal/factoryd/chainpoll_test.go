@@ -2150,6 +2150,112 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 	}
 }
 
+// A human repair card a person closes while its head stays red stands as
+// that head's dismissal: the next red ticks file no card and poke
+// nobody, the chain_red alert stays open; a new red head files a new
+// card. factoryd's own close, on its head's green, dismisses nothing:
+// the same commit red again files a card.
+func TestAPersonsCloseDismissesTheRedHead(t *testing.T) {
+	ctx := context.Background()
+	tick := func(p *ChainPoller) {
+		t.Helper()
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	asked := func(rows *fakeEventRecorder) int {
+		n := 0
+		for _, e := range rows.rows {
+			if e.Kind == EventQuestionAsked {
+				n++
+			}
+		}
+		return n
+	}
+	end := func(store *fakeStore, card Task) {
+		done := store.tasks[card.ID]
+		done.Status, done.FinishedAt = "done", justNow()
+		store.tasks[card.ID] = done
+	}
+
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	rows := &fakeEventRecorder{}
+	p.Timeline = &Timeline{Store: store, Events: rows}
+	tick(p)
+	card := repairCards(store)[demoRepo][0]
+	end(store, card)
+	tick(p)
+	tick(p)
+	if cards := repairCards(store)[demoRepo]; len(cards) != 1 || asked(rows) != 1 {
+		t.Fatalf("repair cards %+v, %d needs-you rows after a person closed the card; want the one card and its one row", cards, asked(rows))
+	}
+	open := 0
+	for _, a := range store.alerts {
+		if a.Kind == AlertChainRed && a.Fingerprint == demoRepo && a.Verdict == "" {
+			open++
+		}
+	}
+	if open != 1 {
+		t.Fatalf("alerts %+v, want the chain_red alert open while the head is red", store.alerts)
+	}
+	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "success"), chainRun(21, demoCommit, "success")}
+	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
+	tick(p)
+	cards := repairCards(store)[demoRepo]
+	if len(cards) != 2 || asked(rows) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Status == "waiting-human" }) {
+		t.Fatalf("repair cards %+v, %d needs-you rows on a new red head; want a second card on %s and its row", cards, asked(rows), demoNext)
+	}
+
+	p, store, f = redRig(t, noAgents(demoRepo), "failure")
+	tick(p)
+	card = repairCards(store)[demoRepo][0]
+	f.statuses[demoRepo][demoCommit] = []map[string]string{{"status": "success", "context": "flux/platform"}}
+	tick(p)
+	if !botCloseRecorded(store.intakeEvents, card) {
+		t.Fatalf("intake events %+v, want factoryd's close of the healed card", store.intakeEvents)
+	}
+	end(store, card)
+	f.statuses[demoRepo][demoCommit] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
+	tick(p)
+	if cards := repairCards(store)[demoRepo]; len(cards) != 2 {
+		t.Fatalf("repair cards %+v, want a new card on the same commit red again after factoryd's own close", cards)
+	}
+}
+
+// Only a repair card that can still act holds the one-per-repository
+// slot: an agent's merged repair card holds while the red head is the
+// commit it was filed for, its fix not yet main's head; the head red on
+// its merge commit files a new card.
+func TestAMergedRepairCardHoldsNoSlot(t *testing.T) {
+	ctx := context.Background()
+	tick := func(p *ChainPoller) {
+		t.Helper()
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, store, f := redRig(t, seedProject(demoRepo), "failure")
+	tick(p)
+	agent := repairCards(store)[demoRepo][0]
+	merged := store.tasks[agent.ID]
+	merged.Status, merged.MergeCommit = "merged", demoNext
+	store.tasks[agent.ID] = merged
+	tick(p)
+	if cards := repairCards(store)[demoRepo]; len(cards) != 1 {
+		t.Fatalf("repair cards %+v while the head is still the card's red commit, want the merged card alone", cards)
+	}
+	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "success"), chainRun(21, demoCommit, "success")}
+	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "failure", "context": "flux/platform"}}
+	tick(p)
+	cards := repairCards(store)[demoRepo]
+	if len(cards) != 2 || !slices.ContainsFunc(cards, func(c Task) bool { return c.SHA == demoNext && c.Kind == "agent" && c.Status == "queued" }) {
+		t.Fatalf("repair cards %+v, want a new agent card on the merge commit %s red", cards, demoNext)
+	}
+	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 2 {
+		t.Fatalf("started %v, want the new card's workflow started too", started)
+	}
+}
+
 // A repository the projects token cannot see answers every call with a
 // 404, which reads exactly like a repository without workflows. The
 // chain must not mistake one for the other: an invisible repository is
