@@ -321,6 +321,7 @@ type rollForgejo struct {
 	prs            map[int64]string    // pull request number -> its head branch
 	closedPRs      []int64             // the numbers of the pull requests closed
 	titles         map[int64]string    // pull request number -> its title
+	titleFails     map[int64]bool      // pull requests whose read answers 500
 	deleted        []string            // the fork branches deleted
 }
 
@@ -498,6 +499,10 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			state := "open"
 			if slices.Contains(f.closedPRs, n) {
 				state = "closed"
+			}
+			if f.titleFails[n] {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
 			}
 			reply(map[string]any{"number": n, "state": state, "title": f.titles[n]})
 		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
@@ -704,6 +709,35 @@ func mainPins() map[string]string {
 // merged pull requests since the last roll (the roll tasks' own left
 // out); an image rebuilt with no input change is no change. A second poll
 // files nothing: each commit once.
+// A carried pull request whose title cannot be read still lists, by its
+// number alone; the other keeps its title, and the roll is filed.
+func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success"), pushRun(56, "c0c0c0c0", "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+		titles:     map[int64]string{13: "Second change"},
+		titleFails: map[int64]bool{12: true},
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-13"] = Task{ID: "t-13", Status: "merged", Repository: codeRepo, PRNumber: 13, MergeCommit: agentA1}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.issues) != 1 || !strings.HasSuffix(f.issues[0], "Merged pull requests it carries:\n\n- #12\n- #13 Second change") {
+		t.Fatalf("issues %q, want one ending in #12 without a title and #13 with its own", f.issues)
+	}
+	if len(store.rolls) != 1 || !slices.Equal(store.rolls[0].PRs, []int64{12, 13}) {
+		t.Fatalf("roll requests %+v, want one carrying #12 and #13", store.rolls)
+	}
+}
+
 func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{

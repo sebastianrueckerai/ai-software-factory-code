@@ -223,11 +223,11 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 }
 
 // SettleRollRequests follows the roll tasks that ended: a done or merged
-// task's committed requests merged, and the ones folded in after its last
-// commit forgotten, so the next poll judges their images again; a task
-// that ended otherwise fails its requests; a request whose task or card never got
-// filed is forgotten. It returns the requests it settled, whose verdicts
-// the caller reports as commit statuses (roadmap 297).
+// task's committed requests merged, and the ones folded in after its
+// last commit forgotten, so the next poll judges their images again; a
+// task that ended otherwise fails its requests; a request whose task or
+// card never got filed is forgotten. It returns the requests it settled,
+// whose verdicts the caller reports as commit statuses (roadmap 297).
 func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH gone AS (
 		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
