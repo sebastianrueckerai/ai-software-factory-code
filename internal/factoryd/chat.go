@@ -228,6 +228,9 @@ type ChatConversation struct {
 	// the console's count of the rows the marker hid on this read.
 	ClearedUpto int64 `json:"-"`
 	Cleared     int64 `json:"cleared,omitempty"`
+	// Unswept counts the rows past the marker, the ones the next Clear old
+	// sweeps; the console greys the button at none.
+	Unswept int64 `json:"unswept,omitempty"`
 	// Summary is the thread's running summary of its rows up to
 	// SummaryUpto, which compaction keeps (roadmap 239); "" before the
 	// first, and Compactions counts them.
@@ -249,7 +252,8 @@ const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS N
 const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
 	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
-	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0)
+	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0),
+	count(m.id) FILTER (WHERE m.id > coalesce(seen.cleared_message_id, 0))
 	FROM chat_conversations c
 	LEFT JOIN chat_messages m ON m.repository = c.repository AND m.login = c.login AND m.conversation = c.conversation
 	LEFT JOIN chat_seen seen ON seen.repository = c.repository AND seen.login = c.login AND seen.conversation = c.conversation
@@ -264,7 +268,7 @@ const conversationGroup = ` GROUP BY c.login, c.conversation, c.title, c.state, 
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto)
+	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto, &c.Unswept)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}

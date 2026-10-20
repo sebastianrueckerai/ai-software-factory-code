@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -354,7 +355,7 @@ type recorded struct {
 func withInfra(t *testing.T, r *rig) *infraFake {
 	t.Helper()
 	f := &infraFake{mergeStatus: http.StatusOK}
-	next, err := url.Parse(r.fg.srv.URL)
+	next, err := url.Parse(cmp.Or(r.c.cfg.ForgejoURL, r.fg.srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}

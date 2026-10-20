@@ -73,8 +73,8 @@ func TestPGStoreChatThreads(t *testing.T) {
 	if err := s.MarkSeen(ctx, repo, login, 1); err != nil {
 		t.Fatal(err)
 	}
-	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.Unread != 0 {
-		t.Errorf("thread 1 after it was read = %+v, %v, %v, want no unread", th, ok, err)
+	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.Unread != 0 || th.Unswept != 3 {
+		t.Errorf("thread 1 after it was read = %+v, %v, %v, want no unread and three rows past the marker", th, ok, err)
 	}
 
 	// clear: the member's sweep of thread 1's rows in view; the marker
@@ -83,20 +83,20 @@ func TestPGStoreChatThreads(t *testing.T) {
 	if err := s.MarkCleared(ctx, repo, login, 1); err != nil {
 		t.Fatal(err)
 	}
-	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.ClearedUpto != 4 {
-		t.Errorf("thread 1 after the sweep = %+v, %v, %v, want the marker at its newest row 4", th, ok, err)
+	if th, ok, err := s.Conversation(ctx, repo, login, 1); err != nil || !ok || th.ClearedUpto != 4 || th.Unswept != 0 {
+		t.Errorf("thread 1 after the sweep = %+v, %v, %v, want the marker at its newest row 4 and no row past it", th, ok, err)
 	}
 	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "assistant", Content: "Later still.", Conversation: 1}); err != nil {
 		t.Fatal(err)
 	}
-	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 4 {
-		t.Errorf("the marker = %d after a late row, want it unmoved at 4", th.ClearedUpto)
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 4 || th.Unswept != 1 {
+		t.Errorf("the marker = %d with %d rows past it after a late row, want it unmoved at 4 with one row past", th.ClearedUpto, th.Unswept)
 	}
 	if err := s.MarkCleared(ctx, repo, login, 1); err != nil {
 		t.Fatal(err)
 	}
-	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 5 {
-		t.Errorf("the marker after the second sweep = %d, want 5", th.ClearedUpto)
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.ClearedUpto != 5 || th.Unswept != 0 {
+		t.Errorf("the marker after the second sweep = %d with %d rows past it, want 5 and none", th.ClearedUpto, th.Unswept)
 	}
 
 	// a queued message and a queued poke wait as queued, the poke keeping
