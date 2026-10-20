@@ -2031,10 +2031,14 @@ func redRig(t *testing.T, proj Project, state string) (*ChainPoller, *fakeStore,
 // A red head of a project without agents (the infra project, spec 6.7)
 // files its repair card in the human lane, labelled human, starting no
 // workflow: one per repository while it stands, ChainCard finds it, and
-// a second red tick files none.
+// a second red tick files none. The worker is told: the card records the
+// needs-you row an escalation records, which the Poker words as the
+// inbox's needs-you poke and sends at the messengers' needs-you level.
 func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	rows := &fakeEventRecorder{}
+	p.Timeline = &Timeline{Store: store, Events: rows}
 	for range 2 {
 		if err := p.Tick(ctx); err != nil {
 			t.Fatal(err)
@@ -2057,6 +2061,22 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	}
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
+	}
+	const title = "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure"
+	if len(rows.rows) != 1 || rows.rows[0].Kind != EventQuestionAsked || rows.rows[0].TaskID != card.ID ||
+		rows.rows[0].Via != ViaFactoryd || rows.rows[0].Actor != FactoryDecider || rows.rows[0].Detail["question"] != title {
+		t.Fatalf("event rows %+v, want the card's one needs-you row", rows.rows)
+	}
+	// the Poker reads the row as the events table gives it back
+	stored := rows.rows[0]
+	b, _ := json.Marshal(stored.Detail)
+	stored.Detail = nil
+	if err := json.Unmarshal(b, &stored.Detail); err != nil {
+		t.Fatal(err)
+	}
+	m, ok := pokeOf(stored, card)
+	if want := "#31 needs you: " + title; !ok || m.Kind != MessageEscalation || m.Content != want || deliveryLevel(m) != LevelNeedsYou {
+		t.Fatalf("the poke = %+v, %v; want the needs-you poke %q at the needs-you level", m, ok, want)
 	}
 }
 

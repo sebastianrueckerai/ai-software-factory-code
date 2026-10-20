@@ -22,6 +22,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Intake is the Forgejo webhook endpoint: every issue becomes a card of
@@ -1088,15 +1089,22 @@ func FileTask(ctx context.Context, store interface {
 // entered a starting lane (a failed start is logged and healed by the next
 // HealPass). A project whose agents are none, or a t its caller made
 // human, gets a human card labelled human instead: it waits on a person
-// from the start, as an issue filed there does. tl records the card's
-// events.
+// from the start, as an issue filed there does, and records the needs-you
+// row an escalation records, which the Poker carries to the inbox and the
+// messengers. tl records the card's events.
 func FileAgentTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	if p.Agents == policy.AgentsNone || t.Kind == "human" {
 		t.Kind = "human"
 		labels = append(slices.DeleteFunc(slices.Clone(labels), func(n string) bool { return n == LabelAgent }), "human")
-		return FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+		t, ref, err := FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+		if err != nil {
+			return Task{}, IssueRef{}, err
+		}
+		tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
+			"question": textutil.Truncate(title, 300), "source": t.Source, "by": cmp.Or(t.Author, forgejo.BotUser)})
+		return t, ref, nil
 	}
 	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {

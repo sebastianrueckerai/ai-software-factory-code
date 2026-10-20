@@ -650,6 +650,8 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 // human-lane issue and task, and starts nothing.
 func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	r := newAlertRig(t)
+	rows := &fakeEventRecorder{}
+	r.in.Timeline = &Timeline{Store: r.store, Events: rows}
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
 	demo.Agents = "none"
 	r.in.Projects.(*memProjects).m["demo-app"] = demo
@@ -662,6 +664,12 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 ||
 		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
 		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
+	}
+	// the person is told: the card's needs-you row, which the Poker carries
+	title, _, _ := strings.Cut(task.Objective, "\n\n")
+	if len(rows.rows) != 1 || rows.rows[0].Kind != EventQuestionAsked || rows.rows[0].Via != ViaFactoryd ||
+		rows.rows[0].Detail["question"] != title || rows.rows[0].Detail["source"] != SourceAlert {
+		t.Fatalf("event rows %+v, want the card's needs-you row on %q", rows.rows, title)
 	}
 }
 
