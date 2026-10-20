@@ -176,13 +176,21 @@ func (s *fakeStore) MarkChainRerun(ctx context.Context, repository, sha string) 
 	return nil
 }
 
-// DismissChainStall mirrors PGStore's: the head row dismissed, the open
-// chain_stalled row resolved noise by the member.
-func (s *fakeStore) DismissChainStall(ctx context.Context, repository, by string) error {
+// DismissChainStall mirrors PGStore's: the head row of sha dismissed,
+// the open chain_stalled row resolved noise by the member; a head moved
+// on or concluded refuses.
+func (s *fakeStore) DismissChainStall(ctx context.Context, repository, sha, by string) error {
 	for i, c := range s.chain {
-		if c.repo == repository && c.pr == 0 {
-			s.chain[i].dismissed = true
+		if c.repo != repository || c.pr != 0 {
+			continue
 		}
+		switch {
+		case c.sha != sha:
+			return ErrStallGone{Head: c.sha}
+		case c.status != "pending" && c.status != "stalled":
+			return ErrStallGone{Head: c.sha, Verdict: verdictWord(c.status)}
+		}
+		s.chain[i].dismissed = true
 	}
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -192,6 +200,20 @@ func (s *fakeStore) DismissChainStall(ctx context.Context, repository, by string
 		}
 	}
 	return nil
+}
+
+// ChainHeldIssues mirrors PGStore's: the issue numbers of the merged
+// cards ChainCovered does not name, ascending.
+func (s *fakeStore) ChainHeldIssues(ctx context.Context, repository string) ([]int64, error) {
+	covered, _ := s.ChainCovered(ctx, repository)
+	var out []int64
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Status == "merged" && t.PRNumber > 0 && t.IssueNumber > 0 && covered[t.ID] == 0 {
+			out = append(out, t.IssueNumber)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 // ChainCarriedIssues are the issue numbers of the cards whose change
@@ -1375,6 +1397,9 @@ func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 // the cards it holds; a later tick adds nothing. No repair card files.
 func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
+	// #76 rode an earlier commit whose run went red: the stall holds it too
+	store.tasks["t-old"] = Task{ID: "t-old", Repository: demoRepo, PRNumber: 2, IssueNumber: 76, Status: "merged", FinishedAt: justNow(), MergeCommit: "0b0b"}
+	store.chain = append(store.chain, fakeChainRun{repo: demoRepo, pr: 2, sha: "0b0b", run: 20, status: "failure"})
 	tickAt(t, p, clock, 0)
 	tickAt(t, p, clock, 2*time.Minute)
 	if !slices.Equal(f.reruns, []string{demoRepo + " 21"}) || len(stallCards(store)) != 0 {
@@ -1402,7 +1427,10 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	if !slices.Equal(q.Choices, stallChoices) {
 		t.Fatalf("choices %+v, want %+v", q.Choices, stallChoices)
 	}
-	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 21 running", "https://git.example/" + demoRepo + "/actions/runs/21", "#77"} {
+	if card.SHA != demoCommit {
+		t.Fatalf("stall card on %q, want the head's commit %s", card.SHA, demoCommit)
+	}
+	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 21 running", "https://git.example/" + demoRepo + "/actions/runs/21", "The stall holds #76, #77:"} {
 		if !strings.Contains(card.Objective, want) {
 			t.Fatalf("the card misses %q:\n%s", want, card.Objective)
 		}
@@ -1559,7 +1587,7 @@ func TestADismissedStallAsksNothingUntilTheHeadChanges(t *testing.T) {
 	tickAt(t, p, clock, 0)
 	tickAt(t, p, clock, 2*time.Minute)
 	first := stallCards(store)[0]
-	if err := store.DismissChainStall(context.Background(), demoRepo, "sebastian"); err != nil {
+	if err := store.DismissChainStall(context.Background(), demoRepo, first.SHA, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	closed := *clock
@@ -1593,29 +1621,88 @@ func TestRerunStallRerunsTheHeadsPendingRun(t *testing.T) {
 	ctx := context.Background()
 	p, store, f, clock := stallRig(t, "running")
 	tickAt(t, p, clock, 0)
-	if err := p.RerunStall(ctx, demoRepo); err != nil {
+	if err := p.RerunStall(ctx, demoRepo, demoCommit); err != nil {
 		t.Fatal(err)
 	}
 	if l, _ := store.ChainLadder(ctx, demoRepo, demoCommit); !slices.Equal(f.reruns, []string{demoRepo + " 21"}) || !l.RerunAt.Equal(*clock) {
 		t.Fatalf("reruns %q, ladder %+v; want run 21 re-run and stamped", f.reruns, l)
 	}
 	f.rerun = http.StatusNotFound
-	if err := p.RerunStall(ctx, demoRepo); !errors.Is(err, ErrNoRerun) {
+	if err := p.RerunStall(ctx, demoRepo, demoCommit); !errors.Is(err, ErrNoRerun) {
 		t.Fatalf("RerunStall on a 404 = %v, want ErrNoRerun", err)
+	}
+	// the head moved on: the card's commit stalls no more
+	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "running"), chainRun(21, demoCommit, "running")}
+	var gone ErrStallGone
+	if err := p.RerunStall(ctx, demoRepo, demoCommit); !errors.As(err, &gone) ||
+		err.Error() != "the head moved on to e5e5e5e; this stall no longer stands" {
+		t.Fatalf("RerunStall of a superseded commit = %v, want the head moved on", err)
+	}
+	// the head concluded: green or red, nothing stands to re-run
+	f.runs[demoRepo] = []map[string]any{chainRun(21, demoCommit, "success")}
+	if err := p.RerunStall(ctx, demoRepo, demoCommit); err == nil || err.Error() != "the head concluded green; this stall no longer stands" {
+		t.Fatalf("RerunStall of a concluded head = %v, want the head concluded green", err)
+	}
+	if len(f.reruns) != 2 {
+		t.Fatalf("reruns %q, want none past the 404", f.reruns)
 	}
 	p, _, _, clock = stallRig(t, "success", "factory/roll")
 	tickAt(t, p, clock, 0)
-	if err := p.RerunStall(ctx, demoRepo); !errors.Is(err, ErrNothingToRerun) {
+	if err := p.RerunStall(ctx, demoRepo, demoCommit); !errors.Is(err, ErrNothingToRerun) {
 		t.Fatalf("RerunStall on a pending required status = %v, want ErrNothingToRerun", err)
+	}
+}
+
+// A stall card outlives no head: a newer commit taking the head closes
+// it, an answer on it refuses with the head it moved on to, and the new
+// head's own stall still alerts and asks.
+func TestASupersededHeadClosesTheStallCard(t *testing.T) {
+	ctx := context.Background()
+	p, store, f, clock := stallRig(t, "success", "factory/roll")
+	tickAt(t, p, clock, 0)
+	tickAt(t, p, clock, 2*time.Minute)
+	first := stallCards(store)[0]
+	if first.SHA != demoCommit {
+		t.Fatalf("stall card on %q, want %s", first.SHA, demoCommit)
+	}
+	f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "success"), chainRun(21, demoCommit, "success")}
+	tickAt(t, p, clock, 15*time.Second)
+	issue := fmt.Sprintf("%s#%d", demoRepo, first.IssueNumber)
+	if !slices.Equal(f.closed, []string{issue}) || len(f.comments) != 1 || !strings.Contains(f.comments[0], "moved on to e5e5e5e") {
+		t.Fatalf("closed %q, comments %q; want A's card closed naming the new head", f.closed, f.comments)
+	}
+	var gone ErrStallGone
+	if err := store.DismissChainStall(ctx, demoRepo, first.SHA, "sebastian"); !errors.As(err, &gone) || gone.Head != demoNext {
+		t.Fatalf("a dismissal on A's card = %v, want the head moved on to %s", err, demoNext)
+	}
+	// the close's webhook lands; B stays pending past its bound
+	closed := *clock
+	first.Status, first.FinishedAt = "done", &closed
+	store.tasks[first.ID] = first
+	tickAt(t, p, clock, 2*time.Minute)
+	cards := stallCards(store)
+	if len(cards) != 2 || cards[1].SHA != demoNext {
+		t.Fatalf("stall cards %+v, want B's own", cards)
+	}
+	open := 0
+	for _, a := range store.alerts {
+		if a.Kind == AlertChainStalled && a.Verdict == "" {
+			open++
+		}
+	}
+	if head := chainOf(store, demoRepo)[0]; open != 1 || head.dismissed || head.status != "stalled" {
+		t.Fatalf("alerts %+v, head %+v; want B's stall alerted and recorded, undismissed", store.alerts, head)
 	}
 }
 
 // The head row keeps its stall ladder while its commit stays: the re-run
 // stamp and the dismissal, which resolves the repository's open
 // chain_stalled row noise by the member and leaves chain_red and other
-// repositories' rows open; a new commit taking the row clears both.
-// ChainCard reads a repository's newest card of a source. Requires a
-// disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// repositories' rows open; a new commit taking the row clears both. A
+// dismissal of a commit the head moved on from, or of a concluded head,
+// refuses and touches nothing. ChainCard reads a repository's newest card
+// of a source. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
 func TestChainLadderRows(t *testing.T) {
 	ctx := context.Background()
 	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -1661,7 +1748,7 @@ func TestChainLadderRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(pg.DismissChainStall(ctx, demoRepo, "sebastian"))
+	must(pg.DismissChainStall(ctx, demoRepo, demoCommit, "sebastian"))
 	if l := ladder(demoCommit); !l.Dismissed || l.RerunAt.IsZero() {
 		t.Fatalf("ladder %+v after the dismissal, want dismissed, the re-run kept", l)
 	}
@@ -1687,6 +1774,31 @@ func TestChainLadderRows(t *testing.T) {
 	if l := ladder(demoNext); l.Dismissed || !l.RerunAt.IsZero() {
 		t.Fatalf("ladder %+v of the new commit, want none", l)
 	}
+	if _, err := pg.InsertAlert(ctx, Alert{Kind: AlertChainStalled, Source: demoRepo, Fingerprint: demoRepo}); err != nil {
+		t.Fatal(err)
+	}
+	openStalls := func() int {
+		t.Helper()
+		var n int
+		must(pg.db.QueryRowContext(ctx, `SELECT count(*) FROM alerts WHERE kind = $1 AND fingerprint = $2 AND verdict IS NULL`,
+			AlertChainStalled, demoRepo).Scan(&n))
+		return n
+	}
+	if err := pg.DismissChainStall(ctx, demoRepo, demoCommit, "sebastian"); err == nil ||
+		err.Error() != "the head moved on to e5e5e5e; this stall no longer stands" {
+		t.Fatalf("a dismissal of the old commit = %v, want the head moved on", err)
+	}
+	if l := ladder(demoNext); l.Dismissed || openStalls() != 1 {
+		t.Fatalf("ladder %+v, %d open stalls after the refused dismissal; want both untouched", l, openStalls())
+	}
+	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, "success"))
+	if err := pg.DismissChainStall(ctx, demoRepo, demoNext, "sebastian"); err == nil ||
+		err.Error() != "the head concluded green; this stall no longer stands" {
+		t.Fatalf("a dismissal of a concluded head = %v, want the head concluded green", err)
+	}
+	if l := ladder(demoNext); l.Dismissed || openStalls() != 1 {
+		t.Fatalf("ladder %+v, %d open stalls after the refused dismissal; want both untouched", l, openStalls())
+	}
 
 	old := time.Now().Add(-time.Hour)
 	for _, c := range []Task{
@@ -1704,6 +1816,49 @@ func TestChainLadderRows(t *testing.T) {
 	}
 	if c, ok, err := pg.ChainCard(ctx, codeRepo, SourceChainStall); err != nil || ok {
 		t.Fatalf("ChainCard of a repository without one = %s, %v, %v; want none", c.ID, ok, err)
+	}
+}
+
+// The stall holds every merged card no green chain covers, whichever
+// commit carried it: a card carried by a red run, one with no carry row
+// yet, not one a green run covers, not a done card. Requires a disposable
+// Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestChainHeldIssues(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	now := time.Now()
+	for _, c := range []Task{
+		{ID: "t-green", PRNumber: 1, IssueNumber: 11, Status: "merged"},
+		{ID: "t-red", PRNumber: 2, IssueNumber: 12, Status: "merged"},
+		{ID: "t-head", PRNumber: 3, IssueNumber: 13, Status: "merged"},
+		{ID: "t-none", PRNumber: 4, IssueNumber: 14, Status: "merged"},
+		{ID: "t-done", PRNumber: 5, IssueNumber: 15, Status: "done"},
+		{ID: "t-web", PRNumber: 6, IssueNumber: 16, Status: "merged", Repository: webRepo},
+	} {
+		c.Kind, c.BudgetEUR, c.FinishedAt, c.Repository = "agent", 1, &now, cmp.Or(c.Repository, demoRepo)
+		if err := pg.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	for _, row := range []struct {
+		pr     int64
+		sha    string
+		run    int64
+		status string
+	}{{1, "a1", 10, "success"}, {2, "b2", 11, "failure"}, {3, "c3", 12, "stalled"}, {5, "a1", 10, "success"}} {
+		if err := pg.RecordChainRun(ctx, demoRepo, row.pr, row.sha, row.run, row.status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := pg.ChainHeldIssues(ctx, demoRepo); err != nil || !slices.Equal(got, []int64{12, 13, 14}) {
+		t.Fatalf("ChainHeldIssues = %v, %v; want #12, #13, #14", got, err)
 	}
 }
 

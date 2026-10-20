@@ -1007,11 +1007,14 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 }
 
 // doStallAnswer answers chain stall card t, the stall ladder's human
-// step, with the choice value or text names: re-run again re-runs the
-// head's stuck runs and keeps the card waiting, nothing posted; check
-// again closes the card and lets the watch run on; dismiss dismisses the
-// stall until the head changes and closes the card. Words that name no
-// choice are refused with the choices.
+// step, with the choice value or text names, on the card's own commit:
+// re-run again re-runs the head's stuck runs and keeps the card waiting,
+// nothing posted; check again closes the card and lets the watch run on;
+// dismiss dismisses the stall until the head changes and closes the card.
+// A head that moved on from the card's commit, or concluded, refuses the
+// re-run and the dismissal with its own line; check again closes the
+// card all the same. Words that name no choice are refused with the
+// choices.
 func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
@@ -1025,9 +1028,12 @@ func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
+	var gone factoryd.ErrStallGone
 	switch value {
 	case factoryd.AnswerRerunAgain:
-		switch err := c.cfg.RerunStall(ctx, t.Repository); {
+		switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
+		case errors.As(err, &gone):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 		case errors.Is(err, factoryd.ErrNoRerun):
 			return "", refuse(http.StatusConflict, "This Forgejo offers no re-run of an action run (the rerun API came with Forgejo 17): check again or dismiss.")
 		case errors.Is(err, factoryd.ErrNothingToRerun):
@@ -1040,7 +1046,10 @@ func (c *Console) doStallAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, map[string]any{"answer": label, "value": value})
 		return fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), nil
 	case factoryd.AnswerDismiss:
-		if err := c.cfg.DismissStall(ctx, t.Repository, a.s.user); err != nil {
+		switch err := c.cfg.DismissStall(ctx, t.Repository, t.SHA, a.s.user); {
+		case errors.As(err, &gone):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
+		case err != nil:
 			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
 			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed; see the factoryd log.")
 		}

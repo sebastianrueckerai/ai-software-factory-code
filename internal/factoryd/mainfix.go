@@ -182,7 +182,7 @@ func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun
 	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
 		return err
 	}
-	if err := recordFactoryClose(ctx, r.Store, t); err != nil {
+	if _, err := recordFactoryClose(ctx, r.Store, t); err != nil {
 		return err
 	}
 	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)

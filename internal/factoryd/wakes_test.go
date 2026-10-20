@@ -292,6 +292,17 @@ func TestWakerBudgetDeathAsksOnce(t *testing.T) {
 	if n := humanCards(); n != 1 {
 		t.Fatalf("%d month-cap cards, want 1", n)
 	}
+	// the card is factoryd's, never the chat agent's, and its ask is a
+	// month cap's: it wakes nobody, the agent's budget being what is spent
+	var source, objective, via, asked string
+	if err := s.db.QueryRowContext(t.Context(), `SELECT t.source, t.objective, e.via, e.detail->>'source' FROM tasks t
+		JOIN events e ON e.task_id = t.id AND e.kind = $1 WHERE t.kind = 'human'`, EventQuestionAsked).Scan(&source, &objective, &via, &asked); err != nil {
+		t.Fatal(err)
+	}
+	if source != SourceMonthCap || via != ViaFactoryd || asked != SourceMonthCap ||
+		strings.Contains(objective, "agent asked") || !strings.Contains(objective, "factoryd asks (the waker)") {
+		t.Fatalf("the card: source %q, via %q, asked %q, objective %q; want factoryd's month-cap ask", source, via, asked, objective)
+	}
 	if !slices.Contains(wakeStateKeys(t, s, "sf/wake"), "budget:"+clock.Format("2006-01")) {
 		t.Fatalf("no budget mark for %s", clock.Format("2006-01"))
 	}
@@ -310,8 +321,39 @@ func TestWakerBudgetDeathAsksOnce(t *testing.T) {
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
-	if calls := starter.recorded(); len(calls) != 1 {
-		t.Fatalf("%d wakes after the cap rose, want 1: %+v", len(calls), calls)
+	if calls := starter.recorded(); len(calls) != 1 || !strings.Contains(calls[0].text, "Raise the month cap?") ||
+		strings.Contains(calls[0].text, "The month cap is reached") {
+		t.Fatalf("wakes after the cap rose %+v, want one on t-1's ask alone", calls)
+	}
+}
+
+// A factory ask wakes the agent, the roll ladder's for the analysis it
+// attaches; a month cap's ask wakes nobody, since the cap refuses the
+// agent's own calls, and the cursor moves past it.
+func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, nil)
+	ask := func(task, ask, source string) int64 {
+		t.Helper()
+		id, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: task, Kind: EventQuestionAsked, Via: ViaFactoryd,
+			Detail: map[string]any{"ask": ask, "source": source}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	id := ask("t-cap", "The month cap is reached. Raise it?", SourceMonthCap)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") < id {
+		t.Fatalf("wakes %+v, cursor %d; want none and the cursor past %d", calls, wakeCursorOf(t, s, "sf/wake"), id)
+	}
+	ask("t-roll", "3 rolls failed since the last one merged. Retry the roll?", SourceRollFailed)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 || !strings.Contains(calls[0].text, "rolls failed since the last one merged") {
+		t.Fatalf("wakes %+v, want one on the roll's ask", calls)
 	}
 }
 

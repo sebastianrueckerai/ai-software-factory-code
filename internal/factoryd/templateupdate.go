@@ -256,7 +256,7 @@ func (r *Registrar) closeReplaced(ctx context.Context, p Project, failed Task, w
 	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, failed.IssueNumber, why); err != nil {
 		return err
 	}
-	if err := recordFactoryClose(ctx, r.Cards, failed); err != nil {
+	if _, err := recordFactoryClose(ctx, r.Cards, failed); err != nil {
 		return err
 	}
 	return r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, failed.IssueNumber)

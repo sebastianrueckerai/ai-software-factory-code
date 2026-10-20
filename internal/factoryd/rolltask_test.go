@@ -1916,6 +1916,8 @@ func TestARollTaskThatFailsEndsItsCommitsStatusFailed(t *testing.T) {
 func TestRollEscalatesAfterAttempts(t *testing.T) {
 	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
 	roller, store, _ := newTestRoller(t, f)
+	rows := &fakeEventRecorder{}
+	roller.Timeline = &Timeline{Store: store, Events: rows}
 	ctx := context.Background()
 	seed := func(id, sha string, run int64, request string) {
 		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}
@@ -1936,6 +1938,21 @@ func TestRollEscalatesAfterAttempts(t *testing.T) {
 	}
 	if len(asks) != 1 || asks[0].Status != "waiting-human" {
 		t.Fatalf("needs-you cards %+v, want one waiting", asks)
+	}
+	// factoryd's ask, never the chat agent's: its row wakes the project
+	// agent, which attaches its analysis
+	if asks[0].Source != SourceRollFailed || strings.Contains(asks[0].Objective, "agent asked") ||
+		!strings.Contains(asks[0].Objective, "factoryd asks (the roller)") {
+		t.Fatalf("the card %+v, want factoryd's roll-failed ask", asks[0])
+	}
+	var asked []Event
+	for _, e := range rows.rows {
+		if e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["source"] != SourceRollFailed {
+		t.Fatalf("question_asked rows %+v, want factoryd's", asked)
 	}
 	for _, want := range []string{"Choices:", "- Retry the roll", "- Park", "- Close", "card #31"} {
 		if !strings.Contains(asks[0].Objective, want) {

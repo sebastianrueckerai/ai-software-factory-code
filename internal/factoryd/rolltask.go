@@ -33,6 +33,11 @@ const SourceRoll = "roll"
 // refused unsigned (roadmap 46).
 const SourceRollRefused = "roll-refused"
 
+// SourceRollFailed is the human card of the roll ladder's end: rolls
+// failed past their bound since the last merged one. factoryd asks, and
+// the project agent wakes to attach its analysis.
+const SourceRollFailed = "roll-failed"
+
 // Roll request states: the task a commit's images opened or were folded
 // into, merged or failed with it, skipped when they changed nothing, or
 // refused when one carries no signature by the factory's key, its task the
@@ -558,7 +563,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 			{Value: AnswerClose, Label: "Close"},
 		},
 	}
-	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller", SourceChat); err != nil {
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller", Task{Source: SourceRollFailed}); err != nil {
 		log.Printf("roller: escalate the failed rolls: %v", err)
 	}
 }
@@ -605,7 +610,7 @@ func (r *Roller) consumeRetry(ctx context.Context) error {
 	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
 		return err
 	}
-	if err := recordFactoryClose(ctx, r.Store, t); err != nil {
+	if _, err := recordFactoryClose(ctx, r.Store, t); err != nil {
 		return err
 	}
 	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again", len(reqs))

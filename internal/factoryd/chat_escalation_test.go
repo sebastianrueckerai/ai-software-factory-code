@@ -26,7 +26,7 @@ func TestEscalateToHuman(t *testing.T) {
 			{Value: "Write the criteria", Label: "Write the criteria"},
 			{Value: "Park", Label: "Park"},
 		},
-	}, "sebastian", SourceChat)
+	}, "sebastian", Task{Source: SourceChat})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,8 +87,9 @@ func TestEscalateToHuman(t *testing.T) {
 }
 
 // An escalation factoryd files itself, as the stall card: the card wears
-// its source, the issue names who asked, and its question_asked row is
-// factoryd's, so the wake reads it as no agent's own doing.
+// its source and commit, the issue says factoryd asks and never the chat
+// agent, and its question_asked row is factoryd's, so the wake reads it
+// as no agent's own doing.
 func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	ctx := context.Background()
 	f, _ := fileStub(t)
@@ -97,11 +98,12 @@ func TestEscalateToHumanOfFactoryd(t *testing.T) {
 	got, err := EscalateToHuman(ctx, store, f, tl, Repo{Owner: "sf", Name: "r"}, HumanQuestion{
 		Ask: "The chain is pending. Re-run it?", Why: "pending past the bound", Info: "a re-run moves it",
 		Choices: []QuestionChoice{{Value: AnswerRerunAgain, Label: "Re-run again"}, {Value: AnswerDismiss, Label: "Dismiss"}},
-	}, "the chain poller", SourceChainStall)
+	}, "the chain poller", Task{Source: SourceChainStall, SHA: "c2c2"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Source != SourceChainStall || !strings.Contains(got.Objective, "\nAsked by the chain poller. ") || strings.Contains(got.Objective, "chat. Answer") {
+	if got.Source != SourceChainStall || got.SHA != "c2c2" || !strings.Contains(got.Objective, "\nfactoryd asks (the chain poller). ") ||
+		strings.Contains(got.Objective, "agent asked") {
 		t.Fatalf("the card = %+v", got)
 	}
 	if len(rows.rows) != 1 || rows.rows[0].Via != ViaFactoryd || rows.rows[0].Detail["source"] != SourceChainStall || rows.rows[0].Detail["by"] != "the chain poller" {

@@ -412,7 +412,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 			return 0, stopped("commenting on the failed card's issue", err)
 		}
 	}
-	if err := recordFactoryClose(ctx, r.store, old); err != nil {
+	if _, err := recordFactoryClose(ctx, r.store, old); err != nil {
 		return 0, stopped("recording the close", err)
 	}
 	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, old.IssueNumber); err != nil {

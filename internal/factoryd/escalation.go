@@ -123,12 +123,12 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 }
 
 // recordFactoryClose writes t's IntakeFactoryClosed; an existing one is
-// kept.
+// kept. first: this call wrote it.
 func recordFactoryClose(ctx context.Context, store interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, t Task) error {
-	_, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber})
-	return err
+}, t Task) (first bool, err error) {
+	id, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber})
+	return id > 0, err
 }
 
 // maxEscalationText bounds the question, the reason and an information

@@ -330,13 +330,9 @@ const (
 // at sha has been pending since when, the cards the stall holds, and the
 // three answers.
 func stallQuestion(repository, sha string, since time.Time, pending []string, cards []int64) HumanQuestion {
-	held := "No card's change rides this head."
+	held := "No merged card waits on the chain."
 	if len(cards) > 0 {
-		nums := make([]string, len(cards))
-		for i, n := range cards {
-			nums[i] = "#" + strconv.FormatInt(n, 10)
-		}
-		held = "The stall holds " + strings.Join(nums, ", ") + ": merged, they wait for a green chain to cover them."
+		held = "The stall holds " + issueRefs(cards) + ": merged, they wait for a green chain to cover them."
 	}
 	return HumanQuestion{
 		Ask: fmt.Sprintf("The chain of %s has been pending at %s since %s UTC. Re-run it, check again or dismiss?",

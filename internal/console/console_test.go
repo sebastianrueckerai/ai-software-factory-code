@@ -895,9 +895,10 @@ type rig struct {
 	invited     []string // "repository user permission" per AddCollaborator
 	issueDeps   []string // "repository#issue on #dependency", the bot's issue dependencies
 	closed      []string // "task by user" per CloseCard
-	reran       []string // the repository per RerunStall
+	reran       []string // "repository@sha" per RerunStall
 	rerunErr    error
-	dismissed   []string // "repository by user" per DismissStall
+	dismissed   []string // "repository@sha by user" per DismissStall
+	dismissErr  error
 	synced      []string // "project by user" per GitHubSync
 	syncErr     error
 	syncGate    chan struct{} // GitHubSync waits on it, when set
@@ -1044,13 +1045,13 @@ func newRig(t *testing.T) *rig {
 			r.closed = append(r.closed, taskID+" by "+by)
 			return nil
 		},
-		RerunStall: func(_ context.Context, repository string) error {
-			r.reran = append(r.reran, repository)
+		RerunStall: func(_ context.Context, repository, sha string) error {
+			r.reran = append(r.reran, repository+"@"+sha)
 			return r.rerunErr
 		},
-		DismissStall: func(_ context.Context, repository, by string) error {
-			r.dismissed = append(r.dismissed, repository+" by "+by)
-			return nil
+		DismissStall: func(_ context.Context, repository, sha, by string) error {
+			r.dismissed = append(r.dismissed, repository+"@"+sha+" by "+by)
+			return r.dismissErr
 		},
 		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)

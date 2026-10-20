@@ -161,6 +161,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if e.Via == ViaChat {
 			continue // the agent's own doing wakes nobody
 		}
+		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
+			continue // the month cap refuses the agent's own calls: its ask wakes nobody
+		}
 		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
 			sum := sha256.Sum256([]byte(askSentence(e)))
 			key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
@@ -422,7 +425,7 @@ func (w *Waker) askBudget(ctx context.Context, repository string, task Task, now
 		return err
 	}
 	reason := monthCapReached + fmt.Sprintf("the chat task %s spent %.2f of its %.2f EUR", task.ID, task.SpentEUR, task.BudgetEUR)
-	if _, err := EscalateToHuman(ctx, w.Store, w.Forgejo, w.Timeline, repo, *monthCapQuestion(reason), "the waker", SourceChat); err != nil {
+	if _, err := EscalateToHuman(ctx, w.Store, w.Forgejo, w.Timeline, repo, *monthCapQuestion(reason), "the waker", Task{Source: SourceMonthCap}); err != nil {
 		return err
 	}
 	return w.Store.WakeMark(ctx, repository, key, now)

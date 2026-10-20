@@ -330,21 +330,17 @@ func CheckOpenLanes(tree policy.Tree, cards []OpenCard) []string {
 	var lines []string
 	for k, issues := range held {
 		slices.Sort(issues)
-		refs := make([]string, len(issues))
-		for i, n := range issues {
-			refs[i] = fmt.Sprintf("#%d", n)
-		}
 		count := fmt.Sprintf("%d open card", len(issues))
 		if len(issues) > 1 {
 			count += "s"
 		}
 		if k.moved {
 			lines = append(lines, fmt.Sprintf("%s: process %s has no lane %s, which holds %s of project %s (%s); move or close them first",
-				policy.ProjectFile(k.project), k.process, k.lane, count, k.project, strings.Join(refs, ", ")))
+				policy.ProjectFile(k.project), k.process, k.lane, count, k.project, issueRefs(issues)))
 			continue
 		}
 		lines = append(lines, fmt.Sprintf("%s: lanes: lane %s is gone from process %s, which project %s follows: it holds %s (%s); move or close them first",
-			policy.ProcessFile(k.process), k.lane, k.process, k.project, count, strings.Join(refs, ", ")))
+			policy.ProcessFile(k.process), k.lane, k.process, k.project, count, issueRefs(issues)))
 	}
 	slices.Sort(lines)
 	return lines
@@ -809,7 +805,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		if _, err := a.Forgejo.CreateIssueComment(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber, msg); err != nil {
 			return err
 		}
-		if err := recordFactoryClose(ctx, a.Store, t); err != nil {
+		if _, err := recordFactoryClose(ctx, a.Store, t); err != nil {
 			return err
 		}
 		if err := a.Forgejo.CloseIssue(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber); err != nil {

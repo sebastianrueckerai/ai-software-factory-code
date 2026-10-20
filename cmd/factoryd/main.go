@@ -590,7 +590,7 @@ func main() {
 			if err != nil {
 				return 0, err
 			}
-			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by, factoryd.SourceChat)
+			t, err := factoryd.EscalateToHuman(ctx, store, forgejo, runner.Timeline(), repo, q, by, factoryd.Task{Source: factoryd.SourceChat})
 			return t.IssueNumber, err
 		},
 		AttachAnalysis: store.AttachAnalysis,

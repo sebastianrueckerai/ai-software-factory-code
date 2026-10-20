@@ -247,12 +247,15 @@ func (r *Runner) FileSplit(ctx context.Context, taskID string, revision int, app
 }
 
 // SplitInto is the end reason of a card split into issues.
-func SplitInto(issues []int64) string {
+func SplitInto(issues []int64) string { return "split into " + issueRefs(issues) }
+
+// issueRefs names issues as a person reads them: "#3, #5".
+func issueRefs(issues []int64) string {
 	refs := make([]string, len(issues))
 	for i, n := range issues {
 		refs[i] = fmt.Sprintf("#%d", n)
 	}
-	return "split into " + strings.Join(refs, ", ")
+	return strings.Join(refs, ", ")
 }
 
 // split is the member's split of the card's large pull request: a planner

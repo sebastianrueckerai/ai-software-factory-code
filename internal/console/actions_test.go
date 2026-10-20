@@ -15,7 +15,7 @@ import (
 // stallCard is sf/code's chain stall card, #41, as the poller files it.
 func stallCard() factoryd.BoardTask {
 	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-stall", Kind: "human", Status: "waiting-human", Source: factoryd.SourceChainStall,
-		Repository: "sf/code", IssueNumber: 41, Objective: "needs you: the chain of sf/code has been pending"},
+		Repository: "sf/code", IssueNumber: 41, SHA: "c2c2c2c", Objective: "needs you: the chain of sf/code has been pending"},
 		Escalation: "The chain of sf/code has been pending. Re-run it, check again or dismiss?",
 		Question: &factoryd.HumanQuestion{Ask: "The chain of sf/code has been pending. Re-run it, check again or dismiss?",
 			Choices: []factoryd.QuestionChoice{
@@ -25,11 +25,13 @@ func stallCard() factoryd.BoardTask {
 			}}}
 }
 
-// The stall card's answers: "re-run again" re-runs the head's pending
-// runs and keeps the card waiting, nothing posted; "check again" closes
-// the card and touches nothing else; "dismiss" dismisses the stall as the
-// member and closes the card. A Forgejo without the rerun API refuses
-// the re-run with what still fits.
+// The stall card's answers carry the card's commit: "re-run again"
+// re-runs the head's pending runs and keeps the card waiting, nothing
+// posted; "check again" closes the card and touches nothing else;
+// "dismiss" dismisses the stall as the member and closes the card. A
+// Forgejo without the rerun API refuses the re-run with what still fits;
+// a head that moved on or concluded refuses with its own line, the card
+// left as it is.
 func TestStallCardAnswers(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/41/comments"
 	closed := []string{`/api/v1/repos/sf/code/issues/41 {"state":"closed"}`}
@@ -62,7 +64,7 @@ func TestStallCardAnswers(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("re-run again = %d %q, want 303", code, body)
 	}
-	if !slices.Equal(r.reran, []string{"sf/code"}) || len(r.fg.patched) != 0 || r.fg.comments[comments] != "" || len(r.dismissed) != 0 {
+	if !slices.Equal(r.reran, []string{"sf/code@c2c2c2c"}) || len(r.fg.patched) != 0 || r.fg.comments[comments] != "" || len(r.dismissed) != 0 {
 		t.Fatalf("re-run again: reran %v, patched %v, comment %q, dismissed %v; want the re-run alone", r.reran, r.fg.patched, r.fg.comments[comments], r.dismissed)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
@@ -94,10 +96,33 @@ func TestStallCardAnswers(t *testing.T) {
 	if code != http.StatusSeeOther {
 		t.Fatalf("dismiss = %d %q, want 303", code, body)
 	}
-	if !slices.Equal(r.dismissed, []string{"sf/code by sebastian"}) || !slices.Equal(r.fg.patched, closed) || len(r.reran) != 0 {
+	if !slices.Equal(r.dismissed, []string{"sf/code@c2c2c2c by sebastian"}) || !slices.Equal(r.fg.patched, closed) || len(r.reran) != 0 {
 		t.Fatalf("dismiss: dismissed %v, patched %v, reran %v; want the stall dismissed and the card closed", r.dismissed, r.fg.patched, r.reran)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Dismiss"}})
+
+	for _, tc := range []struct {
+		value string
+		err   error
+		want  string
+	}{
+		{factoryd.AnswerDismiss, factoryd.ErrStallGone{Head: "e5e5e5e5e5e5"}, "Card #41: the head moved on to e5e5e5e; this stall no longer stands."},
+		{factoryd.AnswerRerunAgain, factoryd.ErrStallGone{Head: "c2c2c2c", Verdict: "green"}, "Card #41: the head concluded green; this stall no longer stands."},
+		{factoryd.AnswerRerunAgain, factoryd.ErrNothingToRerun, "No run of the head is pending"},
+	} {
+		r, ev = newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{stallCard()}
+		r.rerunErr, r.dismissErr = tc.err, tc.err
+		ck, s = r.loggedIn(t)
+		before = ev.count()
+		rec := r.do(post("/tasks/t-stall/answer", url.Values{"csrf": {s.csrf}, "value": {tc.value}}), ck)
+		if rec.Code != http.StatusConflict || !strings.HasPrefix(rec.Body.String(), tc.want) {
+			t.Fatalf("%s on %v = %d %q, want 409 %q", tc.value, tc.err, rec.Code, rec.Body.String(), tc.want)
+		}
+		if ev.count() != before || len(r.fg.patched) != 0 {
+			t.Fatalf("%s on %v: %d rows, patched %v; want the card left as it is", tc.value, tc.err, ev.count()-before, r.fg.patched)
+		}
+	}
 }
 
 // The chat's answer row takes a stall card's choice as the board's button
@@ -118,7 +143,7 @@ func TestStallCardAnswersInTheChat(t *testing.T) {
 	if code != http.StatusNoContent {
 		t.Fatalf("the press = %d %q", code, body)
 	}
-	if !slices.Equal(r.dismissed, []string{"sf/code by sebastian"}) {
+	if !slices.Equal(r.dismissed, []string{"sf/code@c2c2c2c by sebastian"}) {
 		t.Fatalf("dismissed %v, want the stall dismissed", r.dismissed)
 	}
 	equal(t, "the note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/41/comments"), []string{"Dismiss"})
