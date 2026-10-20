@@ -2262,14 +2262,17 @@ func endsMerged(t Task, chain policy.ChainConfig) bool {
 
 // cardMerged tells whether card t's pull request merged: a recorded merge
 // commit says so without a read, else Forgejo answers and its merge
-// commit is recorded, whatever path merged the card. A pull request
-// Forgejo no longer has merged nothing.
+// commit is recorded, whatever path merged the card. An answer no retry
+// changes (a refusal, a pull request Forgejo no longer has) is logged and
+// reads as no merge: the card ends done, its credentials revoked, rather
+// than failing its end every minute.
 func (r *Runner) cardMerged(ctx context.Context, repo Repo, t Task) (bool, error) {
 	if t.MergeCommit != "" {
 		return true, nil
 	}
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
-	if errors.Is(err, ErrNotFound) {
+	if forgejoTerminal(err) {
+		log.Printf("task %s: finish: could not read pull request #%d, ending it done: %v", t.ID, t.PRNumber, err)
 		return false, nil
 	}
 	if err != nil || !pr.Merged {

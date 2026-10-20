@@ -2189,9 +2189,7 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 }
 
 // Histories recorded live on the cluster replay without a nondeterminism
-// error — and history-t1-chain-done-in-review, a dev server's run under
-// stub activities that consumed the chain-done marker and waits in
-// review — and the newest input each activity recorded across them decodes
+// error, and the newest input each activity recorded across them decodes
 // into today's activity of that name: a roll retries an activity in
 // flight with the input the old worker recorded. Older inputs are history
 // the rolls since have passed and keep only their replay.
@@ -2202,11 +2200,7 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	newest := map[string]recordedInput{}
 	for _, f := range files {
-		replayer := worker.NewWorkflowReplayer()
-		replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
-		if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
+		replayHistory(t, f)
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -2219,6 +2213,29 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	for _, bad := range undecodableInputs(newest, activityParams(), retyped) {
 		t.Error(bad)
+	}
+}
+
+// Histories a dev server recorded under stub activities replay too: a run
+// that consumed the chain-done marker and waits in review takes today's
+// end. Their stub inputs are no live input, so no decode reads them.
+func TestWorkflowReplaysDevServerHistories(t *testing.T) {
+	files, _ := filepath.Glob("testdata/devserver-*.json")
+	if len(files) == 0 {
+		t.Fatal("no dev server histories")
+	}
+	for _, f := range files {
+		replayHistory(t, f)
+	}
+}
+
+// replayHistory replays the history in file f against TaskWorkflow.
+func replayHistory(t *testing.T, f string) {
+	t.Helper()
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+	if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
+		t.Fatalf("%s: %v", f, err)
 	}
 }
 

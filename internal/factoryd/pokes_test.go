@@ -348,9 +348,6 @@ func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 	}
 }
 
-// busyLine is the chat's line as the poker sees it: a turn runs in the
-// inbox of each login busy marks, and landed holds the queued rows handed
-// to land there.
 // Finish lands a merged card in merged after its cleanup, so a pass can
 // read the merge while the card is on its way there: one in review or
 // closing in a project whose chain runs informs as a merged one does; a
@@ -407,6 +404,9 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 	}
 }
 
+// busyLine is the chat's line as the poker sees it: a turn runs in the
+// inbox of each login busy marks, and landed holds the queued rows handed
+// to land there.
 type busyLine struct {
 	busy   map[string]bool
 	landed map[string][]int64

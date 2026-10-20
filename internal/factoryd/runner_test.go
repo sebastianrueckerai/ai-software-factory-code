@@ -528,8 +528,10 @@ type forgejoHub struct {
 	comments    []string
 	failWrites  int    // write-token mints to answer 502 before succeeding
 	prFiles     string // a pull request's files, as Forgejo lists them
-	// pulls are GET /pulls/{n} bodies, "" answering 502; unlisted: 404
-	pulls map[int64]string
+	// pulls are GET /pulls/{n} bodies, unlisted: 404; pullStatus answers
+	// a number with its status instead
+	pulls      map[int64]string
+	pullStatus map[int64]int
 }
 
 func (h *forgejoHub) minted() []string {
@@ -614,15 +616,16 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.revoked = append(h.revoked, id)
 			h.calls = append(h.calls, fmt.Sprintf("revoke %d", id))
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == "GET" && strings.Contains(r.URL.Path, "/pulls/") && !strings.HasSuffix(r.URL.Path, "/files"):
+		case r.Method == "GET" && path.Base(path.Dir(r.URL.Path)) == "pulls":
 			h.calls = append(h.calls, "pull "+path.Base(r.URL.Path))
 			var n int64
 			fmt.Sscanf(path.Base(r.URL.Path), "%d", &n)
-			switch body, ok := h.pulls[n]; {
+			body, ok := h.pulls[n]
+			switch {
+			case h.pullStatus[n] != 0:
+				w.WriteHeader(h.pullStatus[n])
 			case !ok:
 				http.NotFound(w, r)
-			case body == "":
-				w.WriteHeader(http.StatusBadGateway)
 			default:
 				io.WriteString(w, body)
 			}

@@ -131,7 +131,8 @@ func (p *Poker) Pass(ctx context.Context) error {
 					return err
 				}
 			}
-			if _, c, _ := tree.ProjectOf(e.Repository); e.Kind == EventPullRequestMerged && !Final(t.Status) && endsMerged(t, c.Chain) {
+			_, project, inTree := tree.ProjectOf(e.Repository)
+			if e.Kind == EventPullRequestMerged && !Final(t.Status) && endsMerged(t, project.Chain) {
 				// Finish lands the card in merged after its cleanup: a pass
 				// reading the merge first finds it on its way there
 				t.Status = "merged"
@@ -155,8 +156,8 @@ func (p *Poker) Pass(ctx context.Context) error {
 				to = pokeTo(tree, e.Repository)
 			}
 			plan := PokeDelivery{RowLevel: deliveryLevel(m), Derived: to, On: true}
-			if _, c, found := tree.ProjectOf(e.Repository); found {
-				plan.On = c.MessengersOn()
+			if inTree {
+				plan.On = project.MessengersOn()
 			}
 			if err := p.poke(ctx, e, to, m, plan); err != nil {
 				return err

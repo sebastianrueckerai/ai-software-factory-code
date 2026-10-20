@@ -381,6 +381,9 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
 			sha := strings.TrimPrefix(p, "/statuses/")
+			if f.statuses == nil {
+				f.statuses = map[string][]map[string]string{}
+			}
 			f.statuses[sha] = append(f.statuses[sha], in)
 			f.reported = append(f.reported, sha+" "+in["state"]+" "+in["context"])
 			w.WriteHeader(http.StatusCreated)
@@ -481,6 +484,9 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				f.forkParents = map[string][]string{}
 			}
 			f.forkParents[sha] = []string{base}
+			if f.branches == nil {
+				f.branches = map[string]string{}
+			}
 			f.branches[branch] = sha
 			reply(map[string]any{"message": "rebased"})
 		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):

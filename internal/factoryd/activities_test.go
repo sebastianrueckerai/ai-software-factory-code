@@ -1273,15 +1273,22 @@ func TestFinishTakesARecordedMergeCommitAsMerged(t *testing.T) {
 }
 
 // A done card whose pull request never merged — an acceptance close after
-// an earlier attempt opened one, or one Forgejo no longer has — ends done
-// as any card without a merge: no merge commit, task_ended at once.
+// an earlier attempt opened one — ends done as any card without a merge,
+// and so does one whose read Forgejo answers in a way no retry changes: a
+// pull request it no longer has, a refusal. Every cleanup runs, no merge
+// commit, task_ended at once.
 func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
-	for name, pulls := range map[string]map[int64]string{
-		"open": {7: `{"number":7,"state":"open","merged":false}`},
-		"gone": nil,
+	for name, tc := range map[string]struct {
+		pulls  map[int64]string
+		status int
+	}{
+		"open":          {pulls: map[int64]string{7: `{"number":7,"state":"open","merged":false}`}},
+		"gone":          {},
+		"forbidden":     {status: http.StatusForbidden},
+		"unprocessable": {status: http.StatusUnprocessableEntity},
 	} {
 		r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
-		hub.pulls = pulls
+		hub.pulls, hub.pullStatus = tc.pulls, map[int64]int{7: tc.status}
 		reason := `acceptance "make check" exited 0 in session s2`
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
 			t.Fatalf("%s: %v", name, err)
@@ -1289,17 +1296,20 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" || got.MergeCommit != "" {
 			t.Fatalf("%s: status = %q, merge commit %q; want done, none", name, got.Status, got.MergeCommit)
 		}
+		if _, on := store.liveSessions["t1"]; on || !slices.Equal(hub.revoked, []int64{1, 2}) {
+			t.Fatalf("%s: live session %v, revoked %v; want the cleanup run", name, on, hub.revoked)
+		}
 		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: " + reason}) {
 			t.Fatalf("%s: task_ended = %q", name, got)
 		}
 	}
 }
 
-// A read of the pull request that fails is an error for the activity to
-// retry: the card stays as it was, nothing cleaned.
+// A read of the pull request that fails for now is an error for the
+// activity to retry: the card stays as it was, nothing cleaned.
 func TestFinishRetriesAFailedPullRequestRead(t *testing.T) {
 	r, hub, store, _ := chainRunner(t, mergedCard, policy.ChainModeRun)
-	hub.pulls = map[int64]string{7: ""}
+	hub.pullStatus = map[int64]int{7: http.StatusBadGateway}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err == nil {
 		t.Fatal("Finish passed a failed pull request read")
 	}
