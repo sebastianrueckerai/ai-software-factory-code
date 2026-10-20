@@ -144,6 +144,10 @@ func TestProjectMetricsPage(t *testing.T) {
 		t.Fatalf("GET metrics page = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
+	// every row's name carries its one-sentence explanation as a tooltip
+	if n := strings.Count(body, `class="mname" title="`); n != 21 {
+		t.Fatalf("%d row names carry a title, want 21", n)
+	}
 	wants := []string{
 		`class="page page-metrics"`,
 		"Delivery", "Stability", "Cost", "Autonomy", "The factory itself",
