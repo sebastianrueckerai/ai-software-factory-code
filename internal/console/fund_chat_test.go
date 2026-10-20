@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -33,7 +34,7 @@ func runFund(t *testing.T, r *rig, in toolInput) (string, error) {
 	if !ok {
 		t.Fatal("there is no fund tool")
 	}
-	note, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+	note, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"},
 		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, in)
 	return note, err
 }
@@ -131,7 +132,7 @@ func TestFundAtAWakeWithoutALiveSessionRefusesAndChangesNothing(t *testing.T) {
 	s := &session{user: "sebastian"}
 	tool, _ := r.c.chatTool("fund")
 	_, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
-		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true},
+		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"},
 		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-e", EUR: 1, Text: "go"})
 	var no *refusal
 	if !errors.As(err, &no) || !strings.Contains(no.msg, "login has lapsed") || !strings.Contains(no.msg, "attach_analysis") {
@@ -163,7 +164,7 @@ func needRig(t *testing.T) *rig {
 	return r
 }
 
-func answerFund(t *testing.T, r *rig, via string) (string, error) {
+func answerFund(t *testing.T, r *rig, via, decider string) (string, error) {
 	t.Helper()
 	_, s := r.loggedIn(t)
 	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) {
@@ -172,7 +173,7 @@ func answerFund(t *testing.T, r *rig, via string) (string, error) {
 		}
 		return needRefusal, nil
 	}
-	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", "the fix is in", factoryd.AnswerFund)
+	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via, decider: decider}, "t-e", "the fix is in", factoryd.AnswerFund)
 }
 
 // The chat answer's fund value is a chat-attributed raise: it meets the
@@ -180,7 +181,7 @@ func answerFund(t *testing.T, r *rig, via string) (string, error) {
 func TestChatAnswerFundPastThePoolRefusesAndChangesNothing(t *testing.T) {
 	r := needRig(t)
 	r.tasks.fundedEUR = 2.5
-	_, err := answerFund(t, r, factoryd.ViaChat)
+	_, err := answerFund(t, r, factoryd.ViaChat, "agent")
 	var no *refusal
 	if !errors.As(err, &no) || !strings.Contains(no.msg, "discretionary_eur") {
 		t.Fatalf("answer fund past the pool = %v, want a refusal naming discretionary_eur", err)
@@ -192,7 +193,7 @@ func TestChatAnswerFundPastThePoolRefusesAndChangesNothing(t *testing.T) {
 
 func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
 	r := needRig(t)
-	if _, err := answerFund(t, r, factoryd.ViaChat); err != nil {
+	if _, err := answerFund(t, r, factoryd.ViaChat, "agent"); err != nil {
 		t.Fatalf("answer fund: %v", err)
 	}
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
@@ -216,7 +217,63 @@ func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
 func TestBoardAnswerFundIgnoresThePool(t *testing.T) {
 	r := needRig(t)
 	r.tasks.fundedEUR = 2.95
-	if _, err := answerFund(t, r, factoryd.ViaButton); err != nil {
+	if _, err := answerFund(t, r, factoryd.ViaButton, ""); err != nil {
 		t.Fatalf("board answer fund: %v", err)
+	}
+}
+
+// A raise the member decides is their money: a proposal they confirmed
+// raises past a full pool and past a missing one, and the pool does not
+// count it.
+func TestMemberDecidedFundIgnoresTheAgentsLimits(t *testing.T) {
+	r := needRig(t)
+	r.tasks.fundedEUR = 3
+	_, s := r.loggedIn(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	tool, _ := r.c.chatTool("fund")
+	note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
+		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "member"},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-e", EUR: 4, Text: "my call"})
+	if err != nil || !strings.Contains(note, "Raised #13's budget by 4.00 EUR to 6.00") {
+		t.Fatalf("a confirmed fund past the pool, the raise max and the cap = %q, %v; want the raise", note, err)
+	}
+	if got := r.events.rows[0].Detail["decider"]; got == "agent" {
+		t.Errorf("the member's raise is stamped %v, which the pool would count", got)
+	}
+}
+
+// The member's own click in the chat inbox is their decision (no decider):
+// it raises on a project that sets no pool.
+func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
+	r := needRig(t)
+	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder"}
+	if _, err := answerFund(t, r, factoryd.ViaChat, ""); err != nil {
+		t.Fatalf("the member's fund click: %v", err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
+		t.Errorf("budget_eur = %v, want 2.9", task.BudgetEUR)
+	}
+}
+
+// Two agent turns that both read the card under its cap: the store's
+// predicate refuses the one that no longer fits, and the line says so.
+func TestFundCardCapRaceRefusalNamesTheCard(t *testing.T) {
+	got := capSpent(13, 4.5, 1, 5)
+	for _, want := range []string{"#13", "€4.50", "€5.00", "attach_analysis", "sizing exception"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("the line %q lacks %q", got, want)
+		}
+	}
+}
+
+// The fund proposal shows the amount the member presses Do it on.
+func TestFundProposalNamesTheAmount(t *testing.T) {
+	r, g := newWritesRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "fund", `{"task_id":"t-cap","eur":0.5,"text":"go"}`)}}
+	_, proposed, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"fund it"}})
+	want := `"description":"Fund a card, #14 t-cap \"Trim the logs.\", 0.50 EUR, text go"`
+	if len(proposed) == 0 || !strings.Contains(proposed[0], want) {
+		t.Fatalf("proposal %v, want it to hold %s", proposed, want)
 	}
 }

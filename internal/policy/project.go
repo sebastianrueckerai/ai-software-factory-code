@@ -547,6 +547,9 @@ func (p ProjectConfig) Validate(name string) error {
 	if p.Budget != nil && (p.Budget.DiscretionaryEUR < 0 || p.Budget.RaiseMaxEUR < 0) {
 		bad("budget.discretionary_eur and budget.raise_max_eur must not be negative")
 	}
+	if b := p.Budget; b != nil && b.DiscretionaryEUR > 0 && b.RaiseMaxEUR <= 0 {
+		bad("budget.discretionary_eur %g needs budget.raise_max_eur above 0: every raise would refuse", b.DiscretionaryEUR)
+	}
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)
 	}

@@ -984,14 +984,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
 		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
-			if a.via != factoryd.ViaChat {
-				return c.doFund(ctx, a, id, need, text, nil)
-			}
-			p, ok, err := c.projectAt(ctx, t.Repository)
-			if err != nil || !ok {
-				return "", refuse(http.StatusInternalServerError, "cannot read the projects")
-			}
-			return c.fundWithinBounds(ctx, a, p.Name, id, need, text)
+			return c.fundWithinBounds(ctx, a, id, need, text)
 		}
 		return "", refuse(http.StatusConflict, "this answer needs the Fund form on the card: name the amount")
 	}
@@ -1209,9 +1202,9 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
 // floor still refuses a session after the raise, the raise and the note
 // stand and the response is a refusal naming the floor's reason, so the
 // member learns the amount now, not on the card's next question. The raise
-// and its card_funded row commit together; a non-nil pool is the month's
-// pool in EUR, which the store checks under a lock before it raises.
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, pool *float64) (string, error) {
+// and its card_funded row commit together; non-nil bounds mark the agent's
+// own raise, which the store checks under a lock before it raises.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, bounds *factoryd.FundBounds) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
@@ -1233,12 +1226,15 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	case !factoryd.BudgetRefusal(why):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
 	}
-	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, pool,
+	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, bounds,
 		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, map[string]any{"reason": note}))
 	var spent *factoryd.PoolSpentError
+	var capped *factoryd.CardCapError
 	switch {
 	case errors.As(err, &spent):
-		return "", refuse(http.StatusConflict, poolSpent(*pool, spent.Funded, eur))
+		return "", refuse(http.StatusConflict, poolSpent(bounds.PoolEUR, spent.Funded, eur))
+	case errors.As(err, &capped):
+		return "", refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, eur, bounds.CardCapEUR))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
 	case err != nil:

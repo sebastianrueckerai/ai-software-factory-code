@@ -286,9 +286,17 @@ type fakeTasks struct {
 
 // FundCard raises task id's budget and records e, both or neither, as the
 // store's one transaction does.
-func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, pool *float64, e factoryd.Event) (float64, float64, error) {
-	if pool != nil && factoryd.Cents(s.fundedEUR)+factoryd.Cents(eur) > factoryd.Cents(*pool) {
-		return 0, 0, &factoryd.PoolSpentError{Funded: s.fundedEUR}
+func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	if bounds != nil {
+		if factoryd.Cents(s.fundedEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
+			return 0, 0, &factoryd.PoolSpentError{Funded: s.fundedEUR}
+		}
+		for _, k := range s.tasks {
+			if k.ID == id && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
+				return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
+			}
+		}
+		e.Detail["decider"] = "agent"
 	}
 	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
 	if err != nil {

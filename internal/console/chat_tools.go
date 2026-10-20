@@ -340,6 +340,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 		parts = append(parts, fmt.Sprintf("%s #%d %s %q", edge, d.IssueNumber, d.ID, factoryd.CardTitle(d)))
 	}
+	if in.EUR > 0 {
+		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
+	}
 	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
@@ -1680,12 +1683,25 @@ func (t *turn) systemText() (string, error) {
 // transaction, so parallel turns cannot overspend it. Money compares in
 // cents.
 func (t *turn) fund(in toolInput) (string, error) {
-	return t.c.fundWithinBounds(t.r.Context(), t.a, t.p.Name, in.TaskID, in.EUR, in.Text)
+	return t.c.fundWithinBounds(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text)
 }
 
-// fundWithinBounds is every chat-attributed raise: the fund tool's and the
-// chat answer's fund value.
-func (c *Console) fundWithinBounds(ctx context.Context, a actor, project, id string, eur float64, text string) (string, error) {
+// fundWithinBounds is every chat door to a raise: the fund tool's and the
+// chat answer's fund value. A raise the agent decides unconfirmed meets the
+// agent's limits; a raise the member decides (a confirmed proposal, their
+// own click) is their money and meets none.
+func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur float64, text string) (string, error) {
+	if a.decider != "agent" {
+		return c.doFund(ctx, a, id, eur, text, nil)
+	}
+	p, ok, err := c.projectAt(ctx, a.repository)
+	switch {
+	case err != nil:
+		log.Printf("console: the projects: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+	case !ok:
+		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
+	}
 	in := toolInput{TaskID: id, EUR: eur, Text: text}
 	if _, err := c.accessToken(ctx, a.s); err != nil {
 		return "", refuse(http.StatusConflict, "the member's login has lapsed: the answer cannot be posted; record your analysis with attach_analysis")
@@ -1695,7 +1711,7 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, project, id str
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
 	}
 	var b policy.ProjectBudget
-	if pb := v.Projects[project].Budget; pb != nil {
+	if pb := v.Projects[p.Name].Budget; pb != nil {
 		b = *pb
 	}
 	card, err := c.cardIn(ctx, a, in.TaskID)
@@ -1715,7 +1731,14 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, project, id str
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the member can make a sizing exception.",
 			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
-	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &b.DiscretionaryEUR)
+	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &factoryd.FundBounds{PoolEUR: b.DiscretionaryEUR, CardCapEUR: ceiling})
+}
+
+// capSpent is the refusal of a raise another turn's raise left past the
+// card's cap.
+func capSpent(issue int64, held, eur, ceiling float64) string {
+	return fmt.Sprintf("Card #%d holds €%.2f now; €%.2f more passes its cap of €%.2f. Record your analysis with attach_analysis so the member can make a sizing exception.",
+		issue, held, eur, ceiling)
 }
 
 // poolSpent is the refusal of a raise past the month's pool.
