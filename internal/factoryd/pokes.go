@@ -132,7 +132,7 @@ func (p *Poker) Pass(ctx context.Context) error {
 				}
 			}
 			_, project, inTree := tree.ProjectOf(e.Repository)
-			if e.Kind == EventPullRequestMerged && !Final(t.Status) && endsMerged(t, project.Chain) {
+			if e.Kind == EventPullRequestMerged && !Final(t.Status) && endsMerged(t, tree) {
 				// Finish lands the card in merged after its cleanup: a pass
 				// reading the merge first finds it on its way there
 				t.Status = "merged"

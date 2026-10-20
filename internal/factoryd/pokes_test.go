@@ -351,8 +351,8 @@ func TestFailurePokeCarriesTheIssueCommentsReason(t *testing.T) {
 // Finish lands a merged card in merged after its cleanup, so a pass can
 // read the merge while the card is on its way there: one in review or
 // closing in a project whose chain runs informs as a merged one does; a
-// roll and a card of a project without a chain end done at the merge and
-// inform nobody.
+// roll, a card of a project without a chain and one of a repository no
+// project file names end done at the merge and inform nobody.
 func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_pokes"))
 	if err != nil {
@@ -368,13 +368,14 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 		{ID: "t-cls", Kind: "agent", Repository: "sf/code", IssueNumber: 602, PRNumber: 10, Status: "closing", Objective: "Feed page"},
 		{ID: "t-roll", Kind: "agent", Repository: "sf/code", IssueNumber: 603, PRNumber: 11, Status: "closing", Source: SourceRoll, Objective: "roll"},
 		{ID: "t-none", Kind: "agent", Repository: "sf/demo", IssueNumber: 604, PRNumber: 3, Status: "closing", Objective: "Feed page"},
+		{ID: "t-gone", Kind: "agent", Repository: "sf/gone", IssueNumber: 605, PRNumber: 4, Status: "closing", Objective: "Feed page"},
 	}
 	for _, task := range tasks {
 		if err := s.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
 	}
-	tree := policy.Tree{Projects: map[string]policy.ProjectConfig{
+	tree := policy.Tree{Document: policy.Document{Approvers: []string{"bob"}}, Projects: map[string]policy.ProjectConfig{
 		"code": {Repository: "sf/code", Notify: []string{"bob"}},
 		"demo": {Repository: "sf/demo", Notify: []string{"bob"}, Chain: policy.ChainConfig{Mode: chainModeNone}},
 	}}
@@ -392,7 +393,7 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got []string
-	for _, repository := range []string{"sf/code", "sf/demo"} {
+	for _, repository := range []string{"sf/code", "sf/demo", "sf/gone"} {
 		inbox, _ := s.EnsureInbox(ctx, repository, "bob")
 		rows, _ := s.ChatMessages(ctx, repository, "bob", inbox, 10)
 		for _, r := range rows {

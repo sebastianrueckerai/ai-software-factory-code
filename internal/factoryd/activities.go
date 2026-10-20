@@ -2180,7 +2180,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, merge
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && !merged && repoErr == nil && endsMerged(t, cfg.Chain) {
+	if final == "done" && !merged && repoErr == nil && endsMerged(t, r.cfg.Policy().Tree) {
 		merged, err := r.cardMerged(ctx, repo, t)
 		if err != nil {
 			return err
@@ -2265,10 +2265,12 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, merge
 }
 
 // endsMerged tells a card that waits for its chain once its pull request
-// merged: one in a project whose chain runs. A roll is live when its own
-// rollout says so, before it finishes.
-func endsMerged(t Task, chain policy.ChainConfig) bool {
-	return t.PRNumber > 0 && t.Source != SourceRoll && chain.Resolved().Mode == policy.ChainModeRun
+// merged: one in a project of tree whose chain runs. A repository no
+// project file names runs no chain. A roll is live when its own rollout
+// says so, before it finishes.
+func endsMerged(t Task, tree policy.Tree) bool {
+	_, p, ok := tree.ProjectOf(t.Repository)
+	return ok && t.PRNumber > 0 && t.Source != SourceRoll && p.Chain.Resolved().Mode == policy.ChainModeRun
 }
 
 // cardMerged tells whether card t's pull request merged: a recorded merge

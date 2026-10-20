@@ -241,6 +241,7 @@ func taskHistoryHits(t *testing.T, summary string) []string {
 	pinned := testPolicyVersion()
 	pinned.Projects["repo"] = policy.ProjectConfig{Repository: "sf/repo", Agents: policy.AgentsCoder, Process: "maintenance"}
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == pinned.ID, nil }
+	runner.cfg.Policy = func() policy.Version { return pinned }
 	fj := &histForgejo{nextID: 100}
 	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, PublicURL: "https://git.example", BotUser: "factory-agent", BotPassword: "bot-password-7f3a9c", Seeded: histSeeded}
 	runner.completion.Forgejo = runner.forgejo

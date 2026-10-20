@@ -294,6 +294,7 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	pinned := fixtureVersion(t)
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	r.cfg.Policy = func() policy.Version { return pinned }
 
 	st := reconcileInto(t, r)
 	if !st.FactoryPR || st.PR.Number != 9 || st.Head != "h9" {

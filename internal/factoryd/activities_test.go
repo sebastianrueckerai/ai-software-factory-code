@@ -1363,17 +1363,26 @@ func TestFinishEndsARollDone(t *testing.T) {
 	}
 }
 
-// A project whose chain is none is live at the merge: done at once.
+// A project whose chain is none is live at the merge: done at once. So is
+// a repository no project file names: it runs no chain.
 func TestFinishEndsANoneModeProjectDone(t *testing.T) {
-	r, _, store, objects := chainRunner(t, mergedCard, chainModeNone)
-	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
-		t.Fatal(err)
-	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
-		t.Fatalf("status = %q, want done", got.Status)
-	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged"}) {
-		t.Fatalf("task_ended = %q", got)
+	gone := mergedCard
+	gone.Repository = "sf/gone"
+	for _, tc := range []struct {
+		card Task
+		mode string
+	}{{mergedCard, chainModeNone}, {gone, policy.ChainModeRun}} {
+		r, hub, store, objects := chainRunner(t, tc.card, tc.mode)
+		hub.pulls = map[int64]string{7: mergedAt(7, "m7")}
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+			t.Fatal(err)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
+			t.Fatalf("%s: status = %q, want done", tc.card.Repository, got.Status)
+		}
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: pull request merged"}) {
+			t.Fatalf("%s: task_ended = %q", tc.card.Repository, got)
+		}
 	}
 }
 
