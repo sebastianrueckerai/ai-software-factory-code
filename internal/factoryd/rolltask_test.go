@@ -320,6 +320,7 @@ type rollForgejo struct {
 	updateConflict bool                // every pull request update answers a conflict
 	prs            map[int64]string    // pull request number -> its head branch
 	closedPRs      []int64             // the numbers of the pull requests closed
+	titles         map[int64]string    // pull request number -> its title
 	deleted        []string            // the fork branches deleted
 }
 
@@ -498,7 +499,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			if slices.Contains(f.closedPRs, n) {
 				state = "closed"
 			}
-			reply(map[string]any{"number": n, "state": state})
+			reply(map[string]any{"number": n, "state": state, "title": f.titles[n]})
 		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -544,14 +545,6 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			default:
 				t.Errorf("compare %s", p)
 			}
-		case repo == codeRepo && p == "/pulls" && q.Get("state") == "closed":
-			reply([]map[string]any{
-				{"number": 14, "title": "roll 0a0a0a0: worker", "merged": true, "merge_commit_sha": mergePR14, "head": map[string]any{"sha": rollR0}},
-				{"number": 13, "title": "closed unmerged", "merged": false},
-				{"number": 12, "title": "Keys are no longer blocked at every session (closes #4, @bob)", "merged": true, "merge_commit_sha": mergePR12,
-					"head": map[string]any{"sha": agentA1, "ref": "refs/pull/12/head"}},
-				{"number": 11, "title": "merged before the last roll", "merged": true, "merge_commit_sha": "0b0b"},
-			})
 		case r.Method == "POST" && repo == codeRepo && p == "/issues":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -723,8 +716,11 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
 		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
+	f.titles = map[int64]string{12: "Keys are no longer blocked at every session (closes #4, @bob)"}
 	roller, store, wf := newTestRoller(t, f)
-	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-11"] = Task{ID: "t-11", Status: "merged", Repository: codeRepo, PRNumber: 11, MergeCommit: "0b0b"}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -906,6 +902,8 @@ func TestRollerSkipsACommitThatChangesNoImage(t *testing.T) {
 		}, gwOldIdx, workerOldIdx, runnerIdx),
 	}
 	roller, store, wf := newTestRoller(t, f)
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}

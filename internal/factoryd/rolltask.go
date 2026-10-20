@@ -222,9 +222,9 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 	return out, rows.Err()
 }
 
-// SettleRollRequests follows the roll tasks that ended: a merged task's
-// committed requests merged, and the ones folded in after its last commit
-// forgotten, so the next poll judges their images again; a task that ended
+// SettleRollRequests follows the roll tasks that ended: a done or merged
+// task's committed requests merged, and the ones folded in after its last
+// commit forgotten, so the next poll judges their images again; a task that ended
 // otherwise fails its requests; a request whose task or card never got
 // filed is forgotten. It returns the requests it settled, whose verdicts
 // the caller reports as commit statuses (roadmap 297).
@@ -329,6 +329,7 @@ func rollTarget(name string) (RollTarget, bool) {
 type RollerStore interface {
 	CreateTask(ctx context.Context, t Task) error
 	RollTaskPRs(ctx context.Context, repository string) ([]int64, error)
+	MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error)
 	SetAgentSummary(ctx context.Context, id, summary string) error
 	RollRequestSeen(ctx context.Context, sha string) (bool, error)
 	RollRuns(ctx context.Context, repository string) (first, carried int64, err error)
@@ -839,8 +840,8 @@ var rollSubject = regexp.MustCompile(`^roll [0-9a-f]{7}: `)
 // carried lists what head brings since the last roll (the commit the last
 // roll task rolled, or before any, the newest commit that touched k8s/,
 // a hand roll): its commits oldest first, merges and roll commits left
-// out, and the pull requests merged among them, the roll tasks' own left
-// out.
+// out, and the pull requests of the cards whose own merge commit lies
+// among them, the roll tasks' own left out.
 func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []MergedPullRequest, error) {
 	base, ok, err := r.Store.LastMergedRoll(ctx, r.Repo.String())
 	if err != nil {
@@ -863,7 +864,7 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 			commits = append(commits, cm)
 		}
 	}
-	merged, err := r.Forgejo.RecentMergedPullRequests(ctx, r.Repo.Owner, r.Repo.Name)
+	cards, err := r.Store.MergedCardCommits(ctx, r.Repo.String())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -871,13 +872,21 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 	if err != nil {
 		return nil, nil, err
 	}
-	var prs []MergedPullRequest
-	for _, p := range merged {
-		if slices.Contains(shas, p.MergeCommit) && !slices.Contains(rolls, p.Number) {
-			prs = append(prs, p)
+	var numbers []int64
+	for _, sha := range shas {
+		if n, ok := cards[sha]; ok && !slices.Contains(rolls, n) {
+			numbers = append(numbers, n)
 		}
 	}
-	slices.SortFunc(prs, func(a, b MergedPullRequest) int { return cmp.Compare(a.Number, b.Number) })
+	slices.Sort(numbers)
+	var prs []MergedPullRequest
+	for _, n := range numbers {
+		pr, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, n)
+		if err != nil {
+			return nil, nil, err
+		}
+		prs = append(prs, MergedPullRequest{Number: n, Title: pr.Title})
+	}
 	return commits, prs, nil
 }
 

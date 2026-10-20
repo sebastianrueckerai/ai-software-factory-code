@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -269,5 +270,49 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	}
 	if got := state(); got != "success" {
 		t.Fatalf("ChainState = %q, want the concluded run's status", got)
+	}
+}
+
+// MergedCardCommits maps each recorded merge commit of the repository to
+// its card's pull request: a card without a commit, without a pull
+// request or of another repository is left out. Requires a disposable
+// Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestMergedCardCommitsListsMergedCards(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, c := range []struct {
+		id, repo, status, commit string
+		pr                       int64
+	}{
+		{"t-a", "sf/r", "merged", "m-a", 7},
+		{"t-b", "sf/r", "done", "m-b", 8},
+		{"t-c", "sf/r", "in-review", "m-c", 9},
+		{"t-nocommit", "sf/r", "merged", "", 10},
+		{"t-nopr", "sf/r", "merged", "m-d", 0},
+		{"t-other", "sf/other", "merged", "m-e", 7},
+	} {
+		tk := Task{ID: c.id, PRNumber: c.pr, Status: c.status, BudgetEUR: 1, Repository: c.repo, Kind: "agent", Objective: "x"}
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.id, err)
+		}
+		if c.commit != "" {
+			if err := s.SetTaskMergeCommit(ctx, c.id, c.commit); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	got, err := s.MergedCardCommits(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := map[string]int64{"m-a": 7, "m-b": 8, "m-c": 9}; !maps.Equal(got, want) {
+		t.Fatalf("MergedCardCommits = %v, want %v", got, want)
 	}
 }

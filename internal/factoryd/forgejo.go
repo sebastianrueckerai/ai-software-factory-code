@@ -1007,6 +1007,7 @@ func (f *Forgejo) BranchHeadSHA(ctx context.Context, owner, repo, branch string)
 // open, closed and merged apart.
 type PullRequestRef struct {
 	Number   int64
+	Title    string
 	URL      string
 	Head     string
 	HeadRepo string // "owner/name" of the repository holding Head
@@ -1028,6 +1029,7 @@ type PullRequestRef struct {
 // wirePR is Forgejo's pull request JSON, as far as the factory reads it.
 type wirePR struct {
 	Number    int64  `json:"number"`
+	Title     string `json:"title"`
 	HTMLURL   string `json:"html_url"`
 	State     string `json:"state"`
 	Merged    bool   `json:"merged"`
@@ -1051,7 +1053,7 @@ type wirePR struct {
 }
 
 func (w wirePR) ref() PullRequestRef {
-	ref := PullRequestRef{Number: w.Number, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
+	ref := PullRequestRef{Number: w.Number, Title: w.Title, URL: w.HTMLURL, Head: w.Head.Ref, HeadRepo: w.Head.Repo.FullName, HeadSHA: w.Head.SHA,
 		State: w.State, Merged: w.Merged, Mergeable: w.Mergeable, Base: w.Base.Ref, MergeCommit: w.MergeSHA, MergeBase: w.MergeBase, Body: w.Body}
 	if w.MergedBy != nil {
 		ref.MergedBy = w.MergedBy.Login

@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -55,6 +54,29 @@ func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[stri
 		covered[id] = run
 	}
 	return covered, rows.Err()
+}
+
+// MergedCardCommits maps the merge commit of every card of repository
+// whose pull request merged to that pull request's number: the queue
+// records the commit at the merge and Finish for any other, so a card
+// still on its way to merged is already in the map.
+func (s *PGStore) MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT merge_commit, pr_number FROM tasks
+		WHERE repository = $1 AND pr_number > 0 AND merge_commit <> ''`, repository)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	commits := map[string]int64{}
+	for rows.Next() {
+		var sha string
+		var pr int64
+		if err := rows.Scan(&sha, &pr); err != nil {
+			return nil, err
+		}
+		commits[sha] = pr
+	}
+	return commits, rows.Err()
 }
 
 // OpenRepairCard reports whether repository has a repair card open: one
@@ -185,6 +207,7 @@ func (f *Forgejo) WorkflowList(ctx context.Context, repo Repo) ([]string, error)
 type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
+	MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
@@ -520,7 +543,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 				return err
 			}
 			for _, pr := range prs {
-				if err := p.Store.RecordChainRun(ctx, proj.Repository, pr.Number, run.CommitSHA, run.ID, v); err != nil {
+				if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, v); err != nil {
 					return err
 				}
 			}
@@ -539,10 +562,11 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	return nil
 }
 
-// chainCarried lists the pull requests run's new commits merged. The
-// first run recorded has no run before it to compare: it reads its own
-// first parent, so its merge's pull requests still map.
-func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun, prev string) ([]MergedPullRequest, error) {
+// chainCarried lists the pull requests of the cards whose own merge
+// commit lies in run's compare range, ascending. The first run recorded
+// has no run before it to compare: it reads its own first parent, so its
+// merge's pull requests still map.
+func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun, prev string) ([]int64, error) {
 	base := prev
 	if base == "" {
 		parent, err := p.Forgejo.CommitParent(ctx, repo.Owner, repo.Name, run.CommitSHA)
@@ -551,28 +575,24 @@ func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun
 		}
 		base = parent
 	}
-	merged, err := p.Forgejo.RecentMergedPullRequests(ctx, repo.Owner, repo.Name)
-	if err != nil {
-		return nil, err
-	}
 	if base == "" { // a root commit: no pull request rides it
 		return nil, nil
+	}
+	cards, err := p.Store.MergedCardCommits(ctx, repo.String())
+	if err != nil {
+		return nil, err
 	}
 	c, err := p.Forgejo.Compare(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
 	if err != nil {
 		return nil, err
 	}
-	in := make(map[string]bool, len(c.Commits))
+	var prs []int64
 	for _, cm := range c.Commits {
-		in[cm.SHA] = true
-	}
-	var prs []MergedPullRequest
-	for _, pr := range merged {
-		if in[pr.MergeCommit] {
+		if pr, ok := cards[cm.SHA]; ok {
 			prs = append(prs, pr)
 		}
 	}
-	slices.SortFunc(prs, func(a, b MergedPullRequest) int { return cmp.Compare(a.Number, b.Number) })
+	slices.Sort(prs)
 	return prs, nil
 }
 

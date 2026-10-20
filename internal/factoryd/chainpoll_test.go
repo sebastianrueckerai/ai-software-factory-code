@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -191,6 +193,40 @@ func (s *fakeStore) Projects(ctx context.Context) ([]Project, error) {
 	return s.projects, nil
 }
 
+// MergedCardCommits mirrors PGStore's read: the merge commit of every
+// card of the repository whose pull request merged.
+func (s *fakeStore) MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.PRNumber > 0 && t.MergeCommit != "" {
+			out[t.MergeCommit] = t.PRNumber
+		}
+	}
+	return out, nil
+}
+
+// seedCards gives store the cards of f.merged: the merged pull requests
+// as the cards that own them, each with its merge commit.
+func (f *chainForgejo) seedCards(store *fakeStore) {
+	for repo, prs := range f.merged {
+		for _, pr := range prs {
+			n, commit := int64(pr["number"].(int)), pr["merge_commit_sha"].(string)
+			id := fmt.Sprintf("t-%s-%d", repo, n)
+			for _, t := range store.tasks {
+				if t.Repository == repo && t.PRNumber == n {
+					id = t.ID
+				}
+			}
+			t, ok := store.tasks[id]
+			if !ok {
+				t = Task{ID: id, Repository: repo, PRNumber: n, Status: "in-review"}
+			}
+			t.MergeCommit = commit
+			store.tasks[id] = t
+		}
+	}
+}
+
 // chainOf is store's chain rows of repository, by pull request.
 func chainOf(s *fakeStore, repository string) []fakeChainRun {
 	var out []fakeChainRun
@@ -248,8 +284,6 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case strings.HasPrefix(p, "/compare/"):
 			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
 			reply(map[string]any{"commits": f.carries[repo][base+"..."+head]})
-		case p == "/pulls":
-			reply(f.merged[repo])
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			state := "success"
@@ -301,6 +335,7 @@ func newTestPoller(t *testing.T, f *chainForgejo, projects ...Project) (*ChainPo
 	t.Helper()
 	store := newFakeStore()
 	store.projects = projects
+	f.seedCards(store)
 	return &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store,
 		Policy: func() policy.Version { return policy.Version{} }}, store
 }
@@ -587,6 +622,9 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if err := pg.CreateTask(ctx, tk); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
+	if err := pg.SetTaskMergeCommit(ctx, "t-wait", mergePR12); err != nil {
+		t.Fatal(err)
+	}
 	projects := newFakeStore()
 	projects.projects = []Project{seedProject(codeRepo)}
 	fj := f.srv(t)
@@ -852,6 +890,7 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		},
 	}
 	store.projects = []Project{seedProject("sf/repo")}
+	f.seedCards(store)
 	ends := 0
 	end := func(ctx context.Context, taskID, final, reason string) error {
 		ends++
@@ -1189,5 +1228,69 @@ func TestChainPollerAlertsOnAnInvisibleRepository(t *testing.T) {
 	}
 	if got := chainOf(store, codeRepo); len(got) != 2 {
 		t.Fatalf("chain of %s %+v, want the workflow-bearing repository recorded", codeRepo, got)
+	}
+}
+
+// A run carries the cards whose own merge commit lies in its compare
+// range: the card merged in the range gets a row, the one merged
+// elsewhere none, and a pull request nobody holds a card for none.
+func TestChainCarriedMapsByMergeCommit(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}, {"sha": "9f9f"}}},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	store.tasks["t-in"] = Task{ID: "t-in", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: mergePR12}
+	store.tasks["t-out"] = Task{ID: "t-out", Repository: codeRepo, PRNumber: 14, Status: "in-review", MergeCommit: mergePR14}
+	store.tasks["t-open"] = Task{ID: "t-open", Repository: codeRepo, PRNumber: 15, Status: "in-review"}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 61, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 61, status: "success"},
+	}) {
+		t.Fatalf("chain %+v, want the head and pr 12 only", got)
+	}
+}
+
+// Forgejo cancels the run of a commit a newer push superseded: the cards
+// it carried keep their row under the cancelled run, and the next green
+// run covers them, not their own.
+func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(10, commitC1, "cancelled")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {
+				"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}},
+				commitC1 + "..." + commitC2:                {},
+			},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", MergeCommit: mergePR12}
+	var ended []string
+	p.End = func(ctx context.Context, taskID, final, reason string) error {
+		ended = append(ended, taskID+" "+final+" "+reason)
+		return nil
+	}
+	ctx := context.Background()
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.ChainCovered(ctx, codeRepo); len(got) != 0 || len(ended) != 0 {
+		t.Fatalf("covered %v, ended %v after the cancelled run, want none", got, ended)
+	}
+	f.runs[codeRepo] = []map[string]any{pushRun(11, commitC2, "success"), pushRun(10, commitC1, "cancelled")}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 11}) {
+		t.Fatalf("covered %v, want t-7 by run 11", got)
+	}
+	if !slices.Equal(ended, []string{"t-7 done live: covered by run 11"}) {
+		t.Fatalf("ended %v, want t-7 done by run 11", ended)
 	}
 }
