@@ -618,6 +618,12 @@ func (s *accBatchStore) RecordDelivery(ctx context.Context, id string) error    
 func (s *accBatchStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
 	panic("unused")
 }
+func (s *accBatchStore) Record(ctx context.Context, e factoryd.Event) (int64, error) {
+	return 0, nil
+}
+func (s *accBatchStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (factoryd.Alert, bool, error) {
+	return factoryd.Alert{}, false, nil
+}
 func (s *accBatchStore) InsertSession(ctx context.Context, sess factoryd.Session) error {
 	panic("unused")
 }

@@ -328,15 +328,3 @@ func (s *PGStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[str
 type eventRecorder interface {
 	Record(ctx context.Context, e Event) (int64, error)
 }
-
-var _ eventRecorder = (*PGStore)(nil)
-
-// eventStoreOf is store's row-writing half for the Timeline, or nil when it
-// writes none: a test store that only answers tasks records no rows.
-func eventStoreOf(store Store) eventRecorder {
-	r, ok := store.(eventRecorder)
-	if !ok {
-		return nil
-	}
-	return r
-}

@@ -587,6 +587,12 @@ type Store interface {
 	// when the card ends (taskEnded, RoutineStore).
 	RoutineRunOfTask(ctx context.Context, taskID string) (RoutineRun, bool, error)
 	EndRoutineRun(ctx context.Context, project, routine string, run int, outcome, note, taskID string, issue int64, costEUR float64) error
+	// Record writes an event row: the runner's Timeline records factoryd's
+	// own events beside their timeline lines through it.
+	Record(ctx context.Context, e Event) (int64, error)
+	// AlertByFingerprint is the newest alert row of kind and fingerprint:
+	// an alert card's pre-check reads whether its alert still fires.
+	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning

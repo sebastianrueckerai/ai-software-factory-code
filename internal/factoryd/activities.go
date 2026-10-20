@@ -2108,13 +2108,6 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 	return pr.Merged, err
 }
 
-// alertStoreReader is what an alert card's pre-check reads of the alert
-// store: the newest alerts row of a fingerprint. PGStore has it; a test
-// store without it takes the check as passing.
-type alertStoreReader interface {
-	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
-}
-
 // AlertPreCheck is an alert card's pre-check before its first model call
 // (roadmap 181, Stage 18 item 3.12): it reads the task's alert fingerprint
 // and its alerts row, the one record of whether the alert fires (kept true
@@ -2131,11 +2124,7 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 	if !ok || t.AlertFingerprint == "" {
 		return true, nil
 	}
-	fr, ok := r.store.(alertStoreReader)
-	if !ok {
-		return true, nil
-	}
-	row, seen, err := fr.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
+	row, seen, err := r.store.AlertByFingerprint(ctx, AlertSigNoz, t.AlertFingerprint)
 	if err != nil {
 		return false, err
 	}
