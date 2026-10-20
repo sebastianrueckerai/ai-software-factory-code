@@ -229,7 +229,7 @@ func TestStagesPendingHeadAtApprovalTakesTheMergeDuringTheWait(t *testing.T) {
 		})
 	g.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	if final := g.run(t); final != "done" || g.finals[0][1] != "pull request merged" {
+	if final := g.run(t); final != "done" || g.finals[0][1] != "live: covered by run 41" {
 		t.Fatalf("final = %q, finals %v: the merge during the wait decides the task", final, g.finals)
 	}
 	if len(g.approvals) != 0 || len(g.merges) != 0 {
@@ -2075,7 +2075,7 @@ func TestProgramBySessionMode(t *testing.T) {
 		final    [2]string
 	}{
 		"report": {policy.SessionReport, 1, 0, [2]string{"done", "report kept on the task, no issue comment"}},
-		"code":   {policy.SessionCode, 0, 1, [2]string{"done", "pull request merged by factory-merge after sebastian's approval"}},
+		"code":   {policy.SessionCode, 0, 1, [2]string{"done", "live: covered by run 41"}},
 		// a run from before versionPlan; the plan loop's are plan_test.go's
 		"plan": {policy.SessionPlan, 0, 0, [2]string{"failed", "session plan is not built yet"}},
 	} {

@@ -131,10 +131,12 @@ func TestPGStoreBoardTasks(t *testing.T) {
 	}
 }
 
-// A done card is live when the chain run that carried its pull request went
-// green or skipped, whatever else the project's chain did after (roadmap 297).
-// A card no chain run names is live only while it finished before the chain
-// began recording. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// A card's liveness is the chain's fact (roadmap 297): a done card is
+// live when the run that carried its pull request went green, a card no
+// run names only while it finished before the chain began recording;
+// the wait itself is the merged card's, which the board holds with its
+// carry row's status as its chain word until the covered signal ends
+// it. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestPGStoreChainLiveness(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -149,8 +151,8 @@ func TestPGStoreChainLiveness(t *testing.T) {
 	for _, tk := range []Task{
 		{ID: "t-era", Status: "done", PRNumber: 11},
 		{ID: "t-green", Status: "done", PRNumber: 12},
-		{ID: "t-run", Status: "done", PRNumber: 13},
-		{ID: "t-red", Status: "done", PRNumber: 14},
+		{ID: "t-run", Status: "merged", PRNumber: 13},
+		{ID: "t-red", Status: "merged", PRNumber: 14},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -158,12 +160,14 @@ func TestPGStoreChainLiveness(t *testing.T) {
 		}
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '90 minutes' WHERE id = 't-era';
-		UPDATE tasks SET finished_at = now() - interval '20 minutes' WHERE id IN ('t-green', 't-run', 't-red')`); err != nil {
+		UPDATE tasks SET finished_at = now() - interval '20 minutes' WHERE id = 't-green'`); err != nil {
 		t.Fatalf("stamp finished_at: %v", err)
 	}
-	// before any chain run is recorded every done card is live
-	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 0 {
-		t.Fatalf("BoardTasks before the chain = %d cards, %v; want none", len(board), err)
+	// before any chain run is recorded the merged cards wait on the board
+	// with no chain word; every done card is live (none recorded yet:
+	// every card, while none is)
+	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 2 {
+		t.Fatalf("BoardTasks before the chain = %d cards, %v; want the two merged", len(board), err)
 	}
 	for _, row := range []struct {
 		pr     int64
@@ -192,9 +196,10 @@ func TestPGStoreChainLiveness(t *testing.T) {
 		ids = append(ids, tk.ID)
 		stages = append(stages, tk.ChainState)
 	}
-	// t-era finished before the first recorded run, so it stays live; t-green
-	// rode a green run; t-run and t-red wait on their run's verdict (t-red
-	// first: its id sorts before t-run's at the same priority and finish time)
+	// the merged cards wait on their run's verdict on the board (t-red
+	// first: its id sorts before t-run's at the same priority); t-era
+	// finished before the first recorded run and t-green rode a green run,
+	// so both are live and done
 	if want := []string{"t-red", "t-run"}; !slices.Equal(ids, want) {
 		t.Fatalf("BoardTasks = %v, want %v", ids, want)
 	}
@@ -212,12 +217,13 @@ func TestPGStoreChainLiveness(t *testing.T) {
 	if want := []string{"t-green", "t-era"}; !slices.Equal(doneIDs, want) {
 		t.Fatalf("FinishedTasks = %v, want %v", doneIDs, want)
 	}
-	// the running run settles green: its card joins the live ones
+	// the running run settles green: the store moves the card's own row, its
+	// chain word with it — the card itself the covered signal's to finish
 	if err := s.RefreshChainStatus(ctx, "sf/r", "e2", "success"); err != nil {
 		t.Fatalf("RefreshChainStatus: %v", err)
 	}
-	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 1 || board[0].ID != "t-red" {
-		t.Fatalf("BoardTasks after the run went green = %+v, %v; want only t-red", board, err)
+	if board, err := s.BoardTasks(ctx, "sf/r"); err != nil || len(board) != 2 || board[1].ID != "t-run" || board[1].ChainState != "success" {
+		t.Fatalf("BoardTasks after the run went green = %+v, %v; want t-run's word green, the card still waiting", board, err)
 	}
 }
 

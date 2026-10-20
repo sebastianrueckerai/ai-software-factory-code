@@ -229,25 +229,13 @@ jobs:
               jq -r 'first(.statuses[]? | select(.context == "factory/roll") | .status) // ""'
           }
           deadline=$(( $(date +%s) + 1800 ))
-          start=$(date +%s)
           while [ "$(date +%s)" -lt "$deadline" ]; do
             state=$(verdict "$GITHUB_SHA") || state=""
             case "$state" in
               success) echo "roll merged or skipped: $GITHUB_SHA runs live"; exit 0 ;;
               failure|error) echo "roll refused or failed: $GITHUB_SHA will not run live"; exit 1 ;;
               pending) : ;; # the roller is rolling the commit
-              *)
-                # No verdict yet. A factoryd that predates the writer never
-                # posts one: whether the parent carries any verdict settles
-                # which world this is (the chain's bootstrap).
-                if [ $(( $(date +%s) - start )) -ge 300 ]; then
-                  parent=$(curl -sS -m 10 -H "$auth" "$api/git/commits/$GITHUB_SHA" | jq -r '.parents[0].sha // ""') || parent=""
-                  if [ -n "$parent" ] && [ -z "$(verdict "$parent")" ]; then
-                    echo "no roller verdicts in the chain yet: the old chain rolls without CI watching"; exit 0
-                  fi
-                fi
-                ;;
             esac
             sleep 15
           done
-          echo "the roller never judged $GITHUB_SHA within 30 minutes"; exit 1
+          echo "no factory/roll verdict on $GITHUB_SHA within 30 minutes: not proven live"; exit 1

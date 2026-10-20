@@ -454,14 +454,12 @@ func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int6
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
-// order: a chat task is none, and a done card whose change is not live
-// yet stays, tracking its own deploy (roadmap 296).
+// order: a chat task is none, and every final card is gone.
 func (s *fakeTasks) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cards := slices.DeleteFunc(slices.Clone(s.tasks), func(t factoryd.BoardTask) bool {
-		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status) &&
-			(t.Status != "done" || factoryd.DeployLive(s.tasks, t))
+		return t.Repository != repository || t.Kind == factoryd.KindChat || factoryd.Final(t.Status)
 	})
 	factoryd.SortBoardTasks(cards)
 	return cards, nil
@@ -484,7 +482,9 @@ func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask,
 	return s.tasks[i], true, nil
 }
 
-// set replaces the tasks; the escalated ones carry reason.
+// set replaces the tasks; the escalated ones carry reason. ChainLive is
+// DeployLive over the set, as the store reads the column: a card whose
+// change no green chain covers is not live, done or not.
 func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -495,6 +495,9 @@ func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 			b.Escalation = reason
 		}
 		s.tasks = append(s.tasks, b)
+	}
+	for i := range s.tasks {
+		s.tasks[i].ChainLive = factoryd.DeployLive(s.tasks, s.tasks[i])
 	}
 }
 
@@ -1413,26 +1416,29 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 // where its deploy chain sits (roadmap 297): chain running while the chain
 // runs, waiting for the chain until a run carries its change, chain red at
 // the failed end states. A done card whose chain went green sits in Done,
-// and one that finished before the chain began recording runs does too. A
-// roll task is no card.
+// and one that finished before the chain began recording runs does too.
+// A done card the chain holds at a not-green verdict — a skipped carry is
+// not live — is on no surface at all: the migration's limbo, undone and
+// invisible until a green head covers it or the poller moves it. A roll
+// task is no card.
 func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	at := func(mins int) *time.Time { t := time.Now().Add(-time.Duration(mins) * time.Minute); return &t }
-	card := func(id string, pr int64, state string, finished int) factoryd.BoardTask {
-		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "done", Repository: "sf/code",
+	card := func(id string, pr int64, state string, finished int, status string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Repository: "sf/code",
 			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, ChainState: state}
 	}
-	// t-era finished before the first chain the set records; t-wait after
-	// t-chain's run was recorded, so the era no longer holds it live
+	// t-era finished before the first chain the set records; t-wait merged
+	// after t-chain's run was recorded, so the era no longer holds it live
 	r.tasks.tasks = []factoryd.BoardTask{
-		card("t-era", 8, "", 90),
-		card("t-chain", 9, "running", 40),
-		card("t-wait", 10, "", 30),
-		card("t-red", 11, "failure", 25),
-		card("t-gone", 12, "cancelled", 20),
-		card("t-live", 13, "success", 15),
-		card("t-skip", 14, "skipped", 10),
+		card("t-era", 8, "", 90, "done"),
+		card("t-chain", 9, "running", 40, "merged"),
+		card("t-wait", 10, "", 30, "merged"),
+		card("t-red", 11, "failure", 25, "merged"),
+		card("t-gone", 12, "cancelled", 20, "merged"),
+		card("t-live", 13, "success", 15, "done"),
+		card("t-skip", 14, "skipped", 10, "done"),
 		{Task: factoryd.Task{ID: "t-rollcard", Kind: "agent", Status: "done", Source: factoryd.SourceRoll,
 			Repository: "sf/code", PRNumber: 15, Objective: "the roll itself", FinishedAt: at(35)}},
 	}
@@ -1448,7 +1454,7 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 			t.Errorf("In progress lacks %s wearing %q:\n%s", id, stage, progress)
 		}
 	}
-	for _, id := range []string{"t-era", "t-live", "t-skip"} {
+	for _, id := range []string{"t-era", "t-live"} {
 		if !strings.Contains(done, `data-card="`+id+`"`) {
 			t.Errorf("Done lacks the live card %s:\n%s", id, done)
 		}
@@ -1460,6 +1466,11 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 		if strings.Contains(done, `data-card="`+id+`"`) {
 			t.Errorf("Done holds %s, whose change is not live", id)
 		}
+	}
+	// a done card the chain holds at a skipped carry is on no surface:
+	// the migration's limbo, invisible until covered or moved
+	if strings.Contains(body, `data-card="t-skip"`) {
+		t.Error("t-skip rendered: a done card no green chain covers is the migration's limbo")
 	}
 	if strings.Contains(body, `data-card="t-rollcard"`) {
 		t.Error("the roll task rendered a card")

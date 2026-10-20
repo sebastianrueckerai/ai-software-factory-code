@@ -92,6 +92,12 @@ type workflowHarness struct {
 	branchReads int
 	// headChecks are the heads HeadChecks (the approval stage's read) ran on
 	headChecks []string
+	// chainFacts answers ActivityChainFacts in order, the last repeating;
+	// none: the chain is live at once (run 41). stalls counts
+	// ActivityChainStalled.
+	chainFacts []ChainFacts
+	chainReads int
+	stalls     int
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -225,6 +231,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
+		ActivityChainFacts: func(ctx context.Context, taskID string) (ChainFacts, error) {
+			return ChainFacts{Mode: policy.ChainModeRun, Live: true, RunID: 41, Stall: policy.DefaultChainStall}, nil
+		},
+		ActivityChainStalled: func(ctx context.Context, taskID string) error { return nil },
 		ActivityFileSplit: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 			return ChildrenResult{}, nil
 		},
@@ -291,6 +301,16 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			h.finishAt = h.env.Now()
 			return nil
 		})
+	h.env.OnActivity(ActivityChainFacts, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (ChainFacts, error) {
+			h.chainReads++
+			if len(h.chainFacts) == 0 {
+				return ChainFacts{Mode: policy.ChainModeRun, Live: true, RunID: 41, Stall: policy.DefaultChainStall}, nil
+			}
+			return h.chainFacts[min(h.chainReads, len(h.chainFacts))-1], nil
+		})
+	h.env.OnActivity(ActivityChainStalled, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) error { h.stalls++; return nil })
 	return h
 }
 
@@ -332,6 +352,10 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
 	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(name, sig) }, d)
 }
+
+// onChainFacts answers the chain's facts in order, the last repeating;
+// none: the chain is live at once.
+func (h *workflowHarness) onChainFacts(facts ...ChainFacts) { h.chainFacts = facts }
 
 func (h *workflowHarness) run(t *testing.T) string {
 	t.Helper()
@@ -389,8 +413,8 @@ func TestWorkflowHappyPathToMerged(t *testing.T) {
 	if len(h.sessions) != 1 || h.sessions[0].Model != "factory/coding-cheap" || h.sessions[0].StartRef != "" || h.sessions[0].Attempt != 1 {
 		t.Fatalf("sessions = %+v, want one cheap attempt from the base", h.sessions)
 	}
-	if !slices.Equal(h.states, []string{"running", "in-review"}) {
-		t.Fatalf("states = %v, want [running in-review]", h.states)
+	if !slices.Equal(h.states, []string{"running", "in-review", "merged"}) {
+		t.Fatalf("states = %v, want [running in-review merged]", h.states)
 	}
 }
 
@@ -2047,7 +2071,7 @@ func TestWorkflowIssueClosedWithoutMergeEndsClosed(t *testing.T) {
 
 		want, reason := "closed", "issue closed without merge"
 		if merged {
-			want, reason = "done", "pull request merged"
+			want, reason = "done", "live: covered by run 41"
 		}
 		if final := h.run(t); final != want || h.finals[0][1] != reason {
 			t.Fatalf("merged=%v: final = %q (%q), want %q (%q)", merged, final, h.finals[0][1], want, reason)
@@ -2092,7 +2116,7 @@ func TestWorkflowPullRequestClosedWithoutMergeFails(t *testing.T) {
 func TestWorkflowTerminalSignalDuringChecksDecides(t *testing.T) {
 	for name, want := range map[string][2]string{
 		SignalPRClosed: {"failed", "pull request closed without merge"},
-		SignalPRMerged: {"done", "pull request merged"},
+		SignalPRMerged: {"done", "live: covered by run 41"},
 	} {
 		h := newWorkflowHarness(t)
 		h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
@@ -3004,17 +3028,18 @@ func TestWorkflowReconcileFinishesAnAlreadyDecidedTask(t *testing.T) {
 		state  RunState
 		final  string
 		reason string
+		states []string
 	}{
-		"merged":         {RunState{Status: "in-review", Merged: true, IssueClosed: true}, "done", "pull request merged"},
-		"issue closed":   {RunState{Status: "in-review", IssueClosed: true}, "closed", "issue closed without merge"},
-		"pr closed":      {RunState{Status: "in-review", PRClosed: true}, "failed", "pull request closed without merge"},
-		"closing merged": {RunState{Status: "closing", Merged: true}, "done", "pull request merged"},
-		"closing":        {RunState{Status: "closing"}, "failed", "completion resumed after an interrupted run"},
+		"merged":         {RunState{Status: "in-review", Merged: true, IssueClosed: true}, "done", "live: covered by run 41", []string{"merged"}},
+		"issue closed":   {RunState{Status: "in-review", IssueClosed: true}, "closed", "issue closed without merge", nil},
+		"pr closed":      {RunState{Status: "in-review", PRClosed: true}, "failed", "pull request closed without merge", nil},
+		"closing merged": {RunState{Status: "closing", Merged: true}, "done", "live: covered by run 41", []string{"merged"}},
+		"closing":        {RunState{Status: "closing"}, "failed", "completion resumed after an interrupted run", nil},
 	} {
 		h := newWorkflowHarness(t)
 		h.state = tc.state
 		h.onSessions(pushed("s1", "c1"))
-		if final := h.run(t); final != tc.final || h.finals[0][1] != tc.reason || len(h.sessions) != 0 || len(h.states) != 0 {
+		if final := h.run(t); final != tc.final || h.finals[0][1] != tc.reason || len(h.sessions) != 0 || !slices.Equal(h.states, tc.states) {
 			t.Fatalf("%s: final = %q (%q), sessions = %d, states = %v", name, final, h.finals[0][1], len(h.sessions), h.states)
 		}
 	}

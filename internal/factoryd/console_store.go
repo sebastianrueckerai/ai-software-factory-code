@@ -21,9 +21,14 @@ import (
 // shaped it (nil on the older and unshaped rows); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
-// liveness warning. ChainState is the status of the newest main run that
-// carries the card's pull request ("" for none): a done card reads it to
-// track its own deploy (roadmap 297), the chain's own fact, no roll in it.
+// liveness warning. ChainState is the verdict of the newest run that
+// carries the card's pull request ("" for none) — its commit's AND of
+// runs and required contexts: a merged card reads it as its chain word
+// (roadmap 297), the chain's own fact, no roll in it.
+// ChainLive is deployLive read as a column: whether the card's change runs
+// on the cluster — a green run covers it, it never opened a pull request,
+// or it finished before the chain began recording — the fact a finished
+// card's own page waits on.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -36,17 +41,23 @@ type BoardTask struct {
 	Question        *HumanQuestion
 	AnswersPending  int
 	ChainState      string
+	ChainLive       bool
 }
 
 // deployLive is the SQL test that a finished card's change runs on the
-// cluster (roadmap 297): a card that never opened a pull request, or
-// whose chain run went green — the chain's tail job confirmed the change
-// runs, whatever that tail is for the project — or that no chain names at
-// all and that finished before the chain began recording runs (none
-// recorded yet: every card, while none is). A chain that names it as not
-// green keeps it waiting.
+// cluster (roadmap 297): a card that never opened a pull request, or that
+// a green run covers — the run that carried its change is recorded and
+// the newest green run on main, the head row or any card's carry row,
+// sits at or after it, so a green run later than its own red carry
+// deploys it — or that no chain names at all and that finished before the
+// chain began recording runs (none recorded yet: every card, while none
+// is). A carry run with no green run at or after it keeps the card
+// waiting; every row's status is its commit's verdict — the runs AND
+// the required contexts — so coverage demands them too.
 const deployLive = `(tasks.pr_number = 0
-	OR EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number AND cr.status IN ('success', 'skipped'))
+	OR EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
+	   AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)
+	      >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number)
 	OR NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
@@ -69,7 +80,8 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
-		        ORDER BY cr.run_id DESC LIMIT 1), '')`
+		        ORDER BY cr.run_id DESC LIMIT 1), ''),
+		        (` + deployLive + `)`
 
 const boardTaskFrom = `
 		 FROM tasks LEFT JOIN LATERAL (SELECT e.id AS esc_id, e.body, e.created_at AS at, e.choices, e.question FROM intake_events e
@@ -80,7 +92,7 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var at sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive)...)
 	})
 	if err != nil {
 		return b, err
@@ -97,13 +109,12 @@ func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 }
 
 // BoardTasks lists repository's open tasks for the console's board, most
-// urgent first; a chat task is no card. A done task whose change is not
-// live yet stays listed: its card tracks its own deploy (roadmap 296). The
-// escalation reason comes from the escalation's intake event, so a poll
-// reads no timeline object.
+// urgent first; a chat task is no card. A merged task is open: its card
+// waits until the chain runs its change live. The escalation reason comes
+// from the escalation's intake event, so a poll reads no timeline object.
 func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
 	rows, err := s.db.QueryContext(ctx, boardTaskQuery+`
-		 WHERE repository = $4 AND kind <> $3 AND (status NOT IN ('done', 'failed', 'closed') OR status = 'done' AND NOT (`+deployLive+`))
+		 WHERE repository = $4 AND kind <> $3 AND status NOT IN ('done', 'failed', 'closed')
 		 ORDER BY priority DESC, finished_at DESC NULLS LAST, tasks.id`, IntakeEscalation, AlertEscalation, KindChat, repository)
 	if err != nil {
 		return nil, err
@@ -250,11 +261,11 @@ func byFinish(a, b Task) int {
 }
 
 // DeployLive is deployLive for the fakes: a card without a pull request,
-// or whose chain run went green or skipped — nothing to deploy — or that
-// no chain names and that arrived before the first chain the set records.
-// A chain that names it as not green keeps it waiting.
+// or whose chain verdict went green, or that no chain names and that
+// arrived before the first chain the set records. A chain that names it
+// as not green keeps it waiting.
 func DeployLive(tasks []BoardTask, t BoardTask) bool {
-	if t.PRNumber == 0 || t.ChainState == "success" || t.ChainState == "skipped" {
+	if t.PRNumber == 0 || t.ChainState == "success" {
 		return true
 	}
 	if t.ChainState != "" {

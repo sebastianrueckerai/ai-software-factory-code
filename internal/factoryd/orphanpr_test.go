@@ -388,8 +388,8 @@ func TestFactoryPRCardRunsItsGatesFromRunning(t *testing.T) {
 			if want := []string{"policy", "repro c7", "review c7", "criteria c7", "approval c7", "merge"}; !slices.Equal(g.steps, want) {
 				t.Fatalf("steps = %v, want %v: the linked pull request runs the gates", g.steps, want)
 			}
-			if !slices.Equal(g.states, []string{"running", "in-review"}) {
-				t.Fatalf("states = %v, want running before in-review: in-review from queued is refused", g.states)
+			if !slices.Equal(g.states, []string{"running", "in-review", "merged"}) {
+				t.Fatalf("states = %v, want running before in-review into merged", g.states)
 			}
 			if !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
 				t.Fatalf("merges = %v", g.merges)
@@ -425,7 +425,7 @@ func TestFactoryPRCardRestartedWhileWaitingRunsNoSession(t *testing.T) {
 			if final := g.run(t); final != "done" {
 				t.Fatalf("final = %q, finals %v", final, g.finals)
 			}
-			if !slices.Equal(g.states, []string{"running", "in-review"}) || len(g.escalated) != 0 || !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
+			if !slices.Equal(g.states, []string{"running", "in-review", "merged"}) || len(g.escalated) != 0 || !slices.Equal(g.merges, []string{"9 c7 sebastian"}) {
 				t.Fatalf("states %v, escalations %q, merges %v: want the gates again from running and no question", g.states, g.escalated, g.merges)
 			}
 		})

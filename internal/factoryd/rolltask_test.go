@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -26,48 +27,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The fakeStore's roll requests, as PGStore keeps them. The chain rows,
-// as PGStore keeps them: one per pull request, the newest run it carries.
-
-type fakeChainRun struct {
-	pr     int64
-	sha    string
-	run    int64
-	status string
-}
-
-func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, error) {
-	var head int64
-	for _, c := range s.chain {
-		if c.run > head {
-			head = c.run
-		}
-	}
-	return head, nil
-}
-
-func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
-	for i, c := range s.chain {
-		if c.pr == pr && c.run > run {
-			return nil
-		}
-		if c.pr == pr {
-			s.chain[i] = fakeChainRun{pr: pr, sha: sha, run: run, status: status}
-			return nil
-		}
-	}
-	s.chain = append(s.chain, fakeChainRun{pr: pr, sha: sha, run: run, status: status})
-	return nil
-}
-
-func (s *fakeStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
-	for i, c := range s.chain {
-		if c.sha == sha && c.status != status {
-			s.chain[i].status = status
-		}
-	}
-	return nil
-}
+// The fakeStore's roll requests, as PGStore keeps them.
 
 func (s *fakeStore) RollRequestSeen(ctx context.Context, sha string) (bool, error) {
 	return slices.ContainsFunc(s.rolls, func(r RollRequest) bool { return r.SHA == sha }), nil
@@ -164,6 +124,34 @@ func (s *fakeStore) LastMergedRoll(ctx context.Context, repository string) (stri
 		}
 	}
 	return last.SHA, last.SHA != "", nil
+}
+
+// FailedRolls mirrors the store's read: the failures since repository's
+// newest merged roll, oldest first.
+func (s *fakeStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
+	merged := int64(0)
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollMerged && r.RunID > merged {
+			merged = r.RunID
+		}
+	}
+	var out []RollRequest
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollFailed && r.RunID > merged {
+			out = append(out, r)
+		}
+	}
+	slices.SortFunc(out, func(a, b RollRequest) int { return cmp.Compare(a.RunID, b.RunID) })
+	return out, nil
+}
+
+func (s *fakeStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind == "human" && t.Status == "waiting-human" && strings.Contains(t.Objective, marker) {
+			return t, true, nil
+		}
+	}
+	return Task{}, false, nil
 }
 
 // TaskRolls are task's roll requests, oldest first: an update writes them
@@ -960,9 +948,9 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	// the runs read, the chain's three bootstrap reads (the run's parent,
-	// the merged pull requests, the compare) and the trigger's status read
-	if len(store.rolls) != 1 || len(f.calls) != 5 {
+	// the runs read and the trigger's status read; the chain's bootstrap
+	// reads belong to the chain poller now, not the roller
+	if len(store.rolls) != 1 || len(f.calls) != 2 {
 		t.Fatalf("folded before the pull request was open: rolls %+v, calls %v", store.rolls, f.calls)
 	}
 
@@ -991,65 +979,6 @@ func TestRollerFoldsNewImagesIntoTheOpenRoll(t *testing.T) {
 	}
 	if !slices.Equal(wf.signals, []string{"t-open roll_folded factory-agent #21: roll c2c2c2c: worker folded in"}) {
 		t.Fatalf("signals %q", wf.signals)
-	}
-}
-
-// The chain recorder (roadmap 297): the first recording maps the newest
-// run only, its carry read from its first parent; a later run's carry is
-// read from the compare against the run before it, a finished run moves
-// its rows to its final status, a run no pull request rides is recorded
-// under none, and a pull request already mapped keeps its own run: a fold
-// settles the verdict of the run that carried it.
-func TestRollerRecordsTheChainOfEveryMainRun(t *testing.T) {
-	d3 := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
-	e4 := "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
-	f := &rollForgejo{
-		runs: []map[string]any{pushRun(61, commitC2, "running")},
-		carries: map[string][]map[string]any{
-			"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}},
-			commitC2 + "..." + d3:                      {{"sha": mergePR14}},
-			d3 + "..." + e4:                            {},
-		},
-	}
-	roller, store, _ := newTestRoller(t, f)
-	ctx := context.Background()
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.chain; len(got) != 1 || got[0] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "running"}) {
-		t.Fatalf("chain after the first recording %+v, want pr 12 running under run 61", got)
-	}
-	// the run finished, and a newer one arrived carrying another pull
-	// request: the old row moves to the final status, the new run's pull
-	// request is mapped beside it
-	f.runs = []map[string]any{pushRun(62, d3, "success"), pushRun(61, commitC2, "success")}
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	got := map[int64]fakeChainRun{}
-	for _, c := range store.chain {
-		got[c.pr] = c
-	}
-	if len(got) != 2 || got[12] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "success"}) ||
-		got[14] != (fakeChainRun{pr: 14, sha: d3, run: 62, status: "success"}) {
-		t.Fatalf("chain after the second run %+v, want pr 12 success under 61 and pr 14 success under 62", store.chain)
-	}
-	// a run no pull request rides is recorded under none; the pull
-	// requests already mapped keep their runs, their own verdicts
-	f.runs = []map[string]any{pushRun(64, e4, "running"), pushRun(62, d3, "success")}
-	if err := roller.poll(ctx); err != nil {
-		t.Fatal(err)
-	}
-	got = map[int64]fakeChainRun{}
-	for _, c := range store.chain {
-		got[c.pr] = c
-	}
-	if len(got) != 3 || got[0] != (fakeChainRun{pr: 0, sha: e4, run: 64, status: "running"}) ||
-		got[12] != (fakeChainRun{pr: 12, sha: commitC2, run: 61, status: "success"}) {
-		t.Fatalf("chain after the third run %+v, want pr 0 under run 64 and pr 12 kept under 61", store.chain)
-	}
-	if head, _ := store.ChainHead(ctx, codeRepo); head != 64 {
-		t.Fatalf("chain head %d, want 64", head)
 	}
 }
 
@@ -1595,8 +1524,9 @@ func TestRollerNeverJudgesARunOlderThanARolledOne(t *testing.T) {
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// the runs read and the chain's three bootstrap reads; nothing judged
-	if len(store.rolls) != 2 || len(wf.started) != 0 || len(f.calls) != 4 {
+	// the runs read alone; nothing judged, and the chain's bootstrap
+	// reads belong to the chain poller now
+	if len(store.rolls) != 2 || len(wf.started) != 0 || len(f.calls) != 1 {
 		t.Fatalf("rolls %+v, starts %v, calls %v", store.rolls, wf.started, f.calls)
 	}
 }
@@ -1909,5 +1839,118 @@ func TestRollerReportsItsVerdictAsACommitStatus(t *testing.T) {
 	want = append(want, commitC1+" success factory/roll")
 	if !slices.Equal(f.reported, want) {
 		t.Fatalf("reported %v, want %v", f.reported, want)
+	}
+}
+
+// The roll ladder's end: when a roll request settles failed and three
+// have failed since the last merged roll, the roller asks a person — the
+// five-part question, Retry the roll / Park / Close as its buttons —
+// once: while the question stands no second card files.
+func TestRollEscalatesAfterAttempts(t *testing.T) {
+	f := &rollForgejo{files: map[string]map[string]string{codeRepo + "@main": mainPins()}}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	seed := func(id, sha string, run int64, request string) {
+		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}
+		store.rolls = append(store.rolls, RollRequest{SHA: sha, Repository: codeRepo, RunID: run,
+			State: request, TaskID: id, Summary: fmt.Sprintf("roll %s: worker\n\nMain CI's push run %d published the images.", sha[:7], run)})
+	}
+	seed("t-r1", "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f", 51, RollFailed)
+	seed("t-r2", "2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f", 52, RollFailed)
+	seed("t-r3", "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", 53, RollOpened) // ends this poll
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var asks []Task
+	for _, t := range store.tasks {
+		if t.Kind == "human" && strings.Contains(t.Objective, "rolls failed since the last one merged") {
+			asks = append(asks, t)
+		}
+	}
+	if len(asks) != 1 || asks[0].Status != "waiting-human" {
+		t.Fatalf("needs-you cards %+v, want one waiting", asks)
+	}
+	for _, want := range []string{"Choices:", "- Retry the roll", "- Park", "- Close", "card #31"} {
+		if !strings.Contains(asks[0].Objective, want) {
+			t.Fatalf("the question misses %q:\n%s", want, asks[0].Objective)
+		}
+	}
+	var q *HumanQuestion
+	for _, e := range store.intakeEvents {
+		if e.Kind == IntakeEscalation {
+			q = e.Question
+		}
+	}
+	if q == nil || q.ChoiceValue("Retry the roll") != "retry" {
+		t.Fatalf("question %+v, want its buttons' values", q)
+	}
+	// a fourth failure settles while the question stands: no second card
+	seed("t-r4", "4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f", 54, RollOpened)
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.issues); n != 1 {
+		t.Fatalf("%d issues filed, want the one question", n)
+	}
+}
+
+// The question's Retry the roll answer acts: the failed attempts'
+// requests go — their commits unjudged again — the question's card closes
+// as factoryd's own, and the same poll's judge files one fresh roll of
+// the newest green images. A third poll consumes the answer once.
+func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(52, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, wf := newTestRoller(t, f)
+	ctx := context.Background()
+	seed := func(id, sha string, run int64, request string) {
+		store.tasks[id] = Task{ID: id, Source: SourceRoll, Status: "failed", Repository: codeRepo, IssueNumber: run - 20}
+		store.rolls = append(store.rolls, RollRequest{SHA: sha, Repository: codeRepo, RunID: run, State: request, TaskID: id})
+	}
+	seed("t-r1", "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f", 50, RollFailed)
+	seed("t-r2", "2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f2f", 51, RollFailed)
+	seed("t-r3", commitC1, 52, RollOpened) // ends this poll
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var ask Task
+	for _, t := range store.tasks {
+		if t.Kind == "human" && strings.Contains(t.Objective, rollAskMarker) {
+			ask = t
+		}
+	}
+	if ask.ID == "" || ask.Status != "waiting-human" || ask.IssueNumber != 31 {
+		t.Fatalf("the question's card %+v, want the waiting ask on issue #31", ask)
+	}
+	// the member's click: the label posted as their trusted comment
+	store.intakeEvents = append(store.intakeEvents,
+		IntakeEvent{TaskID: ask.ID, Kind: "issue_comment", Author: "sebastian", Body: "Retry the roll", Trusted: true})
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closed, []string{"31"}) {
+		t.Fatalf("closed %v, want the question's issue", f.closed)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened {
+		t.Fatalf("roll requests %+v, want one fresh open roll of %s", store.rolls, commitC1)
+	}
+	task := store.tasks[store.rolls[0].TaskID]
+	if task.Source != SourceRoll || task.Status != "queued" || !slices.Equal(wf.started, []string{task.ID}) {
+		t.Fatalf("the fresh roll task %+v, started %v", task, wf.started)
+	}
+	// the answer consumes once: a third poll closes, comments and files nothing again
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.closed, []string{"31"}) || len(f.comments) != 1 || len(f.issues) != 2 || len(wf.started) != 1 {
+		t.Fatalf("third poll: closed %v, %d comments, %d issues, started %v", f.closed, len(f.comments), len(f.issues), wf.started)
 	}
 }

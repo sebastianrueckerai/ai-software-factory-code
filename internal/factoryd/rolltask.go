@@ -161,6 +161,17 @@ func (s *PGStore) MarkRollsCommitted(ctx context.Context, taskID string, shas []
 	return err
 }
 
+// MarkRollsFailed fails the opened roll requests of the roll task whose
+// pull request is pr: the watcher waited past its timeout and the roll's
+// deployments never ran the digest, so the requests join the ladder's
+// failures.
+func (s *PGStore) MarkRollsFailed(ctx context.Context, repository string, pr int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE roll_requests SET state = 'failed' WHERE state = 'opened'
+		AND task_id IN (SELECT id FROM tasks WHERE source = $1 AND repository = $2 AND pr_number = $3)`,
+		SourceRoll, repository, pr)
+	return err
+}
+
 // RollHead is the branch commit RollCommit last wrote for task, "" before
 // its first.
 func (s *PGStore) RollHead(ctx context.Context, taskID string) (string, error) {
@@ -253,29 +264,37 @@ func (s *PGStore) LastMergedRoll(ctx context.Context, repository string) (string
 	return sha, err == nil, err
 }
 
-// ChainHead is the newest main run whose pull requests chain_runs records.
-func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, error) {
-	var head int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(run_id), 0) FROM chain_runs WHERE repository = $1`, repository).Scan(&head)
-	return head, err
+// FailedRolls are repository's roll requests that failed since the last
+// one merged, oldest first: the roll ladder's attempts. None before a
+// merged roll counts — the ladder climbs from the last success.
+func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, run_id, task_id, summary FROM roll_requests
+		WHERE repository = $1 AND state = 'failed'
+		AND run_id > COALESCE((SELECT max(run_id) FROM roll_requests WHERE repository = $1 AND state = 'merged'), 0)
+		ORDER BY run_id`, repository)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RollRequest
+	for rows.Next() {
+		var r RollRequest
+		if err := rows.Scan(&r.SHA, &r.RunID, &r.TaskID, &r.Summary); err != nil {
+			return nil, err
+		}
+		r.Repository = repository
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
-// RecordChainRun upserts one pull request's row to the run that carries
-// it; a newer run wins, a fold's carry moving the change to the fold.
-func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $3, run_id = $4, status = $5, updated_at = now()
-		WHERE chain_runs.run_id < $4`, repository, pr, sha, run, status)
-	return err
-}
-
-// RefreshChainStatus moves every row of sha's run to a status the run
-// reached.
-func (s *PGStore) RefreshChainStatus(ctx context.Context, repository, sha, status string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET status = $3, updated_at = now()
-		WHERE repository = $1 AND sha = $2 AND status <> $3`, repository, sha, status)
-	return err
+// StandingQuestion is repository's human card still waiting whose ask
+// carries marker: the question the marker names stands, no ladder
+// escalates twice while it does, and its answer, when one comes, is the
+// card's to consume.
+func (s *PGStore) StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error) {
+	return s.oneTask(ctx, `repository = $1 AND kind = 'human' AND status = 'waiting-human' AND objective LIKE '%' || $2 || '%'`,
+		repository, marker)
 }
 
 // bumpDigest points the one pinned reference to image in a manifest at
@@ -318,9 +337,9 @@ type RollerStore interface {
 	DeleteRollRequest(ctx context.Context, sha string) error
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
-	ChainHead(ctx context.Context, repository string) (int64, error)
-	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
-	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
+	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
+	StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
@@ -389,21 +408,26 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	stuck := false
 	for _, req := range settled {
 		if req.State == RollMerged {
 			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
 		} else {
 			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
+			stuck = true
 		}
+	}
+	if stuck {
+		r.escalateRolls(ctx)
+	}
+	if err := r.consumeRetry(ctx); err != nil {
+		return err
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
 		return err
 	}
 	if err := r.mainState(ctx, runs); err != nil {
-		return err
-	}
-	if err := r.recordChain(ctx, runs); err != nil {
 		return err
 	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
@@ -450,99 +474,6 @@ func (r *Roller) poll(ctx context.Context) error {
 	return nil
 }
 
-// recordChain records the main runs a poll sees into chain_runs (roadmap
-// 297): one row per pull request whose change a run carries, the run's
-// status the row's. The card's deploy fact, read from the chain itself,
-// for any project: the roll stays this one project's engine and writes
-// none of it. A run newer than the recorded head is mapped once, its
-// carry read from the compare against the run before it; the first
-// recording takes the newest run only, the runs before it belong to the
-// era before the chain was recorded. A run already recorded only moves
-// to a status it finished at.
-func (r *Roller) recordChain(ctx context.Context, runs []ActionRun) error {
-	repo := r.Repo.String()
-	head, err := r.Store.ChainHead(ctx, repo)
-	if err != nil {
-		return err
-	}
-	var main []ActionRun
-	for i := len(runs) - 1; i >= 0; i-- { // oldest first: each carry reads the run before it
-		if runs[i].PrettyRef == prBase && len(runs[i].CommitSHA) >= 7 {
-			main = append(main, runs[i])
-		}
-	}
-	if head == 0 && len(main) > 0 {
-		main = main[len(main)-1:]
-	}
-	prev := ""
-	for _, run := range main {
-		if run.ID <= head {
-			if run.Finished() {
-				if err := r.Store.RefreshChainStatus(ctx, repo, run.CommitSHA, run.Status); err != nil {
-					return err
-				}
-			}
-			prev = run.CommitSHA
-			continue
-		}
-		prs, err := r.chainCarried(ctx, run, prev)
-		if err != nil {
-			return err
-		}
-		if len(prs) == 0 {
-			// a run no pull request rides (a direct push): recorded under
-			// none, so the head still advances and the run is not mapped
-			// again
-			prs = []MergedPullRequest{{Number: 0}}
-		}
-		for _, p := range prs {
-			if err := r.Store.RecordChainRun(ctx, repo, p.Number, run.CommitSHA, run.ID, run.Status); err != nil {
-				return err
-			}
-		}
-		head = run.ID
-		prev = run.CommitSHA
-	}
-	return nil
-}
-
-// chainCarried lists the pull requests run's new commits merged. The
-// first run recorded has no run before it to compare: it reads its own
-// first parent, so its merge's pull requests still map.
-func (r *Roller) chainCarried(ctx context.Context, run ActionRun, prev string) ([]MergedPullRequest, error) {
-	base := prev
-	if base == "" {
-		parent, err := r.Forgejo.CommitParent(ctx, r.Repo.Owner, r.Repo.Name, run.CommitSHA)
-		if err != nil {
-			return nil, err
-		}
-		base = parent
-	}
-	merged, err := r.Forgejo.RecentMergedPullRequests(ctx, r.Repo.Owner, r.Repo.Name)
-	if err != nil {
-		return nil, err
-	}
-	if base == "" { // a root commit: no pull request rides it
-		return nil, nil
-	}
-	c, err := r.Forgejo.Compare(ctx, r.Repo.Owner, r.Repo.Name, base, run.CommitSHA)
-	if err != nil {
-		return nil, err
-	}
-	in := make(map[string]bool, len(c.Commits))
-	for _, cm := range c.Commits {
-		in[cm.SHA] = true
-	}
-	var prs []MergedPullRequest
-	for _, p := range merged {
-		if in[p.MergeCommit] {
-			prs = append(prs, p)
-		}
-	}
-	slices.SortFunc(prs, func(a, b MergedPullRequest) int { return cmp.Compare(a.Number, b.Number) })
-	return prs, nil
-}
-
 // imageContexts are main CI's three image jobs' commit-status contexts:
 // the images they publish are what a roll rolls.
 var imageContexts = []string{"ci / image (push)", "ci / image-sandbox (push)", "ci / image-runner (push)"}
@@ -579,6 +510,117 @@ func (r *Roller) rollStatus(ctx context.Context, sha, state, description string)
 		CommitStatus{State: state, Context: rollStatusContext, Description: description}); err != nil {
 		log.Printf("roller: %s: report %s: %v", sha, state, err)
 	}
+}
+
+// rollAttemptBound is how many roll requests fail since the last merged
+// roll before the ladder asks a human: three attempts, each its own card
+// with its own failure, is a stuck pipeline no fourth automatic attempt
+// solves. A merged roll resets the ladder to zero.
+const rollAttemptBound = 3
+
+// rollAskMarker names the roll ladder's question in the card it files,
+// so StandingQuestion recognises it while it waits. rollRetryLabel is
+// the retry choice's label: the comment a click posts (question.go), and
+// what consumeRetry answers.
+const (
+	rollAskMarker  = "rolls failed since the last one merged"
+	rollRetryLabel = "Retry the roll"
+)
+
+// escalateRolls is the roll ladder's end. A roll request settled failed
+// this poll (each settles once) and the failures since the last merged
+// roll at the bound: the five-part question reaches a person — retry the
+// roll, park it or close it — once per climb, never twice while the
+// question stands. A failure that settles after the card closed climbs
+// again.
+func (r *Roller) escalateRolls(ctx context.Context) {
+	reqs, err := r.Store.FailedRolls(ctx, r.Repo.String())
+	if err != nil {
+		log.Printf("roller: read the failed rolls: %v", err)
+		return
+	}
+	if len(reqs) < rollAttemptBound {
+		return
+	}
+	if _, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker); err != nil || standing {
+		if err != nil {
+			log.Printf("roller: read the standing question: %v", err)
+		}
+		return
+	}
+	var facts []string
+	for _, req := range reqs {
+		title, _, _ := strings.Cut(req.Summary, "\n\n")
+		fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
+		if t, ok, err := r.Store.Task(ctx, req.TaskID); err == nil && ok && t.IssueNumber > 0 {
+			fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+		}
+		facts = append(facts, fact)
+	}
+	q := HumanQuestion{
+		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", len(reqs), rollAskMarker),
+		Why:            "The roll tasks that carry main's images into k8s/ keep failing, so the repository pins the last images that went live and every card merged since waits on a green chain.",
+		Info:           fmt.Sprintf("The failed attempts, oldest first:\n%s\n\nRetry the roll starts one roll task of main's newest green images; park leaves this card waiting; close ends it — the images stay pinned as they are until a new roll merges.", strings.Join(facts, "\n")),
+		Recommendation: "Retry the roll, after reading the newest failed card's reason",
+		Source:         "the roller's",
+		Choices: []QuestionChoice{
+			{Value: "retry", Label: rollRetryLabel},
+			{Value: AnswerPark, Label: "Park"},
+			{Value: AnswerClose, Label: "Close"},
+		},
+	}
+	if _, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "the roller"); err != nil {
+		log.Printf("roller: escalate the failed rolls: %v", err)
+	}
+}
+
+// consumeRetry acts on the roll ladder's answered question: a member's
+// Retry the roll — the click posts the label as their comment
+// (question.go) — resets the ladder. The failed attempts' requests go,
+// their commits unjudged again, and the card closes as factoryd's own,
+// so the judge of this very poll files one fresh roll of main's newest
+// green images; a failure after it climbs from zero. Park and close need
+// no consumer: park leaves the card waiting, close ends it.
+func (r *Roller) consumeRetry(ctx context.Context) error {
+	t, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker)
+	if err != nil {
+		log.Printf("roller: read the standing question: %v", err)
+		return nil
+	}
+	if !standing {
+		return nil
+	}
+	events, err := r.Store.IntakeEvents(ctx, t.ID)
+	if err != nil {
+		log.Printf("roller: read the standing question's answers: %v", err)
+		return nil
+	}
+	if botCloseRecorded(events, t) {
+		return nil // the answer consumed already; the issue's close is on its way
+	}
+	if !slices.ContainsFunc(events, func(e IntakeEvent) bool {
+		return e.Kind == "issue_comment" && e.Trusted && e.Body == rollRetryLabel
+	}) {
+		return nil
+	}
+	reqs, err := r.Store.FailedRolls(ctx, r.Repo.String())
+	if err != nil {
+		return err
+	}
+	for _, req := range reqs {
+		if err := r.Store.DeleteRollRequest(ctx, req.SHA); err != nil {
+			return err
+		}
+	}
+	msg := "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
+	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
+		return err
+	}
+	if err := recordFactoryClose(ctx, r.Store, t); err != nil {
+		return err
+	}
+	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again", len(reqs))
+	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)
 }
 
 // judge decides one run of main whose image jobs are green: a skip, a roll

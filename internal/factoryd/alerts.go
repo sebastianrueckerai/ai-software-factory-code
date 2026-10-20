@@ -30,6 +30,12 @@ const (
 	// of budget.month_eur, one row each per UTC month (fingerprint
 	// month/percent); the cap's also files a human-lane issue.
 	AlertMonthCap = "month_cap"
+	// AlertChainRed and AlertChainStalled are the chain poller's rules:
+	// a repository's head run concluded red, or its chain sat past the
+	// stall bound — one open row per project (fingerprint the
+	// repository), resolved when a green head concludes.
+	AlertChainRed     = "chain_red"
+	AlertChainStalled = "chain_stalled"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.
@@ -274,6 +280,15 @@ func (s *PGStore) SetAlertTask(ctx context.Context, id int64, taskID string, det
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE alerts SET task_id = $2, detail = detail || $3::jsonb WHERE id = $1`, id, taskID, b)
 	return oneRow(res, err, "alert")
+}
+
+// ResolveChainAlerts resolves a repository's open chain alerts: its head
+// concluded green, the red or stall it raised was real and is mended.
+func (s *PGStore) ResolveChainAlerts(ctx context.Context, repository string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
+		WHERE kind = ANY($4) AND fingerprint = $1 AND verdict IS NULL`,
+		repository, VerdictReal, "factoryd", []string{AlertChainRed, AlertChainStalled})
+	return err
 }
 
 // AlertCount is the number of alerts of one kind and verdict ("open" for

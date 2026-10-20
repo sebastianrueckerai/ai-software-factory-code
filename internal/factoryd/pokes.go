@@ -38,7 +38,8 @@ const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
-	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent}
+	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
+	EventPullRequestMerged}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
@@ -67,6 +68,10 @@ type PokeStore interface {
 	// PokeRecipients are a poke's recipients on repository: base plus every
 	// member whose explicit level row (needs-you or all) joins them.
 	PokeRecipients(ctx context.Context, repository string, base []string) ([]string, error)
+	// ChainInform is the merged inform's words: the status of the task's
+	// own carry row, the repository's open repair card's issue (0 for
+	// none), and whether a green chain already covers the task.
+	ChainInform(ctx context.Context, repository string, pr int64, taskID string) (state string, repair int64, covered bool, err error)
 	// Poke writes m into the inbox thread of each of logins on repository,
 	// queued where queued says so, one pending delivery row per connection
 	// whose member's level passes plan's row level, and moves the cursor
@@ -125,6 +130,19 @@ func (p *Poker) Pass(ctx context.Context) error {
 				if t, _, err = p.Store.Task(ctx, e.TaskID); err != nil {
 					return err
 				}
+			}
+			if e.Kind == EventPullRequestMerged && t.Status == "merged" {
+				// the inform's words carry the chain's facts at poke time,
+				// not at merge: the poller may have concluded the chain
+				// between the two
+				state, repair, covered, err := p.Store.ChainInform(ctx, e.Repository, t.PRNumber, t.ID)
+				if err != nil {
+					return err
+				}
+				if e.Detail == nil {
+					e.Detail = map[string]any{}
+				}
+				e.Detail["chain"], e.Detail["repair"], e.Detail["covered"] = state, float64(repair), covered
 			}
 			m, ok := pokeOf(e, t)
 			var to []string
@@ -231,6 +249,22 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		// a row after the card's escalation: the inbox offers its answer
 		// row no more
 		m.Content = ref + " needs you no more: its question is withdrawn because " + str("reason") + "."
+	case EventPullRequestMerged:
+		// a card still merged informs once at its merge, its words the
+		// chain's facts as this poke reads them (chain, repair and covered
+		// in the detail); one already done — or already covered, the
+		// poller concluding between merge and poke — informs nobody
+		if t.Status != "merged" || bl("covered") {
+			return m, false
+		}
+		m.Content = ref + " merged; the chain is running."
+		if repair := num("repair"); str("chain") == "failure" || repair > 0 {
+			m.Content = ref + " merged; the chain failed"
+			if repair > 0 {
+				m.Content += fmt.Sprintf("; repair #%d is on it", repair)
+			}
+			m.Content += "."
+		}
 	case EventApprovalRequested:
 		m.Kind = MessageEscalation
 		switch str("kind") {
@@ -259,7 +293,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			m.Content = fmt.Sprintf("%s failed: %s.", ref, strings.TrimSuffix(FirstLine(str("reason")), "."))
 			m.Choices = []string{"Retry", "Leave it"}
 		case str("state") == "done" && t.Parent == "":
-			m.Content = fmt.Sprintf("%s is done: %s. €%.2f in all.", ref, CardTitle(t), t.SpentEUR)
+			m.Content = fmt.Sprintf("%s is done and live: %s. €%.2f in all.", ref, CardTitle(t), t.SpentEUR)
 		default:
 			return m, false
 		}
@@ -325,6 +359,21 @@ func cardRef(e Event, t Task) string {
 		return fmt.Sprintf("#%d", e.IssueNumber)
 	}
 	return e.TaskID
+}
+
+func (s *PGStore) ChainInform(ctx context.Context, repository string, pr int64, taskID string) (string, int64, bool, error) {
+	var state string
+	var repair int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE((SELECT status FROM chain_runs WHERE repository = $1 AND pr_number = $2), ''),
+		COALESCE((SELECT min(issue_number) FROM tasks WHERE repository = $1 AND source = $3 AND status <> ALL($4) AND issue_number > 0), 0)`,
+		repository, pr, SourceChainRepair, FinalStatuses).Scan(&state, &repair); err != nil {
+		return "", 0, false, err
+	}
+	covered, err := s.ChainCovered(ctx, repository)
+	if err != nil {
+		return "", 0, false, err
+	}
+	return state, repair, covered[taskID] > 0, nil
 }
 
 func (s *PGStore) PokeEvents(ctx context.Context, limit int) ([]Event, error) {

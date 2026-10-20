@@ -60,6 +60,7 @@ type fakeStore struct {
 	alerts          []Alert
 	rolls           []RollRequest
 	chain           []fakeChainRun
+	chainNow        func() time.Time // stamps the fake's chain writes; zero where nil
 	liveSessions    map[string]LiveSession
 	pauses          map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
@@ -826,6 +827,11 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 		return 0, nil
 	}
 	if a.Kind == AlertMonthCap && slices.ContainsFunc(s.alerts, func(b Alert) bool { return b.Kind == AlertMonthCap && b.Fingerprint == a.Fingerprint }) {
+		return 0, nil
+	}
+	if (a.Kind == AlertChainRed || a.Kind == AlertChainStalled) && slices.ContainsFunc(s.alerts, func(b Alert) bool {
+		return b.Kind == a.Kind && b.Fingerprint == a.Fingerprint && b.Verdict == ""
+	}) {
 		return 0, nil
 	}
 	a.ID = int64(len(s.alerts) + 1)

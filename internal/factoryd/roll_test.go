@@ -63,6 +63,12 @@ spec:
 	}
 }
 
+// rollStatusRecord is one commit status the hub's forgejo was told to
+// report.
+type rollStatusRecord struct {
+	sha, state, context, description string
+}
+
 // rollHub serves the Forgejo reads of the roll watcher: the newest k8s
 // commit, the manifests at each commit and each commit's push run.
 type rollHub struct {
@@ -73,6 +79,7 @@ type rollHub struct {
 	pulls     []map[string]any             // the closed pull requests
 	parents   map[string][]string          // commit -> its parents
 	byNumber  map[string]map[string]any    // "/pulls/<n>" -> the pull request
+	statuses  []rollStatusRecord           // the commit statuses reported
 }
 
 func (h *rollHub) setHead(sha, parent string) {
@@ -103,6 +110,17 @@ func (h *rollHub) forgejo(t *testing.T) *Forgejo {
 			json.NewEncoder(w).Encode(h.byNumber[strings.TrimPrefix(r.URL.Path, base)])
 		case r.URL.Path == base+"/pulls" && q.Get("state") == "closed":
 			json.NewEncoder(w).Encode(append([]map[string]any{}, h.pulls...))
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, base+"/statuses/"):
+			var in struct {
+				State       string `json:"state"`
+				Context     string `json:"context"`
+				Description string `json:"description"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+				t.Errorf("decode status: %v", err)
+			}
+			h.statuses = append(h.statuses, rollStatusRecord{strings.TrimPrefix(r.URL.Path, base+"/statuses/"), in.State, in.Context, in.Description})
+			w.WriteHeader(http.StatusCreated)
 		case strings.HasPrefix(r.URL.Path, base+"/git/commits/"):
 			var parents []map[string]string
 			for _, p := range h.parents[strings.TrimPrefix(r.URL.Path, base+"/git/commits/")] {
@@ -175,9 +193,10 @@ func (f *fakeDeployments) set(name, body string) {
 }
 
 type fakeRolls struct {
-	mu   sync.Mutex
-	rows map[string]Roll // sha/image
-	prs  []int64         // the roll tasks' pull requests
+	mu     sync.Mutex
+	rows   map[string]Roll // sha/image
+	prs    []int64         // the roll tasks' pull requests
+	failed []int64         // the pull requests whose rolls were marked failed
 }
 
 func (s *fakeRolls) RollTaskPRs(ctx context.Context, repository string) ([]int64, error) {
@@ -202,6 +221,16 @@ func (s *fakeRolls) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	}
 	s.rows[r.SHA+"/"+r.Image] = r
 	return true, nil
+}
+
+func (s *fakeRolls) MarkRollsFailed(ctx context.Context, repository string, pr int64) error {
+	if repository != "sf/ai-software-factory-code" {
+		return fmt.Errorf("repository %q", repository)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failed = append(s.failed, pr)
+	return nil
 }
 
 func at(s string) time.Time {
@@ -464,5 +493,90 @@ func TestRollFindsTheRollsMergeByItsRecordedPullRequest(t *testing.T) {
 		PushedAt: at("2026-09-29T12:00:00Z"), AppliedAt: at("2026-09-29T12:01:01Z"), LiveAt: at("2026-09-29T12:01:30Z")}}
 	if !reflect.DeepEqual(rolls.rows, want) {
 		t.Fatalf("rows %+v, want %+v", rolls.rows, want)
+	}
+}
+
+// Past its timeout the watcher stops falling silent: it posts the
+// factory/roll failure verdict for the sha it watched and fails the roll
+// requests the roll task's pull request carried, each exactly once.
+func TestWatcherDeadlinePostsFailure(t *testing.T) {
+	rolled := k8sManifests(digestOld, digestNew, digestWorkerNew, digestRunner)
+	hub := &rollHub{head: [2]string{"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c", "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
+		manifests: map[string]map[string]string{
+			"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a": k8sManifests(digestOld, digestOld, digestWorkerOld, digestRunner),
+			"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c": rolled,
+			"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": rolled,
+		},
+		pushed: map[string]string{"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": "2026-09-29T12:00:00Z"},
+		byNumber: map[string]map[string]any{"/pulls/21": {"number": 21, "state": "closed", "merged": true,
+			"merge_commit_sha": "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d", "head": map[string]any{"sha": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"}}},
+		parents: map[string][]string{"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": {"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a", "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"}}}
+	deps := &fakeDeployments{reads: map[string]int{}, json: map[string]string{
+		"factoryd":        deploymentJSON("2026-09-29T12:01:00Z", "2026-09-29T12:02:00Z", registryHost+"factory-gateway@"+digestOld, registryHost+"ci-runner@"+digestRunner, registryHost+"opencode-worker@"+digestWorkerOld),
+		"factory-gateway": deploymentJSON("2026-09-29T12:01:01Z", "2026-09-29T12:01:30Z", registryHost+"factory-gateway@"+digestOld),
+	}}
+	rolls := &fakeRolls{rows: map[string]Roll{}, prs: []int64{21}}
+	w := newTestRollWatcher(t, hub, deps, rolls)
+
+	steps(t, w, 2)
+	if len(hub.statuses) != 0 || len(rolls.failed) != 0 {
+		t.Fatalf("before the deadline: statuses %+v, failed %v", hub.statuses, rolls.failed)
+	}
+	w.deadline = time.Now().Add(-time.Second)
+	steps(t, w, 1)
+	const merge = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d"
+	want := []rollStatusRecord{{merge, "failure", "factory/roll", "not live within 1h0m0s; the deployments did not take the digest"}}
+	if !reflect.DeepEqual(hub.statuses, want) {
+		t.Fatalf("statuses %+v, want %+v", hub.statuses, want)
+	}
+	if !reflect.DeepEqual(rolls.failed, []int64{21}) {
+		t.Fatalf("marked failed %v, want pull request 21's rolls", rolls.failed)
+	}
+	steps(t, w, 2)
+	if len(hub.statuses) != 1 || len(rolls.failed) != 1 {
+		t.Fatalf("after done: statuses %+v, failed %v", hub.statuses, rolls.failed)
+	}
+}
+
+// A measured live is the watcher's success verdict: posted once, only
+// once every waited-for Deployment recorded, and never a failure for a
+// roll that concluded success.
+func TestWatcherSuccessPostsOnMeasure(t *testing.T) {
+	rolled := k8sManifests(digestOld, digestNew, digestWorkerNew, digestRunner)
+	hub := &rollHub{head: [2]string{"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c", "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
+		manifests: map[string]map[string]string{
+			"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a": k8sManifests(digestOld, digestOld, digestWorkerOld, digestRunner),
+			"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c": rolled,
+			"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": rolled,
+		},
+		pushed: map[string]string{"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": "2026-09-29T12:00:00Z"},
+		byNumber: map[string]map[string]any{"/pulls/21": {"number": 21, "state": "closed", "merged": true,
+			"merge_commit_sha": "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d", "head": map[string]any{"sha": "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"}}},
+		parents: map[string][]string{"8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d": {"5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a", "7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c"}}}
+	gw := registryHost + "factory-gateway@" + digestNew
+	deps := &fakeDeployments{reads: map[string]int{}, json: map[string]string{
+		"factoryd":        deploymentJSON("2026-09-29T12:01:00Z", "2026-09-29T12:02:00Z", registryHost+"factory-gateway@"+digestOld, registryHost+"ci-runner@"+digestRunner, registryHost+"opencode-worker@"+digestWorkerOld),
+		"factory-gateway": deploymentJSON("2026-09-29T12:01:01Z", "2026-09-29T12:01:30Z", gw),
+	}}
+	rolls := &fakeRolls{rows: map[string]Roll{}, prs: []int64{21}}
+	w := newTestRollWatcher(t, hub, deps, rolls)
+
+	steps(t, w, 2)
+	if len(hub.statuses) != 0 {
+		t.Fatalf("success posted before every Deployment is live: %+v", hub.statuses)
+	}
+	deps.set("factoryd", deploymentJSON("2026-09-29T12:01:00Z", "2026-09-29T12:02:00Z", registryHost+"factory-gateway@"+digestOld, registryHost+"ci-runner@"+digestRunner, registryHost+"opencode-worker@"+digestWorkerNew))
+	steps(t, w, 2)
+	const merge = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d"
+	want := []rollStatusRecord{{merge, "success", "factory/roll", "measured live: the deployments took the digest"}}
+	if !reflect.DeepEqual(hub.statuses, want) {
+		t.Fatalf("statuses %+v, want %+v", hub.statuses, want)
+	}
+	if len(rolls.failed) != 0 {
+		t.Fatalf("a concluded success also failed rolls: %v", rolls.failed)
+	}
+	steps(t, w, 2)
+	if len(hub.statuses) != 1 {
+		t.Fatalf("the success verdict repeated: %+v", hub.statuses)
 	}
 }
