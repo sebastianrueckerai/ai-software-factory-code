@@ -82,10 +82,11 @@ func TestFundRaisesACappedCardsBudget(t *testing.T) {
 			t.Errorf("the capped card's escalation lacks %s", want)
 		}
 	}
-	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+	rec := r.do(htmxPost("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"eur": {"0.5"}, "reason": {"the card's work is worth it"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) ||
+		!strings.Contains(rec.Body.String(), `<p class="note" role="status">Raised #13&#39;s budget by 0.50 EUR to 2.50 and posted your note as the answer; the card resumes.</p>`) {
+		t.Fatalf("fund by htmx = %d: %s", rec.Code, rec.Body)
 	}
 	task, _, _ := r.tasks.Task(t.Context(), "t-e")
 	if task.BudgetEUR != 2.5 {

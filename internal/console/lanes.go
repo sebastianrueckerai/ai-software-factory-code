@@ -307,11 +307,12 @@ func (c *Console) acceptPlan(w http.ResponseWriter, r *http.Request) {
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	if _, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("answer")); err != nil {
+	note, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("answer"))
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
 // planHoldout posts a writer's okay or drop of one hold-out of the plan
@@ -319,11 +320,12 @@ func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 func (c *Console) planHoldout(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	if _, err := c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb")); err != nil {
+	note, err := c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb"))
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
 // planChanges posts a writer's change request on the plan

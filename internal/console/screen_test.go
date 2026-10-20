@@ -121,14 +121,14 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 		t.Error("the five columns show another project's card, the human lane or a lane column")
 	}
 	needs := col(t, body, "Needs you")
-	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`, `action="/tasks/t-esc/answer"`,
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`, `action="/tasks/t-esc/answer"`,
 		`<input type="hidden" name="back" value="/?project=ai-software-factory-code">`, `action="/approvals/4/approve"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
-	if strings.Count(needs, `/answer"`) != 1 {
-		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/answer"`))
+	if strings.Count(needs, `/answer" hx-post=`) != 1 {
+		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/answer" hx-post=`))
 	}
 	// the place names the column, so a card that changes column for its
 	// viewer swaps the board
@@ -1011,7 +1011,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" hx-target="#board" hx-swap="outerHTML" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}
@@ -1138,7 +1138,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 		}
 	}
 	body := page("t-run")
-	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you">`,
+	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`,
 		`data-query="?project=ai-software-factory-code&amp;q=t-run"`, findForm,
 		`<input id="q" name="q" type="text" value="t-run" placeholder="Find: a word, #612, plan:558"`,
 		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`} {

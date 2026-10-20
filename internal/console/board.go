@@ -149,24 +149,26 @@ const (
 
 var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 
+// columnHolds are the statuses each of the four columns holds, which its
+// data-holds names for a card's action to move the card to.
+var columnHolds = [][]string{
+	colNeedsYou: {"waiting-human", "waiting-poster"},
+	colQueued:   {"backlog", "queued", "waiting-deps"},
+	colProgress: {"running", "closing", "in-review", "merged"},
+	colDone:     {"done", "failed", "closed"},
+}
+
 // fiveColumn is t's column for viewer, -1 for a status none holds: a card
 // waiting on its author needs the viewer when they are the author, else
 // it waits like a queued one; for no viewer (the pulse's) it needs a person.
 func fiveColumn(t factoryd.Task, viewer string) int {
-	switch t.Status {
-	case "waiting-human":
-		return colNeedsYou
-	case "waiting-poster":
-		if t.Author == viewer || viewer == "" {
-			return colNeedsYou
+	if t.Status == "waiting-poster" && t.Author != viewer && viewer != "" {
+		return colQueued
+	}
+	for i, holds := range columnHolds {
+		if slices.Contains(holds, t.Status) {
+			return i
 		}
-		return colQueued
-	case "backlog", "queued", "waiting-deps":
-		return colQueued
-	case "running", "closing", "in-review", "merged":
-		return colProgress
-	case "done", "failed", "closed":
-		return colDone
 	}
 	return -1
 }
@@ -850,6 +852,7 @@ type planCards struct {
 type column struct {
 	Title string
 	Lane  string // a lane column's lane, where a card is dropped
+	Holds string // the statuses the column holds, space-separated
 	// Total is the column's count before the find narrowed it (C13); the
 	// head reads "n of m" when they differ.
 	Total int
@@ -2195,16 +2198,17 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		for _, col := range stateColumns {
 			byStatus[col.Status] = len(d.Columns)
-			k := column{Title: col.Title}
+			k := column{Title: col.Title, Holds: col.Status}
 			if factoryd.Final(col.Status) {
 				k.Finished = col.Status
 			}
 			d.Columns = append(d.Columns, k)
 		}
 		byStatus["closing"] = byStatus["running"]
+		d.Columns[byStatus["closing"]].Holds += " closing"
 	} else {
-		for _, title := range columnTitles {
-			d.Columns = append(d.Columns, column{Title: title})
+		for i, title := range columnTitles {
+			d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
 		}
 		d.Columns[colDone].Finished = "done"
 	}
@@ -2934,10 +2938,15 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if note == answerInChatNote {
-		http.Redirect(w, r, "/projects/"+url.PathEscape(r.PostFormValue("project"))+"/chat", http.StatusSeeOther)
+		chat := "/projects/" + url.PathEscape(r.PostFormValue("project")) + "/chat"
+		if r.Header.Get("HX-Request") != "" {
+			w.Header().Set("HX-Redirect", chat)
+			return
+		}
+		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -2947,11 +2956,12 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason")); err != nil {
+	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"))
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),

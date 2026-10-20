@@ -1403,7 +1403,7 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	if strings.Contains(body, "old reason") || strings.Contains(body, "finished human work") {
 		t.Error("board shows a superseded escalation or a finished human task")
 	}
-	if strings.Count(body, `/answer"`) != 1 {
+	if strings.Count(body, `/answer" hx-post=`) != 1 {
 		t.Error("want exactly one answer box: the escalated agent task")
 	}
 	frag := r.do(httptest.NewRequest(http.MethodGet, "/board", nil), ck).Body.String()

@@ -570,6 +570,153 @@ document.addEventListener("click", function (e) {
   if (open) { var f = box.querySelector("textarea, input, select"); if (f) f.focus(); }
 });
 
+// A card's press acts at once (C31): the card moves to the column that
+// holds the status its form's data-to names, or a lane move's lane column,
+// sliding there, and leaves the board when no column holds it; a form
+// without one moves nothing. From the press on the card is locked: its
+// buttons, on the board and in the drawer, take no press, and a second
+// action on it is dropped, so one press registers. The move holds across
+// the board's swaps until the factory's board shows the card out of the
+// columns it left: an approval's answer does at once, a workflow's step
+// seconds later; then a drawer showing the card's open need loads again.
+// A refusal or a lost request puts the card back at once, the reason in
+// the flash, and so does a factory that has not moved it within a minute.
+(function () {
+  var acts = {}, wait = 60000;
+  function board() { return document.getElementById("board"); }
+  // own are the card's, or the routine's, elements a column's cards hold
+  function own(id) {
+    var q = CSS.escape(id);
+    return ":scope > [data-card=\"" + q + "\"], :scope > [data-ghost=\"" + q + "\"]";
+  }
+  function onBoard(id) {
+    var out = [];
+    document.querySelectorAll("#board .cards").forEach(function (c) { out.push.apply(out, c.querySelectorAll(own(id))); });
+    return out;
+  }
+  function colOf(el) { return el.closest(".column").getAttribute("aria-labelledby"); }
+  function lock(a, el) {
+    el.setAttribute("aria-busy", "true");
+    a.busy.push(el);
+    el.querySelectorAll("button:not(:disabled)").forEach(function (b) {
+      b.disabled = true;
+      a.off.push(b);
+    });
+  }
+  function lockAll(a) {
+    var q = CSS.escape(a.id);
+    onBoard(a.id).forEach(function (el) { lock(a, el); });
+    document.querySelectorAll("#drawer [data-drawer=\"" + q + "\"] .open-need, #drawer [data-routine-drawer^=\"" + q + ":\"] .acts").forEach(function (el) { lock(a, el); });
+  }
+  function glide(el, was) {
+    if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    var r = el.getBoundingClientRect();
+    el.animate([{transform: "translate(" + (was.left - r.left) + "px, " + (was.top - r.top) + "px)"}, {transform: "none"}], {duration: 200, easing: "ease-out"});
+  }
+  // place moves the card out of the columns it left: one copy to the top
+  // of its new column unless the card stands there already, the others
+  // hidden. The mark is data-sent, not a class: htmx settles a swapped
+  // element's classes from the one of its id it replaced.
+  function place(a, slide) {
+    var to = a.to && document.querySelector("#board .column" + a.to + " > .cards");
+    var there = to && to.querySelector(own(a.id));
+    onBoard(a.id).forEach(function (el) {
+      if (a.from.indexOf(colOf(el)) < 0 || el.hasAttribute("data-sent")) return;
+      a.moved.push({el: el, parent: el.parentNode, next: el.nextSibling});
+      el.setAttribute("data-sent", "");
+      if (to && !there) {
+        var was = slide && el.getBoundingClientRect();
+        to.prepend(el);
+        there = el;
+        if (was) glide(el, was);
+      } else el.hidden = true;
+    });
+    a.board = board();
+    lockAll(a);
+  }
+  function free(a) {
+    delete acts[a.id];
+    clearTimeout(a.timer);
+    a.off.forEach(function (b) { b.disabled = false; });
+    a.busy.forEach(function (el) { el.removeAttribute("aria-busy"); });
+  }
+  function back(a, why) {
+    for (var i = a.moved.length - 1; i >= 0; i--) {
+      var m = a.moved[i];
+      if (!m.el.isConnected) continue;
+      m.parent.insertBefore(m.el, m.next && m.next.parentNode === m.parent ? m.next : null);
+      m.el.hidden = false;
+      m.el.removeAttribute("data-sent");
+    }
+    free(a);
+    var flash = document.getElementById("flash");
+    if (!why || !flash) return;
+    flash.textContent = why;
+    flash.hidden = false;
+  }
+  // the factory's board shows the card out of the columns it left: the
+  // move is the factory's now
+  function landed(a) {
+    free(a);
+    var q = CSS.escape(a.id);
+    if (document.querySelector("#drawer [data-drawer=\"" + q + "\"] .open-need")) {
+      htmx.ajax("GET", "/cards/" + encodeURIComponent(a.id) + "/drawer", {target: "#drawer", swap: "innerHTML"});
+    }
+  }
+  function actOf(xhr) {
+    for (var id in acts) if (acts[id].xhr === xhr) return acts[id];
+    return null;
+  }
+  // the answer is in: a refusal goes back, a board that answers it (a
+  // stale plan) standing as the truth; an accepted press without a move
+  // is done, one with a move waits for the board that shows it
+  function answered(a, xhr, swaps) {
+    a.xhr = null;
+    if (xhr.status >= 200 && xhr.status < 400) {
+      a.ok = true;
+      if (!a.from.length) landed(a);
+    } else if (swaps) free(a);
+    else back(a, xhr.status ? "" : "The factory could not be reached; the card is back in its column.");
+  }
+  document.addEventListener("htmx:beforeRequest", function (e) {
+    var f = e.detail.elt, k = f.closest && f.closest("[data-card], [data-ghost], [data-drawer], [data-routine-drawer]");
+    if (e.defaultPrevented || e.detail.requestConfig.verb !== "post" || !k) return;
+    var id = (k.dataset.card || k.dataset.ghost || k.dataset.drawer || k.dataset.routineDrawer).split(":")[0];
+    if (acts[id]) {
+      e.preventDefault();
+      return;
+    }
+    var a = acts[id] = {id: id, xhr: e.detail.xhr, to: "", from: [], moved: [], off: [], busy: []};
+    var lane = f.dataset.move;
+    if (f.dataset.to) a.to = "[data-holds~=\"" + CSS.escape(f.dataset.to) + "\"]";
+    else if (lane && document.querySelector("#board .column[data-lane=\"" + CSS.escape(lane) + "\"]")) a.to = "[data-lane=\"" + CSS.escape(lane) + "\"]";
+    if (a.to) {
+      var to = document.querySelector("#board .column" + a.to), cols = onBoard(id).map(colOf);
+      a.from = cols.filter(function (c, i) { return cols.indexOf(c) === i && (!to || c !== to.getAttribute("aria-labelledby")); });
+    }
+    a.timer = setTimeout(function () {
+      if (acts[id] === a) back(a, "The factory has not moved the card yet; it is back in its column.");
+    }, wait);
+    place(a, true);
+  });
+  document.addEventListener("htmx:beforeSwap", function (e) {
+    var a = actOf(e.detail.xhr);
+    if (a) answered(a, e.detail.xhr, e.detail.shouldSwap);
+  });
+  document.addEventListener("htmx:afterRequest", function (e) {
+    var a = actOf(e.detail.xhr);
+    if (a) answered(a, e.detail.xhr, false);
+  });
+  document.addEventListener("htmx:afterSwap", function () {
+    var b = board();
+    Object.keys(acts).forEach(function (id) {
+      var a = acts[id];
+      if (a.ok && a.board !== b && !onBoard(id).some(function (el) { return a.from.indexOf(colOf(el)) >= 0; })) landed(a);
+      else place(a, false);
+    });
+  });
+})();
+
 // The card drawer docked at the right edge over the board: #card=<id> in
 // the URL opens it, on load too, and a card links there; #card=<id>:<section>
 // opens it with that section of the overview open. A routine's drawer

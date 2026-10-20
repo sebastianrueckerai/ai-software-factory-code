@@ -333,7 +333,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	closeForm := `<form method="post" action="/tasks/t-a/close" hx-post="/tasks/t-a/close" hx-target="#board" hx-swap="outerHTML" ` +
-		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close">` +
+		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">` +
 		`<button type="submit" class="deny" aria-label="Close #21">Close</button></form>`

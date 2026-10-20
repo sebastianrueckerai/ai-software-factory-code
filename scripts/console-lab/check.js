@@ -4,8 +4,9 @@
 // mechanic that does not work: the drawer docked at the right edge and
 // never over the chat, Escape closing it, Do it becoming an applied line,
 // the routines' ghosts at the foot of their lanes with their control and
-// drawer and their period, the find narrowing the board as you type, the
-// chat above the board at 390 px, no horizontal scroll at 1440 or 390.
+// drawer and their period, the find narrowing the board as you type, a
+// card's press moving the card at once and taking one press, the chat
+// above the board at 390 px, no horizontal scroll at 1440 or 390.
 // Exit 1 and one line per failure.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -280,6 +281,68 @@ async function lateRead(page, label, fails) {
   }
   if (after.query.indexOf("q=export") < 0 || after.off) fails.push(label + ": after a late read the board's query is " + after.query + ", " + after.off + " cards do not say export");
   if (after.read !== "settled") fails.push(label + ": the late read's promise is " + after.read);
+}
+
+// cardPress presses Postgres on the busy board's escalation (603), its
+// answer held 1.2 s, and checks C31: before the answer is in the card
+// stands at the top of In progress, busy, no button of it live, and a
+// second press on it sends nothing; a refusal puts it back in Needs you
+// where it stood, live, the refusal in the flash. Pressed again in its
+// drawer and accepted while the factory's board still shows it waiting,
+// it keeps its new place and its lock, the drawer's open need locked too,
+// through the answer's board; a board that shows it out of Needs you lets
+// it go.
+async function cardPress(page, fails) {
+  const id = labID(603), sel = '#board .cards > [data-card="' + id + '"]';
+  await page.goto(base + "/", { waitUntil: "load" });
+  await page.waitForTimeout(600);
+  const where = () => page.evaluate((s) => {
+    const k = document.querySelector(s), f = document.getElementById("flash");
+    return k && { col: k.closest(".column").dataset.holds, at: Array.prototype.indexOf.call(k.parentNode.children, k), busy: k.getAttribute("aria-busy"),
+      live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length, flash: f.hidden ? "" : f.textContent };
+  }, sel);
+  const before = await where();
+  if (!before || before.col.indexOf("waiting-human") < 0 || !before.live) return fails.push("card press: #603 is not a live card in Needs you: " + JSON.stringify(before));
+  let posts = 0, answer;
+  const answers = (u) => u.pathname === "/tasks/" + id + "/answer";
+  await page.route(answers, async (r) => {
+    posts++;
+    await new Promise((ok) => setTimeout(ok, 1200));
+    await answer(r);
+  });
+  answer = (r) => r.fulfill({ status: 409, contentType: "text/plain", body: "The lab refuses the answer." });
+  await page.locator(sel + ' button:text-is("Postgres")').click();
+  const now = await where();
+  if (!now || now.col.indexOf("running") < 0 || now.at !== 0 || now.busy !== "true" || now.live) {
+    fails.push("card press: right after the press the card stands " + JSON.stringify(now) + ", want the top of In progress, busy, no live button");
+  }
+  await page.evaluate((s) => document.querySelectorAll(s + ' form[action$="/answer"]')[1].requestSubmit(), sel);
+  await page.waitForTimeout(200);
+  if (posts !== 1) fails.push("card press: two presses on the card sent " + posts + " answers");
+  await page.waitForTimeout(1400);
+  const refused = await where();
+  if (!refused || refused.col !== before.col || refused.at !== before.at || refused.busy || refused.live !== before.live || refused.flash !== "The lab refuses the answer.") {
+    fails.push("card press: after the refusal the card stands " + JSON.stringify(refused) + ", want back where it stood " + JSON.stringify(before) + " and the refusal in the flash");
+  }
+  const query = await page.evaluate(() => document.getElementById("board").dataset.query);
+  const waiting = await (await page.request.get(base + "/board" + query, { headers: { "HX-Request": "true" } })).text();
+  answer = (r) => r.fulfill({ status: 200, contentType: "text/html", body: waiting });
+  await page.evaluate((k) => { location.hash = "#card=" + k; }, id);
+  await page.waitForSelector("#drawer .open-need button");
+  posts = 0;
+  await page.locator('#drawer .open-need button:text-is("Postgres")').click();
+  await page.waitForTimeout(1800);
+  const kept = await where(), drawerBusy = await page.evaluate(() => { const o = document.querySelector("#drawer .open-need"); return o && o.getAttribute("aria-busy"); });
+  if (posts !== 1 || !kept || kept.col.indexOf("running") < 0 || kept.busy !== "true" || kept.live || drawerBusy !== "true") {
+    fails.push("card press: accepted from the drawer while the factory's board shows the card waiting, " + posts + " answers sent, the card " + JSON.stringify(kept) +
+      ", the drawer's open need busy " + drawerBusy + ", want one answer, the card in In progress and both locked");
+  }
+  await page.unroute(answers);
+  await page.route((u) => u.pathname === "/board", (r) => r.fulfill({ status: 200, contentType: "text/html", body: waiting.split('data-card="' + id + '"').join('data-card="t-moved"') }));
+  await page.evaluate(() => htmx.ajax("GET", "/board" + document.getElementById("board").dataset.query, { source: "#board", target: "#board", swap: "outerHTML" }));
+  await page.waitForTimeout(800);
+  const gone = await page.evaluate((s) => ({ card: !!document.querySelector(s), busy: document.querySelectorAll("#board [aria-busy], #board [data-sent]").length }), sel);
+  if (gone.card || gone.busy) fails.push("card press: a board that shows the card out of Needs you leaves " + JSON.stringify(gone) + ", want the card let go");
 }
 
 async function text(page) {
@@ -1587,6 +1650,10 @@ async function text(page) {
   else if (order.chat === false || order.board === false) fails.push("phone: the chat and the board are not both shown (chat " + order.chat + ", board " + order.board + ")");
   else if (order.chat > order.board) fails.push("phone: the board sits above the chat");
   await ph.ctx.close();
+  await seed("busy");
+  const cp = await open(browser, { width: 1440, height: 900 });
+  await cardPress(cp.page, fails);
+  await cp.ctx.close();
   await browser.close();
   if (fails.length) { console.log(fails.join("\n")); process.exit(1); }
   console.log("ok: every control present, the mechanics work");

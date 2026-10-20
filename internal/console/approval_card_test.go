@@ -1,9 +1,11 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -113,5 +115,43 @@ func TestAMergedCardWaitsInProgressDoneIsDone(t *testing.T) {
 	}
 	if strings.Contains(progress, `data-card="t-d"`) || !strings.Contains(col(t, body, "Done"), `data-card="t-d"`) {
 		t.Fatal("a done card is not a finished card in Done")
+	}
+}
+
+// A card's press moves the card at once (C31): every column names the
+// statuses it holds, in the four columns and the wide view, and the
+// approval's forms the status of its task, whose card the decided request
+// leaves standing. The press sent by htmx answers with the board and its
+// note; a browser's form keeps its redirect.
+func TestCardPressAnswersWithTheBoard(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
+		Repository: "sf/code", IssueNumber: 9, PRNumber: 9}})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-card",
+		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
+	r.c.cfg.ApproveMerge = func(context.Context, string, int64, string) error { return nil }
+	ck, s := r.loggedIn(t)
+	for page, wants := range map[string][]string{
+		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
+			`data-holds="backlog queued waiting-deps">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
+			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" hx-target="#board" hx-swap="outerHTML" data-to="in-review">`},
+		"/?project=ai-software-factory-code&view=wide": {`data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
+			`data-holds="failed"`, `data-holds="closed"`},
+	} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %s", page, want)
+			}
+		}
+	}
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
+	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
+	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.HasPrefix(body, `<div id="board"`) ||
+		!strings.Contains(body, `<p class="note" role="status">Approved pull request #9; factoryd merges it.</p>`) {
+		t.Fatalf("the htmx approve = %d:\n%s", rec.Code, body)
+	}
+	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
+		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
