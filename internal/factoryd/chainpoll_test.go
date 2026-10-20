@@ -783,11 +783,11 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 	var ended []string
 	p.End = func(ctx context.Context, taskID, final, reason string) error {
 		ended = append(ended, taskID+" "+final+" "+reason)
-		if taskID == "t-green" {
-			return errors.New("forgejo is down")
-		}
-		return nil
+		return errors.New("forgejo is down")
 	}
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
 	want := []string{"t-green done live: covered by run 12", "t-later done live: covered by run 12"}
 	for tick := 1; tick <= 2; tick++ {
 		ended = nil
@@ -799,13 +799,46 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 			t.Fatalf("tick %d ended %q, want %q", tick, ended, want)
 		}
 	}
+	for _, id := range []string{"t-green", "t-later"} {
+		if n := strings.Count(logs.String(), "chain poller: "+codeRepo+": end "+id+": forgejo is down\n"); n != 1 {
+			t.Fatalf("the failed end of %s logged %d times, want once: %s", id, n, logs.String())
+		}
+	}
+}
+
+// A covered card whose End keeps failing logs its failure once, not every
+// tick; an End that succeeds forgets it, so the next failure logs again.
+func TestAFailingEndLogsOnceUntilItSucceeds(t *testing.T) {
+	p, store := newTestPoller(t, &chainForgejo{}, seedProject(codeRepo))
+	store.tasks = map[string]Task{"t-green": {ID: "t-green", Status: "merged", Repository: codeRepo, PRNumber: 12}}
+	store.chain = []fakeChainRun{{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"}}
+	down := errors.New("forgejo is down")
+	ends := []error{down, down, nil, down}
+	p.End = func(ctx context.Context, taskID, final, reason string) error {
+		err := ends[0]
+		ends = ends[1:]
+		return err
+	}
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	line := "chain poller: " + codeRepo + ": end t-green: forgejo is down\n"
+	for tick, want := range []int{1, 1, 1, 2} {
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if n := strings.Count(logs.String(), line); n != want {
+			t.Fatalf("after tick %d the failed end logged %d times, want %d: %s", tick+1, n, want, logs.String())
+		}
+	}
 }
 
 // A card merged while the head is already green (the review's focus):
 // the green run that carried its change was recorded a tick before the
 // card reached merged, so no new head names it. The next tick ends it
 // done all the same, through the runner's Finish: one task_ended, so one
-// done poke, no alert, and a later tick ends nothing again.
+// done poke, and no alert. A later tick finds no merged card to end: the
+// end and its poke stay one.
 func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "in-review"), policy.ChainModeRun)
 	hub.pulls = map[int64]string{7: mergedAt(7, mergePR12)}
@@ -819,7 +852,12 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		},
 	}
 	store.projects = []Project{seedProject("sf/repo")}
-	p := &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store, Policy: r.cfg.Policy, End: r.Finish}
+	ends := 0
+	end := func(ctx context.Context, taskID, final, reason string) error {
+		ends++
+		return r.Finish(ctx, taskID, final, reason)
+	}
+	p := &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store, Policy: r.cfg.Policy, End: end}
 	ctx := context.Background()
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
@@ -830,25 +868,31 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 	}) {
 		t.Fatalf("chain %+v, want the head and pr 7 green at run 61", got)
 	}
+	if ends != 0 {
+		t.Fatalf("ended %d times before the merge, want none", ends)
+	}
 	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := store.Task(ctx, "t1"); got.Status != "merged" {
 		t.Fatalf("status at the merge = %q, want merged", got.Status)
 	}
-	for range 2 {
+	for tick := 1; tick <= 2; tick++ {
 		if err := p.Tick(ctx); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if got, _, _ := store.Task(ctx, "t1"); got.Status != "done" {
-		t.Fatalf("status = %q, want done on the tick after the merge", got.Status)
-	}
-	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 61"}) {
-		t.Fatalf("task_ended = %q, want one naming run 61", got)
-	}
-	if len(store.alerts) != 0 {
-		t.Fatalf("alerts = %+v, want none", store.alerts)
+		if got, _, _ := store.Task(ctx, "t1"); got.Status != "done" {
+			t.Fatalf("status after tick %d past the merge = %q, want done", tick, got.Status)
+		}
+		if ends != 1 {
+			t.Fatalf("ended %d times after tick %d past the merge, want once", ends, tick)
+		}
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 61"}) {
+			t.Fatalf("task_ended after tick %d = %q, want one naming run 61", tick, got)
+		}
+		if len(store.alerts) != 0 {
+			t.Fatalf("alerts after tick %d = %+v, want none", tick, store.alerts)
+		}
 	}
 }
 

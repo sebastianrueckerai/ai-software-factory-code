@@ -55,11 +55,19 @@ type BoardTask struct {
 // waiting; every row's status is its commit's verdict — the runs AND
 // the required contexts — so coverage demands them too.
 const deployLive = `(tasks.pr_number = 0
-	OR EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
-	   AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)
-	      >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number)
+	OR ` + chainCovers + `
 	OR NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
+
+// chainGreen is the newest green run of the card's repository, 0 for none.
+const chainGreen = `COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)`
+
+// chainCovers is the SQL test that a green run covers the card's change:
+// the run that carried it is recorded and the newest green run sits at or
+// after it. deployLive and the reconciler's ChainCovered both read it.
+const chainCovers = `(EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
+	AND ` + chainGreen + `
+	   >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number))`
 
 // boardTaskQuery reads tasks as BoardTasks with $1 the escalation's intake
 // kind and $2 the escalation alert's kind; the caller adds the WHERE.

@@ -179,6 +179,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := &ChainPoller{Store: s, End: r.Finish}
+	p.once()
 	for range 2 {
 		p.reconcile(ctx, "sf/r")
 	}

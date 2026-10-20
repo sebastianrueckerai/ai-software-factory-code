@@ -39,14 +39,8 @@ func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, erro
 // cover. The map is the reconciler's list and the merged inform's
 // covered fact.
 func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,
-		       COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
-		   FROM tasks
-		   WHERE repository = $1 AND status = 'merged' AND pr_number > 0
-		     AND EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = $1 AND carry.pr_number = tasks.pr_number)
-		     AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
-			  >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = $1 AND mine.pr_number = tasks.pr_number)`,
-		repository)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, `+chainGreen+` FROM tasks
+		WHERE repository = $1 AND status = 'merged' AND pr_number > 0 AND `+chainCovers, repository)
 	if err != nil {
 		return nil, err
 	}
@@ -278,10 +272,11 @@ type ChainPoller struct {
 	Now  func() time.Time
 	Poll time.Duration
 
-	watched  map[string]bool          // repository -> whether its pushes run a workflow, read once
-	noted    map[string]bool          // the chain-block complaints logged, once each
-	failed   map[string]string        // repository -> the failure it last logged
-	episodes map[headKey]chainEpisode // the head rows watched between polls
+	watched  map[string]bool              // repository -> whether its pushes run a workflow, read once
+	noted    map[string]bool              // the chain-block complaints logged, once each
+	failed   map[string]string            // repository -> the failure it last logged
+	episodes map[headKey]chainEpisode     // the head rows watched between polls
+	ends     map[string]map[string]string // repository -> covered card -> the end failure it last logged
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -307,6 +302,7 @@ func (p *ChainPoller) Run(ctx context.Context) {
 func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
+		p.ends = map[string]map[string]string{}
 	}
 }
 
@@ -354,18 +350,24 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 // reconcile ends every merged card of repository a green run covers, on
 // every tick, so a card that reached merged after its green run was
 // recorded ends all the same. End on a card already done is a no-op; a
-// failed end logs and leaves the card merged for the next tick.
+// failed end leaves the card merged for the next tick and logs once
+// until the card ends or its End succeeds.
 func (p *ChainPoller) reconcile(ctx context.Context, repository string) {
 	covered, err := p.Store.ChainCovered(ctx, repository)
 	if err != nil {
 		log.Printf("chain poller: %s: covered cards: %v", repository, err)
 		return
 	}
+	failed := map[string]string{}
 	for id, run := range covered {
 		if err := p.End(ctx, id, "done", fmt.Sprintf("live: covered by run %d", run)); err != nil {
-			log.Printf("chain poller: %s: end %s: %v", repository, id, err)
+			if p.ends[repository][id] != err.Error() {
+				log.Printf("chain poller: %s: end %s: %v", repository, id, err)
+			}
+			failed[id] = err.Error()
 		}
 	}
+	p.ends[repository] = failed
 }
 
 // serves reads whether the poller serves proj's repository — its file's
