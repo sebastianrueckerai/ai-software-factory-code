@@ -273,9 +273,9 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	}
 }
 
-// MergedCardCommits maps each recorded merge commit of the repository to
-// its card's pull request: a card without a commit, without a pull
-// request or of another repository is left out. Requires a disposable
+// MergedCardCommits maps each of the given merge commits to its card's
+// pull request: a card without a pull request or of another repository
+// is left out, and a commit not asked for stays out. Requires a disposable
 // Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestMergedCardCommitsListsMergedCards(t *testing.T) {
 	ctx := context.Background()
@@ -308,11 +308,24 @@ func TestMergedCardCommitsListsMergedCards(t *testing.T) {
 			}
 		}
 	}
-	got, err := s.MergedCardCommits(ctx, "sf/r")
+	got, err := s.MergedCardCommits(ctx, "sf/r", []string{"m-a", "m-b", "m-c", "m-d", "m-e", "m-x"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := map[string]int64{"m-a": 7, "m-b": 8, "m-c": 9}; !maps.Equal(got, want) {
 		t.Fatalf("MergedCardCommits = %v, want %v", got, want)
+	}
+	if got, err = s.MergedCardCommits(ctx, "sf/r", []string{"m-b"}); err != nil || !maps.Equal(got, map[string]int64{"m-b": 8}) {
+		t.Fatalf("MergedCardCommits of m-b = %v, %v", got, err)
+	}
+	un, err := s.UncarriedMergedCards(ctx, "sf/r")
+	if err != nil || !maps.Equal(un, map[string]int64{"m-a": 7}) {
+		t.Fatalf("UncarriedMergedCards = %v, %v, want only t-a: merged, with a commit and a pull request", un, err)
+	}
+	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 3, "success"); err != nil {
+		t.Fatal(err)
+	}
+	if un, err = s.UncarriedMergedCards(ctx, "sf/r"); err != nil || len(un) != 0 {
+		t.Fatalf("UncarriedMergedCards = %v, %v, want none once t-a has a row", un, err)
 	}
 }

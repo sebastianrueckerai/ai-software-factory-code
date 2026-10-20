@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"net/url"
 	"slices"
@@ -56,13 +57,26 @@ func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[stri
 	return covered, rows.Err()
 }
 
-// MergedCardCommits maps the merge commit of every card of repository
-// whose pull request merged to that pull request's number: the queue
-// records the commit at the merge and Finish for any other, so a card
-// still on its way to merged is already in the map.
-func (s *PGStore) MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT merge_commit, pr_number FROM tasks
-		WHERE repository = $1 AND pr_number > 0 AND merge_commit <> ''`, repository)
+// MergedCardCommits maps those of shas that are the merge commit of a
+// card of repository to that card's pull request, whatever the card's
+// status: the queue records the commit at the merge, before Finish moves
+// the card to merged.
+func (s *PGStore) MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error) {
+	return s.commitCards(ctx, `SELECT merge_commit, pr_number FROM tasks
+		WHERE repository = $1 AND pr_number > 0 AND merge_commit = ANY($2)`, repository, shas)
+}
+
+// UncarriedMergedCards maps the merge commit of every merged card of
+// repository that has one and no carry row to its pull request: the
+// cards whose commit was recorded after the poller mapped their run.
+func (s *PGStore) UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error) {
+	return s.commitCards(ctx, `SELECT merge_commit, pr_number FROM tasks t
+		WHERE repository = $1 AND status = 'merged' AND pr_number > 0 AND merge_commit <> ''
+		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = t.repository AND c.pr_number = t.pr_number)`, repository)
+}
+
+func (s *PGStore) commitCards(ctx context.Context, query string, args ...any) (map[string]int64, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +221,8 @@ func (f *Forgejo) WorkflowList(ctx context.Context, repo Repo) ([]string, error)
 type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
-	MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error)
+	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
+	UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
@@ -295,6 +310,7 @@ type ChainPoller struct {
 	Now  func() time.Time
 	Poll time.Duration
 
+	ranges   map[[3]string][]string       // repository, base, head -> the commits of that compare
 	watched  map[string]bool              // repository -> whether its pushes run a workflow, read once
 	noted    map[string]bool              // the chain-block complaints logged, once each
 	failed   map[string]string            // repository -> the failure it last logged
@@ -325,6 +341,7 @@ func (p *ChainPoller) Run(ctx context.Context) {
 func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
+		p.ranges = map[[3]string][]string{}
 		p.ends = map[string]map[string]string{}
 	}
 }
@@ -550,6 +567,9 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		}
 		prev = run.CommitSHA
 	}
+	if err := p.recordLate(ctx, proj, seen, verdictOf); err != nil {
+		return err
+	}
 	newest := seen[len(seen)-1]
 	verdict, findings, err := p.headVerdict(ctx, repo, cfg, seen, newest.CommitSHA)
 	if err != nil {
@@ -563,10 +583,28 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 }
 
 // chainCarried lists the pull requests of the cards whose own merge
-// commit lies in run's compare range, ascending. The first run recorded
-// has no run before it to compare: it reads its own first parent, so its
-// merge's pull requests still map.
+// commit lies in run's compare range, ascending.
 func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun, prev string) ([]int64, error) {
+	shas, err := p.rangeSHAs(ctx, repo, run, prev)
+	if err != nil || len(shas) == 0 {
+		return nil, err
+	}
+	cards, err := p.Store.MergedCardCommits(ctx, repo.String(), shas)
+	if err != nil {
+		return nil, err
+	}
+	return slices.Sorted(maps.Values(cards)), nil
+}
+
+// rangeSHAs are the commits run brings over prev. The first run recorded
+// has no run before it to compare: it reads its own first parent, so its
+// merge's pull requests still map. A compare of two commits never
+// changes, so its answer is kept for the cards a later tick maps late.
+func (p *ChainPoller) rangeSHAs(ctx context.Context, repo Repo, run ActionRun, prev string) ([]string, error) {
+	key := [3]string{repo.String(), prev, run.CommitSHA}
+	if shas, ok := p.ranges[key]; ok {
+		return shas, nil
+	}
 	base := prev
 	if base == "" {
 		parent, err := p.Forgejo.CommitParent(ctx, repo.Owner, repo.Name, run.CommitSHA)
@@ -575,25 +613,59 @@ func (p *ChainPoller) chainCarried(ctx context.Context, repo Repo, run ActionRun
 		}
 		base = parent
 	}
-	if base == "" { // a root commit: no pull request rides it
-		return nil, nil
-	}
-	cards, err := p.Store.MergedCardCommits(ctx, repo.String())
-	if err != nil {
-		return nil, err
-	}
-	c, err := p.Forgejo.Compare(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
-	if err != nil {
-		return nil, err
-	}
-	var prs []int64
-	for _, cm := range c.Commits {
-		if pr, ok := cards[cm.SHA]; ok {
-			prs = append(prs, pr)
+	var shas []string
+	if base != "" { // a root commit: no pull request rides it
+		c, err := p.Forgejo.Compare(ctx, repo.Owner, repo.Name, base, run.CommitSHA)
+		if err != nil {
+			return nil, err
+		}
+		for _, cm := range c.Commits {
+			shas = append(shas, cm.SHA)
 		}
 	}
-	slices.Sort(prs)
-	return prs, nil
+	if len(p.ranges) >= chainRangesKept {
+		clear(p.ranges)
+	}
+	p.ranges[key] = shas
+	return shas, nil
+}
+
+// chainRangesKept bounds the compare answers the poller keeps: a few
+// windows of runs over the served repositories.
+const chainRangesKept = 512
+
+// recordLate gives the merged cards no carry row yet theirs: the first
+// run of the window whose range holds the card's merge commit records
+// it, with the commit's verdict. Only a card without a row is written,
+// so no row moves, and nothing is read while no such card exists.
+func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error)) error {
+	late, err := p.Store.UncarriedMergedCards(ctx, proj.Repository)
+	if err != nil || len(late) == 0 {
+		return err
+	}
+	prev := ""
+	for _, run := range seen {
+		shas, err := p.rangeSHAs(ctx, proj.Repo(), run, prev)
+		if err != nil {
+			return err
+		}
+		for _, sha := range shas {
+			pr, ok := late[sha]
+			if !ok {
+				continue
+			}
+			v, err := verdictOf(run.CommitSHA)
+			if err != nil {
+				return err
+			}
+			if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, v); err != nil {
+				return err
+			}
+			delete(late, sha)
+		}
+		prev = run.CommitSHA
+	}
+	return nil
 }
 
 // headVerdict is sha's head verdict: the AND of every main run the poll

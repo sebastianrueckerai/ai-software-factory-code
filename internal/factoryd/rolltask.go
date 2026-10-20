@@ -329,7 +329,7 @@ func rollTarget(name string) (RollTarget, bool) {
 type RollerStore interface {
 	CreateTask(ctx context.Context, t Task) error
 	RollTaskPRs(ctx context.Context, repository string) ([]int64, error)
-	MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error)
+	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
 	SetAgentSummary(ctx context.Context, id, summary string) error
 	RollRequestSeen(ctx context.Context, sha string) (bool, error)
 	RollRuns(ctx context.Context, repository string) (first, carried int64, err error)
@@ -864,7 +864,7 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 			commits = append(commits, cm)
 		}
 	}
-	cards, err := r.Store.MergedCardCommits(ctx, r.Repo.String())
+	cards, err := r.Store.MergedCardCommits(ctx, r.Repo.String(), shas)
 	if err != nil {
 		return nil, nil, err
 	}

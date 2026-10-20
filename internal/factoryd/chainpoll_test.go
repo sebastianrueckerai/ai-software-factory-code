@@ -193,12 +193,31 @@ func (s *fakeStore) Projects(ctx context.Context) ([]Project, error) {
 	return s.projects, nil
 }
 
-// MergedCardCommits mirrors PGStore's read: the merge commit of every
-// card of the repository whose pull request merged.
-func (s *fakeStore) MergedCardCommits(ctx context.Context, repository string) (map[string]int64, error) {
+// MergedCardCommits mirrors PGStore's read: the card of each of shas
+// that has a pull request and a recorded merge commit.
+func (s *fakeStore) MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error) {
 	out := map[string]int64{}
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.PRNumber > 0 && t.MergeCommit != "" {
+		if t.Repository == repository && t.PRNumber > 0 && t.MergeCommit != "" && slices.Contains(shas, t.MergeCommit) {
+			out[t.MergeCommit] = t.PRNumber
+		}
+	}
+	return out, nil
+}
+
+// UncarriedMergedCards mirrors PGStore's read: the merged cards with a
+// recorded merge commit and no carry row.
+func (s *fakeStore) UncarriedMergedCards(ctx context.Context, repository string) (map[string]int64, error) {
+	out := map[string]int64{}
+	for _, t := range s.tasks {
+		if t.Repository != repository || t.Status != "merged" || t.PRNumber <= 0 || t.MergeCommit == "" {
+			continue
+		}
+		carried := false
+		for _, c := range s.chain {
+			carried = carried || c.repo == repository && c.pr == t.PRNumber
+		}
+		if !carried {
 			out[t.MergeCommit] = t.PRNumber
 		}
 	}
@@ -252,6 +271,7 @@ type chainForgejo struct {
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
 	reads     []string                                  // "repository dir" of every workflow-list read
+	compares  int                                       // the compare calls served
 }
 
 func (f *chainForgejo) srv(t *testing.T) *Forgejo {
@@ -282,6 +302,7 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case strings.HasPrefix(p, "/git/commits/"):
 			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
 		case strings.HasPrefix(p, "/compare/"):
+			f.compares++
 			base, head, _ := strings.Cut(strings.TrimPrefix(p, "/compare/"), "...")
 			reply(map[string]any{"commits": f.carries[repo][base+"..."+head]})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
@@ -1292,5 +1313,58 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 	}
 	if !slices.Equal(ended, []string{"t-7 done live: covered by run 11"}) {
 		t.Fatalf("ended %v, want t-7 done by run 11", ended)
+	}
+}
+
+// A card whose merge commit is recorded after the poller mapped the run
+// that carries it still gets its row, at that run, with the head left as
+// it was; a row a card already has never moves; a card that stays
+// uncarried costs no compare the poller made before.
+func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {
+				"parent-of-" + commitC1 + "..." + commitC1: {{"sha": "b0b0"}},
+				commitC1 + "..." + commitC2:                {{"sha": mergePR12}, {"sha": mergePR14}},
+			},
+		},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged"}
+	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", MergeCommit: "0c0c"}
+	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", MergeCommit: mergePR14}
+	ctx := context.Background()
+	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC2, 62, "success"); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range chainOf(store, codeRepo) {
+		if c.pr == 12 {
+			t.Fatalf("chain %+v, want no row for pr 12 before its merge commit is recorded", chainOf(store, codeRepo))
+		}
+	}
+	task := store.tasks["t-late"]
+	task.MergeCommit = mergePR12
+	store.tasks["t-late"] = task
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+	}) {
+		t.Fatalf("chain %+v, want pr 12 at run 62, the head and pr 14 as they were", got)
+	}
+	before := f.compares
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if f.compares != before {
+		t.Fatalf("a third tick made %d compare calls for the pairs already compared (t-never stays uncarried)", f.compares-before)
 	}
 }
