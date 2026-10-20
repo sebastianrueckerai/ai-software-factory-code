@@ -296,3 +296,62 @@ func TestPGStoreRollHolds(t *testing.T) {
 		t.Fatalf("hold after clearing both = %+v", h)
 	}
 }
+
+func TestARollRequestSettlesOnAMergedRollTask(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_requests, tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "sf/ai-software-factory-code"
+	for i, c := range []struct{ task, status, sha string }{
+		{"rt1", "merged", "m"}, {"rt2", "failed", "f"}, {"rt3", "running", "r"},
+	} {
+		if err := s.CreateTask(ctx, Task{ID: c.task, Status: c.status, Repository: repo, Kind: "agent", Source: SourceRoll}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.InsertRollRequest(ctx, RollRequest{SHA: c.sha, Repository: repo, RunID: int64(10 + i), State: RollOpened, TaskID: c.task}); err != nil {
+			t.Fatal(err)
+		}
+		if c.status != "running" {
+			if err := s.MarkRollsCommitted(ctx, c.task, []string{c.sha}, "commit-"+c.sha); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	// folded in after rt1's last commit: forgotten, not merged
+	if err := s.InsertRollRequest(ctx, RollRequest{SHA: "late", Repository: repo, RunID: 13, State: RollOpened, TaskID: "rt1"}); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := s.SettleRollRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range settled {
+		got[r.SHA] = r.State
+	}
+	if want := map[string]string{"m": RollMerged, "f": RollFailed}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("settled %v, want %v", got, want)
+	}
+	states := map[string]string{}
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, state FROM roll_requests`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var sha, state string
+		if err := rows.Scan(&sha, &state); err != nil {
+			t.Fatal(err)
+		}
+		states[sha] = state
+	}
+	if want := map[string]string{"m": RollMerged, "f": RollFailed, "r": RollOpened}; !reflect.DeepEqual(states, want) {
+		t.Fatalf("rows %v, want %v", states, want)
+	}
+}

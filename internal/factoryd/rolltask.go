@@ -231,10 +231,10 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH gone AS (
 		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
-			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status = 'done')
+			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status IN ('done', 'merged'))
 		RETURNING r.sha)
-		UPDATE roll_requests r SET state = CASE WHEN t.status = 'done' THEN 'merged' ELSE 'failed' END
-		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1)
+		UPDATE roll_requests r SET state = CASE WHEN t.status IN ('done', 'merged') THEN 'merged' ELSE 'failed' END
+		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1 || ARRAY['merged'])
 		AND r.sha NOT IN (SELECT sha FROM gone)
 		RETURNING r.sha, r.state`, FinalStatuses)
 	if err != nil {
