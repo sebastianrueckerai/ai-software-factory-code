@@ -2091,9 +2091,11 @@ func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
 	}
 }
 
-// A merged card's workflow ended at its merge: a trusted close of its
-// issue, and the console's Close of one without an issue, end it through
-// the runner's CloseMerged with the closer, nothing signalled.
+// A merged card's issue closes with its own merge (Closes #N), and a
+// webhook of that close looks like a human's: the issue close path leaves
+// a merged card merged, nothing signalled to the workflow that ended at
+// the merge. The console's Close of a merged card (CloseCard) ends it
+// through the runner's CloseMerged with the closer.
 func TestClosingAMergedCardEndsItClosed(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	var closed []string
@@ -2102,7 +2104,7 @@ func TestClosingAMergedCardEndsItClosed(t *testing.T) {
 		return nil
 	}
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "merged", Kind: "agent", IssueNumber: 4, PRNumber: 7, FinishedAt: justNow()}
-	store.tasks["t2"] = Task{ID: "t2", Repository: "sf/ai-software-factory-code", Status: "merged", Kind: "agent", PRNumber: 8, FinishedAt: justNow()}
+	store.tasks["t2"] = Task{ID: "t2", Repository: "sf/ai-software-factory-code", Status: "merged", Kind: "agent", IssueNumber: 5, PRNumber: 8, FinishedAt: justNow()}
 	body, _ := json.Marshal(map[string]any{
 		"action":     "closed",
 		"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "sebastian"}},
@@ -2112,10 +2114,13 @@ func TestClosingAMergedCardEndsItClosed(t *testing.T) {
 	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
+	if len(closed) != 0 || len(workflowsOf(in).signals) != 0 || store.tasks["t1"].Status != "merged" {
+		t.Fatalf("the issue's close: closed %q, signals %q, status %s; want the card left merged", closed, workflowsOf(in).signals, store.tasks["t1"].Status)
+	}
 	if err := in.CloseCard(context.Background(), "t2", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"t1 by sebastian", "t2 by alice"}; !slices.Equal(closed, want) || len(workflowsOf(in).signals) != 0 {
+	if want := []string{"t2 by alice"}; !slices.Equal(closed, want) || len(workflowsOf(in).signals) != 0 {
 		t.Fatalf("closed %q, signals %q; want %q and no signal", closed, workflowsOf(in).signals, want)
 	}
 }

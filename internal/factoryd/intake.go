@@ -53,8 +53,9 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
-	// CloseMerged ends a merged card closed on closer's close: the
-	// runner's CloseMerged, its workflow having ended at the merge.
+	// CloseMerged ends a merged card closed on closer's Close in the
+	// console (CloseCard): the runner's CloseMerged, its workflow having
+	// ended at the merge.
 	CloseMerged func(ctx context.Context, taskID, closer string) error
 
 	trustMu sync.Mutex
@@ -1103,8 +1104,10 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// task's branch is deleted, a merged card, whose workflow ended at its
-// merge, ends closed. An issue's author can close it without any
+// task's branch is deleted. A merged card is left as it is: its own
+// merge closes its issue (Closes #N), a close no webhook tells from a
+// human's, and its workflow ended at the merge; the chain ends it, or
+// the console's Close (CloseCard). An issue's author can close it without any
 // repository access, so only a user trusted to steer counts, and the bot
 // account only where factoryd recorded the close as its own
 // (IntakeFactoryClosed): a leaked bot login ends no task.
@@ -1131,7 +1134,7 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	case t.Status == "failed":
 		return in.deleteFailedBranch(ctx, t)
 	case t.Status == "merged":
-		return in.CloseMerged(ctx, t.ID, closer)
+		return nil
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err

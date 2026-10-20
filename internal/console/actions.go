@@ -1290,7 +1290,9 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 
 // doClose closes card id's issue as the member, its note commented first
 // when given; intake ends the card as on any writer's close. A card with
-// no issue factoryd closes alone, a failed one too, its note on the row.
+// no issue factoryd closes alone, a failed one too, its note on the row,
+// and so a merged card: its merge closed its issue already, and closing
+// a closed issue sends no webhook.
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 {
@@ -1303,19 +1305,22 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if factoryd.Final(t.Status) && (t.IssueNumber != 0 || t.Status != "failed") {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
 	}
-	if t.IssueNumber == 0 {
+	if t.IssueNumber != 0 && note != "" {
+		if err := c.comment(ctx, a, t, note, nil); err != nil {
+			return "", &forgejoRefusal{"post the note", err}
+		}
+	}
+	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
 			return "", refuse(http.StatusConflict, "The card could not be closed; see the factoryd log.")
 		}
-		log.Printf("console: %s closed %s (%s, no issue) via %s", a.s.user, t.ID, t.Repository, a.via)
-		c.record(ctx, a, t.Repository, t.ID, 0, factoryd.EventCardClosed, map[string]any{"note": note})
-		return "Closed card " + t.ID + ".", nil
-	}
-	if note != "" {
-		if err := c.comment(ctx, a, t, note, nil); err != nil {
-			return "", &forgejoRefusal{"post the note", err}
+		log.Printf("console: %s closed %s (%s, %s) via %s", a.s.user, t.ID, t.Repository, t.Status, a.via)
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
+		if t.IssueNumber != 0 {
+			return fmt.Sprintf("Closed #%d.", t.IssueNumber), nil
 		}
+		return "Closed card " + t.ID + ".", nil
 	}
 	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
 		return "", &forgejoRefusal{"close the issue", err}

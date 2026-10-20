@@ -109,6 +109,35 @@ func TestChatClose(t *testing.T) {
 	equal(t, "the button's patch", r.fg.patched[1:], []string{`/api/v1/repos/sf/code/issues/5 {"state":"closed"}`})
 }
 
+// A merged card's issue closed with its merge, so closing it again sends
+// no webhook: the console's and the chat's Close end a merged card through
+// CloseCard as the member, its note commented on the issue first, the
+// issue left as it is.
+func TestClosingAMergedCard(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-mg", Kind: "agent", Status: "merged", Repository: "sf/code",
+		IssueNumber: 9, PRNumber: 19, Objective: "Add the feed."}})
+	r.tasks.mu.Unlock()
+	before := r.events.count()
+	args := `{"task_id":"t-mg","note":"The chain cannot carry it."}`
+	_, done, _ := proposeAndDo(t, r, g, "close", args)
+	equal(t, "Do it", done, ran("close", args, "Closed #9."))
+	equal(t, "closed", r.closed, []string{"t-mg by sebastian"})
+	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/9/comments"})
+	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/9/comments"], "The chain cannot carry it.")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-mg", IssueNumber: 9, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "The chain cannot carry it."}})
+
+	ck, s := r.loggedIn(t)
+	before = r.events.count()
+	rec := r.do(post("/tasks/t-mg/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", []any{rec.Code, rec.Header().Get("Location")}, []any{http.StatusSeeOther, "/?project=ai-software-factory-code"})
+	equal(t, "closed by the button", r.closed, []string{"t-mg by sebastian", "t-mg by sebastian"})
+	equal(t, "the patches", r.fg.patched, []string(nil))
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-mg", detail: map[string]any{"note": ""}})
+}
+
 // edit proposes; Do it edits the issue's title alone as the member, and
 // the card's objective becomes the issue's title and body as Forgejo
 // answers them, which the next session's brief reads; one card_edited row
