@@ -39,8 +39,11 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	m, reader := testMetrics(t)
 	r.completion.Metrics = m
 	store.projects = []Project{{Name: "demo", Repository: "sf/repo", MergeRule: policy.MergeAuto}}
-	for _, reason := range []string{"pull request merged", "live: covered by run 12", "live: covered by run 12"} {
-		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := r.EndCovered(context.Background(), "t1", 12); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -278,10 +281,11 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityRecordUsage, "t1", TaskUsage{AgentTime: 19 * time.Minute, Attempts: 1, ExtraTime: 9 * time.Minute}); err != nil {
 		t.Fatal(err)
 	}
-	for _, reason := range []string{"pull request merged", "live: covered by run 12"} {
-		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.EndCovered(ctx, "t1", 12); err != nil {
+		t.Fatal(err)
 	}
 	roll := prTask
 	roll.ID, roll.Status, roll.Source = "t-roll", "in-review", SourceRoll

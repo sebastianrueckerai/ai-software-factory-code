@@ -769,8 +769,8 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	projects.projects = []Project{seedProject(codeRepo)}
 	fj := f.srv(t)
 	var ended []string
-	end := func(ctx context.Context, taskID, final, reason string) error {
-		ended = append(ended, taskID+" "+reason)
+	end := func(ctx context.Context, taskID string, run int64) error {
+		ended = append(ended, fmt.Sprintf("%s run %d", taskID, run))
 		return nil
 	}
 	poll := func() { // a fresh poller: factoryd restarted
@@ -822,7 +822,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if run := covered(); run != 61 {
 		t.Fatalf("after the context concluded: covered by run %d, want live at run 61", run)
 	}
-	if !slices.Equal(ended, []string{"t-wait live: covered by run 61"}) {
+	if !slices.Equal(ended, []string{"t-wait run 61"}) {
 		t.Fatalf("ended %q, want t-wait once, on the tick its context concluded", ended)
 	}
 }
@@ -959,14 +959,14 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 		{repo: codeRepo, pr: 14, sha: "c14", run: 14, status: "pending"},
 	}
 	var ended []string
-	p.End = func(ctx context.Context, taskID, final, reason string) error {
-		ended = append(ended, taskID+" "+final+" "+reason)
+	p.End = func(ctx context.Context, taskID string, run int64) error {
+		ended = append(ended, fmt.Sprintf("%s run %d", taskID, run))
 		return errors.New("forgejo is down")
 	}
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
-	want := []string{"t-green done live: covered by run 12", "t-later done live: covered by run 12"}
+	want := []string{"t-green run 12", "t-later run 12"}
 	for tick := 1; tick <= 2; tick++ {
 		ended = nil
 		if err := p.Tick(context.Background()); err != nil {
@@ -992,7 +992,7 @@ func TestAFailingEndLogsOnceUntilItSucceeds(t *testing.T) {
 	store.chain = []fakeChainRun{{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"}}
 	down := errors.New("forgejo is down")
 	ends := []error{down, down, nil, down}
-	p.End = func(ctx context.Context, taskID, final, reason string) error {
+	p.End = func(ctx context.Context, taskID string, run int64) error {
 		err := ends[0]
 		ends = ends[1:]
 		return err
@@ -1032,9 +1032,9 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 	store.projects = []Project{seedProject("sf/repo")}
 	f.seedCards(store)
 	ends := 0
-	end := func(ctx context.Context, taskID, final, reason string) error {
+	end := func(ctx context.Context, taskID string, run int64) error {
 		ends++
-		return r.Finish(ctx, taskID, final, reason)
+		return r.EndCovered(ctx, taskID, run)
 	}
 	p := &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store, Policy: r.cfg.Policy, End: end}
 	ctx := context.Background()
@@ -1354,7 +1354,7 @@ func stallRig(t *testing.T, status string, requires ...string) (*ChainPoller, *f
 		}}}
 	}
 	p.Workflows = &fakeWorkflows{}
-	p.End = func(context.Context, string, string, string) error { return nil } // a green head covers #77
+	p.End = func(context.Context, string, int64) error { return nil } // a green head covers #77
 	p.Forgejo.PublicURL = "https://git.example"
 	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
 	clock := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
@@ -1950,8 +1950,8 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12}
 	var ended []string
-	p.End = func(ctx context.Context, taskID, final, reason string) error {
-		ended = append(ended, taskID+" "+final+" "+reason)
+	p.End = func(ctx context.Context, taskID string, run int64) error {
+		ended = append(ended, fmt.Sprintf("%s run %d", taskID, run))
 		return nil
 	}
 	ctx := context.Background()
@@ -1968,7 +1968,7 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 11}) {
 		t.Fatalf("covered %v, want t-7 by run 11", got)
 	}
-	if !slices.Equal(ended, []string{"t-7 done live: covered by run 11"}) {
+	if !slices.Equal(ended, []string{"t-7 run 11"}) {
 		t.Fatalf("ended %v, want t-7 done by run 11", ended)
 	}
 }
@@ -1988,7 +1988,7 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
+	p.End = func(ctx context.Context, taskID string, run int64) error { return nil }
 	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow()}
 	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c"}
 	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14}
@@ -2039,7 +2039,7 @@ func TestALateCompareFailureStopsNothingElse(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	var ended []string
-	p.End = func(ctx context.Context, taskID, final, reason string) error {
+	p.End = func(ctx context.Context, taskID string, run int64) error {
 		ended = append(ended, taskID)
 		return nil
 	}
@@ -2089,7 +2089,7 @@ func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	p.End = func(ctx context.Context, taskID, final, reason string) error { return nil }
+	p.End = func(ctx context.Context, taskID string, run int64) error { return nil }
 	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "b0b0"}
 	ctx := context.Background()
 	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
@@ -2125,7 +2125,7 @@ func TestAnUncarriedMergedCardAlertsAfterTheBound(t *testing.T) {
 	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
 	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
-	p.End = func(context.Context, string, string, string) error { return nil }
+	p.End = func(context.Context, string, int64) error { return nil }
 	store.chainNow = p.Now
 	merged := clock
 	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: "f00d"}
@@ -2357,7 +2357,7 @@ func TestAGreenRunWithAPendingRequiredStatusStaysPending(t *testing.T) {
 	clock := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
 	ended := 0
-	p.End = func(context.Context, string, string, string) error { ended++; return nil }
+	p.End = func(context.Context, string, int64) error { ended++; return nil }
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
@@ -2393,8 +2393,8 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
 	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
 	var ended []string
-	p.End = func(_ context.Context, id, final, reason string) error {
-		ended = append(ended, id+" "+final+" "+reason)
+	p.End = func(_ context.Context, id string, run int64) error {
+		ended = append(ended, fmt.Sprintf("%s run %d", id, run))
 		return nil
 	}
 	if err := p.Tick(context.Background()); err != nil {
@@ -2413,7 +2413,7 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 		}
 	}
 	slices.Sort(ended)
-	if want := []string{"t-12 done live: covered by run 61", "t-14 done live: covered by run 61"}; !slices.Equal(ended, want) {
+	if want := []string{"t-12 run 61", "t-14 run 61"}; !slices.Equal(ended, want) {
 		t.Fatalf("ended %q, want %q", ended, want)
 	}
 }

@@ -127,7 +127,7 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 	}
 }
 
-// The reconciler over the real store, ending through the runner's Finish:
+// The reconciler over the real store, ending through the runner's EndCovered:
 // a merged card a green run covers ends done, one the chain has not
 // covered yet stays merged, the covered card's task_ended event and its
 // done poke land once, and a second tick changes nothing. Requires a
@@ -184,7 +184,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 	if err := poker.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
-	p := &ChainPoller{Store: s, End: r.Finish}
+	p := &ChainPoller{Store: s, End: r.EndCovered}
 	p.once()
 	for range 2 {
 		p.reconcile(ctx, "sf/r")

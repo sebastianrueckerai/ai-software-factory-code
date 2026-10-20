@@ -397,9 +397,9 @@ type ChainPoller struct {
 	Policy func() policy.Version
 	// Workflows starts the repair card a red head files.
 	Workflows Workflows
-	// End ends a covered merged card: the runner's Finish, the one
-	// function that ends a task.
-	End func(ctx context.Context, taskID, final, reason string) error
+	// End ends merged card taskID done, covered by green run run: the
+	// runner's EndCovered, through the one function that ends a task.
+	End func(ctx context.Context, taskID string, run int64) error
 	// Timeline records the events of the cards the poller files; nil
 	// records none.
 	Timeline *Timeline
@@ -579,7 +579,7 @@ func (p *ChainPoller) reconcile(ctx context.Context, repository string) {
 	}
 	failed := map[string]string{}
 	for id, run := range covered {
-		if err := p.End(ctx, id, "done", fmt.Sprintf("live: covered by run %d", run)); err != nil {
+		if err := p.End(ctx, id, run); err != nil {
 			if p.ends[repository][id] != err.Error() {
 				log.Printf("chain poller: %s: end %s: %v", repository, id, err)
 			}

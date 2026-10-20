@@ -2142,23 +2142,45 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
 // issue label) and, for a failure, the reason as an issue comment.
-// Finishing an already-finished task is a no-op, so a retried Finish never
-// double-completes. A done end of a card whose pull request merged and
+// Finishing an already-finished task, or a merged one, is a no-op, so a
+// retried Finish never double-completes and never ends a merged card
+// without its chain. A done end of a card whose pull request merged and
 // waits for its chain (endsMerged) runs every step of done and lands in
-// merged, not final and without task_ended: its Finish with done at live
-// ends it.
+// merged, not final and without task_ended: EndCovered ends it at live,
+// CloseMerged at a human's close.
 func (r *Runner) Finish(ctx context.Context, taskID, final, reason string) error {
+	return r.finish(ctx, taskID, final, reason, false)
+}
+
+// EndCovered ends merged card taskID done: run, a green run of its
+// chain, covers it. The chain poller's reconciler calls it every tick, so
+// a card already done is a no-op.
+func (r *Runner) EndCovered(ctx context.Context, taskID string, run int64) error {
+	return r.finish(ctx, taskID, "done", fmt.Sprintf("live: covered by run %d", run), true)
+}
+
+// CloseMerged ends merged card taskID closed on closer's close of its
+// issue or its card: its change merged but no chain ran it live, so the
+// card is not done.
+func (r *Runner) CloseMerged(ctx context.Context, taskID, closer string) error {
+	return r.finish(ctx, taskID, "closed", "closed by "+closer+": ended without a live chain", true)
+}
+
+// finish is the one end of a task. merged picks the cards it ends: a
+// merged card for the ends after the merge, else one neither merged nor
+// final.
+func (r *Runner) finish(ctx context.Context, taskID, final, reason string, merged bool) error {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
 		return err
 	}
-	if !ok || Final(t.Status) {
-		return nil // nothing to finish: gone, or already final
+	if !ok || Final(t.Status) || (t.Status == "merged") != merged {
+		return nil // nothing to finish here: gone, already final, or not this entry's
 	}
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && t.Status != "merged" && repoErr == nil && endsMerged(t, cfg.Chain) {
+	if _, cfg, _ := r.cfg.Policy().ProjectOf(t.Repository); final == "done" && !merged && repoErr == nil && endsMerged(t, cfg.Chain) {
 		merged, err := r.cardMerged(ctx, repo, t)
 		if err != nil {
 			return err

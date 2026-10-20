@@ -52,7 +52,7 @@ func TestWiringBuildsThePollerAsMainDoes(t *testing.T) {
 	defer store.Close()
 	var runner *factoryd.Runner // no card to end: never called
 	p := newChainPoller(&factoryd.Forgejo{}, store, func() policy.Version { return policy.Version{} }, factoryd.BoundedWorkflows{},
-		nil, factoryd.Repo{}, runner.Finish)
+		nil, factoryd.Repo{}, runner.EndCovered)
 	if err := p.Tick(ctx); err != nil {
 		t.Fatalf("tick: %v", err)
 	}

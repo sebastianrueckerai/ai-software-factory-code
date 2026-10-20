@@ -1323,20 +1323,21 @@ func TestFinishRetriesAFailedPullRequestRead(t *testing.T) {
 
 // A merged card's re-check that fails leaves it merged, never closing, so
 // the next end retries it: that one ends it done with one task_ended.
-func TestFinishKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
+func TestEndCoveredKeepsAMergedCardMergedWhenItsRecheckFails(t *testing.T) {
 	r, _, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
 	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusBadGateway) }))
 	t.Cleanup(down.Close)
 	up := r.completion.LiteLLM
 	r.completion.LiteLLM = &LiteLLMAdmin{BaseURL: down.URL, MasterKey: "mk"}
-	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err == nil {
-		t.Fatal("Finish passed a failed re-check")
+	ctx := context.Background()
+	if err := r.EndCovered(ctx, "t1", 12); err == nil {
+		t.Fatal("EndCovered passed a failed re-check")
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" || len(taskEnds(t, objects, "t1")) != 0 {
+	if got, _, _ := store.Task(ctx, "t1"); got.Status != "merged" || len(taskEnds(t, objects, "t1")) != 0 {
 		t.Fatalf("status = %q, task_ended = %q; want merged and no end", got.Status, taskEnds(t, objects, "t1"))
 	}
 	r.completion.LiteLLM = up
-	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err != nil {
+	if err := r.EndCovered(ctx, "t1", 12); err != nil {
 		t.Fatal(err)
 	}
 	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "done" {
@@ -1378,10 +1379,10 @@ func TestFinishEndsANoneModeProjectDone(t *testing.T) {
 
 // The chain covering a merged card ends it done, task_ended naming the
 // run; a second end of the done card changes nothing.
-func TestFinishEndsAMergedCardDone(t *testing.T) {
+func TestEndCoveredEndsAMergedCardDone(t *testing.T) {
 	r, _, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
 	for range 2 {
-		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "live: covered by run 12"); err != nil {
+		if err := r.EndCovered(context.Background(), "t1", 12); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1390,6 +1391,26 @@ func TestFinishEndsAMergedCardDone(t *testing.T) {
 	}
 	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 12"}) {
 		t.Fatalf("task_ended = %q, want one naming the run", got)
+	}
+}
+
+// A retried Finish of the merge — its first attempt moved the card to
+// merged, the worker died before it reported — finds the card merged and
+// changes nothing: no done, no task_ended, no cleanup again. Only the
+// chain's EndCovered ends a merged card.
+func TestFinishLeavesAMergedCardMerged(t *testing.T) {
+	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "merged"), policy.ChainModeRun)
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.Status != "merged" {
+		t.Fatalf("status = %q, want merged", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); len(got) != 0 {
+		t.Fatalf("task_ended = %q, want none", got)
+	}
+	if _, on := store.liveSessions["t1"]; !on || len(hub.revoked) != 0 {
+		t.Fatalf("live session %v, revoked %v; want nothing touched", on, hub.revoked)
 	}
 }
 

@@ -374,7 +374,7 @@ func main() {
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Registry:  registry, SigningKey: rollSigningKey()}
 	go roller.Run(ctx)
-	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.Finish)
+	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.EndCovered)
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
@@ -1017,10 +1017,11 @@ func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerIntercepto
 }
 
 // newChainPoller records every run-mode repository's chain (roadmap 297)
-// and ends each covered merged card through end, the runner's Finish: the
-// roll stays the factory's own repository's engine and writes none of it.
+// and ends each covered merged card through end, the runner's EndCovered:
+// the roll stays the factory's own repository's engine and writes none of
+// it.
 func newChainPoller(forgejo *factoryd.Forgejo, store *factoryd.PGStore, current func() policy.Version, workflows factoryd.BoundedWorkflows,
-	timeline *factoryd.Timeline, own factoryd.Repo, end func(ctx context.Context, taskID, final, reason string) error) *factoryd.ChainPoller {
+	timeline *factoryd.Timeline, own factoryd.Repo, end func(ctx context.Context, taskID string, run int64) error) *factoryd.ChainPoller {
 	return &factoryd.ChainPoller{Forgejo: forgejo, Store: store, Projects: store, Policy: current,
 		Workflows: workflows, Timeline: timeline, Own: own, End: end, Now: time.Now, Poll: 15 * time.Second}
 }
